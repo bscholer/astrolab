@@ -39,6 +39,10 @@ class Node[ParamsT: BaseModel](ABC):
     outputs: ClassVar[dict[str, PortType]]
     params_schema: ClassVar[type[BaseModel]]
 
+    optional_inputs: ClassVar[frozenset[str]] = frozenset()
+    """Names of input ports that are optional. Unwired optional inputs are
+    omitted from the dict passed to run() and from the cache hash."""
+
     @abstractmethod
     def run(
         self,

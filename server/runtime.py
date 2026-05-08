@@ -117,19 +117,22 @@ def run_job(
         node_inst: Node = node_cls()
 
         # Resolve inputs from prior outputs (or from job.inputs for sources).
+        # Optional inputs may be omitted; required inputs must resolve.
         resolved_inputs: dict[str, Ref] = {}
         for in_port in node_cls.inputs:
             src = spec.inputs.get(in_port)
+            external_key = f"{nid}.{in_port}"
             if src is None:
-                # Treat as an external input keyed by '<node_id>.<port>'.
-                external_key = f"{nid}.{in_port}"
-                if external_key not in refs:
+                if external_key in refs:
+                    resolved_inputs[in_port] = refs[external_key]
+                elif in_port in node_cls.optional_inputs:
+                    continue
+                else:
                     raise RunError(
                         nid,
                         f"input port '{in_port}' has no edge and no external input "
                         f"'{external_key}' in job.inputs",
                     )
-                resolved_inputs[in_port] = refs[external_key]
             else:
                 if src not in refs:
                     raise RunError(nid, f"unresolved input edge '{src}' for port '{in_port}'")
