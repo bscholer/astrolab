@@ -726,27 +726,46 @@ def create_project_from_session(
 
 
 def _attach_preview(project_dict: dict) -> dict:
-    """Resolve the project's current job to a (preview_hash, preview_port)
-    pair so the UI can render a thumbnail without a second roundtrip.
+    """Resolve a (preview_hash, preview_port) pair for the project so
+    the UI can render a thumbnail without a second roundtrip.
 
-    Picks the same output the project detail page uses: the port named
-    'image' if present, otherwise the first output. Returns the dict
-    unchanged when the job is still running, was evicted, or has no
-    outputs yet — the UI just doesn't show a thumbnail in that case.
+    Walks history newest-to-oldest, starting at current_seq, and picks
+    the first job with outputs. This means a failed retweak still
+    shows the last good render — important because the projects list
+    is the user's at-a-glance "what does each of my stacks look like"
+    view, not a status board.
+
+    Picks the same output the project detail page uses: the port
+    named 'image' if present, otherwise the first output. Leaves the
+    fields off when nothing in history has outputs yet — UI falls
+    back to an inline version chip in that case.
     """
-    job_id = project_dict.get("current_job_id")
-    if not job_id:
+    history = project_dict.get("history") or []
+    current_seq = project_dict.get("current_seq", 0)
+    # Try the current pointer first (typical case), then walk backward
+    # through earlier history entries, then forward through any future
+    # ones the user may have reverted past.
+    seq_order = (
+        [current_seq]
+        + list(range(current_seq - 1, -1, -1))
+        + list(range(current_seq + 1, len(history)))
+    )
+    by_seq = {h["seq"]: h for h in history}
+    for seq in seq_order:
+        entry = by_seq.get(seq)
+        if entry is None:
+            continue
+        record = job_manager.get(entry["job_id"])
+        if record is None or not record.outputs:
+            continue
+        outputs = record.outputs
+        port = "image" if "image" in outputs else next(iter(outputs))
+        ref = outputs.get(port)
+        if ref is None:
+            continue
+        project_dict["preview_hash"] = ref.node_hash
+        project_dict["preview_port"] = port
         return project_dict
-    record = job_manager.get(job_id)
-    if record is None or not record.outputs:
-        return project_dict
-    outputs = record.outputs
-    port = "image" if "image" in outputs else next(iter(outputs))
-    ref = outputs.get(port)
-    if ref is None:
-        return project_dict
-    project_dict["preview_hash"] = ref.node_hash
-    project_dict["preview_port"] = port
     return project_dict
 
 
