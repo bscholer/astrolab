@@ -1,0 +1,61 @@
+"""FITS primary-header reader.
+
+Reads only the primary HDU's header; we never touch pixel data here. astropy
+pre-reads the first 2880-byte block lazily, so this is cheap (~ms per file).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from astropy.io import fits
+
+HEADER_KEYS_TO_KEEP: tuple[str, ...] = (
+    "OBJECT",
+    "DATE-OBS",
+    "EXPTIME",
+    "GAIN",
+    "FILTER",
+    "CAMERA",
+    "INSTRUME",
+    "TELESCOP",
+    "ORIGIN",
+    "XBINNING",
+    "YBINNING",
+    "XPIXSZ",
+    "YPIXSZ",
+    "FOCALLEN",
+    "DET-TEMP",
+    "CCD-TEMP",
+    "RA",
+    "DEC",
+    "BAYERPAT",
+    "IMAGETYP",
+    "NAXIS1",
+    "NAXIS2",
+)
+"""Headers we care about. Anything else is dropped to keep blob size sane."""
+
+
+def read_primary_header(path: Path) -> dict[str, Any]:
+    """Return a dict of selected headers from `path`'s primary HDU.
+
+    Missing keys are simply absent from the returned dict; callers should
+    coalesce with adapter hints when a key isn't present.
+    """
+    out: dict[str, Any] = {}
+    with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
+        header = hdul[0].header
+        for key in HEADER_KEYS_TO_KEEP:
+            if key in header:
+                value = header[key]
+                if isinstance(value, str):
+                    value = value.strip()
+                out[key] = value
+    return out
+
+
+def normalize_target(name: str) -> str:
+    """Collapse whitespace runs in a target name and strip the result."""
+    return " ".join(name.split())
