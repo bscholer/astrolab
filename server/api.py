@@ -580,8 +580,11 @@ def get_preview(node_hash: str, port: str) -> FileResponse:
     return FileResponse(
         path,
         media_type="image/png",
-        # The cache is content-addressed, so a hit is permanent and cacheable.
-        headers={"Cache-Control": "public, max-age=86400, immutable"},
+        # Content-addressed by node_hash, but the *renderer* can change (siril
+        # autostretch swap, MTF tweaks, etc.). max-age covers a normal session
+        # and dropping `immutable` lets a hard refresh actually fetch the new
+        # render after a code change.
+        headers={"Cache-Control": "public, max-age=60"},
     )
 
 
