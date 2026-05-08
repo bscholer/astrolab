@@ -42,15 +42,15 @@ class ContentCache:
             return self.entry_dir(node_hash)
         return None
 
-    def reserve(self, node_hash: str) -> Path:
+    def reserve(self, node_hash: str, *, force: bool = False) -> Path:
         """Create (or reset) the entry directory and return its path.
 
-        If a half-written entry exists (no _done marker), it gets cleared. A
-        committed entry is left alone; the caller should have checked lookup
-        first.
+        If a half-written entry exists (no _done marker), it gets cleared.
+        A committed entry is normally left alone; pass force=True to wipe
+        it (used by the 'Reprocess' flow when bypassing cache lookup).
         """
         d = self.entry_dir(node_hash)
-        if d.exists() and not self.is_committed(node_hash):
+        if d.exists() and (force or not self.is_committed(node_hash)):
             shutil.rmtree(d)
         d.mkdir(parents=True, exist_ok=True)
         return d

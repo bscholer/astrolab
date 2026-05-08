@@ -142,6 +142,28 @@ def test_websocket_streams_completion(client, tmp_path: Path) -> None:
     assert "node_completed" in seen
 
 
+def test_rerun_creates_new_job_with_force(client, tmp_path: Path) -> None:
+    src = _make_png(tmp_path / "in.png")
+    job_id = client.post("/api/jobs", json=_downscale_payload(src)).json()["job_id"]
+    _wait_for(client, job_id)
+
+    r = client.post(f"/api/jobs/{job_id}/rerun")
+    assert r.status_code == 200
+    new_id = r.json()["job_id"]
+    assert new_id != job_id
+    body = _wait_for(client, new_id)
+    assert body["status"] == "completed"
+
+    # Original job is still around for history; status unchanged.
+    orig = client.get(f"/api/jobs/{job_id}").json()
+    assert orig["status"] == "completed"
+
+
+def test_rerun_unknown_job_404(client) -> None:
+    r = client.post("/api/jobs/not-a-real-id/rerun")
+    assert r.status_code == 404
+
+
 def test_list_jobs_returns_recent_first(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
     ids = []

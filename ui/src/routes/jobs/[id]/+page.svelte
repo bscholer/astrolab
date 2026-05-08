@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { api, type JobEvent, type JobSummary } from '$lib/api';
-  import { layoutTemplate, type Layout } from '$lib/graph';
+  import { layoutTemplate, nodeDisplayName, type Layout } from '$lib/graph';
   import { toast } from '$lib/toast.svelte';
+  import { formatDuration, formatExposure, shortAgo } from '$lib/format';
 
   let job = $state<JobSummary | null>(null);
   let layout = $state<Layout | null>(null);
@@ -128,23 +130,64 @@
     const entries = Object.entries(job.outputs);
     return entries.length ? entries[0] : null;
   });
+
+  let rerunning = $state(false);
+  async function reprocess() {
+    if (!job) return;
+    rerunning = true;
+    try {
+      const r = await api.rerunJob(job.id);
+      toast.info('Reprocessing — every node will run from scratch');
+      goto(`/jobs/${r.job_id}`);
+    } catch (e) {
+      toast.error(`Couldn't reprocess: ${(e as Error).message}`);
+    } finally {
+      rerunning = false;
+    }
+  }
 </script>
 
 <div class="header">
   <a href="/jobs" class="back">← jobs</a>
   {#if job}
     <h1>
-      <code>{job.template_id}</code>
-      <span class="muted v">v{job.template_version}</span>
+      {#if job.capture?.target_name}
+        {job.capture.target_name}
+      {:else}
+        <span class="muted">job</span>
+      {/if}
     </h1>
     <span class="status status-{job.status}">{job.status}</span>
+    <button
+      type="button"
+      class="reprocess"
+      onclick={reprocess}
+      disabled={rerunning || job.status === 'queued' || job.status === 'running'}
+      title={
+        job.status === 'queued' || job.status === 'running'
+          ? 'Wait until the current run finishes'
+          : 'Re-run every step from scratch (bypasses the cache)'
+      }
+    >
+      {rerunning ? 'Submitting…' : 'Reprocess'}
+    </button>
   {/if}
 </div>
 
 {#if job === null}
   <p class="muted">Loading…</p>
 {:else}
-  <p class="muted small">job <code>{job.id}</code></p>
+  <p class="capture-line muted small">
+    {#if job.capture}
+      <span>{formatExposure(job)}</span>
+      <span aria-hidden="true">·</span>
+    {/if}
+    <span title={job.submitted_at}>{shortAgo(job.submitted_at)}</span>
+    {#if job.started_at}
+      <span aria-hidden="true">·</span>
+      <span>{formatDuration(job.started_at, job.finished_at)}</span>
+    {/if}
+  </p>
 
   {#if layout}
     <section class="graph">
@@ -163,8 +206,9 @@
           {@const p = nodeProgress[n.id]}
           <g transform="translate({n.x}, {n.y})">
             <rect width={n.width} height={n.height} rx="6" class="node node-{s}" />
-            <text x={n.width / 2} y="22" class="node-id">{n.id}</text>
-            <text x={n.width / 2} y="40" class="node-kind">{n.kind}</text>
+            <text x={n.width / 2} y={n.height / 2 + 5} class="node-name">
+              {nodeDisplayName(nodeKind[n.id] ?? n.kind)}
+            </text>
             {#if s === 'running' && p}
               <rect
                 x="6"
@@ -191,8 +235,7 @@
         {@const port = nodePort[n.id] ?? 'image'}
         <article class="step step-{s}">
           <header class="step-head">
-            <span class="step-id">{n.id}</span>
-            <span class="muted small">{nodeKind[n.id] ?? n.kind}</span>
+            <span class="step-id">{nodeDisplayName(nodeKind[n.id] ?? n.kind)}</span>
             <span class="status status-mini status-{s}">{s}</span>
           </header>
           <div class="step-preview">
@@ -278,14 +321,35 @@
   .header h1 {
     margin: 0;
     flex: 1;
-  }
-  .v {
-    font-size: 0.7em;
-    margin-left: 0.5rem;
+    font-size: 1.5rem;
   }
   .back {
     color: var(--muted, #888);
     text-decoration: none;
+  }
+  .reprocess {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border, #444);
+    color: var(--accent, #7aa2ff);
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .reprocess:hover:not(:disabled) {
+    background: rgba(122, 162, 255, 0.1);
+  }
+  .reprocess:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .capture-line {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+    margin: 0.25rem 0 0.75rem;
   }
   .small {
     font-size: 0.85em;
@@ -334,16 +398,11 @@
     fill: #6cf;
     opacity: 0.7;
   }
-  .node-id {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px;
+  .node-name {
+    font-size: 13px;
+    font-weight: 600;
     text-anchor: middle;
     fill: #ddd;
-  }
-  .node-kind {
-    font-size: 10px;
-    text-anchor: middle;
-    fill: #888;
   }
   .edge {
     stroke: #555;

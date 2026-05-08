@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api, type JobSummary } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import { formatDuration, formatExposure, shortAgo } from '$lib/format';
 
   let jobs = $state<JobSummary[] | null>(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -26,16 +27,6 @@
   onDestroy(() => {
     if (pollHandle) clearInterval(pollHandle);
   });
-
-  function formatDuration(start: string | null, end: string | null): string {
-    if (!start) return '';
-    const t0 = new Date(start).getTime();
-    const t1 = end ? new Date(end).getTime() : Date.now();
-    const sec = (t1 - t0) / 1000;
-    if (sec < 1) return '<1s';
-    if (sec < 60) return `${sec.toFixed(1)}s`;
-    return `${Math.floor(sec / 60)}m ${Math.floor(sec % 60)}s`;
-  }
 </script>
 
 <h1>Jobs</h1>
@@ -44,28 +35,36 @@
   <p class="muted">Loading…</p>
 {:else if jobs.length === 0}
   <p class="muted">
-    No jobs yet. Submit one with <code>POST /api/jobs</code>; the
-    <code>scripts/smoke_pipeline.py</code> example is the easiest way to kick one off.
+    No jobs yet. Open a session in the <a href="/">Library</a> and click
+    <strong>Run…</strong> to start one.
   </p>
 {:else}
   <table class="jobs">
     <thead>
       <tr>
+        <th>Target</th>
+        <th>Capture</th>
         <th>Status</th>
-        <th>Template</th>
-        <th>Submitted</th>
         <th>Duration</th>
-        <th></th>
+        <th class="muted">Submitted</th>
       </tr>
     </thead>
     <tbody>
       {#each jobs as j (j.id)}
         <tr>
+          <td>
+            <a class="target" href="/jobs/{j.id}">
+              {#if j.capture?.target_name}
+                {j.capture.target_name}
+              {:else}
+                <span class="muted">—</span>
+              {/if}
+            </a>
+          </td>
+          <td class="muted">{formatExposure(j) || '—'}</td>
           <td><span class="status status-{j.status}">{j.status}</span></td>
-          <td><code>{j.template_id}</code> v{j.template_version}</td>
-          <td class="muted">{j.submitted_at.replace('T', ' ').slice(0, 19)}</td>
           <td class="muted">{formatDuration(j.started_at, j.finished_at)}</td>
-          <td><a href="/jobs/{j.id}">open →</a></td>
+          <td class="muted small" title={j.submitted_at}>{shortAgo(j.submitted_at)}</td>
         </tr>
       {/each}
     </tbody>
@@ -114,5 +113,16 @@
   }
   .muted {
     color: var(--muted, #888);
+  }
+  .small {
+    font-size: 0.8rem;
+  }
+  .target {
+    color: var(--fg, #ddd);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .target:hover {
+    color: var(--accent, #7aa2ff);
   }
 </style>

@@ -89,6 +89,8 @@ class JobRecord:
     finished_at: str | None = None
     outputs: dict[str, Ref] | None = None
     error: str | None = None
+    force: bool = False
+    """Whether this submission should bypass the cache (set on Reprocess)."""
     events: list[JobEvent] = field(default_factory=list)
     _subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = field(
         default_factory=list
@@ -195,7 +197,7 @@ class JobManager:
 
     # -- public API --------------------------------------------------------
 
-    def submit(self, template: Template, job: Job) -> str:
+    def submit(self, template: Template, job: Job, *, force: bool = False) -> str:
         job_id = str(uuid.uuid4())
         record = JobRecord(
             id=job_id,
@@ -203,6 +205,7 @@ class JobManager:
             template=template,
             job=job,
             submitted_at=_now(),
+            force=force,
         )
         with self._lock:
             self._records[job_id] = record
@@ -280,6 +283,7 @@ class JobManager:
                 record.job,
                 cache=self._cache,
                 events=event_sink,
+                force=record.force,
             )
             with self._lock:
                 record.status = "completed"

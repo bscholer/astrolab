@@ -141,6 +141,18 @@ export interface Template {
   outputs: Record<string, string>;
 }
 
+export interface JobCaptureSummary {
+  target_name: string | null;
+  frame_count: number;
+  failed_count: number;
+  session_count: number;
+  exptime: number | null;
+  gain: number | null;
+  binning: number | null;
+  camera: string | null;
+  filter: string | null;
+}
+
 export interface JobSummary {
   id: string;
   status: JobStatus;
@@ -151,6 +163,8 @@ export interface JobSummary {
   finished_at: string | null;
   error: string | null;
   outputs: Record<string, JobOutputRef> | null;
+  // Only populated when the job was built from catalog session(s).
+  capture?: JobCaptureSummary;
   // Only populated by GET /api/jobs/{id}, not the list endpoint.
   template?: Template;
 }
@@ -200,6 +214,8 @@ export const api = {
   listTemplates: () => getJSON<Template[]>('/api/templates'),
   submitFromSession: (req: SubmitFromSessionRequest) =>
     postJSON<{ job_id: string }>('/api/jobs/from_session', req),
+  rerunJob: (id: string) =>
+    postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
   /**
    * Open a WebSocket for live event streaming. The server replays buffered
    * history and then closes when the job hits a terminal state.

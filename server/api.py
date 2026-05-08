@@ -390,6 +390,22 @@ def submit_job(req: SubmitJobRequest) -> SubmitJobResponse:
     return SubmitJobResponse(job_id=job_id)
 
 
+@app.post("/api/jobs/{job_id}/rerun", response_model=SubmitJobResponse)
+def rerun_job(job_id: str) -> SubmitJobResponse:
+    """Reprocess: submit a fresh copy of an existing job with cache bypass.
+
+    The original job stays in the list as history; the new job runs every
+    node from scratch, then commits results back so subsequent non-force
+    runs against the same inputs will hit the rebuilt cache.
+    """
+    record = job_manager.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    new_id = job_manager.submit(record.template, record.job, force=True)
+    log.info("job rerun: %s -> %s template=%s", job_id, new_id, record.template.id)
+    return SubmitJobResponse(job_id=new_id)
+
+
 @app.get("/api/templates")
 def list_templates_endpoint() -> list[dict]:
     return [t.model_dump(mode="json") for t in list_templates()]
@@ -434,21 +450,78 @@ def submit_from_session(req: SubmitFromSessionRequest, conn: DBDep) -> SubmitJob
     return SubmitJobResponse(job_id=job_id)
 
 
+def _job_capture_summary(conn: sqlite3.Connection, session_ids: list[str]) -> dict:
+    """Pull target / frame_count / exptime / gain / camera / filter for the
+    sessions a job ran against, for header display in the UI.
+
+    Jobs not built via from_session (eg the smoke pipeline) have empty
+    session_ids; those return {} so the UI falls back to template metadata.
+    """
+    if not session_ids:
+        return {}
+    try:
+        ids = [int(sid) for sid in session_ids]
+    except (ValueError, TypeError):
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT s.id, s.frame_count, s.failed_count, s.exptime, s.gain, s.binning,
+               s.camera, s.filter, t.name AS target_name
+        FROM sessions s
+        LEFT JOIN targets t ON t.id = s.target_id
+        WHERE s.id IN ({placeholders})
+        """,  # noqa: S608  (placeholders are ints)
+        ids,
+    ).fetchall()
+    if not rows:
+        return {}
+    target_names = sorted({r["target_name"] for r in rows if r["target_name"]})
+    frame_count = sum((r["frame_count"] or 0) for r in rows)
+    failed_count = sum((r["failed_count"] or 0) for r in rows)
+    # Sessions a single job spans usually share these; show the first.
+    first = rows[0]
+    return {
+        "target_name": ", ".join(target_names) or None,
+        "frame_count": frame_count,
+        "failed_count": failed_count,
+        "session_count": len(rows),
+        "exptime": first["exptime"],
+        "gain": first["gain"],
+        "binning": first["binning"],
+        "camera": first["camera"],
+        "filter": first["filter"],
+    }
+
+
+def _enriched_job_dict(
+    record, conn: sqlite3.Connection, *, include_template: bool = False
+) -> dict:
+    d = record.public_dict(include_template=include_template)
+    summary = _job_capture_summary(conn, record.job.session_ids)
+    if summary:
+        d["capture"] = summary
+    return d
+
+
 @app.get("/api/jobs")
-def list_jobs() -> list[dict]:
+def list_jobs(conn: DBDep) -> list[dict]:
     # Newest-first; in-memory for now so a quick list is fine.
-    return [r.public_dict() for r in sorted(
-        job_manager.list_jobs(), key=lambda r: r.submitted_at, reverse=True
-    )]
+    return [
+        _enriched_job_dict(r, conn)
+        for r in sorted(
+            job_manager.list_jobs(), key=lambda r: r.submitted_at, reverse=True
+        )
+    ]
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str) -> dict:
+def get_job(job_id: str, conn: DBDep) -> dict:
     record = job_manager.get(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     # Detail view includes the template so the UI can render the DAG.
-    return record.public_dict(include_template=True)
+    return _enriched_job_dict(record, conn, include_template=True)
 
 
 @app.get("/api/jobs/{job_id}/events")

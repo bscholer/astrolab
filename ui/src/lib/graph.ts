@@ -10,6 +10,27 @@
  */
 import type { NodeSpec, Template } from './api';
 
+// Pretty names for the registered nodes. The Python kind is the stable id
+// (used in the cache hash); this map is only for display. Keep in sync when
+// new node kinds land.
+const NODE_DISPLAY_NAMES: Record<string, string> = {
+  convert_lights: 'Convert',
+  calibrate: 'Calibrate',
+  seq_register: 'Register',
+  seq_stack: 'Stack',
+  downscale: 'Downscale'
+};
+
+export function nodeDisplayName(kind: string): string {
+  if (NODE_DISPLAY_NAMES[kind]) return NODE_DISPLAY_NAMES[kind];
+  // Fallback: snake_case -> Title Case so a freshly added node still looks
+  // tidy until we drop it in the map.
+  return kind
+    .split('_')
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(' ');
+}
+
 export interface LayoutNode {
   id: string;
   kind: string;

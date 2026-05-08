@@ -106,6 +106,7 @@ def run_job(
     profile: Profile | None = None,
     progress: ProgressFn | None = None,
     events: EventFn | None = None,
+    force: bool = False,
 ) -> dict[str, Ref]:
     """Execute a Job and return a map of declared template outputs to Refs.
 
@@ -116,6 +117,11 @@ def run_job(
     node-lifecycle transition (node_started/cached/progress/completed/failed)
     so callers can drive a UI. Use `progress` for a simple fraction-and-string
     callback that doesn't care about node lifecycle.
+
+    `force`: when True, skip the cache lookup at every node but still write
+    fresh outputs back into it. Used by the 'Reprocess' affordance so users
+    can re-run a job from scratch (eg after a node version bump) without
+    invalidating the cache for everyone else.
     """
     cache_obj: ContentCache = cache if cache is not None else ContentCache()
     on_progress: ProgressFn = progress if progress is not None else _noop_progress
@@ -172,7 +178,7 @@ def run_job(
 
         on_event({"type": "node_started", "node_id": nid, "kind": spec.kind, "hash": h})
 
-        cached_dir = cache_obj.lookup(h)
+        cached_dir = None if force else cache_obj.lookup(h)
         if cached_dir is not None:
             log.info("cache hit: %s -> %s", nid, h[:12])
             on_progress(0.0, f"{nid}: cached")
@@ -204,8 +210,9 @@ def run_job(
                 )
             continue
 
-        # Cache miss: run the node, write outputs into the reserved entry dir.
-        out_dir = cache_obj.reserve(h)
+        # Cache miss (or force): run the node, write outputs into the
+        # reserved entry dir. force=True wipes any existing committed entry.
+        out_dir = cache_obj.reserve(h, force=force)
 
         def _node_progress(f: float, m: str, _nid: str = nid) -> None:
             on_progress(f, f"{_nid}: {m}")
