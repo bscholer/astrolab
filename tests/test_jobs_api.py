@@ -8,9 +8,8 @@ empty so the API can boot without filesystem state.
 from __future__ import annotations
 
 import time
-from pathlib import Path
-
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient

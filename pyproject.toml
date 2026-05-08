@@ -36,6 +36,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Tests are readable with longer lines (lots of Ref(...) constructors); the
+# 100-col rule isn't load-bearing for fixtures.
+"tests/*" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

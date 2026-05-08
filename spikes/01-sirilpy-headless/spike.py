@@ -5,9 +5,9 @@ on macOS without a GUI, so the astrolab pipeline runtime can drive Siril
 from out-of-process Python.
 """
 
+import json
 import os
 import sys
-import json
 import traceback
 
 

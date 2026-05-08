@@ -33,7 +33,9 @@ class FakeRuntime:
         )
         if self._on_run is not None:
             self._on_run(commands, working_dir)
-        return SirilResult(returncode=self.returncode, stdout="ok", stderr="", ssf="\n".join(commands))
+        return SirilResult(
+            returncode=self.returncode, stdout="ok", stderr="", ssf="\n".join(commands),
+        )
 
 
 def _ctx(tmp_path: Path) -> RunContext:

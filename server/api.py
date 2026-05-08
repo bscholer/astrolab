@@ -18,14 +18,13 @@ Phase 2 keeps job state in memory; persistence + worker scaling come later.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
-
-from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -407,10 +406,8 @@ async def stream_job_events(ws: WebSocket, job_id: str) -> None:
     finally:
         job_manager.unsubscribe(job_id, queue)
         # Best-effort close; ignore if already closed.
-        try:
+        with contextlib.suppress(RuntimeError):
             await ws.close()
-        except RuntimeError:
-            pass
 
 
 # ---------------------------------------------------------------------------

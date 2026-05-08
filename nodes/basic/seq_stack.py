@@ -11,6 +11,7 @@ calibrated lights of varying transparency. The output filename is fixed at
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -149,11 +150,9 @@ class SeqStackNode(Node[SeqStackParams]):
         for link in staged:
             if link.is_symlink() or link.exists():
                 link.unlink()
-        try:
+        # Siril may have left an FWHM .reg or similar behind; rmdir then is fine to skip.
+        with contextlib.suppress(OSError):
             work_dir.rmdir()
-        except OSError:
-            # Siril may have left an FWHM .reg or similar behind; not fatal.
-            pass
 
         ctx.progress(1.0, f"seq_stack: wrote {out_image.name}")
         return {

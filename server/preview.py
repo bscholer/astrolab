@@ -21,7 +21,7 @@ import numpy as np
 from astropy.io import fits
 from PIL import Image
 
-from .cache import ContentCache, DONE_MARKER
+from .cache import DONE_MARKER, ContentCache
 
 log = logging.getLogger("astrolab.preview")
 
