@@ -77,6 +77,8 @@ def test_register_fitseq_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert "-2pass" in reg
     assert "-transf=homography" in reg
     assert "-minpairs=10" in reg
+    apply_cmd = next(c for c in cmds if c.startswith("seqapplyreg "))
+    assert apply_cmd.startswith("seqapplyreg pp_light")
 
 
 def test_register_per_frame_no_count_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,6 +133,32 @@ def test_register_param_options_propagate(tmp_path: Path, monkeypatch: pytest.Mo
     assert "-2pass" not in reg
     assert "-transf=shift" in reg
     assert "-minpairs=20" in reg
+
+
+def test_register_filter_options_propagate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    (seq_in / "pp_light.fit").write_bytes(b"")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        (out_dir / "sequence" / "r_pp_light.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
+    SeqRegisterNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+        },
+        params=SeqRegisterParams(filter_fwhm=0.2, filter_round=0.1),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    apply_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("seqapplyreg "))
+    assert "-filter-fwhm=0.2" in apply_cmd
+    assert "-filter-round=0.1" in apply_cmd
 
 
 def test_register_raises_when_siril_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

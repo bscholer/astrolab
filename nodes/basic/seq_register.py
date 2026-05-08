@@ -1,10 +1,15 @@
-"""seq_register: align a sequence with Siril 1.4's `register` command.
+"""seq_register: align a sequence with Siril 1.4's `register` + `seqapplyreg`.
 
 Input port  : sequence (SEQUENCE_FITS) - typically the output of calibrate
 Output port : sequence (SEQUENCE_FITS) - r_<basename>_*.fit or r_<basename>.fit
 
-Siril writes registered frames into cwd with an `r_` prefix; we cd into
-out_dir/sequence, symlink the input frames, run, then drop the input symlinks.
+Siril 1.4 splits registration into two phases: `register` computes per-frame
+transforms (and writes them into the .seq file), `seqapplyreg` materializes
+the aligned frames as `r_<basename>_*.fit`. We always run both so the output
+is a usable sequence regardless of -2pass/-noout flags.
+
+Optional filter-* options on seqapplyreg drop low-quality frames before they
+reach the stacker, which is the standard Naztronomy-style flow.
 """
 
 from __future__ import annotations
@@ -51,6 +56,15 @@ class SeqRegisterParams(BaseModel):
         description="Minimum star pairs Siril must find to register a frame. Frames "
         "below the threshold are dropped from the registered sequence.",
     )
+    filter_fwhm: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Drop frames whose FWHM is in the worst N fraction. 0.2 keeps "
+        "the best 80%. None disables FWHM filtering.",
+    )
+    filter_round: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Drop frames whose roundness is in the worst N fraction.",
+    )
 
 
 @register("seq_register")
@@ -86,14 +100,24 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
                 f"'{params.input_basename}' under {seq_in}"
             )
 
-        opts: list[str] = [f"-transf={params.transform}", f"-minpairs={params.min_pairs}"]
+        reg_opts: list[str] = [f"-transf={params.transform}", f"-minpairs={params.min_pairs}"]
         if params.two_pass:
-            opts.append("-2pass")
+            reg_opts.append("-2pass")
+
+        # seqapplyreg writes the actual r_<basename>_*.fit files. Without it,
+        # `register -2pass` only updates the .seq metadata and no aligned frames
+        # land on disk. Filter options drop low-quality frames pre-stack.
+        apply_opts: list[str] = []
+        if params.filter_fwhm is not None:
+            apply_opts.append(f"-filter-fwhm={params.filter_fwhm}")
+        if params.filter_round is not None:
+            apply_opts.append(f"-filter-round={params.filter_round}")
 
         ctx.progress(0.2, f"seq_register: aligning {len(staged)} frames")
         commands = [
             f"cd {_quote(seq_out.resolve())}",
-            f"register {params.input_basename} {' '.join(opts)}",
+            f"register {params.input_basename} {' '.join(reg_opts)}",
+            f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
         ]
         runtime = SirilRuntime()
         result = runtime.run(
