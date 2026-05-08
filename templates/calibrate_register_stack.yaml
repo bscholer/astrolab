@@ -1,9 +1,10 @@
 id: calibrate_register_stack
-version: 2
+version: 3
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> background extract
-            -> plate-solve register -> rejection stack with rgb_equal.
+            -> plate-solve register -> rejection stack with rgb_equal
+            -> stretch (autostretch by default) -> save 16-bit PNG.
   Inputs the Job must supply:
     convert.lights  -> a directory of raw .fits subs (typically a Dwarf 3 session folder)
     calibrate.dark  -> a master_dark .fits matched on instrument/exptime/gain/temp
@@ -53,5 +54,20 @@ nodes:
     inputs:
       sequence: register.sequence
 
+  - id: stretch
+    kind: stretch
+    params:
+      method: autostretch
+      # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
+    inputs:
+      image: stack.image
+
+  - id: save
+    kind: save_image
+    inputs:
+      image: stretch.image
+
 outputs:
-  image: stack.image
+  image: save.image
+  stacked: stack.image
+  stretched: stretch.image

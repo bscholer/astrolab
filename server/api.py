@@ -24,7 +24,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,11 +46,14 @@ from server.job_builder import (
 from server.jobs import JobManager
 from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_preview
+from server.registry import lookup as registry_lookup
+from server.renderings import RenderingManager, RenderingNotFound
 from server.templates import TemplateNotFound, list_templates, load_template
 
 log = logging.getLogger("astrolab.api")
 
 job_manager = JobManager()
+rendering_manager = RenderingManager(job_manager)
 
 
 from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
@@ -58,12 +61,16 @@ from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    # Pull persisted jobs into memory so /jobs lists them and the detail page
-    # can replay events even after a server restart.
+    # Pull persisted jobs and renderings into memory so the UI lists them
+    # and detail pages can replay events even after a server restart.
     try:
         job_manager.rehydrate()
     except Exception:  # pragma: no cover  (defensive: server starts even if DB is wedged)
         log.exception("job rehydrate failed; continuing with empty state")
+    try:
+        rendering_manager.rehydrate()
+    except Exception:  # pragma: no cover
+        log.exception("rendering rehydrate failed; continuing with empty state")
     yield
     job_manager.shutdown(wait=False)
 
@@ -78,7 +85,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
     allow_credentials=False,
 )
@@ -558,6 +565,206 @@ async def stream_job_events(ws: WebSocket, job_id: str) -> None:
         # Best-effort close; ignore if already closed.
         with contextlib.suppress(RuntimeError):
             await ws.close()
+
+
+# ---------------------------------------------------------------------------
+# Renderings
+# ---------------------------------------------------------------------------
+
+
+class CreateRenderingRequest(BaseModel):
+    """Generic 'rendering from an explicit Template + Job' creator.
+
+    Mirrors POST /api/jobs; used by smoke scripts and tests that don't want
+    to go through the catalog. Production UI uses /api/renderings/from_session.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    template: Template
+    job: Job
+    name: str = "untitled"
+    source_session_ids: list[str] = []
+
+
+class CreateRenderingFromSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: int
+    template_id: str
+    name: str | None = None
+    """Human-friendly title; defaults to the session's target name."""
+    calibration: CalibrationSpec | None = None
+
+
+@app.post("/api/renderings")
+def create_rendering(req: CreateRenderingRequest) -> dict:
+    rendering = rendering_manager.create(
+        name=req.name,
+        template=req.template,
+        base_job=req.job,
+        source_session_ids=req.source_session_ids,
+    )
+    return rendering.to_public_dict()
+
+
+class RenderingResponse(BaseModel):
+    """Loose passthrough so we don't have to re-spec the whole DTO here. The
+    rendering manager produces a stable shape via to_public_dict()."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class PatchRenderingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    overrides: dict[str, dict[str, Any] | None] | None = None
+    """Partial overrides keyed by node_id. Pass {node_id: None} to clear a
+    node entirely; {node_id: {param: None}} to reset a single param."""
+    draft_mode: bool | None = None
+    label: str | None = None
+    """Optional explicit label for this history entry; auto-generated from
+    the diff when omitted."""
+    force: bool = False
+    """Bypass the cache for this submission (debug rerun)."""
+
+
+@app.post("/api/renderings/from_session")
+def create_rendering_from_session(
+    req: CreateRenderingFromSessionRequest, conn: DBDep
+) -> dict:
+    """Create a Rendering from a catalog session and submit its initial job."""
+    try:
+        template = load_template(req.template_id)
+    except TemplateNotFound as exc:
+        log.warning("rendering create rejected: unknown template %r", req.template_id)
+        raise HTTPException(status_code=404, detail=f"template {exc} not found") from exc
+    try:
+        job = build_from_session(conn, req.session_id, template, req.calibration)
+    except SessionNotFound as exc:
+        log.warning("rendering create rejected (session=%s): %s", req.session_id, exc)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (CalibrationMissing, TooFewFrames) as exc:
+        log.warning("rendering create rejected (session=%s): %s", req.session_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except JobBuildError as exc:
+        log.warning("rendering create rejected (session=%s): %s", req.session_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    name = req.name
+    if not name:
+        # Default to the session's target name so the rendering shows up in
+        # the list with a meaningful title.
+        row = conn.execute(
+            "SELECT t.name FROM sessions s LEFT JOIN targets t ON t.id = s.target_id "
+            "WHERE s.id = ?",
+            (req.session_id,),
+        ).fetchone()
+        name = (row["name"] if row and row["name"] else f"session {req.session_id}")
+
+    rendering = rendering_manager.create(
+        name=name,
+        template=template,
+        base_job=job,
+        source_session_ids=[str(req.session_id)],
+    )
+    return rendering.to_public_dict()
+
+
+@app.get("/api/renderings")
+def list_renderings() -> list[dict]:
+    out = [r.to_public_dict() for r in rendering_manager.list()]
+    out.sort(key=lambda r: r["updated_at"], reverse=True)
+    return out
+
+
+@app.get("/api/renderings/{rendering_id}")
+def get_rendering(rendering_id: str) -> dict:
+    rendering = rendering_manager.get(rendering_id)
+    if rendering is None:
+        raise HTTPException(status_code=404, detail=f"rendering {rendering_id} not found")
+    return rendering.to_public_dict()
+
+
+@app.patch("/api/renderings/{rendering_id}")
+def patch_rendering(rendering_id: str, req: PatchRenderingRequest) -> dict:
+    """Apply param overrides (and optionally toggle draft_mode), submit a new
+    job, and append a history entry. Returns the updated rendering."""
+    try:
+        rendering = rendering_manager.patch(
+            rendering_id,
+            overrides=req.overrides,
+            draft_mode=req.draft_mode,
+            label=req.label,
+            force=req.force,
+        )
+    except RenderingNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"rendering {rendering_id} not found"
+        ) from exc
+    return rendering.to_public_dict()
+
+
+@app.post("/api/renderings/{rendering_id}/revert/{seq}")
+def revert_rendering(rendering_id: str, seq: int) -> dict:
+    """Move the current pointer to history seq `seq`. No new job; the prior
+    history entry's job_id is what the UI displays."""
+    try:
+        rendering = rendering_manager.revert(rendering_id, seq)
+    except RenderingNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"rendering {rendering_id} not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return rendering.to_public_dict()
+
+
+# ---------------------------------------------------------------------------
+# Template + node schema
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/templates/{template_id}/schema")
+def get_template_schema(template_id: str) -> dict:
+    """Return per-node parameter JSON schemas + cost class for a template.
+
+    The UI uses this to auto-build param forms with cost-aware affordances.
+    Each entry mirrors the template's NodeSpec but adds the Pydantic
+    JSON-Schema (with descriptions, ge/le, enums, defaults) and the node
+    class's cost label. Downstream-closure cost is derived in the UI from
+    the template's edge graph.
+    """
+    try:
+        template = load_template(template_id)
+    except TemplateNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"template {exc} not found") from exc
+
+    nodes_out: list[dict] = []
+    for spec in template.nodes:
+        try:
+            node_cls = registry_lookup(spec.kind, spec.variant)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"unknown node kind in template: {exc}"
+            ) from exc
+        schema = node_cls.params_schema.model_json_schema()
+        defaults = node_cls.params_schema().model_dump(mode="json")
+        nodes_out.append(
+            {
+                "node_id": spec.id,
+                "kind": spec.kind,
+                "variant": spec.variant,
+                "cost": node_cls.cost,
+                "schema": schema,
+                "defaults": defaults,
+                "template_params": spec.params,
+                "inputs": spec.inputs,
+            }
+        )
+    return {
+        "template_id": template.id,
+        "template_version": template.version,
+        "nodes": nodes_out,
+        "outputs": template.outputs,
+    }
 
 
 # ---------------------------------------------------------------------------

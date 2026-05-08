@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -190,6 +190,51 @@ MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX idx_job_events_job ON job_events(job_id, seq)",
         "INSERT INTO schema_version (version) VALUES (3)",
+    ],
+    4: [
+        # Renderings: a Rendering is a "live edit" of a stack from a source
+        # session(s) under a chosen template. It holds the seed Job (external
+        # inputs + calibration choice) and a sequence of param-override
+        # snapshots. Each snapshot is materialized as a Job; tweaking a slider
+        # in the UI appends a new history entry whose Job runs with the
+        # changed param_overrides. The cache makes upstream nodes free across
+        # tweaks. current_seq is the pointer the UI is "looking at": undo
+        # rewinds it, redo advances, edits create-and-advance.
+        """
+        CREATE TABLE renderings (
+            id                    TEXT PRIMARY KEY,
+            name                  TEXT NOT NULL,
+            template_id           TEXT NOT NULL,
+            template_version      INTEGER NOT NULL,
+            template_json         TEXT NOT NULL,
+            base_job_json         TEXT NOT NULL,
+            current_seq           INTEGER NOT NULL,
+            draft_mode            INTEGER NOT NULL DEFAULT 0,
+            source_session_ids    TEXT NOT NULL,
+            created_at            TEXT NOT NULL,
+            updated_at            TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_renderings_updated ON renderings(updated_at DESC)",
+        # Append-only edit log. seq is monotonic per rendering; revert moves
+        # the current_seq pointer rather than truncating, so prior entries
+        # remain reachable for "compare" affordances later. job_id is not a
+        # FK so deleting an old job (eg cache cleanup) leaves the entry as a
+        # tombstone instead of cascading the rendering away.
+        """
+        CREATE TABLE rendering_history (
+            id              INTEGER PRIMARY KEY,
+            rendering_id    TEXT NOT NULL REFERENCES renderings(id) ON DELETE CASCADE,
+            seq             INTEGER NOT NULL,
+            job_id          TEXT NOT NULL,
+            overrides_json  TEXT NOT NULL,
+            label           TEXT,
+            created_at      TEXT NOT NULL,
+            UNIQUE (rendering_id, seq)
+        )
+        """,
+        "CREATE INDEX idx_rh_rendering ON rendering_history(rendering_id, seq)",
+        "INSERT INTO schema_version (version) VALUES (4)",
     ],
 }
 

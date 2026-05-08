@@ -8,7 +8,7 @@
  * This is intentionally tiny: enough to render a 5-10 node pipeline. If we
  * end up with branchy templates that look cramped, swap in dagre-d3 later.
  */
-import type { NodeSpec, Template } from './api';
+import type { CostClass, NodeSpec, Template } from './api';
 
 // Pretty names for the registered nodes. The Python kind is the stable id
 // (used in the cache hash); this map is only for display. Keep in sync when
@@ -19,6 +19,8 @@ const NODE_DISPLAY_NAMES: Record<string, string> = {
   seq_bg_extract: 'Background',
   seq_register: 'Register',
   seq_stack: 'Stack',
+  stretch: 'Stretch',
+  save_image: 'Save Image',
   downscale: 'Downscale'
 };
 
@@ -158,4 +160,65 @@ export function layoutTemplate(template: Template): Layout {
     width: MARGIN * 2 + colCount * NODE_W + (colCount - 1) * COL_GAP,
     height: MARGIN * 2 + totalRows * NODE_H + (totalRows - 1) * ROW_GAP
   };
+}
+
+/**
+ * Cost-aware affordance helpers.
+ *
+ * When the user tweaks a param on node N, every downstream node has to
+ * re-execute (its inputs changed). The "blast radius" for editing N is the
+ * set {N} ∪ descendants(N), and the "cost" of editing N is the worst
+ * cost-class in that set (cheap < medium < expensive). We surface this in
+ * the UI as a colored badge per param so users see "this slider triggers a
+ * full re-stack" before they touch it.
+ *
+ * Cost classes are lifted from the schema endpoint (one per node). For
+ * nodes the schema doesn't cover (shouldn't happen with valid templates),
+ * we conservatively assume 'expensive' so we don't accidentally claim a
+ * tweak is free.
+ */
+
+const COST_RANK: Record<CostClass, number> = {
+  cheap: 0,
+  medium: 1,
+  expensive: 2
+};
+
+export function descendantsOf(template: Template, nodeId: string): Set<string> {
+  // Build a child map (id -> ids that consume its outputs) once and BFS.
+  const children = new Map<string, string[]>();
+  for (const n of template.nodes) {
+    for (const src of Object.values(n.inputs)) {
+      const srcId = src.split('.', 1)[0];
+      if (!children.has(srcId)) children.set(srcId, []);
+      children.get(srcId)!.push(n.id);
+    }
+  }
+  const out = new Set<string>();
+  const queue = [nodeId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const c of children.get(cur) ?? []) {
+      if (!out.has(c)) {
+        out.add(c);
+        queue.push(c);
+      }
+    }
+  }
+  return out;
+}
+
+export function blastRadiusCost(
+  template: Template,
+  nodeId: string,
+  costByNodeId: Record<string, CostClass>
+): CostClass {
+  const closure = descendantsOf(template, nodeId);
+  closure.add(nodeId);
+  let worst: CostClass = 'cheap';
+  for (const id of closure) {
+    const c = costByNodeId[id] ?? 'expensive';
+    if (COST_RANK[c] > COST_RANK[worst]) worst = c;
+  }
+  return worst;
 }

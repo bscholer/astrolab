@@ -120,6 +120,18 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+async function patchJSON<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    throw new ApiError(r.status, await _readErrorDetail(r));
+  }
+  return (await r.json()) as T;
+}
+
 // ----- jobs --------------------------------------------------------------
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -203,10 +215,102 @@ export interface CalibrationSpec {
   master_ids?: Record<string, number>;
 }
 
+// PATCH semantics for the rendering endpoint: a value of null in the
+// overrides map clears the corresponding key (per-node or per-param).
+export type OverrideValue = unknown;
+
 export interface SubmitFromSessionRequest {
   session_id: number;
   template_id: string;
   calibration?: CalibrationSpec;
+}
+
+// ----- renderings --------------------------------------------------------
+
+export type CostClass = 'cheap' | 'medium' | 'expensive';
+
+export interface RenderingHistoryEntry {
+  seq: number;
+  job_id: string;
+  overrides: Record<string, Record<string, unknown>>;
+  label: string | null;
+  created_at: string;
+}
+
+export interface Rendering {
+  id: string;
+  name: string;
+  template_id: string;
+  template_version: number;
+  template: Template;
+  base_job: Record<string, unknown>;
+  current_seq: number;
+  draft_mode: boolean;
+  source_session_ids: string[];
+  history: RenderingHistoryEntry[];
+  current_job_id: string;
+  current_overrides: Record<string, Record<string, unknown>>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateRenderingFromSessionRequest {
+  session_id: number;
+  template_id: string;
+  name?: string;
+  calibration?: CalibrationSpec;
+}
+
+export interface PatchRenderingRequest {
+  overrides?: Record<string, Record<string, unknown> | null> | null;
+  draft_mode?: boolean;
+  label?: string;
+  force?: boolean;
+}
+
+/**
+ * JSON Schema entry returned by GET /api/templates/{id}/schema. The UI uses
+ * this to auto-build per-node param forms with cost-aware affordances.
+ */
+export interface TemplateNodeSchema {
+  node_id: string;
+  kind: string;
+  variant: string | null;
+  cost: CostClass;
+  // Pydantic v2 JSON Schema; we don't model it deeply, just walk it.
+  schema: {
+    properties: Record<string, JSONSchemaField>;
+    required?: string[];
+    title?: string;
+    type?: string;
+    [k: string]: unknown;
+  };
+  defaults: Record<string, unknown>;
+  template_params: Record<string, unknown>;
+  inputs: Record<string, string>;
+}
+
+export interface JSONSchemaField {
+  type?: string | string[];
+  description?: string;
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  exclusiveMinimum?: number;
+  exclusiveMaximum?: number;
+  enum?: unknown[];
+  anyOf?: JSONSchemaField[];
+  // We tag float-precision via Pydantic Field(json_schema_extra=...); it
+  // surfaces here under hash_precision and is purely informational.
+  hash_precision?: number;
+  [k: string]: unknown;
+}
+
+export interface TemplateSchema {
+  template_id: string;
+  template_version: number;
+  nodes: TemplateNodeSchema[];
+  outputs: Record<string, string>;
 }
 
 export const api = {
@@ -218,10 +322,20 @@ export const api = {
   getJob: (id: string) => getJSON<JobSummary>(`/api/jobs/${id}`),
   getJobEvents: (id: string) => getJSON<JobEvent[]>(`/api/jobs/${id}/events`),
   listTemplates: () => getJSON<Template[]>('/api/templates'),
+  getTemplateSchema: (id: string) =>
+    getJSON<TemplateSchema>(`/api/templates/${id}/schema`),
   submitFromSession: (req: SubmitFromSessionRequest) =>
     postJSON<{ job_id: string }>('/api/jobs/from_session', req),
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
+  listRenderings: () => getJSON<Rendering[]>('/api/renderings'),
+  getRendering: (id: string) => getJSON<Rendering>(`/api/renderings/${id}`),
+  createRenderingFromSession: (req: CreateRenderingFromSessionRequest) =>
+    postJSON<Rendering>('/api/renderings/from_session', req),
+  patchRendering: (id: string, req: PatchRenderingRequest) =>
+    patchJSON<Rendering>(`/api/renderings/${id}`, req),
+  revertRendering: (id: string, seq: number) =>
+    postJSON<Rendering>(`/api/renderings/${id}/revert/${seq}`, {}),
   /**
    * Open a WebSocket for live event streaming. The server replays buffered
    * history and then closes when the job hits a terminal state.

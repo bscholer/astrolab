@@ -12,9 +12,10 @@
     <a href="/" class="logo">astrolab</a>
     <nav class="row nav">
       <a href="/">Library</a>
-      <a href="/jobs">Jobs</a>
+      <a href="/renderings">Renderings</a>
+      <a href="/jobs" class="dim">Jobs</a>
     </nav>
-    <span class="muted phase-pill">Phase 2</span>
+    <span class="muted phase-pill">Phase 3</span>
   </div>
 </header>
 
@@ -46,6 +47,9 @@
   }
   .nav a:hover {
     color: var(--fg, #ddd);
+  }
+  .nav a.dim {
+    opacity: 0.55;
   }
 
   .phase-pill {

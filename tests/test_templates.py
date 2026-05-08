@@ -14,18 +14,25 @@ def test_canned_template_parses() -> None:
 
 def test_load_template_by_id() -> None:
     t = load_template("calibrate_register_stack")
-    assert t.version == 2
+    assert t.version == 3
     kinds = [n.kind for n in t.nodes]
-    # Naztronomy-aligned 5-step pipeline.
+    # Naztronomy-aligned chain plus stretch + save_image (Phase 3 finishing).
     assert kinds == [
         "convert_lights",
         "calibrate",
         "seq_bg_extract",
         "seq_register",
         "seq_stack",
+        "stretch",
+        "save_image",
     ]
-    # Output port wired through to the stacker.
-    assert t.outputs == {"image": "stack.image"}
+    # Public outputs: a viewable PNG at `image`, plus intermediates so the UI
+    # can preview the linear stack and the stretched FITS independently.
+    assert t.outputs == {
+        "image": "save.image",
+        "stacked": "stack.image",
+        "stretched": "stretch.image",
+    }
 
 
 def test_load_unknown_template_raises() -> None:

@@ -82,14 +82,17 @@
   async function submitRun(sessionId: number) {
     running = true;
     try {
-      const res = await api.submitFromSession({
+      // Renderings are the editable wrapper around jobs: each tweak appends
+      // a fresh job to the rendering's history, with cache hits keeping
+      // upstream cheap. The standalone job page still exists for debugging.
+      const r = await api.createRenderingFromSession({
         session_id: sessionId,
         template_id: runTemplateId,
         calibration: { mode: runCalibrationMode },
       });
-      goto(`/jobs/${res.job_id}`);
+      goto(`/renderings/${r.id}`);
     } catch (e) {
-      toast.error(`Couldn't start job: ${(e as Error).message}`);
+      toast.error(`Couldn't start rendering: ${(e as Error).message}`);
     } finally {
       running = false;
     }
