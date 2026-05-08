@@ -1,5 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import {
     api,
     type CalibrationMode,
@@ -13,8 +15,10 @@
 
   let targets = $state<TargetSummary[] | null>(null);
   let openTargetId = $state<number | null>(null);
-  let openTarget = $state<TargetDetail | null>(null);
-  let openLoading = $state(false);
+  // Detail-per-target, populated in parallel after the targets list lands.
+  // Keeping every target's sessions in hand makes expand/collapse feel
+  // free — no spinner, no API roundtrip when the user clicks.
+  let targetDetails = $state<Map<number, TargetDetail>>(new Map());
   let scanning = $state(false);
   let lastScanAt = $state<string | null>(null);
   let nowTick = $state(Date.now());
@@ -38,28 +42,26 @@
 
   async function load() {
     try {
-      targets = await api.listTargets();
+      const list = await api.listTargets();
+      targets = list;
+      // Fan out detail fetches in parallel so the expand animation
+      // never has to wait on the network. Settled-not-rejected so one
+      // bad row doesn't poison the others.
+      const results = await Promise.allSettled(
+        list.map((t) => api.getTarget(t.id))
+      );
+      const next = new Map<number, TargetDetail>();
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') next.set(list[i].id, r.value);
+      });
+      targetDetails = next;
     } catch (e) {
       toast.error(`Failed to load targets: ${(e as Error).message}`);
     }
   }
 
-  async function openTarget_(id: number) {
-    if (openTargetId === id) {
-      openTargetId = null;
-      openTarget = null;
-      return;
-    }
-    openTargetId = id;
-    openTarget = null;
-    openLoading = true;
-    try {
-      openTarget = await api.getTarget(id);
-    } catch (e) {
-      toast.error(`Failed to load target ${id}: ${(e as Error).message}`);
-    } finally {
-      openLoading = false;
-    }
+  function openTarget_(id: number) {
+    openTargetId = openTargetId === id ? null : id;
   }
 
   async function rescan() {
@@ -259,12 +261,15 @@
         </button>
 
         {#if openTargetId === t.id}
-          <div class="target-detail">
-            {#if openLoading}
+          {@const detail = targetDetails.get(t.id)}
+          <div class="target-detail" transition:slide={{ duration: 220, easing: cubicOut }}>
+            {#if detail === undefined}
               <p class="muted">Loading…</p>
-            {:else if openTarget}
+            {:else if detail.sessions.length === 0}
+              <p class="muted">No sessions yet for this target.</p>
+            {:else}
               <ul class="session-list">
-                {#each openTarget.sessions as s (s.id)}
+                {#each detail.sessions as s (s.id)}
                   <li class="session">
                     <div class="session-head">
                       <span class="session-when">{shortDate(s.started_at)}</span>
