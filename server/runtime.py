@@ -26,10 +26,19 @@ from .models import Job, Profile, Ref, RunContext, Template
 from .registry import lookup as registry_lookup
 
 ProgressFn = Callable[[float, str], None]
+EventFn = Callable[[dict], None]
+"""Sink for structured runtime events. Each event is a dict with keys:
+{type, node_id?, fraction?, message?, error?}. JobManager wraps this to push
+events to WebSocket subscribers."""
+
 log = logging.getLogger("astrolab.runtime")
 
 
 def _noop_progress(_fraction: float, _message: str) -> None:
+    pass
+
+
+def _noop_events(_event: dict) -> None:
     pass
 
 
@@ -96,14 +105,21 @@ def run_job(
     cache: ContentCache | None = None,
     profile: Profile | None = None,
     progress: ProgressFn | None = None,
+    events: EventFn | None = None,
 ) -> dict[str, Ref]:
     """Execute a Job and return a map of declared template outputs to Refs.
 
     Returns the public outputs declared on Template.outputs (mapping
     public_name -> Ref). Internal node Refs are reachable through the cache.
+
+    `events` (optional): structured event sink. Receives one dict per
+    node-lifecycle transition (node_started/cached/progress/completed/failed)
+    so callers can drive a UI. Use `progress` for a simple fraction-and-string
+    callback that doesn't care about node lifecycle.
     """
     cache_obj: ContentCache = cache if cache is not None else ContentCache()
     on_progress: ProgressFn = progress if progress is not None else _noop_progress
+    on_event: EventFn = events if events is not None else _noop_events
 
     by_id = {n.id: n for n in template.nodes}
     order = _topo_order(template)
@@ -154,10 +170,13 @@ def run_job(
             params=params,
         )
 
+        on_event({"type": "node_started", "node_id": nid, "kind": spec.kind, "hash": h})
+
         cached_dir = cache_obj.lookup(h)
         if cached_dir is not None:
             log.info("cache hit: %s -> %s", nid, h[:12])
             on_progress(0.0, f"{nid}: cached")
+            on_event({"type": "node_cached", "node_id": nid, "hash": h})
             for out_port, port_type in node_cls.outputs.items():
                 # Outputs land at one of two shapes inside the entry dir:
                 #   - file: <out_dir>/<port>.<ext>  (downscale, single PNG)
@@ -187,16 +206,25 @@ def run_job(
 
         # Cache miss: run the node, write outputs into the reserved entry dir.
         out_dir = cache_obj.reserve(h)
+
+        def _node_progress(f: float, m: str, _nid: str = nid) -> None:
+            on_progress(f, f"{_nid}: {m}")
+            on_event({"type": "node_progress", "node_id": _nid, "fraction": f, "message": m})
+
         with tempfile.TemporaryDirectory(prefix=f"astrolab-{nid}-") as td:
             ctx = RunContext(
                 tmpdir=Path(td),
-                progress=lambda f, m, _nid=nid: on_progress(f, f"{_nid}: {m}"),
+                progress=_node_progress,
                 log=log.getChild(nid),
             )
             try:
                 produced = node_inst.run(resolved_inputs, params, ctx, out_dir)
             except Exception as exc:
                 shutil.rmtree(out_dir, ignore_errors=True)
+                on_event(
+                    {"type": "node_failed", "node_id": nid,
+                     "error": f"{type(exc).__name__}: {exc}"}
+                )
                 raise RunError(nid, f"{type(exc).__name__}: {exc}") from exc
 
         # Validate produced ports match declared outputs and live under out_dir.
@@ -224,6 +252,7 @@ def run_job(
         cache_obj.commit(h, committed)
         for port, ref in committed.items():
             refs[f"{nid}.{port}"] = ref
+        on_event({"type": "node_completed", "node_id": nid, "hash": h})
 
     public: dict[str, Ref] = {}
     for public_name, internal in template.outputs.items():

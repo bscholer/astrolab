@@ -1,16 +1,19 @@
 """FastAPI application for the astrolab control plane.
 
-Phase 1 only ships read-only catalog endpoints plus a POST /api/scan to
-trigger a rescan. Job submission, WebSocket progress, and render endpoints
-land in Phase 2+.
-
 Endpoints:
 - GET  /api/health                       liveness ping
 - GET  /api/targets                      target list with frame counts
 - GET  /api/targets/{id}                 target detail: sessions + calibration
 - GET  /api/sessions/{id}                session detail: frames summary + cal
-- POST /api/scan                         trigger a rescan (synchronous in 1.c)
+- POST /api/scan                         trigger a rescan (synchronous)
 - GET  /api/masters                      indexed calibration masters
+- POST /api/jobs                         submit a Template+Job to run
+- GET  /api/jobs                         list known jobs
+- GET  /api/jobs/{id}                    job detail (status, outputs, error)
+- GET  /api/jobs/{id}/events             buffered events as JSON list
+- WS   /api/jobs/{id}/events             live event stream (after replay)
+
+Phase 2 keeps job state in memory; persistence + worker scaling come later.
 """
 
 from __future__ import annotations
@@ -22,18 +25,35 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from collections.abc import AsyncIterator
+
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 
+import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.scanner import scan as run_scan
+from server.jobs import JobManager
+from server.models import Job, Template
 
 log = logging.getLogger("astrolab.api")
 
-app = FastAPI(title="astrolab", version="0.1.0")
+job_manager = JobManager()
+
+
+from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    job_manager.shutdown(wait=False)
+
+
+app = FastAPI(title="astrolab", version="0.1.0", lifespan=lifespan)
 
 # Phase 1 dev: SvelteKit dev server runs on a different port. Allow it through
 # CORS. Tighten or drop once the static build is mounted under the same origin.
@@ -311,6 +331,88 @@ def trigger_scan(req: ScanRequest) -> ScanResponse:
         masters_removed=stats.masters_removed,
         masters_skipped=stats.masters_skipped,
     )
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+
+class SubmitJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    template: Template
+    job: Job
+
+
+class SubmitJobResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+
+
+@app.post("/api/jobs", response_model=SubmitJobResponse)
+def submit_job(req: SubmitJobRequest) -> SubmitJobResponse:
+    job_id = job_manager.submit(req.template, req.job)
+    log.info("job submitted: %s template=%s", job_id, req.template.id)
+    return SubmitJobResponse(job_id=job_id)
+
+
+@app.get("/api/jobs")
+def list_jobs() -> list[dict]:
+    # Newest-first; in-memory for now so a quick list is fine.
+    return [r.public_dict() for r in sorted(
+        job_manager.list_jobs(), key=lambda r: r.submitted_at, reverse=True
+    )]
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict:
+    record = job_manager.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    return record.public_dict()
+
+
+@app.get("/api/jobs/{job_id}/events")
+def get_job_events(job_id: str) -> list[dict]:
+    """Return the buffered event history for a job (snapshot, not live)."""
+    record = job_manager.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    return [ev.to_dict() for ev in record.events]
+
+
+@app.websocket("/api/jobs/{job_id}/events")
+async def stream_job_events(ws: WebSocket, job_id: str) -> None:
+    """Live event stream for a job: replays history, then streams new events.
+
+    Closes when the job reaches a terminal state (completed or failed). The
+    client can reconnect or fall back to GET /api/jobs/{id} for the snapshot.
+    """
+    await ws.accept()
+    queue = job_manager.subscribe(job_id)
+    if queue is None:
+        await ws.close(code=4404, reason=f"job {job_id} not found")
+        return
+    try:
+        while True:
+            event = await queue.get()
+            await ws.send_json(event.to_dict())
+            if event.type in ("job_completed", "job_failed"):
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        job_manager.unsubscribe(job_id, queue)
+        # Best-effort close; ignore if already closed.
+        try:
+            await ws.close()
+        except RuntimeError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 # Make `python -m server.api` start a dev server.
