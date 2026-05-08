@@ -67,12 +67,10 @@ def test_stack_default_rej_writes_image(tmp_path: Path, monkeypatch: pytest.Monk
     assert img.path.exists()
 
     stack_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("stack "))
-    assert "stack r_pp_light rej " in stack_cmd
-    assert "3.0 3.0" in stack_cmd
-    assert "-rejection=w" in stack_cmd
+    assert stack_cmd.startswith("stack r_pp_light rej w 3.0 3.0 ")
     assert "-norm=addscale" in stack_cmd
     assert "-output_norm" in stack_cmd
-    assert "-32bits" in stack_cmd
+    assert "-32bits" not in stack_cmd  # 1.4 default
     assert f"-out={out_dir.resolve() / 'image.fit'}" in stack_cmd
 
 
@@ -99,7 +97,7 @@ def test_stack_mean_no_rejection_args(tmp_path: Path, monkeypatch: pytest.Monkey
     )
     stack_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("stack "))
     assert "stack r_pp_light mean" in stack_cmd
-    assert "-rejection" not in stack_cmd
+    assert " w " not in stack_cmd  # no rejection type
     assert "3.0 3.0" not in stack_cmd
 
 

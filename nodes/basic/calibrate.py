@@ -213,6 +213,15 @@ def _stage_sequence(
             link.unlink()
         link.symlink_to(f.resolve())
         staged.append(link)
+
+    # Siril 1.4 writes <basename>_.seq but `stack` reads <basename>.seq (no
+    # trailing underscore). Add a no-underscore alias so both naming
+    # conventions resolve. Only relevant for non-fitseq mode.
+    underscored = seq_out / f"{basename}_.seq"
+    no_underscore = seq_out / f"{basename}.seq"
+    if underscored.exists() and not no_underscore.exists():
+        no_underscore.symlink_to(underscored.resolve())
+        staged.append(no_underscore)
     return staged
 
 

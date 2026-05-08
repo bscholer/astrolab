@@ -62,10 +62,6 @@ class SeqStackParams(BaseModel):
         default=True,
         description="Pass -output_norm to clip the stacked output to [0,1].",
     )
-    bits_32: bool = Field(
-        default=True,
-        description="Pass -32bits so the stacked output is 32-bit float (vs 16-bit int).",
-    )
     weight_from_quality: bool = Field(
         default=False,
         description="Pass -weight=wfwhm to weight by FWHM. Cheap quality boost when "
@@ -109,17 +105,19 @@ class SeqStackNode(Node[SeqStackParams]):
 
         out_image = out_dir_path / "image.fit"
 
-        # Build the stack command. Siril's stack syntax is positional:
-        #   stack <seq> <method> [<sigma_low> <sigma_high>] [-rejection=<type>] [...]
+        # Build the stack command. Siril 1.4 syntax (positional, no flags for
+        # rejection type or bit depth):
+        #   stack <seq> rej <type> <sigma_low> <sigma_high> [-norm=...] [-output_norm] [...]
+        # Default output is 32-bit FITS already, so we don't pass -32bits.
         cmd_parts = [f"stack {params.input_basename} {params.method}"]
         if params.method == "rej":
+            cmd_parts.append(params.rejection_type)
             cmd_parts.append(f"{params.sigma_low} {params.sigma_high}")
-            cmd_parts.append(f"-rejection={params.rejection_type}")
-        cmd_parts.append(f"-norm={params.norm}")
+            cmd_parts.append(f"-norm={params.norm}")
+        elif params.method in ("mean", "median"):
+            cmd_parts.append(f"-norm={params.norm}")
         if params.output_norm:
             cmd_parts.append("-output_norm")
-        if params.bits_32:
-            cmd_parts.append("-32bits")
         if params.weight_from_quality:
             cmd_parts.append("-weight=wfwhm")
         cmd_parts.append(f"-out={_quote(out_image.resolve())}")
