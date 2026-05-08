@@ -157,12 +157,16 @@ def build_from_session(
                 "bias",
             ):
                 if cal.mode == "none":
-                    # Skip optional masters; for required ones, fail loud.
+                    # Skip ALL master wiring — nodes must declare these
+                    # ports as optional to opt into mode='none' support, and
+                    # they handle the absence gracefully (calibrate without
+                    # -dark just doesn't dark-subtract).
                     if port_name in node_cls.optional_inputs:
                         continue
                     raise CalibrationMissing(
                         f"template requires master {port_name} but "
-                        f"calibration mode is 'none'"
+                        f"calibration mode is 'none'. Mark the port "
+                        f"optional on the node to allow uncalibrated runs."
                     )
                 if cal.mode == "explicit" and port_name in cal.master_ids:
                     master_id = cal.master_ids[port_name]

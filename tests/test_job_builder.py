@@ -153,11 +153,29 @@ def test_build_from_session_auto_uses_matched_master(db, tmp_path: Path) -> None
     assert job.inputs["calibrate.dark"].path == tmp_path / "masters" / "dark.fit"
 
 
-def test_build_from_session_fails_when_no_master_matched(db, tmp_path: Path) -> None:
+def test_build_from_session_skips_unmatched_optional_master(db, tmp_path: Path) -> None:
+    """With dark declared optional on calibrate, auto mode silently builds a
+    job that simply omits calibrate.dark when nothing matches. Calibration is
+    suboptimal but the pipeline still runs end-to-end — surfacing this as a
+    hard error blocked legitimate sessions whose gain/temp don't match an
+    indexed master."""
     _seed_session(db, folder=tmp_path / "sess")
     template = load_template("calibrate_register_stack")
-    with pytest.raises(CalibrationMissing, match="no matched master dark"):
-        build_from_session(db, 1, template)
+    job = build_from_session(db, 1, template)
+    assert "calibrate.dark" not in job.inputs
+    assert "convert.lights" in job.inputs
+
+
+def test_build_from_session_skips_dark_in_none_mode(db, tmp_path: Path) -> None:
+    """mode='none' explicitly skips master wiring even when one is matched.
+    Used by the 'just process the lights' affordance."""
+    _seed_session(db, folder=tmp_path / "sess")
+    _seed_master_dark(db, master_id=1, path=tmp_path / "masters" / "dark.fit")
+    template = load_template("calibrate_register_stack")
+    job = build_from_session(
+        db, 1, template, calibration=CalibrationSpec(mode="none")
+    )
+    assert "calibrate.dark" not in job.inputs
 
 
 def test_build_from_session_explicit_master_id(db, tmp_path: Path) -> None:

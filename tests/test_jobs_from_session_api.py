@@ -76,14 +76,15 @@ def test_from_session_404_on_unknown_template(client) -> None:
     assert r.status_code == 404
 
 
-def test_from_session_400_on_missing_calibration(client) -> None:
-    """No master dark -> 400, since calibrate_register_stack needs one."""
+def test_from_session_succeeds_without_master_dark(client) -> None:
+    """No master dark -> still 200. Calibrate's dark input is optional, so
+    the job builds and runs (suboptimal calibration, but it works). Used to
+    error here back when dark was required."""
     r = client.post(
         "/api/jobs/from_session",
         json={"session_id": 1, "template_id": "calibrate_register_stack"},
     )
-    assert r.status_code == 400
-    assert "no matched master" in r.text
+    assert r.status_code == 200, r.text
 
 
 def test_from_session_404_on_unknown_session(client) -> None:

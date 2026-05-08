@@ -3,9 +3,14 @@ sequence via Siril 1.4's `calibrate` command.
 
 Input ports
 - sequence (SEQUENCE_FITS, required)        prior step's sequence dir
-- dark     (MASTER_FITS,   required)        master dark frame
+- dark     (MASTER_FITS,   optional)        master dark frame
 - flat     (MASTER_FITS,   optional)        master flat frame
 - bias     (MASTER_FITS,   optional)        master bias frame
+
+All three masters are optional. With none provided, `calibrate` becomes a
+prefix-rename pass with -cfa/-debayer applied; the resulting stack is
+noisier than a dark-calibrated one but the pipeline still completes. This
+unblocks sessions whose gain/temp/exptime don't match any indexed master.
 
 Output port
 - sequence (SEQUENCE_FITS): directory containing pp_<basename>_*.fit (or
@@ -90,7 +95,7 @@ class CalibrateNode(Node[CalibrateParams]):
         "flat": PortType.MASTER_FITS,
         "bias": PortType.MASTER_FITS,
     }
-    optional_inputs = frozenset({"flat", "bias"})
+    optional_inputs = frozenset({"dark", "flat", "bias"})
     outputs = {"sequence": PortType.SEQUENCE_FITS}
     params_schema = CalibrateParams
 
@@ -117,14 +122,18 @@ class CalibrateNode(Node[CalibrateParams]):
                 f"'{params.input_basename}' under {seq_in}"
             )
 
-        opts: list[str] = [f"-dark={_quote(inputs['dark'].path.resolve())}"]
+        opts: list[str] = []
+        if "dark" in inputs:
+            opts.append(f"-dark={_quote(inputs['dark'].path.resolve())}")
         if "flat" in inputs:
             opts.append(f"-flat={_quote(inputs['flat'].path.resolve())}")
         if "bias" in inputs:
             opts.append(f"-bias={_quote(inputs['bias'].path.resolve())}")
         if params.cfa:
             opts.append("-cfa")
-        if params.cosmetic:
+        if params.cosmetic and "dark" in inputs:
+            # -cc=dark needs a dark to detect hot/cold pixels; silently drop
+            # cosmetic correction when no dark is available.
             opts.append("-cc=dark")
         if params.equalize_cfa and params.cfa:
             opts.append("-equalize_cfa")
