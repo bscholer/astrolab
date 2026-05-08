@@ -16,7 +16,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from .models import ImageType, Quality
+from .models import ImageType, MasterKind, MasterSource, Quality
 
 
 class DiscoveredFrame(BaseModel):
@@ -43,13 +43,39 @@ class DiscoveredFrame(BaseModel):
     Header data wins where both are present, but path hints fill gaps."""
 
 
+class DiscoveredMaster(BaseModel):
+    """An adapter's path-level classification of a pre-built calibration master.
+
+    Used for masters the scope ships with or stacks itself (factory / user
+    sources). DAG-built masters bypass this path; they're inserted directly
+    by the master-build job.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    kind: MasterKind
+    source: MasterSource = "factory"
+    camera: str | None = None
+    instrument: str | None = None
+    filter: str | None = None
+    exptime: float | None = None
+    gain: int | None = None
+    binning: int | None = None
+    ccd_temp: float | None = None
+    stack_count: int | None = None
+
+
+DiscoveredItem = DiscoveredFrame | DiscoveredMaster
+
+
 class IngestAdapter(Protocol):
     """A scope-specific walker."""
 
     scope_id: str
 
-    def discover(self, root: Path) -> Iterator[DiscoveredFrame]:
-        """Yield candidate frames found beneath `root`.
+    def discover(self, root: Path) -> Iterator[DiscoveredItem]:
+        """Yield candidate frames or masters found beneath `root`.
 
         Implementations should be lazy (use os.walk / Path.iterdir) and skip
         directories that don't belong to the scope. They should never read

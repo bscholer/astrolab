@@ -23,7 +23,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from server.catalog.adapter import DiscoveredFrame, register
+from server.catalog.adapter import DiscoveredFrame, DiscoveredMaster, register
 
 LIGHT_FOLDER_RE = re.compile(
     r"^DWARF_RAW_TELE_(?P<target>.+?)_EXP_(?P<exp>[\d.]+)_GAIN_(?P<gain>\d+)_"
@@ -39,11 +39,24 @@ DARK_FOLDER_RE = re.compile(
 )
 """Matches a Dwarf 3 raw-dark session folder under DWARF_DARK/."""
 
+MASTER_FILENAME_RE = re.compile(
+    r"^(?P<kind>dark|flat|bias)_exp_(?P<exp>[\d.]+)_gain_(?P<gain>\d+)_"
+    r"bin_(?P<bin>\d+)_(?P<temp>-?\d+(?:\.\d+)?)C_stack_(?P<n>\d+)\.fits$"
+)
+"""Matches a pre-built master file under CALI_FRAME/<kind>/cam_*/.
+
+Per Dwarf docs, `bin` here is a resolution mode flag (1 = 4k, 2 = 2k), not
+binning in the astronomy sense. We still persist it for matching since it
+disambiguates two otherwise-equivalent masters."""
+
+CAM_FROM_DIR: dict[str, str] = {"cam_0": "TELE", "cam_1": "WIDE"}
+"""Per Dwarf docs: cam_0 is the telephoto, cam_1 is the wide."""
+
 
 class DwarfThreeAdapter:
     scope_id = "dwarf3"
 
-    def discover(self, root: Path) -> Iterator[DiscoveredFrame]:
+    def discover(self, root: Path) -> Iterator[DiscoveredFrame | DiscoveredMaster]:
         if not root.exists():
             return
         for child in sorted(root.iterdir()):
@@ -51,7 +64,7 @@ class DwarfThreeAdapter:
                 continue
             name = child.name
             if name == "CALI_FRAME":
-                # Pre-built masters; deferred to the masters slice.
+                yield from self._walk_cali(child)
                 continue
             if name == "DWARF_DARK":
                 yield from self._walk_darks(child)
@@ -62,7 +75,7 @@ class DwarfThreeAdapter:
                 continue
             # Other top-level directories (e.g. hand-curated 'wizard_nebula',
             # 'NGC7380', 'heart_nebula') are user folders not produced by the
-            # Dwarf 3 firmware. Skip in Phase 1.a; they need a different rule.
+            # Dwarf 3 firmware. Skip; they would need a different rule.
 
     def _walk_lights(self, folder: Path, hints: dict) -> Iterator[DiscoveredFrame]:
         session_key = f"dwarf3:{folder.name}"
@@ -92,6 +105,37 @@ class DwarfThreeAdapter:
                 session_key=session_key,
                 session_hints=session_hints,
             )
+
+    def _walk_cali(self, cali_root: Path) -> Iterator[DiscoveredMaster]:
+        """Walk CALI_FRAME/{dark,bias,flat}/cam_*/ and yield masters."""
+        for kind_dir in sorted(cali_root.iterdir()):
+            if not kind_dir.is_dir():
+                continue
+            kind = kind_dir.name
+            if kind not in {"dark", "flat", "bias"}:
+                continue
+            for cam_dir in sorted(kind_dir.iterdir()):
+                if not cam_dir.is_dir() or not cam_dir.name.startswith("cam_"):
+                    continue
+                camera = CAM_FROM_DIR.get(cam_dir.name)
+                for f in sorted(cam_dir.iterdir()):
+                    if not f.is_file() or f.suffix.lower() != ".fits":
+                        continue
+                    m = MASTER_FILENAME_RE.match(f.name)
+                    if not m:
+                        continue
+                    yield DiscoveredMaster(
+                        path=f,
+                        kind=kind,  # type: ignore[arg-type]
+                        source="factory",
+                        camera=camera,
+                        instrument="DWARFIII",
+                        exptime=float(m.group("exp")),
+                        gain=int(m.group("gain")),
+                        binning=int(m.group("bin")),
+                        ccd_temp=float(m.group("temp")),
+                        stack_count=int(m.group("n")),
+                    )
 
     def _walk_darks(self, dark_root: Path) -> Iterator[DiscoveredFrame]:
         for folder in sorted(dark_root.iterdir()):

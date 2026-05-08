@@ -23,10 +23,11 @@ from typing import Any
 
 import xxhash
 
-from .adapter import DiscoveredFrame, IngestAdapter
+from .adapter import DiscoveredFrame, DiscoveredMaster, IngestAdapter
 from .adapter import lookup as adapter_lookup
 from .db import open_db
 from .fits_reader import normalize_target, read_primary_header
+from .matching import match_all_sessions
 
 log = logging.getLogger("astrolab.catalog.scanner")
 
@@ -45,13 +46,19 @@ class ScanStats:
         self.updated: int = 0
         self.failed: int = 0
         self.removed: int = 0
+        self.masters_inserted: int = 0
+        self.masters_updated: int = 0
+        self.masters_skipped: int = 0
+        self.masters_removed: int = 0
 
     def __repr__(self) -> str:
         return (
             f"ScanStats(discovered={self.discovered}, "
             f"skipped={self.skipped_unchanged}, inserted={self.inserted}, "
             f"updated={self.updated}, removed={self.removed}, "
-            f"failed={self.failed})"
+            f"failed={self.failed}, "
+            f"masters[ins={self.masters_inserted} upd={self.masters_updated} "
+            f"skip={self.masters_skipped} rm={self.masters_removed}])"
         )
 
 
@@ -181,6 +188,75 @@ def _upsert_target(conn: sqlite3.Connection, name: str) -> int:
     return cur.lastrowid or -1
 
 
+def _ingest_master(
+    conn: sqlite3.Connection,
+    discovered: DiscoveredMaster,
+    scope_id: str,
+    scan_started_at: float,
+    stats: ScanStats,
+) -> None:
+    path = discovered.path
+    path_str = str(path)
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        log.warning("master vanished mid-scan: %s", path)
+        return
+
+    existing = conn.execute(
+        "SELECT id, size, mtime, file_hash FROM masters WHERE path = ?",
+        (path_str,),
+    ).fetchone()
+    if (
+        existing is not None
+        and existing["size"] == st.st_size
+        and existing["mtime"] == st.st_mtime
+        and existing["file_hash"] is not None
+    ):
+        conn.execute(
+            "UPDATE masters SET scanned_at = ? WHERE path = ?",
+            (scan_started_at, path_str),
+        )
+        stats.masters_skipped += 1
+        return
+
+    file_hash = _hash_file(path)
+    row: dict[str, Any] = {
+        "kind": discovered.kind,
+        "scope_id": scope_id,
+        "source": discovered.source,
+        "instrument": discovered.instrument,
+        "camera": discovered.camera,
+        "filter": discovered.filter,
+        "exptime": discovered.exptime,
+        "gain": discovered.gain,
+        "binning": discovered.binning,
+        "ccd_temp": discovered.ccd_temp,
+        "stack_count": discovered.stack_count,
+        "file_hash": file_hash,
+        "path": path_str,
+        "inode": st.st_ino,
+        "mtime": st.st_mtime,
+        "size": st.st_size,
+        "date_built": None,
+        "cache_ref": path_str,
+        "source_frame_ids": None,
+        "scanned_at": scan_started_at,
+    }
+    columns = list(row.keys())
+    placeholders = ",".join("?" for _ in columns)
+    sql = (
+        f"INSERT INTO masters ({','.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(path) DO UPDATE SET "
+        + ",".join(f"{c}=excluded.{c}" for c in columns)
+    )
+    conn.execute(sql, [row[c] for c in columns])
+    if existing is None:
+        stats.masters_inserted += 1
+    else:
+        stats.masters_updated += 1
+
+
 def _remove_orphans(
     conn: sqlite3.Connection,
     scope_id: str,
@@ -188,7 +264,7 @@ def _remove_orphans(
     scan_started_at: float,
     stats: ScanStats,
 ) -> None:
-    """Delete frame rows for files that the adapter no longer surfaces.
+    """Delete frame and master rows for files that the adapter no longer surfaces.
 
     Scoped to the prefix we just scanned, so unrelated paths from other roots
     are not affected. Sessions and targets that lose all their members get
@@ -202,6 +278,13 @@ def _remove_orphans(
         (scope_id, len(root_prefix), root_prefix, scan_started_at),
     )
     stats.removed = cur.rowcount or 0
+    cur = conn.execute(
+        "DELETE FROM masters "
+        "WHERE scope_id = ? AND substr(path, 1, ?) = ? "
+        "AND (scanned_at IS NULL OR scanned_at < ?)",
+        (scope_id, len(root_prefix), root_prefix, scan_started_at),
+    )
+    stats.masters_removed = cur.rowcount or 0
 
 
 def _refresh_sessions(conn: sqlite3.Connection, scope_id: str) -> None:
@@ -325,9 +408,14 @@ def scan(
             stats.discovered += 1
             on_progress(stats.discovered, 0, str(discovered.path))
             with conn:
-                _ingest_frame(conn, discovered, scope_id, scan_started_at, stats)
+                if isinstance(discovered, DiscoveredFrame):
+                    _ingest_frame(conn, discovered, scope_id, scan_started_at, stats)
+                elif isinstance(discovered, DiscoveredMaster):
+                    _ingest_master(conn, discovered, scope_id, scan_started_at, stats)
         with conn:
             _remove_orphans(conn, scope_id, root, scan_started_at, stats)
             _refresh_sessions(conn, scope_id)
+        with conn:
+            match_all_sessions(conn)
     log.info("scan complete: %r", stats)
     return stats

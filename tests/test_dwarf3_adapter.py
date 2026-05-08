@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import server.catalog.adapters  # noqa: F401  registers dwarf3
+from server.catalog.adapter import DiscoveredFrame, DiscoveredMaster
 from server.catalog.adapter import lookup as adapter_lookup
 from server.catalog.adapters.dwarf3 import DwarfThreeAdapter, _path_ts_to_iso
 
@@ -76,13 +77,57 @@ def test_classifies_darks(tmp_path: Path) -> None:
         assert d.session_hints["binning_from_path"] == 1
 
 
-def test_skips_cali_frame(tmp_path: Path) -> None:
+def test_classifies_cali_frame_masters(tmp_path: Path) -> None:
+    cali = tmp_path / "CALI_FRAME" / "dark" / "cam_0"
+    _touch(cali / "dark_exp_30.000000_gain_60_bin_1_22C_stack_10.fits")
+    _touch(cali / "ignored_other_file.fits")  # bad name; skipped
+
+    flat_cam0 = tmp_path / "CALI_FRAME" / "flat" / "cam_0"
+    _touch(flat_cam0 / "flat_exp_0.001_gain_60_bin_2_18C_stack_5.fits")
+
+    bias_cam1 = tmp_path / "CALI_FRAME" / "bias" / "cam_1"
+    _touch(bias_cam1 / "bias_exp_0.000125_gain_60_bin_1_-5C_stack_20.fits")
+
+    adapter = DwarfThreeAdapter()
+    found = list(adapter.discover(tmp_path))
+
+    assert all(isinstance(d, DiscoveredMaster) for d in found)
+    masters = sorted([d for d in found if isinstance(d, DiscoveredMaster)], key=lambda d: d.kind)
+    kinds = [m.kind for m in masters]
+    assert kinds == ["bias", "dark", "flat"]
+
+    bias = next(m for m in masters if m.kind == "bias")
+    assert bias.camera == "WIDE"
+    assert bias.binning == 1
+    assert bias.ccd_temp == -5.0
+    assert bias.stack_count == 20
+
+    dark = next(m for m in masters if m.kind == "dark")
+    assert dark.camera == "TELE"
+    assert dark.exptime == 30.0
+    assert dark.ccd_temp == 22.0
+    assert dark.stack_count == 10
+    assert dark.source == "factory"
+    assert dark.instrument == "DWARFIII"
+
+    flat = next(m for m in masters if m.kind == "flat")
+    assert flat.camera == "TELE"
+    assert flat.binning == 2  # Dwarf res-mode 2 = 2k
+
+
+def test_lights_and_masters_distinguished(tmp_path: Path) -> None:
+    """Adapter yields a mix of frames and masters; types differentiate them."""
+    light_folder = tmp_path / "DWARF_RAW_TELE_M 33_EXP_30_GAIN_60_2025-10-21-22-18-55-284"
+    _touch(light_folder / "M 33_30s60_Astro_20251021-221929504_24C.fits")
     cali = tmp_path / "CALI_FRAME" / "dark" / "cam_0"
     _touch(cali / "dark_exp_30.000000_gain_60_bin_1_22C_stack_10.fits")
 
     adapter = DwarfThreeAdapter()
     found = list(adapter.discover(tmp_path))
-    assert found == []
+    frames = [d for d in found if isinstance(d, DiscoveredFrame)]
+    masters = [d for d in found if isinstance(d, DiscoveredMaster)]
+    assert len(frames) == 1
+    assert len(masters) == 1
 
 
 def test_mosaic_target_flag(tmp_path: Path) -> None:

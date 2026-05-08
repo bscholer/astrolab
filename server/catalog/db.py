@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -95,6 +95,59 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE TABLE schema_version (version INTEGER PRIMARY KEY)",
         "INSERT INTO schema_version (version) VALUES (1)",
     ],
+    2: [
+        # Pre-built or DAG-built calibration masters. Dwarf 3 ships factory
+        # masters in CALI_FRAME; later, a master-build job will produce ones
+        # whose source_frame_ids reference rows in `frames`. cache_ref is the
+        # filesystem location of the master image.
+        """
+        CREATE TABLE masters (
+            id              INTEGER PRIMARY KEY,
+            kind            TEXT NOT NULL,        -- 'dark' | 'flat' | 'bias'
+            scope_id        TEXT,
+            source          TEXT,                  -- 'factory' | 'user' | 'astrolab'
+            instrument      TEXT,
+            camera          TEXT,                  -- TELE / WIDE for Dwarf
+            filter          TEXT,                  -- relevant for flats
+            exptime         REAL,                  -- relevant for darks
+            gain            INTEGER,
+            binning         INTEGER,               -- Dwarf res-mode for Dwarf 3 (1=4k, 2=2k)
+            ccd_temp        REAL,
+            stack_count     INTEGER,               -- source frame count for the stack
+            file_hash       TEXT,
+            path            TEXT NOT NULL UNIQUE,
+            inode           INTEGER,
+            mtime           REAL,
+            size            INTEGER,
+            date_built      TEXT,
+            cache_ref       TEXT,                  -- content-cache pointer or external path
+            source_frame_ids TEXT,                 -- JSON array of frames.id; null for factory
+            scanned_at      REAL
+        )
+        """,
+        "CREATE INDEX idx_masters_kind ON masters(kind)",
+        """
+        CREATE INDEX idx_masters_match ON masters(
+            kind, instrument, camera, gain, exptime, binning, ccd_temp
+        )
+        """,
+        # Best-known calibration choice for each session, recomputed on demand
+        # by the matcher. `master_id` is null when no acceptable match exists;
+        # the UI should make that loud (per README).
+        """
+        CREATE TABLE calibration_matches (
+            session_id      INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            kind            TEXT NOT NULL,         -- 'dark' | 'flat' | 'bias'
+            master_id       INTEGER REFERENCES masters(id) ON DELETE SET NULL,
+            match_quality   TEXT NOT NULL,         -- 'exact' | 'approx' | 'none'
+            details         TEXT,                   -- JSON: deltas, candidate count, etc.
+            overridden      INTEGER NOT NULL DEFAULT 0,
+            updated_at      REAL,
+            PRIMARY KEY (session_id, kind)
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (2)",
+    ],
 }
 
 
@@ -121,9 +174,8 @@ def migrate(conn: sqlite3.Connection) -> None:
         with conn:
             for stmt in MIGRATIONS[version]:
                 conn.execute(stmt)
-            if version != 1:
-                # v1 inserts its own row; later migrations record themselves.
-                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+            # Each migration is responsible for inserting its own
+            # schema_version row.
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
