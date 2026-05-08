@@ -116,6 +116,15 @@
             />
             <span class="prow-thumb-version">v{r.current_seq + 1}</span>
           </a>
+        {:else}
+          <!-- Reserve the same 84px slot so rows without a preview line
+               up with rows that do have one. Title says why so future
+               eyes don't think it's a bug. -->
+          <div
+            class="prow-thumb prow-thumb-empty"
+            title="No saved render yet"
+            aria-hidden="true"
+          ></div>
         {/if}
         <a class="prow-link" href="/projects/{r.id}">
           <div class="prow-name">
@@ -302,9 +311,17 @@
       inset 0 0 18px rgba(0, 0, 0, 0.5);
     transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 220ms ease;
   }
-  .prow:hover .prow-thumb {
+  .prow:hover .prow-thumb:not(.prow-thumb-empty) {
     transform: scale(1.04);
     filter: saturate(1.15) brightness(1.05);
+  }
+  /* Empty placeholder: reserves the 84px slot so name + meta align with
+     rows that do have a preview. Subtle inset hairline so it reads as
+     'preview slot, nothing here yet' rather than a missing element. */
+  .prow-thumb-empty {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    cursor: default;
   }
   .prow-thumb-img {
     width: 100%;
