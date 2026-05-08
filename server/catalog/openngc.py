@@ -138,19 +138,25 @@ def _alias_keys_for(entry_name: str, m: str, ngc: str, ic: str, identifiers: str
     # Drop any space variants of the canonical id.
     if " " in entry_name:
         keys.add(entry_name.replace(" ", ""))
-    # Messier cross-reference.
-    if m:
-        m = m.strip()
-        keys.add(f"M {m}")
-        keys.add(f"M{m}")
-    # NGC / IC cross-references (only meaningful when this row's name
-    # isn't already that catalog).
+
+    def _emit(prefix: str, raw: str) -> None:
+        """Add 'PREFIX N' / 'PREFIXN' both with and without leading
+        zeros. OpenNGC zero-pads everywhere ('031', '0598'); humans
+        don't ('M 31', 'NGC 598'). Index both forms so either resolves.
+        """
+        n = raw.strip()
+        if not n:
+            return
+        stripped = n.lstrip("0") or "0"
+        for v in {n, stripped}:
+            keys.add(f"{prefix} {v}")
+            keys.add(f"{prefix}{v}")
+
+    _emit("M", m)
     if ngc and not entry_name.startswith("NGC"):
-        keys.add(f"NGC {ngc.strip()}")
-        keys.add(f"NGC{ngc.strip()}")
+        _emit("NGC", ngc)
     if ic and not entry_name.startswith("IC"):
-        keys.add(f"IC {ic.strip()}")
-        keys.add(f"IC{ic.strip()}")
+        _emit("IC", ic)
     # Foreign identifiers (Sh2-155, LBN 529, …). We only index the ones
     # that look like 'PREFIX number' so we don't pollute the index with
     # SDSS J… names that nobody types by hand.
