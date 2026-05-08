@@ -101,6 +101,62 @@ def test_calibrate_dark_only_happy_path(tmp_path: Path, monkeypatch: pytest.Monk
     assert "-fitseq" in cal
 
 
+def test_calibrate_passes_debayer_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OSC pipelines must debayer at calibrate so register/stack don't run on
+    Bayer pixels (sub-pixel registration would scramble the pattern)."""
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    (seq_in / "light.fit").write_bytes(b"FAKE")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    dark = _make_master(tmp_path / "masters" / "dark.fit")
+
+    def fake(cmds, wd):
+        (out_dir / "sequence" / "pp_light.fit").write_bytes(b"FAKE")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.calibrate.SirilRuntime", lambda *a, **k: fake_rt)
+    CalibrateNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+            "dark": Ref(node_hash="ext", port="dark", path=dark, type=PortType.MASTER_FITS),
+        },
+        params=CalibrateParams(fitseq=True),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    cal = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("calibrate "))
+    assert "-debayer" in cal
+
+
+def test_calibrate_debayer_off_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    (seq_in / "light.fit").write_bytes(b"FAKE")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    dark = _make_master(tmp_path / "masters" / "dark.fit")
+
+    def fake(cmds, wd):
+        (out_dir / "sequence" / "pp_light.fit").write_bytes(b"FAKE")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.calibrate.SirilRuntime", lambda *a, **k: fake_rt)
+    CalibrateNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+            "dark": Ref(node_hash="ext", port="dark", path=dark, type=PortType.MASTER_FITS),
+        },
+        params=CalibrateParams(fitseq=True, debayer=False),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    cal = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("calibrate "))
+    assert "-debayer" not in cal
+
+
 def test_calibrate_with_flat_and_bias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seq_in = tmp_path / "in"
     seq_in.mkdir()

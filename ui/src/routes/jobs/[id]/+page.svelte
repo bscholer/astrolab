@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { api, type JobEvent, type JobSummary } from '$lib/api';
@@ -88,9 +88,26 @@
     return 'image';
   }
 
-  onMount(async () => {
+  function resetState() {
+    job = null;
+    layout = null;
+    nodeStatus = {};
+    nodeProgress = {};
+    nodeHash = {};
+    nodeKind = {};
+    nodePort = {};
+    recentEvents = [];
+    seenEventKey.clear();
+    ws?.close();
+    ws = null;
+  }
+
+  async function loadJob(jobId: string) {
     try {
-      job = await api.getJob(id);
+      const fresh = await api.getJob(jobId);
+      // Bail if the route changed mid-fetch (user navigated again).
+      if (jobId !== id) return;
+      job = fresh;
       if (job.template) {
         layout = layoutTemplate(job.template);
         const initStatus: Record<string, NodeStatus> = {};
@@ -107,18 +124,28 @@
       }
       // Bootstrap from buffered history so a reload after the WS closed still
       // paints the right state immediately.
-      const history = await api.getJobEvents(id);
+      const history = await api.getJobEvents(jobId);
+      if (jobId !== id) return;
       for (const ev of history) applyEvent(ev);
 
       // Only attach the WS while there's still work to do (or the job is so
       // fresh we might race the worker). The server closes the WS on terminal
       // events anyway, but skipping it on a finished job is a clean reload.
       if (job.status === 'queued' || job.status === 'running') {
-        ws = api.subscribeJobEvents(id, applyEvent);
+        ws = api.subscribeJobEvents(jobId, applyEvent);
       }
     } catch (e) {
-      toast.error(`Couldn't load job ${id}: ${(e as Error).message}`);
+      toast.error(`Couldn't load job ${jobId}: ${(e as Error).message}`);
     }
+  }
+
+  // Reload whenever the route id changes (incl. after Reprocess goto). Without
+  // this, navigating between jobs reuses the component instance and the old
+  // state (events, node status, ws) lingers until you hit refresh.
+  $effect(() => {
+    if (!id) return;
+    resetState();
+    loadJob(id);
   });
 
   onDestroy(() => {

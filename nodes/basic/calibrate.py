@@ -60,6 +60,13 @@ class CalibrateParams(BaseModel):
         description="Pass -equalize_cfa when calibrating CFA flats (fixes channel "
         "offsets). Only meaningful with cfa=True.",
     )
+    debayer: bool = Field(
+        default=True,
+        description="Pass -debayer so calibrate emits debayered RGB frames. On for "
+        "OSC sensors (Dwarf 3): registration applies sub-pixel shifts that scramble "
+        "the Bayer pattern, so we must debayer here before register/stack. Turn off "
+        "only for mono cameras or pure-CFA workflows.",
+    )
 
 
 @register("calibrate")
@@ -112,6 +119,8 @@ class CalibrateNode(Node[CalibrateParams]):
             opts.append("-cc=dark")
         if params.equalize_cfa and params.cfa:
             opts.append("-equalize_cfa")
+        if params.debayer:
+            opts.append("-debayer")
         if params.fitseq:
             opts.append("-fitseq")
 
