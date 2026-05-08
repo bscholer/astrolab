@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 import nodes.basic  # noqa: F401  registers downscale
-from server.api import app, job_manager, rendering_manager
+from server.api import app, job_manager, project_manager
 from server.cache import ContentCache
 
 
@@ -23,7 +23,7 @@ from server.cache import ContentCache
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
     job_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
-    rendering_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
+    project_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
     with TestClient(app) as c:
         yield c
 
@@ -73,7 +73,7 @@ def _wait_for_job(client, job_id: str, timeout: float = 5.0) -> dict:
 
 def test_create_seeds_initial_history_entry(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
-    r = client.post("/api/renderings", json=_payload(src, name="ngc 7380"))
+    r = client.post("/api/projects", json=_payload(src, name="ngc 7380"))
     assert r.status_code == 200
     body = r.json()
 
@@ -90,11 +90,11 @@ def test_create_seeds_initial_history_entry(client, tmp_path: Path) -> None:
 
 def test_patch_appends_history_with_diff_label(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
 
     r = client.patch(
-        f"/api/renderings/{rid}",
+        f"/api/projects/{rid}",
         json={"overrides": {"ds": {"target_size_px": 32}}},
     )
     assert r.status_code == 200
@@ -115,10 +115,10 @@ def test_patch_with_same_overrides_still_appends(client, tmp_path: Path) -> None
     explicit timeline entry; the cache makes the underlying job a near-instant
     cache hit."""
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
 
-    r = client.patch(f"/api/renderings/{rid}", json={"overrides": {}})
+    r = client.patch(f"/api/projects/{rid}", json={"overrides": {}})
     body = r.json()
     assert body["current_seq"] == 1
     assert body["history"][1]["label"] == "no changes"
@@ -126,17 +126,17 @@ def test_patch_with_same_overrides_still_appends(client, tmp_path: Path) -> None
 
 def test_revert_moves_pointer_without_new_job(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
 
     body = client.patch(
-        f"/api/renderings/{rid}",
+        f"/api/projects/{rid}",
         json={"overrides": {"ds": {"target_size_px": 32}}},
     ).json()
     _wait_for_job(client, body["history"][1]["job_id"])
     assert body["current_seq"] == 1
 
-    r = client.post(f"/api/renderings/{rid}/revert/0")
+    r = client.post(f"/api/projects/{rid}/revert/0")
     assert r.status_code == 200
     body = r.json()
     assert body["current_seq"] == 0
@@ -147,36 +147,36 @@ def test_revert_moves_pointer_without_new_job(client, tmp_path: Path) -> None:
 
 def test_revert_to_unknown_seq_400(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    r = client.post(f"/api/renderings/{rid}/revert/99")
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    r = client.post(f"/api/projects/{rid}/revert/99")
     assert r.status_code == 400
 
 
 def test_force_rerun_appears_in_history(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
 
-    r = client.patch(f"/api/renderings/{rid}", json={"force": True})
+    r = client.patch(f"/api/projects/{rid}", json={"force": True})
     body = r.json()
     assert body["current_seq"] == 1
     assert "Reprocess" in body["history"][1]["label"]
 
 
 def test_unknown_rendering_404(client) -> None:
-    assert client.get("/api/renderings/not-real").status_code == 404
+    assert client.get("/api/projects/not-real").status_code == 404
     assert client.patch(
-        "/api/renderings/not-real", json={"overrides": {}}
+        "/api/projects/not-real", json={"overrides": {}}
     ).status_code == 404
-    assert client.post("/api/renderings/not-real/revert/0").status_code == 404
+    assert client.post("/api/projects/not-real/revert/0").status_code == 404
 
 
 def test_list_returns_recent_first(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
-    a = client.post("/api/renderings", json=_payload(src, name="alpha")).json()["id"]
+    a = client.post("/api/projects", json=_payload(src, name="alpha")).json()["id"]
     time.sleep(0.01)
-    b = client.post("/api/renderings", json=_payload(src, name="beta")).json()["id"]
-    listing = client.get("/api/renderings").json()
+    b = client.post("/api/projects", json=_payload(src, name="beta")).json()["id"]
+    listing = client.get("/api/projects").json()
     ids = [r["id"] for r in listing]
     assert ids.index(b) < ids.index(a)
 
@@ -208,14 +208,14 @@ def test_template_schema_unknown_404(client) -> None:
 def test_cancel_running_job_marks_interrupted(client, tmp_path: Path) -> None:
     """Set the cancel token on a record before the worker picks it up; the
     worker should see it on entry, mark the job interrupted, and never run
-    a node. This is the path RenderingManager.patch uses to abandon stale
+    a node. This is the path ProjectManager.patch uses to abandon stale
     in-flight pipelines when the user tweaks a slider mid-render."""
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
 
     body = client.patch(
-        f"/api/renderings/{rid}",
+        f"/api/projects/{rid}",
         json={"overrides": {"ds": {"target_size_px": 32}}},
     ).json()
     job_id = body["history"][1]["job_id"]
@@ -239,29 +239,29 @@ def test_cancel_running_job_marks_interrupted(client, tmp_path: Path) -> None:
 
 
 def test_patch_signals_prior_running_job(monkeypatch, client, tmp_path: Path) -> None:
-    """Auto-cancel happens inside RenderingManager.patch: prior active job
+    """Auto-cancel happens inside ProjectManager.patch: prior active job
     (if still queued/running) gets its cancel token flipped before the new
     job is queued. Verified here by stubbing JobManager.cancel and checking
     the call history."""
-    from server.api import rendering_manager
+    from server.api import project_manager
 
     src = _make_png(tmp_path / "in.png")
-    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
-    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
 
-    # Track what RenderingManager asks JobManager to cancel.
+    # Track what ProjectManager asks JobManager to cancel.
     cancelled: list[str] = []
-    real_cancel = rendering_manager._jobs.cancel
+    real_cancel = project_manager._jobs.cancel
 
     def tracking_cancel(job_id: str) -> bool:
         cancelled.append(job_id)
         return real_cancel(job_id)
 
-    monkeypatch.setattr(rendering_manager._jobs, "cancel", tracking_cancel)
+    monkeypatch.setattr(project_manager._jobs, "cancel", tracking_cancel)
 
-    prior_job = client.get(f"/api/renderings/{rid}").json()["current_job_id"]
+    prior_job = client.get(f"/api/projects/{rid}").json()["current_job_id"]
     body = client.patch(
-        f"/api/renderings/{rid}",
+        f"/api/projects/{rid}",
         json={"overrides": {"ds": {"target_size_px": 32}}},
     ).json()
     _wait_for_job(client, body["history"][1]["job_id"])

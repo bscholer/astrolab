@@ -5,16 +5,16 @@ Three things live here:
 1. **Size accounting**: walk the cache root, sum bytes per entry, expose
    totals via `system_storage()`.
 
-2. **Reachability mapping**: for each rendering, look at every history
+2. **Reachability mapping**: for each project, look at every history
    entry's job, pull that job's persisted `node_hashes` set, and fold
-   that into a {cache_hash -> set(rendering_id)} reverse index. This lets
-   us answer "what does this rendering own vs share?" without re-walking
+   that into a {cache_hash -> set(project_id)} reverse index. This lets
+   us answer "what does this project own vs share?" without re-walking
    the event log per request.
 
 3. **Eviction**: score every reachable cache entry by
    `cost_weight * recency_weight`, sort ascending, evict from the front
    until the cache fits under a configured budget. Dead (unreachable)
-   entries always go first regardless of score so a deleted rendering
+   entries always go first regardless of score so a deleted project
    frees its cache without a separate code path.
 
 The module talks to the catalog DB and the ContentCache; it does NOT
@@ -52,7 +52,7 @@ class CacheEntryInfo:
     node_hash: str
     bytes: int
     owners: set[str] = field(default_factory=set)
-    """Rendering ids whose history references this entry. Empty = unreachable."""
+    """Project ids whose history references this entry. Empty = unreachable."""
 
     # Heuristic metadata used by the scorer. Filled in best-effort: when
     # multiple jobs across multiple renderings touched the same hash, we
@@ -67,19 +67,19 @@ class CacheEntryInfo:
 
 @dataclass
 class ProjectStorage:
-    """Per-rendering storage breakdown surfaced to the UI."""
+    """Per-project storage breakdown surfaced to the UI."""
 
-    rendering_id: str
+    project_id: str
     name: str
     updated_at: str
     owned_bytes: int
-    """Bytes of cache entries reachable only from this rendering. Safe to
+    """Bytes of cache entries reachable only from this project. Safe to
     purge without affecting other projects."""
     shared_bytes: int
-    """Bytes of cache entries this rendering shares with others. Purging
+    """Bytes of cache entries this project shares with others. Purging
     these would invalidate other projects too."""
     entry_count: int
-    """How many cache entries this rendering reaches in total."""
+    """How many cache entries this project reaches in total."""
 
 
 @dataclass
@@ -102,24 +102,24 @@ def build_reachability(
     conn: sqlite3.Connection,
     cache: ContentCache,
 ) -> tuple[dict[str, CacheEntryInfo], dict[str, dict[str, Any]]]:
-    """Return (entries by hash, renderings by id).
+    """Return (entries by hash, projects by id).
 
     `entries` covers every committed cache hash on disk, with owner sets
-    populated from rendering history. `renderings` is a side index of basic
-    rendering metadata so callers don't need to re-query.
+    populated from project history. `projects` is a side index of basic
+    project metadata so callers don't need to re-query.
     """
     entries: dict[str, CacheEntryInfo] = {}
     for h in cache.all_committed_hashes():
         entries[h] = CacheEntryInfo(node_hash=h, bytes=cache.entry_size(h))
 
-    renderings: dict[str, dict[str, Any]] = {}
+    projects: dict[str, dict[str, Any]] = {}
     for r in conn.execute(
-        "SELECT id, name, template_json, updated_at FROM renderings"
+        "SELECT id, name, template_json, updated_at FROM projects"
     ).fetchall():
-        renderings[r["id"]] = _row_to_dict(r)
+        projects[r["id"]] = _row_to_dict(r)
 
     # Map job_id -> set(node_hashes). Pull every job we have on file; some
-    # may belong to renderings we've since deleted (orphan job rows), but
+    # may belong to projects we've since deleted (orphan job rows), but
     # that's fine — we only walk history below, which references current
     # job_ids.
     job_hashes: dict[str, list[str]] = {}
@@ -130,9 +130,6 @@ def build_reachability(
             except (ValueError, TypeError):
                 continue
 
-    # For cost-class lookup: cache the (kind, variant) -> CostClass map per
-    # rendering's template (templates are small; the cost lookup is per node
-    # spec, not per node_hash, so a per-rendering memoization is cheap).
     def _node_cost_map(template_json: str) -> dict[str, str]:
         try:
             t = Template.model_validate(json.loads(template_json))
@@ -149,44 +146,37 @@ def build_reachability(
 
     # We don't have a stored mapping from node_hash to its (kind, variant),
     # so we approximate: walk each history entry, infer per-node cost from
-    # the template, and assign the rendering's per-node cost to each hash
+    # the template, and assign the project's per-node cost to each hash
     # that node touched. Multiple visits to the same hash take the cheapest
-    # (most replaceable) cost so the eviction scorer doesn't over-protect a
-    # hash because some other rendering classed it as expensive.
+    # (most replaceable) cost so the eviction scorer doesn't over-protect
+    # a hash because some other project classed it as expensive.
     cost_rank = {"cheap": 0, "medium": 1, "expensive": 2}
 
-    for rid, r in renderings.items():
-        cost_map = _node_cost_map(r["template_json"])
+    for pid, p in projects.items():
+        cost_map = _node_cost_map(p["template_json"])
         history = conn.execute(
-            "SELECT seq, job_id, created_at FROM rendering_history "
-            "WHERE rendering_id = ? ORDER BY seq ASC",
-            (rid,),
+            "SELECT seq, job_id, created_at FROM project_history "
+            "WHERE project_id = ? ORDER BY seq ASC",
+            (pid,),
         ).fetchall()
         for h in history:
             hashes_for_this_job = job_hashes.get(h["job_id"], [])
-            # We don't have per-hash node_id mapping, so we can't perfectly
-            # attribute each hash to a single node. Best-effort: distribute
-            # node costs by template order. This gets the right answer when
-            # the per-node hashes come back in the same order as the
-            # template's node list — which they do, since the runtime walks
-            # the template in topological order.
-            template = Template.model_validate(json.loads(r["template_json"]))
+            template = Template.model_validate(json.loads(p["template_json"]))
             for i, hash_str in enumerate(hashes_for_this_job):
                 if hash_str not in entries:
                     continue
                 entry = entries[hash_str]
-                entry.owners.add(rid)
+                entry.owners.add(pid)
                 if i < len(template.nodes):
                     spec = template.nodes[i]
                     cost = cost_map.get(spec.id, "expensive")
                     if cost_rank.get(cost, 2) < cost_rank.get(entry.cost, 2):
                         entry.cost = cost
-                # Recency: newest history entry that touched this wins.
                 created = h["created_at"]
                 if entry.last_used_at is None or created > entry.last_used_at:
                     entry.last_used_at = created
 
-    return entries, renderings
+    return entries, projects
 
 
 def system_storage(
@@ -195,30 +185,30 @@ def system_storage(
 ) -> StorageSnapshot:
     """Build the snapshot the storage UI consumes."""
     with _conn(db_path) as conn:
-        entries, renderings = build_reachability(conn, cache)
+        entries, projects = build_reachability(conn, cache)
 
     total_bytes = sum(e.bytes for e in entries.values())
     unreachable_bytes = sum(e.bytes for e in entries.values() if not e.owners)
     unreachable_count = sum(1 for e in entries.values() if not e.owners)
 
     per_project: list[ProjectStorage] = []
-    for rid, r in renderings.items():
+    for pid, p in projects.items():
         owned = 0
         shared = 0
         count = 0
         for e in entries.values():
-            if rid not in e.owners:
+            if pid not in e.owners:
                 continue
             count += 1
-            if e.owners == {rid}:
+            if e.owners == {pid}:
                 owned += e.bytes
             else:
                 shared += e.bytes
         per_project.append(
             ProjectStorage(
-                rendering_id=rid,
-                name=r["name"],
-                updated_at=r["updated_at"],
+                project_id=pid,
+                name=p["name"],
+                updated_at=p["updated_at"],
                 owned_bytes=owned,
                 shared_bytes=shared,
                 entry_count=count,
@@ -241,14 +231,14 @@ def system_storage(
 # ---------------------------------------------------------------------------
 
 
-def purge_rendering_cache(
+def purge_project_cache(
     cache: ContentCache,
-    rendering_id: str,
+    project_id: str,
     *,
     keep_outputs: bool = False,
     db_path: Path | None = None,
 ) -> tuple[int, int]:
-    """Evict cache entries owned solely by `rendering_id`.
+    """Evict cache entries owned solely by `project_id`.
 
     Returns (entries_evicted, bytes_freed). Shared entries are left alone
     — purging them would invalidate other projects.
@@ -261,13 +251,13 @@ def purge_rendering_cache(
     with _conn(db_path) as conn:
         entries, _ = build_reachability(conn, cache)
         keep_hashes = (
-            _terminal_output_hashes(conn, rendering_id) if keep_outputs else set()
+            _terminal_output_hashes(conn, project_id) if keep_outputs else set()
         )
 
     evicted = 0
     freed = 0
     for h, e in entries.items():
-        if e.owners != {rendering_id}:
+        if e.owners != {project_id}:
             continue
         if h in keep_hashes:
             continue
@@ -276,41 +266,41 @@ def purge_rendering_cache(
     return evicted, freed
 
 
-def delete_rendering(
-    rendering_id: str,
+def delete_project(
+    project_id: str,
     cache: ContentCache,
     db_path: Path | None = None,
 ) -> tuple[int, int]:
-    """Remove a rendering and any cache entries it solely owns.
+    """Remove a project and any cache entries it solely owns.
 
     Returns (entries_evicted, bytes_freed). Caller is responsible for any
-    in-memory RenderingManager state; this function only touches the DB
+    in-memory ProjectManager state; this function only touches the DB
     and the disk cache.
     """
-    evicted, freed = purge_rendering_cache(
-        cache, rendering_id, keep_outputs=False, db_path=db_path
+    evicted, freed = purge_project_cache(
+        cache, project_id, keep_outputs=False, db_path=db_path
     )
     with _conn(db_path) as conn:
         with conn:
-            # rendering_history cascades via FK ON DELETE CASCADE.
-            conn.execute("DELETE FROM renderings WHERE id = ?", (rendering_id,))
+            # project_history cascades via FK ON DELETE CASCADE.
+            conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     return evicted, freed
 
 
 def _terminal_output_hashes(
-    conn: sqlite3.Connection, rendering_id: str
+    conn: sqlite3.Connection, project_id: str
 ) -> set[str]:
     """Pull every node_hash that appears as a terminal output across the
-    rendering's history. These are the hashes pointed at by
+    project's history. These are the hashes pointed at by
     `jobs.outputs_json[<port>].node_hash`."""
     rows = conn.execute(
         """
         SELECT j.outputs_json
-        FROM rendering_history h
+        FROM project_history h
         JOIN jobs j ON j.id = h.job_id
-        WHERE h.rendering_id = ?
+        WHERE h.project_id = ?
         """,
-        (rendering_id,),
+        (project_id,),
     ).fetchall()
     out: set[str] = set()
     for r in rows:

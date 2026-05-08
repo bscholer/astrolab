@@ -65,10 +65,10 @@ button:disabled {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
 
-/* Rendering editor needs more horizontal room: 8 pipeline previews + a
+/* Project editor needs more horizontal room: 8 pipeline previews + a
    parallel params grid only feel right with a wide canvas. The page sets
    this class on body while it's mounted. */
-body.rendering-page .container {
+body.project-page .container {
   max-width: min(1800px, calc(100vw - 2rem));
 }
 

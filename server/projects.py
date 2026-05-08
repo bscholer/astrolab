@@ -1,6 +1,6 @@
-"""Rendering layer: a live, editable view of a stack pipeline.
+"""Project layer: a live, editable view of a stack pipeline.
 
-A Rendering is the user-facing unit of work in the UI. It owns:
+A Project is the user-facing unit of work in the UI. It owns:
   - a source (one or more catalog sessions),
   - a Template (the chain of nodes, fixed at creation time),
   - a base Job (external inputs + calibration choice),
@@ -8,7 +8,7 @@ A Rendering is the user-facing unit of work in the UI. It owns:
   - a `current_seq` pointer indicating which history entry the UI is looking
     at right now.
 
-Editing a slider in the UI maps to RenderingManager.patch(): the new param
+Editing a slider in the UI maps to ProjectManager.patch(): the new param
 overrides are merged into the current state, a fresh Job is submitted, and a
 history entry is appended at the new tail. The content-addressed cache makes
 upstream nodes (calibrate / register / stack) skip immediately when only a
@@ -20,8 +20,11 @@ from a reverted state — older entries become unreachable through normal
 undo/redo but remain in the DB for "compare" or "branch" affordances later.
 
 This module owns persistence to the catalog DB; it does NOT own job execution
-(that's JobManager's job). RenderingManager calls JobManager.submit and
-records the resulting job id.
+(that's JobManager's job). ProjectManager calls JobManager.submit and records
+the resulting job id.
+
+(Originally called "Rendering"; renamed to "Project" since users think in
+terms of "my Wizard Nebula edit" not "this single output".)
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ from .catalog.db import connect as open_catalog_db
 from .jobs import JobManager
 from .models import Job, Template
 
-log = logging.getLogger("astrolab.renderings")
+log = logging.getLogger("astrolab.projects")
 
 
 def _now() -> str:
@@ -79,16 +82,7 @@ def _diff_label(
     *,
     max_changes: int = 3,
 ) -> str:
-    """Auto-generate a short label describing what changed from prev to curr.
-
-    Examples:
-      'stretch.midtones 0.5 → 0.3'
-      'stretch.method autostretch → mtf, stretch.midtones 0.5 → 0.3'
-      'stretch.midtones, +1 more'
-
-    Returns 'no changes' if the override sets are identical (used when the
-    caller forces a re-run without param edits).
-    """
+    """Auto-generate a short label describing what changed from prev to curr."""
     changes: list[str] = []
     nodes = set(prev) | set(curr)
     for nid in sorted(nodes):
@@ -134,7 +128,7 @@ class HistoryEntry:
 
 
 @dataclass
-class Rendering:
+class Project:
     id: str
     name: str
     template: Template
@@ -172,12 +166,12 @@ class Rendering:
         }
 
 
-class RenderingNotFound(LookupError):
+class ProjectNotFound(LookupError):
     pass
 
 
-class RenderingManager:
-    """Owns Rendering persistence and routes edits through JobManager.
+class ProjectManager:
+    """Owns Project persistence and routes edits through JobManager.
 
     Threading: every public method takes a coarse lock for in-memory map
     consistency, then drops it before submitting jobs (which can take a
@@ -188,24 +182,24 @@ class RenderingManager:
     def __init__(self, jobs: JobManager, *, db_path: Path | None = None) -> None:
         self._jobs = jobs
         self._db_path = db_path
-        self._records: dict[str, Rendering] = {}
+        self._records: dict[str, Project] = {}
         self._lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
 
     def rehydrate(self) -> None:
-        """Load persisted renderings from the DB. Idempotent."""
+        """Load persisted projects from the DB. Idempotent."""
         try:
             conn = self._conn()
         except Exception:  # pragma: no cover  (defensive: DB might not exist yet)
-            log.exception("could not open catalog DB for rendering rehydration")
+            log.exception("could not open catalog DB for project rehydration")
             return
         try:
             rows = conn.execute(
-                "SELECT * FROM renderings ORDER BY updated_at DESC"
+                "SELECT * FROM projects ORDER BY updated_at DESC"
             ).fetchall()
         except sqlite3.Error:
-            log.exception("DB read failed during rendering rehydration")
+            log.exception("DB read failed during project rehydration")
             conn.close()
             return
 
@@ -213,14 +207,14 @@ class RenderingManager:
             self._records.clear()
             for row in rows:
                 try:
-                    rendering = self._row_to_rendering(conn, row)
+                    project = self._row_to_project(conn, row)
                 except Exception:
-                    log.exception("could not rehydrate rendering %s; skipping", row["id"])
+                    log.exception("could not rehydrate project %s; skipping", row["id"])
                     continue
-                self._records[rendering.id] = rendering
+                self._records[project.id] = project
         conn.close()
         if rows:
-            log.info("rehydrated %d rendering(s) from catalog DB", len(rows))
+            log.info("rehydrated %d project(s) from catalog DB", len(rows))
 
     def reset_for_tests(self, *, db_path: Path | None = None) -> None:
         with self._lock:
@@ -237,25 +231,23 @@ class RenderingManager:
         template: Template,
         base_job: Job,
         source_session_ids: list[str],
-    ) -> Rendering:
-        """Create a Rendering and submit its initial job.
+    ) -> Project:
+        """Create a Project and submit its initial job.
 
         `base_job` should carry external inputs and calibration but no
         param_overrides; the initial history entry uses an empty override
         dict so the template defaults are what runs first.
         """
         if base_job.param_overrides:
-            # We want history-entry overrides to be the source of truth, not
-            # the seed Job. Move them into the initial entry.
             initial_overrides = dict(base_job.param_overrides)
             base_job = base_job.model_copy(update={"param_overrides": {}})
         else:
             initial_overrides = {}
 
-        rid = str(uuid.uuid4())
+        pid = str(uuid.uuid4())
         now = _now()
-        rendering = Rendering(
-            id=rid,
+        project = Project(
+            id=pid,
             name=name,
             template=template,
             base_job=base_job,
@@ -266,8 +258,7 @@ class RenderingManager:
             updated_at=now,
         )
 
-        # Submit the initial job and append history.
-        job_id = self._submit_with_overrides(rendering, initial_overrides)
+        job_id = self._submit_with_overrides(project, initial_overrides)
         entry = HistoryEntry(
             seq=0,
             job_id=job_id,
@@ -275,57 +266,49 @@ class RenderingManager:
             label="initial render",
             created_at=now,
         )
-        rendering.history.append(entry)
+        project.history.append(entry)
 
         with self._lock:
-            self._records[rid] = rendering
-        self._persist_rendering(rendering, kind="insert")
-        self._persist_history_entry(rid, entry)
-        log.info("rendering created: %s name=%r template=%s", rid, name, template.id)
-        return rendering
+            self._records[pid] = project
+        self._persist_project(project, kind="insert")
+        self._persist_history_entry(pid, entry)
+        log.info("project created: %s name=%r template=%s", pid, name, template.id)
+        return project
 
-    def get(self, rendering_id: str) -> Rendering | None:
+    def get(self, project_id: str) -> Project | None:
         with self._lock:
-            return self._records.get(rendering_id)
+            return self._records.get(project_id)
 
-    def list(self) -> list[Rendering]:
+    def list(self) -> list[Project]:
         with self._lock:
             return list(self._records.values())
 
     def patch(
         self,
-        rendering_id: str,
+        project_id: str,
         *,
         overrides: dict[str, dict[str, Any] | None] | None = None,
         draft_mode: bool | None = None,
         label: str | None = None,
         force: bool = False,
-    ) -> Rendering:
+    ) -> Project:
         """Apply param overrides (and optionally toggle draft_mode), submit a
         new job, and append the resulting state to history.
 
-        `overrides` is a partial dict; values are merged into the rendering's
-        current overrides. Pass {node_id: None} to drop a node's overrides
-        entirely; pass {node_id: {param: None}} to reset a single param.
+        Cancels the project's currently-active job before submitting the new
+        one so an in-flight pipeline that's about to be superseded by fresh
+        edits doesn't waste cycles. The cancelled job lands in history with
+        status 'interrupted'; the user can resume it by re-submitting its
+        overrides.
 
-        `force=True` bypasses the cache for this submission (debug rerun).
-        Reruns with `force=True` and no param changes still append a history
-        entry so the run is visible in the timeline.
-
-        Cancels the rendering's currently-active job before submitting the
-        new one: an in-flight pipeline that's about to be superseded by
-        fresh edits is wasted work, so we tell it to wind up cooperatively.
-        The cancelled job lands in history with status 'interrupted' and
-        the user can resume it later by re-submitting its overrides.
-
-        Raises RenderingNotFound if the id is unknown.
+        Raises ProjectNotFound if the id is unknown.
         """
         with self._lock:
-            rendering = self._records.get(rendering_id)
-        if rendering is None:
-            raise RenderingNotFound(rendering_id)
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
 
-        prev_overrides = rendering.current_overrides()
+        prev_overrides = project.current_overrides()
         new_overrides = (
             _deep_merge_overrides(prev_overrides, overrides)
             if overrides is not None
@@ -333,20 +316,14 @@ class RenderingManager:
         )
 
         if draft_mode is not None:
-            rendering.draft_mode = draft_mode
+            project.draft_mode = draft_mode
 
-        # Drop the prior active job before queuing a new one. Cooperative
-        # cancellation: the worker drains the cancel into 'interrupted'
-        # status; we don't block here.
-        prev_job_id = rendering.current_entry().job_id
+        prev_job_id = project.current_entry().job_id
         self._jobs.cancel(prev_job_id)
 
-        # Submit a fresh job. Even if overrides == prev_overrides AND not
-        # forced, we still go through the submit path so the timeline records
-        # an explicit user action; the cache will short-circuit it.
-        job_id = self._submit_with_overrides(rendering, new_overrides, force=force)
+        job_id = self._submit_with_overrides(project, new_overrides, force=force)
 
-        next_seq = max((h.seq for h in rendering.history), default=-1) + 1
+        next_seq = max((h.seq for h in project.history), default=-1) + 1
         derived_label = label
         if derived_label is None:
             if force and new_overrides == prev_overrides:
@@ -361,117 +338,110 @@ class RenderingManager:
             label=derived_label,
             created_at=_now(),
         )
-        rendering.history.append(entry)
-        rendering.current_seq = next_seq
-        rendering.updated_at = _now()
+        project.history.append(entry)
+        project.current_seq = next_seq
+        project.updated_at = _now()
 
-        self._persist_rendering(rendering, kind="update")
-        self._persist_history_entry(rendering_id, entry)
+        self._persist_project(project, kind="update")
+        self._persist_history_entry(project_id, entry)
         log.info(
-            "rendering patched: %s seq=%d job=%s label=%r",
-            rendering_id, next_seq, job_id, derived_label,
+            "project patched: %s seq=%d job=%s label=%r",
+            project_id, next_seq, job_id, derived_label,
         )
-        return rendering
+        return project
 
-    def forget(self, rendering_id: str) -> bool:
-        """Drop a rendering from the in-memory map. Used by the API after
-        the storage layer has already deleted the DB row + cache entries.
-        Returns True if the id was known."""
+    def forget(self, project_id: str) -> bool:
+        """Drop a project from the in-memory map. Used by the API after the
+        storage layer has already deleted the DB row + cache entries."""
         with self._lock:
-            return self._records.pop(rendering_id, None) is not None
+            return self._records.pop(project_id, None) is not None
 
-    def revert(self, rendering_id: str, seq: int) -> Rendering:
+    def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.
-
-        Subsequent edits append at the tail; intermediate entries between
-        `seq` and the prior tail remain in the DB but become unreachable
-        through normal undo/redo. We keep them for future "branch" support.
         """
         with self._lock:
-            rendering = self._records.get(rendering_id)
-        if rendering is None:
-            raise RenderingNotFound(rendering_id)
-        seqs = {h.seq for h in rendering.history}
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+        seqs = {h.seq for h in project.history}
         if seq not in seqs:
-            raise ValueError(f"rendering {rendering_id} has no history seq {seq}")
-        rendering.current_seq = seq
-        rendering.updated_at = _now()
-        self._persist_rendering(rendering, kind="update")
-        log.info("rendering reverted: %s -> seq %d", rendering_id, seq)
-        return rendering
+            raise ValueError(f"project {project_id} has no history seq {seq}")
+        project.current_seq = seq
+        project.updated_at = _now()
+        self._persist_project(project, kind="update")
+        log.info("project reverted: %s -> seq %d", project_id, seq)
+        return project
 
     # -- internals ---------------------------------------------------------
 
     def _submit_with_overrides(
         self,
-        rendering: Rendering,
+        project: Project,
         overrides: dict[str, dict[str, Any]],
         *,
         force: bool = False,
     ) -> str:
-        """Build a Job from the rendering's base_job + given overrides, submit
-        it via JobManager, and return the new job id."""
-        job = rendering.base_job.model_copy(
+        job = project.base_job.model_copy(
             update={"param_overrides": overrides}
         )
-        return self._jobs.submit(rendering.template, job, force=force)
+        return self._jobs.submit(project.template, job, force=force)
 
     def _conn(self) -> sqlite3.Connection:
         return open_catalog_db(self._db_path)
 
-    def _persist_rendering(self, rendering: Rendering, *, kind: str) -> None:
+    def _persist_project(self, project: Project, *, kind: str) -> None:
         try:
             conn = self._conn()
         except Exception:
-            log.exception("could not open catalog DB for rendering persistence")
+            log.exception("could not open catalog DB for project persistence")
             return
         try:
             with conn:
                 if kind == "insert":
                     conn.execute(
                         """
-                        INSERT INTO renderings
+                        INSERT INTO projects
                         (id, name, template_id, template_version, template_json,
                          base_job_json, current_seq, draft_mode, source_session_ids,
                          created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            rendering.id,
-                            rendering.name,
-                            rendering.template.id,
-                            rendering.template.version,
-                            json.dumps(rendering.template.model_dump(mode="json")),
-                            json.dumps(rendering.base_job.model_dump(mode="json")),
-                            rendering.current_seq,
-                            int(rendering.draft_mode),
-                            json.dumps(rendering.source_session_ids),
-                            rendering.created_at,
-                            rendering.updated_at,
+                            project.id,
+                            project.name,
+                            project.template.id,
+                            project.template.version,
+                            json.dumps(project.template.model_dump(mode="json")),
+                            json.dumps(project.base_job.model_dump(mode="json")),
+                            project.current_seq,
+                            int(project.draft_mode),
+                            json.dumps(project.source_session_ids),
+                            project.created_at,
+                            project.updated_at,
                         ),
                     )
                 else:
                     conn.execute(
                         """
-                        UPDATE renderings
+                        UPDATE projects
                         SET name=?, current_seq=?, draft_mode=?, updated_at=?
                         WHERE id=?
                         """,
                         (
-                            rendering.name,
-                            rendering.current_seq,
-                            int(rendering.draft_mode),
-                            rendering.updated_at,
-                            rendering.id,
+                            project.name,
+                            project.current_seq,
+                            int(project.draft_mode),
+                            project.updated_at,
+                            project.id,
                         ),
                     )
         except sqlite3.Error:
-            log.exception("DB write failed for rendering %s", rendering.id)
+            log.exception("DB write failed for project %s", project.id)
         finally:
             conn.close()
 
-    def _persist_history_entry(self, rendering_id: str, entry: HistoryEntry) -> None:
+    def _persist_history_entry(self, project_id: str, entry: HistoryEntry) -> None:
         try:
             conn = self._conn()
         except Exception:
@@ -480,12 +450,12 @@ class RenderingManager:
             with conn:
                 conn.execute(
                     """
-                    INSERT INTO rendering_history
-                    (rendering_id, seq, job_id, overrides_json, label, created_at)
+                    INSERT INTO project_history
+                    (project_id, seq, job_id, overrides_json, label, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        rendering_id,
+                        project_id,
                         entry.seq,
                         entry.job_id,
                         json.dumps(entry.overrides),
@@ -494,17 +464,17 @@ class RenderingManager:
                     ),
                 )
         except sqlite3.Error:
-            log.exception("DB write failed for history on rendering %s", rendering_id)
+            log.exception("DB write failed for history on project %s", project_id)
         finally:
             conn.close()
 
-    def _row_to_rendering(
+    def _row_to_project(
         self, conn: sqlite3.Connection, row: sqlite3.Row
-    ) -> Rendering:
+    ) -> Project:
         template = Template.model_validate(json.loads(row["template_json"]))
         base_job = Job.model_validate(json.loads(row["base_job_json"]))
         sessions: list[str] = json.loads(row["source_session_ids"])
-        rendering = Rendering(
+        project = Project(
             id=row["id"],
             name=row["name"],
             template=template,
@@ -516,11 +486,11 @@ class RenderingManager:
             updated_at=row["updated_at"],
         )
         history_rows = conn.execute(
-            "SELECT * FROM rendering_history WHERE rendering_id = ? ORDER BY seq ASC",
+            "SELECT * FROM project_history WHERE project_id = ? ORDER BY seq ASC",
             (row["id"],),
         ).fetchall()
         for hr in history_rows:
-            rendering.history.append(
+            project.history.append(
                 HistoryEntry(
                     seq=hr["seq"],
                     job_id=hr["job_id"],
@@ -529,4 +499,4 @@ class RenderingManager:
                     created_at=hr["created_at"],
                 )
             )
-        return rendering
+        return project

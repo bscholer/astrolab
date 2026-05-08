@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -253,6 +253,20 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "INSERT INTO schema_version (version) VALUES (5)",
+    ],
+    6: [
+        # Rename: renderings -> projects, rendering_history -> project_history.
+        # SQLite 3.26+ updates FK references during ALTER TABLE RENAME, so
+        # the ON DELETE CASCADE link survives the rename. Indexes need to
+        # be dropped + recreated; ALTER doesn't touch them.
+        "DROP INDEX IF EXISTS idx_renderings_updated",
+        "DROP INDEX IF EXISTS idx_rh_rendering",
+        "ALTER TABLE renderings RENAME TO projects",
+        "ALTER TABLE rendering_history RENAME TO project_history",
+        "ALTER TABLE project_history RENAME COLUMN rendering_id TO project_id",
+        "CREATE INDEX idx_projects_updated ON projects(updated_at DESC)",
+        "CREATE INDEX idx_ph_project ON project_history(project_id, seq)",
+        "INSERT INTO schema_version (version) VALUES (6)",
     ],
 }
 

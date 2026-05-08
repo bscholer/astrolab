@@ -215,7 +215,7 @@ export interface CalibrationSpec {
   master_ids?: Record<string, number>;
 }
 
-// PATCH semantics for the rendering endpoint: a value of null in the
+// PATCH semantics for the project endpoint: a value of null in the
 // overrides map clears the corresponding key (per-node or per-param).
 export type OverrideValue = unknown;
 
@@ -225,11 +225,11 @@ export interface SubmitFromSessionRequest {
   calibration?: CalibrationSpec;
 }
 
-// ----- renderings --------------------------------------------------------
+// ----- projects ----------------------------------------------------------
 
 export type CostClass = 'cheap' | 'medium' | 'expensive';
 
-export interface RenderingHistoryEntry {
+export interface ProjectHistoryEntry {
   seq: number;
   job_id: string;
   overrides: Record<string, Record<string, unknown>>;
@@ -237,7 +237,7 @@ export interface RenderingHistoryEntry {
   created_at: string;
 }
 
-export interface Rendering {
+export interface Project {
   id: string;
   name: string;
   template_id: string;
@@ -247,21 +247,21 @@ export interface Rendering {
   current_seq: number;
   draft_mode: boolean;
   source_session_ids: string[];
-  history: RenderingHistoryEntry[];
+  history: ProjectHistoryEntry[];
   current_job_id: string;
   current_overrides: Record<string, Record<string, unknown>>;
   created_at: string;
   updated_at: string;
 }
 
-export interface CreateRenderingFromSessionRequest {
+export interface CreateProjectFromSessionRequest {
   session_id: number;
   template_id: string;
   name?: string;
   calibration?: CalibrationSpec;
 }
 
-export interface PatchRenderingRequest {
+export interface PatchProjectRequest {
   overrides?: Record<string, Record<string, unknown> | null> | null;
   draft_mode?: boolean;
   label?: string;
@@ -325,7 +325,7 @@ export interface TemplateSchema {
 // ----- storage -----------------------------------------------------------
 
 export interface ProjectStorage {
-  rendering_id: string;
+  project_id: string;
   name: string;
   updated_at: string;
   owned_bytes: number;
@@ -377,21 +377,21 @@ export const api = {
     postJSON<{ job_id: string }>('/api/jobs/from_session', req),
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
-  listRenderings: () => getJSON<Rendering[]>('/api/renderings'),
-  getRendering: (id: string) => getJSON<Rendering>(`/api/renderings/${id}`),
-  createRenderingFromSession: (req: CreateRenderingFromSessionRequest) =>
-    postJSON<Rendering>('/api/renderings/from_session', req),
-  patchRendering: (id: string, req: PatchRenderingRequest) =>
-    patchJSON<Rendering>(`/api/renderings/${id}`, req),
-  revertRendering: (id: string, seq: number) =>
-    postJSON<Rendering>(`/api/renderings/${id}/revert/${seq}`, {}),
-  deleteRendering: (id: string) =>
+  listProjects: () => getJSON<Project[]>('/api/projects'),
+  getProject: (id: string) => getJSON<Project>(`/api/projects/${id}`),
+  createProjectFromSession: (req: CreateProjectFromSessionRequest) =>
+    postJSON<Project>('/api/projects/from_session', req),
+  patchProject: (id: string, req: PatchProjectRequest) =>
+    patchJSON<Project>(`/api/projects/${id}`, req),
+  revertProject: (id: string, seq: number) =>
+    postJSON<Project>(`/api/projects/${id}/revert/${seq}`, {}),
+  deleteProject: (id: string) =>
     deleteJSON<{ evicted_count: number; bytes_freed: number }>(
-      `/api/renderings/${id}`
+      `/api/projects/${id}`
     ),
-  purgeRenderingCache: (id: string, keepOutputs = false) =>
+  purgeProjectCache: (id: string, keepOutputs = false) =>
     deleteJSON<{ evicted_count: number; bytes_freed: number }>(
-      `/api/renderings/${id}/cache?keep_outputs=${keepOutputs}`
+      `/api/projects/${id}/cache?keep_outputs=${keepOutputs}`
     ),
   getStorage: () => getJSON<StorageSnapshot>('/api/storage'),
   storageCleanup: (max_bytes?: number) =>

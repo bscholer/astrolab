@@ -88,7 +88,7 @@
 </script>
 
 <div class="header">
-  <a href="/renderings" class="back">← renderings</a>
+  <a href="/projects" class="back">← projects</a>
   <h1>Settings</h1>
 </div>
 

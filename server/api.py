@@ -12,6 +12,18 @@ Endpoints:
 - GET  /api/jobs/{id}                    job detail (status, outputs, error)
 - GET  /api/jobs/{id}/events             buffered events as JSON list
 - WS   /api/jobs/{id}/events             live event stream (after replay)
+- POST /api/projects                     create a project from Template+Job
+- POST /api/projects/from_session        create a project from a catalog session
+- GET  /api/projects                     list projects (newest first)
+- GET  /api/projects/{id}                project detail (state + history)
+- PATCH /api/projects/{id}               apply param overrides / draft toggle
+- POST /api/projects/{id}/revert/{seq}   move history pointer
+- DELETE /api/projects/{id}              delete project + owned cache
+- DELETE /api/projects/{id}/cache        purge owned cache (keep_outputs?)
+- GET  /api/storage                      cache size + per-project breakdown
+- POST /api/storage/cleanup              run eviction sweep
+- GET  /api/settings                     read system settings
+- PATCH /api/settings                    update settings (cache_max_bytes)
 
 Phase 2 keeps job state in memory; persistence + worker scaling come later.
 """
@@ -46,14 +58,14 @@ from server.job_builder import (
 from server.jobs import JobManager
 from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_preview
+from server.projects import ProjectManager, ProjectNotFound
 from server.registry import lookup as registry_lookup
-from server.renderings import RenderingManager, RenderingNotFound
 from server.storage import (
     DEFAULT_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
-    delete_rendering,
+    delete_project,
     get_setting,
-    purge_rendering_cache,
+    purge_project_cache,
     run_cleanup,
     set_setting,
     system_storage,
@@ -63,7 +75,7 @@ from server.templates import TemplateNotFound, list_templates, load_template
 log = logging.getLogger("astrolab.api")
 
 job_manager = JobManager()
-rendering_manager = RenderingManager(job_manager)
+project_manager = ProjectManager(job_manager)
 
 
 from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
@@ -71,16 +83,16 @@ from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    # Pull persisted jobs and renderings into memory so the UI lists them
+    # Pull persisted jobs and projects into memory so the UI lists them
     # and detail pages can replay events even after a server restart.
     try:
         job_manager.rehydrate()
     except Exception:  # pragma: no cover  (defensive: server starts even if DB is wedged)
         log.exception("job rehydrate failed; continuing with empty state")
     try:
-        rendering_manager.rehydrate()
+        project_manager.rehydrate()
     except Exception:  # pragma: no cover
-        log.exception("rendering rehydrate failed; continuing with empty state")
+        log.exception("project rehydrate failed; continuing with empty state")
     yield
     job_manager.shutdown(wait=False)
 
@@ -578,15 +590,15 @@ async def stream_job_events(ws: WebSocket, job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Renderings
+# Projects
 # ---------------------------------------------------------------------------
 
 
-class CreateRenderingRequest(BaseModel):
-    """Generic 'rendering from an explicit Template + Job' creator.
+class CreateProjectRequest(BaseModel):
+    """Generic 'project from an explicit Template + Job' creator.
 
     Mirrors POST /api/jobs; used by smoke scripts and tests that don't want
-    to go through the catalog. Production UI uses /api/renderings/from_session.
+    to go through the catalog. Production UI uses /api/projects/from_session.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -596,7 +608,7 @@ class CreateRenderingRequest(BaseModel):
     source_session_ids: list[str] = []
 
 
-class CreateRenderingFromSessionRequest(BaseModel):
+class CreateProjectFromSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session_id: int
     template_id: str
@@ -605,25 +617,18 @@ class CreateRenderingFromSessionRequest(BaseModel):
     calibration: CalibrationSpec | None = None
 
 
-@app.post("/api/renderings")
-def create_rendering(req: CreateRenderingRequest) -> dict:
-    rendering = rendering_manager.create(
+@app.post("/api/projects")
+def create_project(req: CreateProjectRequest) -> dict:
+    project = project_manager.create(
         name=req.name,
         template=req.template,
         base_job=req.job,
         source_session_ids=req.source_session_ids,
     )
-    return rendering.to_public_dict()
+    return project.to_public_dict()
 
 
-class RenderingResponse(BaseModel):
-    """Loose passthrough so we don't have to re-spec the whole DTO here. The
-    rendering manager produces a stable shape via to_public_dict()."""
-
-    model_config = ConfigDict(extra="allow")
-
-
-class PatchRenderingRequest(BaseModel):
+class PatchProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     overrides: dict[str, dict[str, Any] | None] | None = None
     """Partial overrides keyed by node_id. Pass {node_id: None} to clear a
@@ -636,31 +641,31 @@ class PatchRenderingRequest(BaseModel):
     """Bypass the cache for this submission (debug rerun)."""
 
 
-@app.post("/api/renderings/from_session")
-def create_rendering_from_session(
-    req: CreateRenderingFromSessionRequest, conn: DBDep
+@app.post("/api/projects/from_session")
+def create_project_from_session(
+    req: CreateProjectFromSessionRequest, conn: DBDep
 ) -> dict:
-    """Create a Rendering from a catalog session and submit its initial job."""
+    """Create a Project from a catalog session and submit its initial job."""
     try:
         template = load_template(req.template_id)
     except TemplateNotFound as exc:
-        log.warning("rendering create rejected: unknown template %r", req.template_id)
+        log.warning("project create rejected: unknown template %r", req.template_id)
         raise HTTPException(status_code=404, detail=f"template {exc} not found") from exc
     try:
         job = build_from_session(conn, req.session_id, template, req.calibration)
     except SessionNotFound as exc:
-        log.warning("rendering create rejected (session=%s): %s", req.session_id, exc)
+        log.warning("project create rejected (session=%s): %s", req.session_id, exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (CalibrationMissing, TooFewFrames) as exc:
-        log.warning("rendering create rejected (session=%s): %s", req.session_id, exc)
+        log.warning("project create rejected (session=%s): %s", req.session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except JobBuildError as exc:
-        log.warning("rendering create rejected (session=%s): %s", req.session_id, exc)
+        log.warning("project create rejected (session=%s): %s", req.session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     name = req.name
     if not name:
-        # Default to the session's target name so the rendering shows up in
+        # Default to the session's target name so the project shows up in
         # the list with a meaningful title.
         row = conn.execute(
             "SELECT t.name FROM sessions s LEFT JOIN targets t ON t.id = s.target_id "
@@ -669,103 +674,102 @@ def create_rendering_from_session(
         ).fetchone()
         name = (row["name"] if row and row["name"] else f"session {req.session_id}")
 
-    rendering = rendering_manager.create(
+    project = project_manager.create(
         name=name,
         template=template,
         base_job=job,
         source_session_ids=[str(req.session_id)],
     )
-    return rendering.to_public_dict()
+    return project.to_public_dict()
 
 
-@app.get("/api/renderings")
-def list_renderings() -> list[dict]:
-    out = [r.to_public_dict() for r in rendering_manager.list()]
-    out.sort(key=lambda r: r["updated_at"], reverse=True)
+@app.get("/api/projects")
+def list_projects() -> list[dict]:
+    out = [p.to_public_dict() for p in project_manager.list()]
+    out.sort(key=lambda p: p["updated_at"], reverse=True)
     return out
 
 
-@app.get("/api/renderings/{rendering_id}")
-def get_rendering(rendering_id: str) -> dict:
-    rendering = rendering_manager.get(rendering_id)
-    if rendering is None:
-        raise HTTPException(status_code=404, detail=f"rendering {rendering_id} not found")
-    return rendering.to_public_dict()
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str) -> dict:
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    return project.to_public_dict()
 
 
-@app.patch("/api/renderings/{rendering_id}")
-def patch_rendering(rendering_id: str, req: PatchRenderingRequest) -> dict:
+@app.patch("/api/projects/{project_id}")
+def patch_project(project_id: str, req: PatchProjectRequest) -> dict:
     """Apply param overrides (and optionally toggle draft_mode), submit a new
-    job, and append a history entry. Returns the updated rendering."""
+    job, and append a history entry. Returns the updated project."""
     try:
-        rendering = rendering_manager.patch(
-            rendering_id,
+        project = project_manager.patch(
+            project_id,
             overrides=req.overrides,
             draft_mode=req.draft_mode,
             label=req.label,
             force=req.force,
         )
-    except RenderingNotFound as exc:
+    except ProjectNotFound as exc:
         raise HTTPException(
-            status_code=404, detail=f"rendering {rendering_id} not found"
+            status_code=404, detail=f"project {project_id} not found"
         ) from exc
-    return rendering.to_public_dict()
+    return project.to_public_dict()
 
 
-@app.post("/api/renderings/{rendering_id}/revert/{seq}")
-def revert_rendering(rendering_id: str, seq: int) -> dict:
+@app.post("/api/projects/{project_id}/revert/{seq}")
+def revert_project(project_id: str, seq: int) -> dict:
     """Move the current pointer to history seq `seq`. No new job; the prior
     history entry's job_id is what the UI displays."""
     try:
-        rendering = rendering_manager.revert(rendering_id, seq)
-    except RenderingNotFound as exc:
+        project = project_manager.revert(project_id, seq)
+    except ProjectNotFound as exc:
         raise HTTPException(
-            status_code=404, detail=f"rendering {rendering_id} not found"
+            status_code=404, detail=f"project {project_id} not found"
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return rendering.to_public_dict()
+    return project.to_public_dict()
 
 
-@app.delete("/api/renderings/{rendering_id}")
-def delete_rendering_endpoint(rendering_id: str) -> dict:
-    """Remove a rendering and any cache entries it owns alone. Shared
-    entries are left in place — purging them would invalidate other
-    projects."""
-    if rendering_manager.get(rendering_id) is None:
+@app.delete("/api/projects/{project_id}")
+def delete_project_endpoint(project_id: str) -> dict:
+    """Remove a project and any cache entries it owns alone. Shared entries
+    are left in place — purging them would invalidate other projects."""
+    if project_manager.get(project_id) is None:
         raise HTTPException(
-            status_code=404, detail=f"rendering {rendering_id} not found"
+            status_code=404, detail=f"project {project_id} not found"
         )
     # Cancel any in-flight job before pulling state out from under it.
-    rec = rendering_manager.get(rendering_id)
+    rec = project_manager.get(project_id)
     if rec is not None:
         for entry in rec.history:
             job_manager.cancel(entry.job_id)
-    evicted, freed = delete_rendering(
-        rendering_id, job_manager.cache, db_path=job_manager.db_path
+    evicted, freed = delete_project(
+        project_id, job_manager.cache, db_path=job_manager.db_path
     )
-    rendering_manager.forget(rendering_id)
+    project_manager.forget(project_id)
     log.info(
-        "rendering deleted: %s evicted=%d freed=%d",
-        rendering_id, evicted, freed,
+        "project deleted: %s evicted=%d freed=%d",
+        project_id, evicted, freed,
     )
     return {"evicted_count": evicted, "bytes_freed": freed}
 
 
-@app.delete("/api/renderings/{rendering_id}/cache")
-def purge_rendering_cache_endpoint(
-    rendering_id: str, keep_outputs: bool = False
+@app.delete("/api/projects/{project_id}/cache")
+def purge_project_cache_endpoint(
+    project_id: str, keep_outputs: bool = False
 ) -> dict:
-    """Evict the rendering's owned cache entries without deleting the
-    rendering itself. With keep_outputs=true, terminal-output hashes
+    """Evict the project's owned cache entries without deleting the
+    project itself. With keep_outputs=true, terminal-output hashes
     survive (the user keeps the saved final image, loses the
     intermediates)."""
-    if rendering_manager.get(rendering_id) is None:
+    if project_manager.get(project_id) is None:
         raise HTTPException(
-            status_code=404, detail=f"rendering {rendering_id} not found"
+            status_code=404, detail=f"project {project_id} not found"
         )
-    evicted, freed = purge_rendering_cache(
-        job_manager.cache, rendering_id,
+    evicted, freed = purge_project_cache(
+        job_manager.cache, project_id,
         keep_outputs=keep_outputs, db_path=job_manager.db_path,
     )
     return {"evicted_count": evicted, "bytes_freed": freed}
@@ -789,7 +793,7 @@ def get_storage() -> dict:
         "cache_root": snap.cache_root,
         "per_project": [
             {
-                "rendering_id": p.rendering_id,
+                "project_id": p.project_id,
                 "name": p.name,
                 "updated_at": p.updated_at,
                 "owned_bytes": p.owned_bytes,

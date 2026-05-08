@@ -12,7 +12,7 @@
     <a href="/" class="logo">astrolab</a>
     <nav class="row nav">
       <a href="/">Library</a>
-      <a href="/renderings">Renderings</a>
+      <a href="/projects">Projects</a>
       <a href="/settings">Settings</a>
       <a href="/jobs" class="dim">Jobs</a>
     </nav>

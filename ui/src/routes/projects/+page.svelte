@@ -1,32 +1,32 @@
 <!--
-  Rendering list with storage management built in.
+  Project list with storage management built in.
 
   Per-row affordances:
     - "Free intermediates" — drops the heavy mid-pipeline cache while
       keeping the saved final image so the UI still has a thumbnail.
-    - Trash — deletes the rendering AND its owned cache entries. Shared
+    - Trash — deletes the project AND its owned cache entries. Shared
       entries (used by other projects) stay on disk.
 
   Header pill shows total cache + a "Run cleanup" link to /settings for
   the system-wide budget knobs.
 -->
 <script lang="ts">
-  import { api, type Rendering, type StorageSnapshot } from '$lib/api';
+  import { api, type Project, type StorageSnapshot } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import { formatBytes, shortAgo } from '$lib/format';
 
-  let renderings = $state<Rendering[] | null>(null);
+  let projects = $state<Project[] | null>(null);
   let storage = $state<StorageSnapshot | null>(null);
   let busyId = $state<string | null>(null);
 
   async function loadAll() {
     try {
-      [renderings, storage] = await Promise.all([
-        api.listRenderings(),
+      [projects, storage] = await Promise.all([
+        api.listProjects(),
         api.getStorage(),
       ]);
     } catch (e) {
-      toast.error(`Couldn't load renderings: ${(e as Error).message}`);
+      toast.error(`Couldn't load projects: ${(e as Error).message}`);
     }
   }
 
@@ -34,14 +34,14 @@
     loadAll();
   });
 
-  // Map rendering id -> storage row so each render row can pull its own
+  // Map project id -> storage row so each render row can pull its own
   // owned/shared bytes without scanning per render.
   const storageById = $derived.by(() => {
     if (!storage) return new Map<string, StorageSnapshot['per_project'][number]>();
-    return new Map(storage.per_project.map((p) => [p.rendering_id, p]));
+    return new Map(storage.per_project.map((p) => [p.project_id, p]));
   });
 
-  async function freeIntermediates(r: Rendering) {
+  async function freeIntermediates(r: Project) {
     const ok = confirm(
       `Free intermediates for "${r.name}"? The saved final image stays; ` +
         'cached upstream stages will need to be recomputed if you tweak.'
@@ -49,7 +49,7 @@
     if (!ok) return;
     busyId = r.id;
     try {
-      const result = await api.purgeRenderingCache(r.id, true);
+      const result = await api.purgeProjectCache(r.id, true);
       toast.success(
         `Freed ${formatBytes(result.bytes_freed)} (${result.evicted_count} entries)`
       );
@@ -61,7 +61,7 @@
     }
   }
 
-  async function deleteRendering(r: Rendering) {
+  async function deleteProject(r: Project) {
     const owned = storageById.get(r.id)?.owned_bytes ?? 0;
     const ok = confirm(
       `Delete "${r.name}"? This drops the project and frees ` +
@@ -70,7 +70,7 @@
     if (!ok) return;
     busyId = r.id;
     try {
-      const result = await api.deleteRendering(r.id);
+      const result = await api.deleteProject(r.id);
       toast.success(
         `Deleted "${r.name}" — freed ${formatBytes(result.bytes_freed)}`
       );
@@ -85,7 +85,7 @@
 
 <div class="header">
   <a href="/" class="back">← library</a>
-  <h1>Renderings</h1>
+  <h1>Projects</h1>
   {#if storage}
     <a href="/settings" class="storage-pill" title="Open storage settings">
       cache {formatBytes(storage.total_bytes)}
@@ -97,18 +97,18 @@
   <a href="/jobs" class="muted small debug">debug: jobs</a>
 </div>
 
-{#if renderings === null}
+{#if projects === null}
   <p class="muted">Loading…</p>
-{:else if renderings.length === 0}
+{:else if projects.length === 0}
   <p class="muted">
-    No renderings yet. Click "Run…" on a session in the library to start one.
+    No projects yet. Click "Run…" on a session in the library to start one.
   </p>
 {:else}
   <ul class="list">
-    {#each renderings as r (r.id)}
+    {#each projects as r (r.id)}
       {@const s = storageById.get(r.id)}
       <li class="row" class:busy={busyId === r.id}>
-        <a class="row-link" href="/renderings/{r.id}">
+        <a class="row-link" href="/projects/{r.id}">
           <div class="row-name">{r.name}</div>
           <div class="row-meta muted small">
             <span title={r.template_id}>{r.template_id}</span>
@@ -135,7 +135,7 @@
           <button
             type="button"
             class="action-btn danger"
-            onclick={() => deleteRendering(r)}
+            onclick={() => deleteProject(r)}
             disabled={busyId !== null}
             title="Delete project + its owned cache"
           >🗑</button>

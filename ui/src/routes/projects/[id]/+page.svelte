@@ -1,5 +1,5 @@
 <!--
-  Rendering detail page: a live, editable view of one stack pipeline.
+  Project detail page: a live, editable view of one stack pipeline.
 
   Layout (top to bottom):
     1. Header: target name, version pointer, undo/redo, reprocess.
@@ -14,7 +14,7 @@
     5. Final output (big preview).
     6. History strip with revert + Cmd-Z/Cmd-Shift-Z.
 
-  Edits debounce 350ms then PATCH the rendering. The active job is the
+  Edits debounce 350ms then PATCH the project. The active job is the
   current_seq's job_id; we tear down/rebind the WS subscription whenever
   the active job changes.
 -->
@@ -26,7 +26,7 @@
     type CostClass,
     type JobEvent,
     type JobSummary,
-    type Rendering,
+    type Project,
     type TemplateSchema
   } from '$lib/api';
   import {
@@ -37,7 +37,7 @@
   import { formatDuration, shortAgo } from '$lib/format';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
 
-  let rendering = $state<Rendering | null>(null);
+  let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
   let activeJob = $state<JobSummary | null>(null);
 
@@ -193,11 +193,11 @@
     activeJob = null;
   }
 
-  async function loadRendering(rid: string) {
+  async function loadProject(rid: string) {
     try {
-      const fresh = await api.getRendering(rid);
+      const fresh = await api.getProject(rid);
       if (rid !== id) return;
-      rendering = fresh;
+      project = fresh;
       schema = await api.getTemplateSchema(fresh.template_id);
       if (rid !== id) return;
       const initKind: Record<string, string> = {};
@@ -213,25 +213,25 @@
       );
       await attachToJob(fresh.current_job_id);
     } catch (e) {
-      toast.error(`Couldn't load rendering ${rid}: ${(e as Error).message}`);
+      toast.error(`Couldn't load project ${rid}: ${(e as Error).message}`);
     }
   }
 
   $effect(() => {
     if (!id) return;
-    rendering = null;
+    project = null;
     schema = null;
     resetPipelineState();
     detachFromJob();
-    loadRendering(id);
+    loadProject(id);
   });
 
   // While this page is mounted, widen the global container so the pipeline
   // strip + params grid actually use ultrawide real estate. Removed on
   // unmount so other pages stay at the comfortable reading width.
   $effect(() => {
-    document.body.classList.add('rendering-page');
-    return () => document.body.classList.remove('rendering-page');
+    document.body.classList.add('project-page');
+    return () => document.body.classList.remove('project-page');
   });
 
   onDestroy(() => {
@@ -252,13 +252,13 @@
 
   async function flushPatch() {
     patchTimer = null;
-    if (!rendering || !pendingOverrides) return;
+    if (!project || !pendingOverrides) return;
     const overrides = pendingOverrides;
     pendingOverrides = null;
     patching = true;
     try {
-      const next = await api.patchRendering(rendering.id, { overrides });
-      onRenderingUpdated(next);
+      const next = await api.patchProject(project.id, { overrides });
+      onProjectUpdated(next);
     } catch (e) {
       toast.error(`Couldn't apply changes: ${(e as Error).message}`);
     } finally {
@@ -266,8 +266,8 @@
     }
   }
 
-  function onRenderingUpdated(next: Rendering) {
-    rendering = next;
+  function onProjectUpdated(next: Project) {
+    project = next;
     resetPipelineState();
     if (schema) {
       nodeStatus = Object.fromEntries(
@@ -286,12 +286,12 @@
   }
 
   async function reprocess() {
-    if (!rendering) return;
+    if (!project) return;
     reprocessing = true;
     try {
-      const next = await api.patchRendering(rendering.id, { force: true });
+      const next = await api.patchProject(project.id, { force: true });
       toast.info('Reprocessing — every step runs from scratch');
-      onRenderingUpdated(next);
+      onProjectUpdated(next);
     } catch (e) {
       toast.error(`Couldn't reprocess: ${(e as Error).message}`);
     } finally {
@@ -300,29 +300,29 @@
   }
 
   async function revertTo(seq: number) {
-    if (!rendering) return;
+    if (!project) return;
     try {
-      const next = await api.revertRendering(rendering.id, seq);
-      onRenderingUpdated(next);
+      const next = await api.revertProject(project.id, seq);
+      onProjectUpdated(next);
     } catch (e) {
       toast.error(`Couldn't revert: ${(e as Error).message}`);
     }
   }
 
   function onKeydown(e: KeyboardEvent) {
-    if (!rendering) return;
+    if (!project) return;
     const meta = e.metaKey || e.ctrlKey;
     if (!meta) return;
     if (e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      const prev = rendering.current_seq - 1;
-      if (prev >= 0 && rendering.history.some((h) => h.seq === prev)) {
+      const prev = project.current_seq - 1;
+      if (prev >= 0 && project.history.some((h) => h.seq === prev)) {
         revertTo(prev);
       }
     } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
       e.preventDefault();
-      const next = rendering.current_seq + 1;
-      if (rendering.history.some((h) => h.seq === next)) {
+      const next = project.current_seq + 1;
+      if (project.history.some((h) => h.seq === next)) {
         revertTo(next);
       }
     }
@@ -336,10 +336,10 @@
   });
 
   const undoDisabled = $derived(
-    !rendering || !rendering.history.some((h) => h.seq === (rendering!.current_seq - 1))
+    !project || !project.history.some((h) => h.seq === (project!.current_seq - 1))
   );
   const redoDisabled = $derived(
-    !rendering || !rendering.history.some((h) => h.seq === (rendering!.current_seq + 1))
+    !project || !project.history.some((h) => h.seq === (project!.current_seq + 1))
   );
 
   function shortHistoryLabel(label: string | null): string {
@@ -359,25 +359,25 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="rendering-root">
+<div class="project-root">
   <div class="header">
     <a href="/" class="back">← library</a>
-    {#if rendering}
-      <h1>{rendering.name}</h1>
+    {#if project}
+      <h1>{project.name}</h1>
       <span class="version muted small">
-        v{rendering.current_seq + 1} of {rendering.history.length}
+        v{project.current_seq + 1} of {project.history.length}
       </span>
       <button
         type="button"
         class="hbtn"
-        onclick={() => revertTo(rendering!.current_seq - 1)}
+        onclick={() => revertTo(project!.current_seq - 1)}
         disabled={undoDisabled}
         title="Undo (Cmd-Z)"
       >↶ Undo</button>
       <button
         type="button"
         class="hbtn"
-        onclick={() => revertTo(rendering!.current_seq + 1)}
+        onclick={() => revertTo(project!.current_seq + 1)}
         disabled={redoDisabled}
         title="Redo (Cmd-Shift-Z)"
       >↷ Redo</button>
@@ -393,7 +393,7 @@
     {/if}
   </div>
 
-  {#if rendering === null}
+  {#if project === null}
     <p class="muted">Loading…</p>
   {:else}
     <p class="capture-line muted small">
@@ -405,7 +405,7 @@
         {/if}
       {/if}
       <span aria-hidden="true">·</span>
-      <span title={rendering.created_at}>created {shortAgo(rendering.created_at)}</span>
+      <span title={project.created_at}>created {shortAgo(project.created_at)}</span>
       {#if activeJob?.started_at}
         <span aria-hidden="true">·</span>
         <span>{formatDuration(activeJob.started_at, activeJob.finished_at)}</span>
@@ -467,14 +467,14 @@
     {/if}
 
     <!-- Parameters grid: one card per node, form always visible. -->
-    {#if schema && rendering}
+    {#if schema && project}
       <section class="params-section">
         <h2 class="section-h">Parameters</h2>
         <div class="params-grid">
           {#each schema.nodes as nschema (nschema.node_id)}
             {@const nid = nschema.node_id}
-            {@const closureCost = blastRadiusCost(rendering.template, nid, costByNode)}
-            {@const overrides = (rendering.current_overrides[nid] as Record<string, unknown>) ?? {}}
+            {@const closureCost = blastRadiusCost(project.template, nid, costByNode)}
+            {@const overrides = (project.current_overrides[nid] as Record<string, unknown>) ?? {}}
             {@const props = nschema.schema.properties ?? {}}
             <article class="param-card">
               <header class="param-card-head">
@@ -530,10 +530,10 @@
     {/if}
 
     <section class="history">
-      <h2 class="section-h">History <span class="muted small">({rendering.history.length})</span></h2>
+      <h2 class="section-h">History <span class="muted small">({project.history.length})</span></h2>
       <ol class="history-strip">
-        {#each rendering.history as h (h.seq)}
-          <li class="hist-entry" class:active={h.seq === rendering.current_seq}>
+        {#each project.history as h (h.seq)}
+          <li class="hist-entry" class:active={h.seq === project.current_seq}>
             <button type="button" onclick={() => revertTo(h.seq)} title={h.label ?? ''}>
               <span class="hist-seq muted">v{h.seq + 1}</span>
               <span class="hist-label">{shortHistoryLabel(h.label)}</span>
@@ -547,7 +547,7 @@
 </div>
 
 <style>
-  .rendering-root {
+  .project-root {
     display: contents;
   }
 
