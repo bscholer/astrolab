@@ -46,6 +46,7 @@ class StretchParams(BaseModel):
         "the same curve, preserving color. -unlinked stretches each channel "
         "independently which often gives a flatter, more 'auto' look but can "
         "wash out color casts you'd want to keep. Default linked.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     shadows_clip: float = Field(
         default=-2.8,
@@ -112,6 +113,7 @@ class StretchParams(BaseModel):
         description="(asinh only) Use the human-vision-weighted variant (-human). "
         "Preserves color saturation better but can over-emphasize green channels "
         "on OSC data.",
+        json_schema_extra={"ui_section": "advanced"},
     )
 
 

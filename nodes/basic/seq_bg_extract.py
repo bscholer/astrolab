@@ -31,10 +31,12 @@ class SeqBgExtractParams(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9_]+$",
         description="Basename of the input sequence. Output is prefixed with 'bkg_'.",
+        json_schema_extra={"ui_hidden": True},
     )
     fitseq: bool = Field(
         default=True,
         description="Operate on a FITSEQ container instead of per-frame files.",
+        json_schema_extra={"ui_hidden": True},
     )
     degree: int = Field(
         default=1,

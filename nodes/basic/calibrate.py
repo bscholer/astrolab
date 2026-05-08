@@ -39,11 +39,13 @@ class CalibrateParams(BaseModel):
         description="Basename of the input sequence (matches Siril `<basename>_NNNNN.fit` "
         "or the `<basename>.fit` FITSEQ container). Output is automatically prefixed "
         "with 'pp_'.",
+        json_schema_extra={"ui_hidden": True},
     )
     fitseq: bool = Field(
         default=True,
         description="Operate on a FITSEQ container (single .fit) rather than per-frame "
         "files. Must match the upstream convert_lights setting.",
+        json_schema_extra={"ui_hidden": True},
     )
     cfa: bool = Field(
         default=True,
@@ -51,17 +53,20 @@ class CalibrateParams(BaseModel):
         "Bayer pattern. On by default — this is the right behavior for any sensor "
         "with BAYERPAT in the FITS header (Dwarf 3, Seestar, ZWO OSC). Flip off "
         "only for mono cameras or already-debayered inputs.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     cosmetic: bool = Field(
         default=True,
         description="Pass -cc=dark to apply hot/cold pixel correction from the dark. "
         "Cheap and almost always wanted.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     equalize_cfa: bool = Field(
         default=True,
         description="Pass -equalize_cfa when calibrating CFA flats; equalizes the two "
         "G channels of the Bayer pattern so post-debayer colors are balanced. Only "
         "meaningful with cfa=True; on by default for the OSC pipeline.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     debayer: bool = Field(
         default=True,
@@ -69,6 +74,7 @@ class CalibrateParams(BaseModel):
         "OSC sensors (Dwarf 3): registration applies sub-pixel shifts that scramble "
         "the Bayer pattern, so we must debayer here before register/stack. Turn off "
         "only for mono cameras or pure-CFA workflows.",
+        json_schema_extra={"ui_section": "advanced"},
     )
 
 

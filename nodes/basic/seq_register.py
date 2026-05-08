@@ -40,10 +40,12 @@ class SeqRegisterParams(BaseModel):
         description="Basename of the input sequence. Output is prefixed with 'r_'. "
         "Default 'bkg_pp_light' assumes the canned pipeline order: convert -> "
         "calibrate -> bg_extract -> register.",
+        json_schema_extra={"ui_hidden": True},
     )
     fitseq: bool = Field(
         default=True,
         description="Operate on a FITSEQ container instead of per-frame files.",
+        json_schema_extra={"ui_hidden": True},
     )
     method: str = Field(
         default="platesolve",
@@ -59,22 +61,26 @@ class SeqRegisterParams(BaseModel):
         description="Pass -disto=ps_distortion to seqplatesolve so optical "
         "distortion is modeled when reprojecting. Almost always wanted on "
         "wide-field smart telescopes.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     # --- star method ---
     two_pass: bool = Field(
         default=True,
         description="(star method only) Pass -2pass for the refinement step.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     transform: str = Field(
         default="homography",
         pattern=r"^(homography|affine|similarity|shift)$",
         description="(star method only) Transform model.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     min_pairs: int = Field(
         default=10,
         ge=4,
         le=200,
         description="(star method only) Minimum star pairs needed.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     # --- shared seqapplyreg flags ---
     framing: str = Field(
@@ -83,6 +89,7 @@ class SeqRegisterParams(BaseModel):
         description="seqapplyreg framing: 'max' (default) keeps the union of "
         "all frame footprints, so dithered captures don't get cropped to the "
         "intersection. 'min' is the old default and crops aggressively.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     kernel: str = Field(
         default="square",
@@ -90,6 +97,7 @@ class SeqRegisterParams(BaseModel):
         description="seqapplyreg interpolation kernel. 'square' (Naztronomy "
         "default) preserves flux; 'lanczos3' is sharper but can introduce "
         "ringing on bright stars.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     filter_fwhm: float | None = Field(
         default=None, ge=0.0, le=1.0,

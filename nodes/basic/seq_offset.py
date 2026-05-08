@@ -38,10 +38,12 @@ class SeqOffsetParams(BaseModel):
         description="Basename of the input sequence. Output keeps the same "
         "basename (no prefix) — the pedestal is just baked into the pixel "
         "data, downstream nodes see the same file-naming convention.",
+        json_schema_extra={"ui_hidden": True},
     )
     fitseq: bool = Field(
         default=True,
         description="Operate on a FITSEQ container instead of per-frame files.",
+        json_schema_extra={"ui_hidden": True},
     )
     pedestal: float = Field(
         default=0.01,

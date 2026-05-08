@@ -39,6 +39,7 @@ class ConvertLightsParams(BaseModel):
         pattern=r"^[A-Za-z0-9_]+$",
         description="Output sequence basename. Siril writes <basename>_.seq + "
         "<basename>_NNNNN.fit. Keep ASCII-safe; Siril is picky about pathing.",
+        json_schema_extra={"ui_hidden": True},
     )
 
     debayer: bool = Field(
@@ -46,12 +47,14 @@ class ConvertLightsParams(BaseModel):
         description="Pass -debayer to convert. Off by default since most pipelines "
         "debayer downstream after calibration; flip on only for OSC flows that "
         "skip calibration.",
+        json_schema_extra={"ui_section": "advanced"},
     )
 
     fitseq: bool = Field(
         default=True,
         description="Emit a single FITSEQ container instead of N individual frames. "
         "Saves filesystem inodes and makes downstream cd's trivial.",
+        json_schema_extra={"ui_hidden": True},
     )
 
 

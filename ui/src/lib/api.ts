@@ -300,9 +300,12 @@ export interface JSONSchemaField {
   exclusiveMaximum?: number;
   enum?: unknown[];
   anyOf?: JSONSchemaField[];
-  // We tag float-precision via Pydantic Field(json_schema_extra=...); it
-  // surfaces here under hash_precision and is purely informational.
+  // The following keys come from Pydantic Field(json_schema_extra=...).
+  // hash_precision is informational; ui_hidden / ui_section drive the UI's
+  // form rendering (hidden = pipeline plumbing, advanced = collapsed).
   hash_precision?: number;
+  ui_hidden?: boolean;
+  ui_section?: 'basic' | 'advanced';
   [k: string]: unknown;
 }
 

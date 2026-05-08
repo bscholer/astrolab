@@ -31,8 +31,12 @@ class SeqStackParams(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9_]+$",
         description="Basename of the registered input sequence.",
+        json_schema_extra={"ui_hidden": True},
     )
-    fitseq: bool = Field(default=True)
+    fitseq: bool = Field(
+        default=True,
+        json_schema_extra={"ui_hidden": True},
+    )
     method: str = Field(
         default="rej",
         pattern=r"^(rej|mean|median|min|max|sum)$",
@@ -52,27 +56,32 @@ class SeqStackParams(BaseModel):
         pattern=r"^(w|s|p|l|m|n)$",
         description="Rejection algorithm: w=winsorized, s=sigma, p=percentile, "
         "l=linearfit, m=median, n=none.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     norm: str = Field(
         default="addscale",
         pattern=r"^(no|add|addscale|mul|mulscale)$",
         description="Normalization. 'addscale' (additive + scale) is the standard for "
         "deep-sky lights with varying transparency.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     output_norm: bool = Field(
         default=True,
         description="Pass -output_norm to clip the stacked output to [0,1].",
+        json_schema_extra={"ui_section": "advanced"},
     )
     weight_from_quality: bool = Field(
         default=False,
         description="Pass -weight=wfwhm to weight by FWHM. Cheap quality boost when "
         "frames vary in seeing; harmless to leave off.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     rgb_equal: bool = Field(
         default=True,
         description="Pass -rgb_equal so Siril rescales each channel mean to match. "
         "Fixes the pink/green color cast that OSC stacks tend to come out with; "
         "Naztronomy's smart-telescope script always sets this.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     maximize: bool = Field(
         default=True,
@@ -80,12 +89,14 @@ class SeqStackParams(BaseModel):
         "footprint instead of just the first frame's. Matters for dithered or "
         "drift-corrected sessions where edges would otherwise be cropped to the "
         "least-common rectangle.",
+        json_schema_extra={"ui_section": "advanced"},
     )
     filter_included: bool = Field(
         default=True,
         description="Pass -filter-included so frames marked excluded by upstream "
         "quality assessment (eg seqapplyreg's filter-fwhm/round) are dropped from "
         "the stack. Cheap, off only if you want to ignore prior filtering.",
+        json_schema_extra={"ui_section": "advanced"},
     )
 
 
