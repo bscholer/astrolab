@@ -122,7 +122,19 @@ def _render_fits_to_png(src: Path, dst: Path) -> None:
 def _render_via_siril(src: Path, dst: Path) -> bool:
     """Render `src` via Siril's autostretch and resize into `dst`. Returns
     False (no exception) when Siril isn't available or the run fails, so
-    the caller can fall back to the numpy path."""
+    the caller can fall back to the numpy path.
+
+    Siril's `autostretch` assumes the working buffer is in [0, 1]. Most of
+    our intermediate FITS aren't:
+      * convert outputs are uint16 raw Bayer (effective range ~[60, 4095])
+      * calibrate / register outputs are float32 centered near zero with
+        small negative tails (post-debayer, post-dark-sub)
+    Feeding those directly produces degenerate MTF params (Siril logs
+    `Applying MTF with values 0.000000, 0.000000, 1.000000`) and the
+    preview comes out all-black or all-white. We pre-normalize each input
+    to [0, 1] via robust percentile clipping into a temp FITS, then let
+    Siril autostretch that.
+    """
     try:
         binary = find_siril()
     except SirilNotFound:
@@ -131,9 +143,12 @@ def _render_via_siril(src: Path, dst: Path) -> bool:
     runtime = SirilRuntime(binary=binary)
     with tempfile.TemporaryDirectory(prefix="astrolab-preview-") as td:
         td_path = Path(td)
+        normalized = td_path / "input.fit"
+        if not _write_normalized_fits(src, normalized):
+            return False
         out_stem = td_path / "preview"
         commands = [
-            f"load {_siril_quote(src.resolve())}",
+            f"load {_siril_quote(normalized)}",
             "autostretch -linked",
             f"savepng {_siril_quote(out_stem)}",
         ]
@@ -160,6 +175,49 @@ def _render_via_siril(src: Path, dst: Path) -> bool:
         img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
         img.save(dst, "PNG", optimize=True)
     return True
+
+
+def _write_normalized_fits(src: Path, dst: Path) -> bool:
+    """Read `src`, robust-normalize the data to [0, 1], write to `dst`.
+
+    Single-pass percentile clip [0.5, 99.95] across the whole array (not
+    per-channel) so RGB cubes keep their channel relationships, then Siril
+    autostretch acts on a sane range. Returns False if the source has no
+    image data; callers fall back to the numpy renderer.
+    """
+    try:
+        with fits.open(src, memmap=False) as hdul:
+            data = hdul[0].data
+            header = hdul[0].header
+            if data is None:
+                for hdu in hdul[1:]:
+                    if hdu.data is not None:
+                        data = hdu.data
+                        header = hdu.header
+                        break
+        if data is None:
+            return False
+        arr = np.asarray(data).astype(np.float32, copy=False)
+        finite_mask = np.isfinite(arr)
+        if not finite_mask.any():
+            return False
+        finite = arr[finite_mask]
+        lo = float(np.percentile(finite, 0.5))
+        hi = float(np.percentile(finite, 99.95))
+        span = max(hi - lo, 1e-9)
+        norm = np.clip((arr - lo) / span, 0.0, 1.0).astype(np.float32)
+        norm = np.where(np.isfinite(norm), norm, 0.0).astype(np.float32)
+        # Drop BSCALE/BZERO so the normalized values aren't reinterpreted on
+        # read; everything else (BAYERPAT, NAXIS3 for cubes) we keep.
+        clean = header.copy()
+        for key in ("BSCALE", "BZERO", "DATAMIN", "DATAMAX"):
+            if key in clean:
+                del clean[key]
+        fits.PrimaryHDU(data=norm, header=clean).writeto(dst, overwrite=True)
+        return True
+    except Exception:
+        log.exception("preview: normalize-FITS failed for %s", src)
+        return False
 
 
 def _siril_quote(path: Path) -> str:
