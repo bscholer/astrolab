@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+build/
+dist/
+.coverage
+htmlcov/
+
+# editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# astrolab runtime data (lives outside repo per README, but guard against accidents)
+/cache/
+/data/
+*.sqlite
+*.sqlite3

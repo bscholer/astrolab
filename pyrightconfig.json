@@ -1,0 +1,9 @@
+{
+  "include": ["server", "nodes", "tests"],
+  "exclude": ["spikes", ".venv", "**/__pycache__"],
+  "extraPaths": ["."],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "reportMissingImports": "warning"
+}
