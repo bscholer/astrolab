@@ -197,14 +197,15 @@ The right-side rail (`.prow-side`) has:
 The size lives next to the actions because the actions act on it
 ("how much will I free?").
 
-**No thumbnail.** We considered a project preview thumbnail on each
-row, but the project list endpoint doesn't expose a preview hash and
-synthesizing a fake gradient thumbnail is misleading — it implies
-"this is what your stack looks like" when it isn't. When the API
-exposes a real preview hash per project (`preview_hash` +
-`preview_port`), revisit and add a 84px thumbnail with the version
-pill overlaid. Until then, the version sits inline next to the name
-as a small chip.
+**Thumbnail when available.** `/api/projects` now returns
+`preview_hash` and `preview_port` derived from the current job's
+outputs (port `image` preferred, otherwise the first one). The row
+renders an 84px square preview from `api.previewUrl(hash, port)` with
+the version pill (`v14`) overlaid in the bottom-right and a hover
+saturate. When the current job is still running or its cache has
+been evicted, the fields are absent and the row falls back to an
+inline `v14` chip next to the name — never a placeholder gradient or
+synthesized art.
 
 ### Pipeline strip card
 

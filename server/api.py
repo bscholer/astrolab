@@ -725,9 +725,34 @@ def create_project_from_session(
     return project.to_public_dict()
 
 
+def _attach_preview(project_dict: dict) -> dict:
+    """Resolve the project's current job to a (preview_hash, preview_port)
+    pair so the UI can render a thumbnail without a second roundtrip.
+
+    Picks the same output the project detail page uses: the port named
+    'image' if present, otherwise the first output. Returns the dict
+    unchanged when the job is still running, was evicted, or has no
+    outputs yet — the UI just doesn't show a thumbnail in that case.
+    """
+    job_id = project_dict.get("current_job_id")
+    if not job_id:
+        return project_dict
+    record = job_manager.get(job_id)
+    if record is None or not record.outputs:
+        return project_dict
+    outputs = record.outputs
+    port = "image" if "image" in outputs else next(iter(outputs))
+    ref = outputs.get(port)
+    if ref is None:
+        return project_dict
+    project_dict["preview_hash"] = ref.node_hash
+    project_dict["preview_port"] = port
+    return project_dict
+
+
 @app.get("/api/projects")
 def list_projects() -> list[dict]:
-    out = [p.to_public_dict() for p in project_manager.list()]
+    out = [_attach_preview(p.to_public_dict()) for p in project_manager.list()]
     out.sort(key=lambda p: p["updated_at"], reverse=True)
     return out
 
@@ -737,7 +762,7 @@ def get_project(project_id: str) -> dict:
     project = project_manager.get(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"project {project_id} not found")
-    return project.to_public_dict()
+    return _attach_preview(project.to_public_dict())
 
 
 @app.patch("/api/projects/{project_id}")

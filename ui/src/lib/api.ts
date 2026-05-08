@@ -262,6 +262,11 @@ export interface Project {
   current_overrides: Record<string, Record<string, unknown>>;
   created_at: string;
   updated_at: string;
+  // Preview pointer: present when the project's current job has finished
+  // and its outputs are still in cache. The UI feeds these to
+  // api.previewUrl() to render a row thumbnail.
+  preview_hash?: string;
+  preview_port?: string;
 }
 
 export interface CreateProjectFromSessionRequest {

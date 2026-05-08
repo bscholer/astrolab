@@ -105,10 +105,24 @@
     {#each projects as r, i (r.id)}
       {@const s = storageById.get(r.id)}
       <li class="prow" class:busy={busyId === r.id} style="--stagger: {i}">
+        {#if r.preview_hash && r.preview_port}
+          <a class="prow-thumb" href="/projects/{r.id}" aria-label="Open project">
+            <img
+              class="prow-thumb-img"
+              src={api.previewUrl(r.preview_hash, r.preview_port)}
+              alt=""
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="prow-thumb-version">v{r.current_seq + 1}</span>
+          </a>
+        {/if}
         <a class="prow-link" href="/projects/{r.id}">
           <div class="prow-name">
             {r.name}
-            <span class="version-chip">v{r.current_seq + 1}</span>
+            {#if !r.preview_hash}
+              <span class="version-chip">v{r.current_seq + 1}</span>
+            {/if}
           </div>
           <div class="prow-template">{templateDisplayName(r.template_id)}</div>
           <div class="prow-foot muted small">
@@ -269,6 +283,48 @@
     gap: 0.4rem;
     font-size: 0.78rem;
     opacity: 0.85;
+  }
+
+  /* Project thumbnail — real preview from the current job's output.
+     When the job is still running or its cache was evicted we fall
+     through to the inline version chip on the name (no placeholder,
+     no fake gradient). */
+  .prow-thumb {
+    position: relative;
+    width: 84px;
+    height: 84px;
+    flex-shrink: 0;
+    border-radius: calc(var(--radius-card) - 2px);
+    overflow: hidden;
+    background: var(--bg-elev-2);
+    box-shadow:
+      0 0 0 1px var(--hairline),
+      inset 0 0 18px rgba(0, 0, 0, 0.5);
+    transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 220ms ease;
+  }
+  .prow:hover .prow-thumb {
+    transform: scale(1.04);
+    filter: saturate(1.15) brightness(1.05);
+  }
+  .prow-thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .prow-thumb-version {
+    position: absolute;
+    bottom: 4px;
+    right: 5px;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+    background: rgba(0, 0, 0, 0.55);
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
   }
 
   /* Inline version chip — hugs the project name. */
