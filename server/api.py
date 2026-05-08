@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
@@ -38,6 +39,7 @@ from server.catalog.db import open_db
 from server.catalog.scanner import scan as run_scan
 from server.jobs import JobManager
 from server.models import Job, Template
+from server.preview import PreviewError, render_preview
 
 log = logging.getLogger("astrolab.api")
 
@@ -409,6 +411,31 @@ async def stream_job_events(ws: WebSocket, job_id: str) -> None:
             await ws.close()
         except RuntimeError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Previews
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/preview/{node_hash}/{port}")
+def get_preview(node_hash: str, port: str) -> FileResponse:
+    """Render (or return cached) thumbnail PNG for a node's output.
+
+    The preview is cached inside the node's cache entry so subsequent loads
+    are a static file read. FITS artifacts get an asinh-stretched render;
+    PNG artifacts pass through.
+    """
+    try:
+        path = render_preview(job_manager.cache, node_hash, port)
+    except PreviewError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="image/png",
+        # The cache is content-addressed, so a hit is permanent and cacheable.
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -168,5 +168,8 @@ export const api = {
       }
     };
     return ws;
+  },
+  previewUrl(nodeHash: string, port: string): string {
+    return `/api/preview/${nodeHash}/${encodeURIComponent(port)}`;
   }
 };

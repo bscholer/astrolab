@@ -8,16 +8,37 @@
   let layout = $state<Layout | null>(null);
   let nodeStatus = $state<Record<string, NodeStatus>>({});
   let nodeProgress = $state<Record<string, { fraction: number; message: string }>>({});
+  let nodeHash = $state<Record<string, string>>({});
+  let nodeKind = $state<Record<string, string>>({});
+  let nodePort = $state<Record<string, string>>({});
   let recentEvents = $state<JobEvent[]>([]);
   let error = $state<string | null>(null);
   let ws: WebSocket | null = null;
+  // Dedupe events seen via the GET /events bootstrap vs WS replay.
+  const seenEventKey = new Set<string>();
 
   type NodeStatus = 'pending' | 'running' | 'cached' | 'completed' | 'failed';
 
   const id = $derived($page.params.id ?? '');
 
+  function eventKey(ev: JobEvent): string {
+    // timestamp+type+node_id is unique enough; node_progress events with the
+    // same fraction/message at the same timestamp are effectively idempotent.
+    return `${ev.timestamp}|${ev.type}|${ev.node_id ?? ''}|${ev.fraction ?? ''}|${ev.message ?? ''}`;
+  }
+
   function applyEvent(ev: JobEvent) {
-    recentEvents = [...recentEvents.slice(-99), ev];
+    const key = eventKey(ev);
+    if (seenEventKey.has(key)) return;
+    seenEventKey.add(key);
+
+    recentEvents = [...recentEvents.slice(-199), ev];
+    if (ev.kind && ev.node_id) {
+      nodeKind = { ...nodeKind, [ev.node_id]: ev.kind };
+    }
+    if (ev.hash && ev.node_id) {
+      nodeHash = { ...nodeHash, [ev.node_id]: ev.hash };
+    }
     if (ev.node_id) {
       switch (ev.type) {
         case 'node_started':
@@ -50,19 +71,49 @@
     }
   }
 
+  function pickPreviewPort(template: NonNullable<JobSummary['template']>, nodeId: string): string {
+    // The first declared output port is the canonical one for previews.
+    const node = template.nodes.find((n) => n.id === nodeId);
+    if (!node) return 'image';
+    // Each Node class has its outputs declared in Python; we don't know them
+    // from the template alone. Conventions used by the basic nodes:
+    if (node.kind === 'seq_stack' || node.kind === 'downscale') return 'image';
+    if (
+      node.kind === 'convert_lights' ||
+      node.kind === 'calibrate' ||
+      node.kind === 'seq_register'
+    ) return 'sequence';
+    return 'image';
+  }
+
   onMount(async () => {
     try {
       job = await api.getJob(id);
       if (job.template) {
         layout = layoutTemplate(job.template);
-        // Initialize all nodes as pending so the graph paints immediately.
-        const init: Record<string, NodeStatus> = {};
-        for (const n of job.template.nodes) init[n.id] = 'pending';
-        nodeStatus = init;
+        const initStatus: Record<string, NodeStatus> = {};
+        const initKind: Record<string, string> = {};
+        const initPort: Record<string, string> = {};
+        for (const n of job.template.nodes) {
+          initStatus[n.id] = 'pending';
+          initKind[n.id] = n.kind;
+          initPort[n.id] = pickPreviewPort(job.template, n.id);
+        }
+        nodeStatus = initStatus;
+        nodeKind = initKind;
+        nodePort = initPort;
       }
-      // Open WebSocket for live events. The server replays history first,
-      // so we don't need to separately fetch /events.
-      ws = api.subscribeJobEvents(id, applyEvent);
+      // Bootstrap from buffered history so a reload after the WS closed still
+      // paints the right state immediately.
+      const history = await api.getJobEvents(id);
+      for (const ev of history) applyEvent(ev);
+
+      // Only attach the WS while there's still work to do (or the job is so
+      // fresh we might race the worker). The server closes the WS on terminal
+      // events anyway, but skipping it on a finished job is a clean reload.
+      if (job.status === 'queued' || job.status === 'running') {
+        ws = api.subscribeJobEvents(id, applyEvent);
+      }
     } catch (e) {
       error = (e as Error).message;
     }
@@ -70,6 +121,12 @@
 
   onDestroy(() => {
     ws?.close();
+  });
+
+  const finalOutput = $derived.by(() => {
+    if (!job?.outputs) return null;
+    const entries = Object.entries(job.outputs);
+    return entries.length ? entries[0] : null;
   });
 </script>
 
@@ -94,7 +151,6 @@
   {#if layout}
     <section class="graph">
       <svg viewBox="0 0 {layout.width} {layout.height}" width={layout.width} height={layout.height}>
-        <!-- edges first so nodes draw on top -->
         {#each layout.edges as e}
           <line
             x1={e.x1}
@@ -112,7 +168,14 @@
             <text x={n.width / 2} y="22" class="node-id">{n.id}</text>
             <text x={n.width / 2} y="40" class="node-kind">{n.kind}</text>
             {#if s === 'running' && p}
-              <rect x="6" y={n.height - 10} width={(n.width - 12) * (p.fraction || 0)} height="4" rx="2" class="node-progress" />
+              <rect
+                x="6"
+                y={n.height - 10}
+                width={(n.width - 12) * (p.fraction || 0)}
+                height="4"
+                rx="2"
+                class="node-progress"
+              />
             {/if}
           </g>
         {/each}
@@ -120,18 +183,60 @@
     </section>
   {/if}
 
-  {#if job.outputs}
-    <section>
-      <h2>Outputs</h2>
-      <ul class="outputs">
-        {#each Object.entries(job.outputs) as [name, ref]}
-          <li>
-            <strong>{name}</strong>
-            <span class="muted">[{ref.type}]</span>
-            <code>{ref.path}</code>
-          </li>
-        {/each}
-      </ul>
+  <section class="steps">
+    <h2>Steps</h2>
+    <div class="step-grid">
+      {#each layout?.nodes ?? [] as n}
+        {@const s = nodeStatus[n.id] ?? 'pending'}
+        {@const p = nodeProgress[n.id]}
+        {@const h = nodeHash[n.id]}
+        {@const port = nodePort[n.id] ?? 'image'}
+        <article class="step step-{s}">
+          <header class="step-head">
+            <span class="step-id">{n.id}</span>
+            <span class="muted small">{nodeKind[n.id] ?? n.kind}</span>
+            <span class="status status-mini status-{s}">{s}</span>
+          </header>
+          <div class="step-preview">
+            {#if (s === 'completed' || s === 'cached') && h}
+              <a href={api.previewUrl(h, port)} target="_blank" rel="noopener">
+                <img
+                  src={api.previewUrl(h, port)}
+                  alt="preview of {n.id}"
+                  loading="lazy"
+                  onerror={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+                />
+              </a>
+            {:else if s === 'running' && p}
+              <div class="run-msg">
+                <span class="pct">{Math.round((p.fraction ?? 0) * 100)}%</span>
+                <span class="muted small">{p.message}</span>
+              </div>
+            {:else if s === 'failed'}
+              <div class="run-msg err">failed</div>
+            {:else}
+              <div class="run-msg muted">waiting</div>
+            {/if}
+          </div>
+          {#if h}
+            <footer class="step-foot muted">
+              <code class="hash">{h.slice(0, 12)}…</code>
+            </footer>
+          {/if}
+        </article>
+      {/each}
+    </div>
+  </section>
+
+  {#if finalOutput}
+    {@const name = finalOutput[0]}
+    {@const ref = finalOutput[1]}
+    <section class="final">
+      <h2>Output: {name}</h2>
+      <p class="muted small"><code>{ref.path}</code> <span>[{ref.type}]</span></p>
+      <a class="big-preview-link" href={api.previewUrl(ref.node_hash, name)} target="_blank" rel="noopener">
+        <img class="big-preview" src={api.previewUrl(ref.node_hash, name)} alt="output preview" />
+      </a>
     </section>
   {/if}
 
@@ -144,20 +249,24 @@
 
   <section class="events">
     <h2>Events <span class="muted small">({recentEvents.length})</span></h2>
-    <ol>
-      {#each recentEvents.slice().reverse() as ev}
-        <li class="ev ev-{ev.type}">
-          <span class="muted ts">{ev.timestamp.slice(11, 19)}</span>
-          <span class="ev-type">{ev.type}</span>
-          {#if ev.node_id}<code>{ev.node_id}</code>{/if}
-          {#if ev.fraction !== undefined}
-            <span class="muted small">{Math.round(ev.fraction * 100)}%</span>
-          {/if}
-          {#if ev.message}<span class="muted">{ev.message}</span>{/if}
-          {#if ev.error}<span class="err">{ev.error}</span>{/if}
-        </li>
-      {/each}
-    </ol>
+    {#if recentEvents.length === 0}
+      <p class="muted small">No events yet.</p>
+    {:else}
+      <ol>
+        {#each recentEvents.slice().reverse() as ev}
+          <li class="ev ev-{ev.type}">
+            <span class="muted ts">{ev.timestamp.slice(11, 19)}</span>
+            <span class="ev-type">{ev.type}</span>
+            {#if ev.node_id}<code>{ev.node_id}</code>{/if}
+            {#if ev.fraction !== undefined}
+              <span class="muted small">{Math.round(ev.fraction * 100)}%</span>
+            {/if}
+            {#if ev.message}<span class="muted">{ev.message}</span>{/if}
+            {#if ev.error}<span class="err">{ev.error}</span>{/if}
+          </li>
+        {/each}
+      </ol>
+    {/if}
   </section>
 {/if}
 
@@ -191,7 +300,7 @@
   }
 
   .graph {
-    margin: 1.5rem 0;
+    margin: 1rem 0;
     overflow-x: auto;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid var(--border, #333);
@@ -204,17 +313,29 @@
     stroke-width: 1.5;
     transition: stroke 0.2s, fill 0.2s;
   }
-  .node-pending { stroke: #555; }
-  .node-running { stroke: #6cf; fill: #1a2538; }
-  .node-cached { stroke: #777; fill: #1a1f1a; }
-  .node-completed { stroke: #6c9; fill: #1a2521; }
-  .node-failed { stroke: #f66; fill: #251818; }
-
+  .node-pending {
+    stroke: #555;
+  }
+  .node-running {
+    stroke: #6cf;
+    fill: #1a2538;
+  }
+  .node-cached {
+    stroke: #777;
+    fill: #1a1f1a;
+  }
+  .node-completed {
+    stroke: #6c9;
+    fill: #1a2521;
+  }
+  .node-failed {
+    stroke: #f66;
+    fill: #251818;
+  }
   .node-progress {
     fill: #6cf;
     opacity: 0.7;
   }
-
   .node-id {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
@@ -226,16 +347,23 @@
     text-anchor: middle;
     fill: #888;
   }
-
   .edge {
     stroke: #555;
     stroke-width: 1.5;
     fill: none;
   }
-  .edge-running { stroke: #6cf; }
-  .edge-cached { stroke: #777; }
-  .edge-completed { stroke: #6c9; }
-  .edge-failed { stroke: #f66; }
+  .edge-running {
+    stroke: #6cf;
+  }
+  .edge-cached {
+    stroke: #777;
+  }
+  .edge-completed {
+    stroke: #6c9;
+  }
+  .edge-failed {
+    stroke: #f66;
+  }
 
   .status {
     display: inline-block;
@@ -245,18 +373,119 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .status-queued { background: #444; color: #ccc; }
-  .status-running { background: #234; color: #6cf; }
-  .status-completed { background: #243; color: #6c9; }
-  .status-failed { background: #422; color: #f88; }
-
-  .outputs li {
-    font-size: 0.85rem;
-    margin-bottom: 0.25rem;
+  .status-mini {
+    font-size: 0.65rem;
+    padding: 0.05rem 0.4rem;
+    margin-left: auto;
   }
-  .outputs code {
-    font-size: 0.8rem;
-    margin-left: 0.5rem;
+  .status-pending {
+    background: #2a2a2a;
+    color: #aaa;
+  }
+  .status-queued {
+    background: #444;
+    color: #ccc;
+  }
+  .status-running {
+    background: #234;
+    color: #6cf;
+  }
+  .status-cached {
+    background: #2a2a2a;
+    color: #aaa;
+  }
+  .status-completed {
+    background: #243;
+    color: #6c9;
+  }
+  .status-failed {
+    background: #422;
+    color: #f88;
+  }
+
+  .step-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+  .step {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    padding: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .step-completed {
+    border-color: #2c5;
+  }
+  .step-cached {
+    border-color: #555;
+  }
+  .step-running {
+    border-color: #6cf;
+  }
+  .step-failed {
+    border-color: #f66;
+  }
+  .step-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .step-id {
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+  }
+  .step-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    background: #0a0c10;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .step-preview img {
+    max-width: 100%;
+    max-height: 220px;
+    display: block;
+  }
+  .run-msg {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.5rem;
+    text-align: center;
+    font-size: 0.85rem;
+  }
+  .pct {
+    font-size: 1.2rem;
+    color: #6cf;
+    font-variant-numeric: tabular-nums;
+  }
+  .step-foot {
+    font-size: 0.7rem;
+  }
+  .hash {
+    font-family: ui-monospace, monospace;
+  }
+
+  .final {
+    margin-top: 1.5rem;
+  }
+  .big-preview-link {
+    display: inline-block;
+    margin-top: 0.5rem;
+  }
+  .big-preview {
+    max-width: 100%;
+    max-height: 600px;
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
   }
 
   .error-box {
@@ -277,6 +506,8 @@
     padding: 0;
     margin: 0.5rem 0 0;
     font-size: 0.85rem;
+    max-height: 400px;
+    overflow-y: auto;
   }
   .ev {
     padding: 0.2rem 0;
