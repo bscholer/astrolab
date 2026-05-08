@@ -170,6 +170,13 @@ def node_hash(
         h.update(ref.node_hash.encode("utf-8"))
         h.update(b"/")
         h.update(ref.port.encode("utf-8"))
+        # External Refs (those produced outside the runtime, eg the session
+        # folder selected by the UI) all share node_hash='ext'; their actual
+        # discriminator is the filesystem path. Internal Refs have a real
+        # producer hash already, so the path is implied by it; we still mix
+        # it in defensively to make the hash transparent on inspection.
+        h.update(b"@")
+        h.update(str(ref.path).encode("utf-8"))
         h.update(b";")
 
     h.update(b"\x00params=")
@@ -190,8 +197,9 @@ class RefLike:
     """Structural type matching server.models.Ref for the parts node_hash needs.
 
     Defined here as a minimal protocol so canonical.py has no import cycle with
-    models.py. Anything with `.node_hash: str` and `.port: str` works.
+    models.py. Anything with `.node_hash: str`, `.port: str`, and `.path` works.
     """
 
     node_hash: str
     port: str
+    path: Any  # pathlib.Path or anything else with a stable str()

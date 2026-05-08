@@ -23,9 +23,33 @@ from server.canonical import (
 
 
 class FakeRef:
-    def __init__(self, node_hash: str, port: str = "out") -> None:
+    def __init__(self, node_hash: str, port: str = "out", path: str = "/x") -> None:
         self.node_hash = node_hash
         self.port = port
+        self.path = path
+
+
+def test_external_refs_with_different_paths_hash_differently() -> None:
+    """Regression: external Refs (node_hash='ext') used to collide on path,
+    so submitting jobs against different sessions served the wrong cached
+    output. node_hash now mixes the path in to keep them distinct."""
+
+    class P(BaseModel):
+        x: int = 1
+
+    h_a = node_hash(
+        node_id="convert_lights",
+        node_version=1,
+        inputs={"lights": FakeRef("ext", "lights", "/data/sessionA")},
+        params=P(),
+    )
+    h_b = node_hash(
+        node_id="convert_lights",
+        node_version=1,
+        inputs={"lights": FakeRef("ext", "lights", "/data/sessionB")},
+        params=P(),
+    )
+    assert h_a != h_b
 
 
 class GHSParams(BaseModel):
