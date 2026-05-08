@@ -78,15 +78,18 @@ def test_classifies_darks(tmp_path: Path) -> None:
 
 
 def test_classifies_cali_frame_masters(tmp_path: Path) -> None:
+    """Each master kind has its own filename schema per the Dwarf 3 docs."""
     cali = tmp_path / "CALI_FRAME" / "dark" / "cam_0"
     _touch(cali / "dark_exp_30.000000_gain_60_bin_1_22C_stack_10.fits")
     _touch(cali / "ignored_other_file.fits")  # bad name; skipped
 
+    # Factory flat: gain index + bin + ir filter, no exposure or temperature.
     flat_cam0 = tmp_path / "CALI_FRAME" / "flat" / "cam_0"
-    _touch(flat_cam0 / "flat_exp_0.001_gain_60_bin_2_18C_stack_5.fits")
+    _touch(flat_cam0 / "flat_gain_2_bin_1_ir_1.fits")  # ir_1 = Astro
 
+    # Factory bias: just gain index + bin. No exposure, temperature, or filter.
     bias_cam1 = tmp_path / "CALI_FRAME" / "bias" / "cam_1"
-    _touch(bias_cam1 / "bias_exp_0.000125_gain_60_bin_1_-5C_stack_20.fits")
+    _touch(bias_cam1 / "bias_gain_2_bin_1.fits")
 
     adapter = DwarfThreeAdapter()
     found = list(adapter.discover(tmp_path))
@@ -99,8 +102,10 @@ def test_classifies_cali_frame_masters(tmp_path: Path) -> None:
     bias = next(m for m in masters if m.kind == "bias")
     assert bias.camera == "WIDE"
     assert bias.binning == 1
-    assert bias.ccd_temp == -5.0
-    assert bias.stack_count == 20
+    # Bias deliberately carries no photographic gain / filter / temp.
+    assert bias.gain is None
+    assert bias.filter is None
+    assert bias.ccd_temp is None
 
     dark = next(m for m in masters if m.kind == "dark")
     assert dark.camera == "TELE"
@@ -112,7 +117,11 @@ def test_classifies_cali_frame_masters(tmp_path: Path) -> None:
 
     flat = next(m for m in masters if m.kind == "flat")
     assert flat.camera == "TELE"
-    assert flat.binning == 2  # Dwarf res-mode 2 = 2k
+    assert flat.binning == 1
+    assert flat.filter == "Astro"  # ir_1 maps to Astro
+    # No photographic gain or temperature on factory flats.
+    assert flat.gain is None
+    assert flat.ccd_temp is None
 
 
 def test_lights_and_masters_distinguished(tmp_path: Path) -> None:

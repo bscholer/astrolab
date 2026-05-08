@@ -39,15 +39,35 @@ DARK_FOLDER_RE = re.compile(
 )
 """Matches a Dwarf 3 raw-dark session folder under DWARF_DARK/."""
 
-MASTER_FILENAME_RE = re.compile(
-    r"^(?P<kind>dark|flat|bias)_exp_(?P<exp>[\d.]+)_gain_(?P<gain>\d+)_"
-    r"bin_(?P<bin>\d+)_(?P<temp>-?\d+(?:\.\d+)?)C_stack_(?P<n>\d+)\.fits$"
+DARK_MASTER_RE = re.compile(
+    r"^dark_exp_(?P<exp>[\d.]+)_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)_"
+    r"(?P<temp>-?\d+(?:\.\d+)?)C_stack_(?P<n>\d+)\.(?:fits|png)$"
 )
-"""Matches a pre-built master file under CALI_FRAME/<kind>/cam_*/.
+"""Dark master: dark_exp_15.000000_gain_60_bin_1_38C_stack_10.fits.
 
-Per Dwarf docs, `bin` here is a resolution mode flag (1 = 4k, 2 = 2k), not
-binning in the astronomy sense. We still persist it for matching since it
-disambiguates two otherwise-equivalent masters."""
+Carries the full set of attributes (exp, photographic gain, bin mode, ccd
+temp, stack depth)."""
+
+FLAT_MASTER_RE = re.compile(
+    r"^flat_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)_ir_(?P<ir>\d+)\.(?:fits|png)$"
+)
+"""Flat master: flat_gain_2_bin_1_ir_0.fits.
+
+Per Dwarf docs the `gain_N` on factory bias/flat is a different (low) gain
+index than the photographic `GAIN_60` on lights — we deliberately don't
+store it on the master, since matching it against a session's photographic
+gain would cause every flat to miss. `ir_N` IS the filter type:
+0 = VIS, 1 = Astro, 2 = Duo-Band."""
+
+BIAS_MASTER_RE = re.compile(
+    r"^bias_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)\.(?:fits|png)$"
+)
+"""Bias master: bias_gain_2_bin_1.fits. Only `bin` is matchable (factory
+bias is filter-, exposure-, and temperature-independent)."""
+
+# Map the `ir_N` index on factory flats to the filter-name string the catalog
+# already stores for lights, so the matcher can join them transparently.
+FLAT_IR_TO_FILTER: dict[int, str] = {0: "VIS", 1: "Astro", 2: "Duo-Band"}
 
 CAM_FROM_DIR: dict[str, str] = {"cam_0": "TELE", "cam_1": "WIDE"}
 """Per Dwarf docs: cam_0 is the telephoto, cam_1 is the wide."""
@@ -140,7 +160,11 @@ class DwarfThreeAdapter:
             )
 
     def _walk_cali(self, cali_root: Path) -> Iterator[DiscoveredMaster]:
-        """Walk CALI_FRAME/{dark,bias,flat}/cam_*/ and yield masters."""
+        """Walk CALI_FRAME/{dark,bias,flat}/cam_*/ and yield masters.
+
+        Each kind has its own filename schema; using one regex misses bias
+        (no temp/exp) and flat (no temp/exp; carries `ir_N` filter) entirely.
+        """
         for kind_dir in sorted(cali_root.iterdir()):
             if not kind_dir.is_dir():
                 continue
@@ -152,23 +176,67 @@ class DwarfThreeAdapter:
                     continue
                 camera = CAM_FROM_DIR.get(cam_dir.name)
                 for f in sorted(cam_dir.iterdir()):
-                    if not f.is_file() or f.suffix.lower() != ".fits":
+                    if not f.is_file():
                         continue
-                    m = MASTER_FILENAME_RE.match(f.name)
-                    if not m:
+                    if f.suffix.lower() not in (".fits", ".png"):
                         continue
-                    yield DiscoveredMaster(
-                        path=f,
-                        kind=kind,  # type: ignore[arg-type]
-                        source="factory",
-                        camera=camera,
-                        instrument="DWARFIII",
-                        exptime=float(m.group("exp")),
-                        gain=int(m.group("gain")),
-                        binning=int(m.group("bin")),
-                        ccd_temp=float(m.group("temp")),
-                        stack_count=int(m.group("n")),
-                    )
+                    master = self._parse_master(f, kind, camera)
+                    if master is not None:
+                        yield master
+
+    def _parse_master(
+        self, f: Path, kind: str, camera: str | None
+    ) -> DiscoveredMaster | None:
+        """Match a master file against the per-kind regex and return its
+        DiscoveredMaster, or None if the filename doesn't fit the spec."""
+        if kind == "dark":
+            m = DARK_MASTER_RE.match(f.name)
+            if not m:
+                return None
+            return DiscoveredMaster(
+                path=f,
+                kind="dark",
+                source="factory",
+                camera=camera,
+                instrument="DWARFIII",
+                exptime=float(m.group("exp")),
+                gain=int(m.group("gain")),
+                binning=int(m.group("bin")),
+                ccd_temp=float(m.group("temp")),
+                stack_count=int(m.group("n")),
+            )
+        if kind == "flat":
+            m = FLAT_MASTER_RE.match(f.name)
+            if not m:
+                return None
+            ir = int(m.group("ir"))
+            return DiscoveredMaster(
+                path=f,
+                kind="flat",
+                source="factory",
+                camera=camera,
+                instrument="DWARFIII",
+                # gain/exptime/temp deliberately left None: factory flats
+                # encode an `ir_N` filter type and a low-gain mode that
+                # don't correspond to a session's photographic settings.
+                filter=FLAT_IR_TO_FILTER.get(ir),
+                binning=int(m.group("bin")),
+            )
+        if kind == "bias":
+            m = BIAS_MASTER_RE.match(f.name)
+            if not m:
+                return None
+            return DiscoveredMaster(
+                path=f,
+                kind="bias",
+                source="factory",
+                camera=camera,
+                instrument="DWARFIII",
+                # No filter / exptime / temp / photographic gain on factory
+                # bias; matching is binning-only.
+                binning=int(m.group("bin")),
+            )
+        return None
 
     def _walk_darks(self, dark_root: Path) -> Iterator[DiscoveredFrame]:
         for folder in sorted(dark_root.iterdir()):

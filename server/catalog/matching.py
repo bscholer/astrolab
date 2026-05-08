@@ -4,11 +4,18 @@ Given a session row, choose the best master_dark, master_flat, master_bias.
 Rules per the README, tunable per camera; the defaults here are a starting
 point and will tighten once we have more nights of data to validate against.
 
-| kind | match by                                  | tolerance              |
+| kind | match by                                   | tolerance              |
 |------|--------------------------------------------|------------------------|
-| dark | instrument, gain, exptime, ccd_temp, bin   | temp +/- 3C; exp exact |
-| flat | instrument, filter, gain, bin              | date proximity         |
-| bias | instrument, gain, bin                      | exact                  |
+| dark | instrument, camera, gain, exptime, bin     | temp +/- 3C; exp exact |
+| flat | instrument, camera, filter, bin            | date proximity         |
+| bias | instrument, camera, bin                    | exact                  |
+
+Note on Dwarf 3 specifics: factory bias and flats encode a `gain_N` index
+that is *not* the photographic gain on lights (which is `GAIN_60` etc.).
+Their photographic-gain field is None and the matcher does not filter on
+it, otherwise no flat or bias would ever match a real session. Flats are
+matched on filter (Astro / VIS / Duo-Band, derived from the file's
+`ir_0/1/2` suffix); bias is matched on bin only.
 
 We always prefer 'exact' (zero-tolerance) matches when one exists. If only
 'approx' candidates exist we pick the one with the smallest temperature
@@ -111,7 +118,8 @@ def _match_dark(
         "none",
         {
             "reason": (
-                f"no dark within +/-{DARK_TEMP_TOLERANCE_C}C of session temp {session_temp}"
+                f"no dark within +/-{DARK_TEMP_TOLERANCE_C:g}C of "
+                f"session temp {session_temp:.1f}C"
             )
         },
     )
@@ -122,6 +130,9 @@ def _match_flat(
 ) -> tuple[int | None, MatchQuality, dict[str, Any]]:
     if session["instrument"] is None:
         return None, "none", {"reason": "session missing instrument"}
+    # Match on filter + binning + camera; deliberately NOT on photographic
+    # gain (factory flats use a different gain index) or exptime (flats are
+    # exposure-independent).
     candidates = conn.execute(
         """
         SELECT id, date_built, stack_count
@@ -129,21 +140,24 @@ def _match_flat(
         WHERE kind = 'flat'
           AND instrument = ?
           AND IFNULL(filter, '') = IFNULL(?, '')
-          AND IFNULL(gain, -1) = IFNULL(?, -1)
           AND IFNULL(binning, -1) = IFNULL(?, -1)
           AND (camera = ? OR camera IS NULL OR ? IS NULL)
         """,
         (
             session["instrument"],
             session["filter"],
-            session["gain"],
             session["binning"],
             session["camera"],
             session["camera"],
         ),
     ).fetchall()
     if not candidates:
-        return None, "none", {"reason": "no flat candidates"}
+        return None, "none", {
+            "reason": (
+                f"no flat for filter={session['filter']!r} bin={session['binning']!r} "
+                f"on {session['camera'] or 'any camera'}"
+            )
+        }
     chosen = max(candidates, key=lambda r: (r["date_built"] or "", r["stack_count"] or 0))
     return chosen["id"], "exact", {}
 
@@ -153,26 +167,32 @@ def _match_bias(
 ) -> tuple[int | None, MatchQuality, dict[str, Any]]:
     if session["instrument"] is None:
         return None, "none", {"reason": "session missing instrument"}
+    # Bias is binning-only; factory bias has no exposure, no filter, and
+    # the `gain_N` in its filename is not photographic gain (so don't match
+    # on session gain).
     candidates = conn.execute(
         """
         SELECT id, stack_count
         FROM masters
         WHERE kind = 'bias'
           AND instrument = ?
-          AND IFNULL(gain, -1) = IFNULL(?, -1)
           AND IFNULL(binning, -1) = IFNULL(?, -1)
           AND (camera = ? OR camera IS NULL OR ? IS NULL)
         """,
         (
             session["instrument"],
-            session["gain"],
             session["binning"],
             session["camera"],
             session["camera"],
         ),
     ).fetchall()
     if not candidates:
-        return None, "none", {"reason": "no bias candidates"}
+        return None, "none", {
+            "reason": (
+                f"no bias for bin={session['binning']!r} "
+                f"on {session['camera'] or 'any camera'}"
+            )
+        }
     chosen = max(candidates, key=lambda r: (r["stack_count"] or 0))
     return chosen["id"], "exact", {}
 

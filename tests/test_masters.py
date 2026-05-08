@@ -30,10 +30,10 @@ def _build_tree_with_cali(root: Path) -> None:
     write_fits(cali_dark / "dark_exp_30.000000_gain_60_bin_1_25C_stack_5.fits")
 
     cali_bias = root / "CALI_FRAME" / "bias" / "cam_0"
-    write_fits(cali_bias / "bias_exp_0.000125_gain_60_bin_1_-5C_stack_20.fits")
+    write_fits(cali_bias / "bias_gain_2_bin_1.fits")
 
     cali_flat = root / "CALI_FRAME" / "flat" / "cam_0"
-    write_fits(cali_flat / "flat_exp_0.001_gain_60_bin_1_18C_stack_5.fits")
+    write_fits(cali_flat / "flat_gain_2_bin_1_ir_1.fits")  # ir_1 = Astro
 
 
 def test_scan_inserts_masters(tmp_path: Path, astrolab_home: Path) -> None:

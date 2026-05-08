@@ -159,6 +159,36 @@ def test_bias_match_when_present(db: sqlite3.Connection) -> None:
     assert out["bias"]["match_quality"] == "exact"
 
 
+def test_bias_factory_matches_despite_photographic_gain_mismatch(
+    db: sqlite3.Connection,
+) -> None:
+    """Regression: Dwarf 3 factory bias filenames carry a gain index that's
+    not the photographic gain on lights. Adapter stores gain=NULL on those
+    masters; the matcher must still find them for sessions at gain=60."""
+    sid = _insert_session(db, gain=60, binning=1)
+    bias = _insert_master(db, kind="bias", gain=None, binning=1, exptime=None,
+                          path="/tmp/bias-factory.fits")
+    out = match_session(db, sid)
+    assert out["bias"]["master_id"] == bias
+    assert out["bias"]["match_quality"] == "exact"
+
+
+def test_flat_factory_matches_on_filter_and_bin_only(
+    db: sqlite3.Connection,
+) -> None:
+    """Regression: factory flats have gain/exptime NULL. Match purely on
+    (filter, binning, camera) so a session at gain=60 + Astro filter still
+    finds the matching factory flat."""
+    sid = _insert_session(db, filter_="Astro", gain=60, binning=1)
+    flat = _insert_master(
+        db, kind="flat", filter_="Astro", gain=None, binning=1,
+        exptime=None, path="/tmp/flat-astro.fits",
+    )
+    out = match_session(db, sid)
+    assert out["flat"]["master_id"] == flat
+    assert out["flat"]["match_quality"] == "exact"
+
+
 def test_flat_match_picks_most_recent(db: sqlite3.Connection) -> None:
     sid = _insert_session(db, filter_="Astro", gain=60, binning=1)
     older = _insert_master(
