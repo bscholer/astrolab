@@ -23,6 +23,10 @@ htmlcov/
 /data/
 *.sqlite
 *.sqlite3
+# captured/processed astrophotography artifacts
+*.fit
+*.fits
+*.seq
 
 # UI build artifacts (live in ui/.gitignore too, kept here as a safety net)
 ui/node_modules/
