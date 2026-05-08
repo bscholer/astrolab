@@ -80,6 +80,48 @@ def test_find_siril_appimage_picked_up(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert binary.version is not None and binary.version[:2] == (1, 4)
 
 
+def test_find_siril_prefers_extracted_appdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An extracted AppDir wins over a packed AppImage of the same version,
+    since FUSE-based AppImages frequently fail on locked-down hosts."""
+    monkeypatch.delenv("SIRIL_BIN", raising=False)
+    fake_home = tmp_path / "home"
+    (fake_home / "Downloads").mkdir(parents=True)
+    (fake_home / "Applications").mkdir(parents=True)
+    (fake_home / "Downloads" / "Siril-1.4.3-x86_64.AppImage").touch()
+    appdir = fake_home / "Applications" / "Siril-1.4.3.AppDir"
+    appdir.mkdir()
+    apprun = appdir / "AppRun"
+    apprun.touch()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("PATH", "")
+
+    binary = find_siril()
+    assert binary.path == apprun
+    assert binary.source == "appdir"
+    assert binary.args_prefix == ("siril-cli",)
+
+
+def test_run_invokes_appdir_with_siril_cli_prefix(tmp_path: Path) -> None:
+    """When the binary carries an args_prefix, it is inserted before -s."""
+    fake = tmp_path / "fake-apprun.sh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'echo "[fake] argv=$*"\n'
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+
+    rt = SirilRuntime(
+        binary=SirilBinary(path=fake, source="appdir", args_prefix=("siril-cli",))
+    )
+    res = rt.run(["save dummy"], working_dir=tmp_path)
+    assert res.returncode == 0
+    # Fake shell prints what argv it got; siril-cli should appear before -s.
+    assert "siril-cli -s" in res.stdout
+
+
 def test_find_siril_skips_old_appimages(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

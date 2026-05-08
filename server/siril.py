@@ -47,7 +47,10 @@ class SirilNotFound(RuntimeError):
 class SirilBinary:
     path: Path
     version: tuple[int, int, int] | None = None  # parsed from filename / --version
-    source: str = "unknown"  # 'env' | 'appimage' | 'system'
+    source: str = "unknown"  # 'env' | 'appdir' | 'appimage' | 'system'
+    args_prefix: tuple[str, ...] = ()
+    """Args to insert before our own. Used for AppRun, which dispatches by
+    its first positional arg ('siril-cli' for the headless CLI mode)."""
 
 
 def _parse_version(text: str) -> tuple[int, int, int] | None:
@@ -76,14 +79,54 @@ def _candidate_appimages() -> list[Path]:
     return [p for _, p in out]
 
 
+def _candidate_appdirs() -> list[tuple[tuple[int, int, int], Path]]:
+    """List extracted Siril AppDirs (AppImages unpacked via --appimage-extract
+    or unsquashfs). Returned as (version, AppRun_path) tuples, newest first.
+
+    Preferred over packed AppImages because FUSE mounting frequently fails on
+    locked-down hosts (AppArmor, unprivileged user namespaces, broken
+    squashfuse) and an extracted tree always works.
+    """
+    homes = [Path.home() / "Applications", Path.home() / ".local" / "share"]
+    out: list[tuple[tuple[int, int, int], Path]] = []
+    for home in homes:
+        if not home.exists():
+            continue
+        for child in home.iterdir():
+            if not child.is_dir():
+                continue
+            apprun = child / "AppRun"
+            if not apprun.exists():
+                continue
+            ver = _parse_version(child.name) or (0, 0, 0)
+            out.append((ver, apprun))
+    out.sort(key=lambda t: t[0], reverse=True)
+    return out
+
+
 def find_siril() -> SirilBinary:
-    """Locate a usable Siril 1.4+ executable, raising SirilNotFound otherwise."""
+    """Locate a usable Siril 1.4+ executable, raising SirilNotFound otherwise.
+
+    Search order:
+      1. $SIRIL_BIN env var (path; if it ends in 'AppRun' we add 'siril-cli'
+         to the args prefix automatically).
+      2. Extracted AppDirs at ~/Applications/*.AppDir/AppRun (newest first).
+      3. Packed AppImages at ~/Downloads or ~/Applications (newest first).
+      4. System siril-cli / siril on PATH (must be 1.4+).
+    """
     override = os.environ.get("SIRIL_BIN")
     if override:
         path = Path(override).expanduser()
         if not path.exists():
             raise SirilNotFound(f"$SIRIL_BIN points at {path} which does not exist")
-        return SirilBinary(path=path, source="env")
+        prefix: tuple[str, ...] = ("siril-cli",) if path.name == "AppRun" else ()
+        return SirilBinary(path=path, source="env", args_prefix=prefix)
+
+    for ver, apprun in _candidate_appdirs():
+        if ver[:2] >= MIN_VERSION:
+            return SirilBinary(
+                path=apprun, version=ver, source="appdir", args_prefix=("siril-cli",)
+            )
 
     for app in _candidate_appimages():
         m = _APPIMAGE_NAME_RE.match(app.name)
@@ -178,9 +221,15 @@ class SirilRuntime:
             tf.write(ssf_text)
             ssf_path = Path(tf.name)
 
+        argv = [
+            str(self.binary.path),
+            *self.binary.args_prefix,
+            "-s",
+            str(ssf_path),
+        ]
         try:
             proc = subprocess.Popen(
-                [str(self.binary.path), "-s", str(ssf_path)],
+                argv,
                 cwd=str(working_dir) if working_dir is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
