@@ -187,7 +187,10 @@ class Node[ParamsT]:
 
 `Ref` is an opaque handle to a cache entry (a path under `cache/<hash>/`). `RunContext` provides:
 - A scoped temp dir.
-- A `siril()` callable for sirilpy commands (manages the Siril subprocess lifecycle).
+- A `siril()` callable for issuing Siril commands. The callable is backed by one of two runtime modes (selected per-host, see Spike 01):
+  - **pyscript mode (Linux)**: wraps a live sirilpy session inside Siril; supports `cmd(...)`, pixel reads/writes, structured progress.
+  - **ssf mode (macOS dev, or sirilpy unavailable)**: accumulates `.ssf` snippets and flushes via `siril-cli -s -`; supports `cmd(...)` only. Pixel-level operations raise `RuntimeError("requires pyscript runtime")`.
+  Nodes that only need command dispatch are runtime-agnostic.
 - A `progress(fraction, message)` callback.
 - Logger.
 
@@ -528,7 +531,7 @@ Each phase ends with something demoably useful, not "infrastructure done."
 
 ## Risks & open questions
 
-- **sirilpy headless lifecycle on Linux Mint** (the deployment target). Need to confirm `siril-cli --pythonscript` (or equivalent in 1.4) works without an X display, and that we can spawn one Siril per job cleanly. macOS is dev-only, so a working Linux story is the gate. Fallback: generate `.ssf` and shell out; slightly less progress fidelity but bulletproof. **Decide in Phase 0 spike.**
+- **sirilpy headless lifecycle.** Spike 01 (see `spikes/01-sirilpy-headless/FINDINGS.md`) confirmed the architecture (`siril-cli -s file.ssf` -> `pyscript path.py` -> sirilpy connects via `MY_SOCKET`) but found that **macOS structurally blocks it**: the bundled Python has an AMFI launch constraint that rejects any third-party terminal as the root parent process. Linux Mint (the deployment target) has no equivalent mechanism and is expected to work; verify on hardware when set up. Net: pyscript mode is Linux-only by macOS design, not configuration. The `.ssf`-shellout mode is now a first-class peer, used on macOS for dev and as a fallback anywhere sirilpy is unavailable.
 - **Cache hash stability across Siril versions.** A Siril upgrade can change pixel output of an "identical" stack. Add `siril_version` into node hashes for any node that calls Siril, so upgrades invalidate cleanly.
 - **Float param canonicalization.** Two GHS configs that look the same can hash differently due to float noise. Mitigation: per-param rounding precision in the schema.
 - **NAS read perf during stacking.** SMB latency over hundreds of frames is a killer. Plan: sync session locally before expensive stages; the catalog scanner stays remote (reads only FITS headers).
@@ -554,6 +557,7 @@ Capture decisions with the *why*; future-us will want this.
 | 8 | No Celery/Redis | Single user; in-process async + subprocess pool is enough. |
 | 9 | Read-only graph viz in MVP, editor later (maybe) | Authoring is rare; tweaking is constant. Don't conflate them. |
 | 10 | Cache lives on local SSD; NAS for archive only | Disk perf during expensive nodes is the bottleneck. |
+| 11 | Two first-class Siril runtime modes (pyscript on Linux, ssf-shellout on macOS) behind one `RunContext.siril()` interface | Spike 01 found macOS AMFI launch constraints structurally block the bundled Python from being spawned by any third-party parent. Linux has no such block. Forcing one mode would lose either macOS dev support or rich pixel ops; running both behind one interface keeps node code portable. |
 
 ---
 
@@ -561,7 +565,8 @@ Capture decisions with the *why*; future-us will want this.
 
 Phase 0 starts with two questions to spike before committing:
 
-1. **`sirilpy` headless lifecycle on Linux Mint**: can we spawn one Siril per job, no GUI, and drive it from Python? Linux is the deployment target; macOS only needs to work well enough for dev. If yes, Phase 0 looks like the plan above. If no, we generate `.ssf` and shell out (downstream API for nodes is unchanged).
+1. ~~**`sirilpy` headless lifecycle**~~. Done; see `spikes/01-sirilpy-headless/FINDINGS.md`. Outcome: pyscript mode is Linux-only (macOS AMFI blocks it); `.ssf`-shellout mode is mandatory on macOS and the universal fallback.
 2. **Cache key canonicalization**: write a small property test that proves equivalent params hash the same and unequal params don't. Bake it into CI early.
+3. **Verify pyscript on Linux Mint** when the deployment box is set up; re-run Spike 01 there.
 
-Once both pass, port the existing Naztronomy script onto the node framework, one stage at a time, with a snapshot test against the current script's output to make sure we haven't drifted.
+After (2) and (3) pass, port the existing Naztronomy script onto the node framework, one stage at a time, with a snapshot test against the current script's output to make sure we haven't drifted.
