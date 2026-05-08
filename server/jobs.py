@@ -530,6 +530,7 @@ class JobManager:
             # storage layer can attribute their cache back to the right
             # rendering. One-time cost on the first rehydrate after the
             # upgrade; subsequent rehydrates see the column already filled.
+            backfilled = False
             if not node_hashes:
                 hash_rows = conn.execute(
                     "SELECT extra_json FROM job_events "
@@ -548,6 +549,8 @@ class JobManager:
                     if isinstance(h, str) and h not in seen:
                         seen.add(h)
                         node_hashes.append(h)
+                if node_hashes:
+                    backfilled = True
             record = JobRecord(
                 id=row["id"],
                 status=status,
@@ -596,6 +599,11 @@ class JobManager:
                         error="server interrupted before this job finished",
                     ),
                 )
+            elif backfilled:
+                # We reconstructed node_hashes from events; persist them
+                # so the storage layer (which reads the column directly)
+                # can attribute this job's cache going forward.
+                self._persist_record(record, kind="update")
 
         self._close(conn)
         if rows:
