@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict
 
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
+from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.scanner import scan as run_scan
 
@@ -72,6 +73,7 @@ class TargetSummary(BaseModel):
 
     id: int
     name: str
+    common_name: str | None = None
     session_count: int
     frame_count: int
     failed_count: int
@@ -110,6 +112,7 @@ class TargetDetail(BaseModel):
 
     id: int
     name: str
+    common_name: str | None = None
     sessions: list[SessionSummary]
 
 
@@ -223,6 +226,7 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
         TargetSummary(
             id=r["id"],
             name=r["name"],
+            common_name=lookup_common_name(r["name"]),
             session_count=r["session_count"],
             frame_count=r["frame_count"],
             failed_count=r["failed_count"],
@@ -253,6 +257,7 @@ def get_target(
     return TargetDetail(
         id=target["id"],
         name=target["name"],
+        common_name=lookup_common_name(target["name"]),
         sessions=[
             _row_to_session_summary(conn, s, target_name=target["name"])
             for s in sessions

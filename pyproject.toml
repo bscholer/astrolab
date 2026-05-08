@@ -27,6 +27,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["server", "nodes"]
+include = ["server/catalog/data/*.json"]
 
 [tool.ruff]
 line-length = 100

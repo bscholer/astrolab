@@ -34,6 +34,7 @@ export interface SessionSummary {
 export interface TargetSummary {
   id: number;
   name: string;
+  common_name: string | null;
   session_count: number;
   frame_count: number;
   failed_count: number;
@@ -43,6 +44,7 @@ export interface TargetSummary {
 export interface TargetDetail {
   id: number;
   name: string;
+  common_name: string | null;
   sessions: SessionSummary[];
 }
 

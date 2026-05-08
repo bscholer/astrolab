@@ -146,7 +146,14 @@
     {#each targets as t (t.id)}
       <li class="target" class:open={openTargetId === t.id}>
         <button class="target-row" onclick={() => openTarget_(t.id)}>
-          <div class="target-name">{t.name}</div>
+          <div class="target-name">
+            {#if t.common_name}
+              <span class="target-common">{t.common_name}</span>
+              <span class="target-cat muted">{t.name}</span>
+            {:else}
+              {t.name}
+            {/if}
+          </div>
           <div class="target-meta muted">
             <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
             <span aria-hidden="true">·</span>
@@ -286,6 +293,20 @@
   .target-name {
     font-weight: 600;
     font-size: 1.05rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .target-common {
+    font-weight: 600;
+  }
+
+  .target-cat {
+    font-weight: 500;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
   }
 
   .target-meta {
