@@ -4,10 +4,12 @@
 
   Each schema field can carry UI metadata via Pydantic's
   `Field(json_schema_extra={...})`:
-    - ui_hidden: true     -> never shown (pipeline plumbing like
-                              input_basename / fitseq).
-    - ui_section: "advanced" -> collapsed behind an "Advanced" toggle.
-    - (default)           -> shown inline as part of the basic form.
+    - ui_hidden: true                    -> never shown (pipeline plumbing).
+    - ui_section: "advanced"             -> collapsed behind a disclosure.
+    - ui_when: {paramName: value}        -> only shown when current value of
+                                            paramName equals `value` (scalar)
+                                            or is in `value` (list).
+    - (default)                          -> always shown in basic.
 
   Control rendering is heuristic on the field shape:
     - enum         -> <select>
@@ -16,9 +18,11 @@
     - boolean      -> toggle (<input type=checkbox>)
     - string       -> <input type=text>
 
-  The component does NOT submit on its own; it emits 'change' events with
-  the new partial overrides for this node, so the parent can debounce and
-  PATCH the rendering.
+  Range/number controls follow a "live display, commit on release" model:
+  dragging the slider updates the displayed numeric value continuously but
+  doesn't fire `onchange` to the parent until the user releases. This keeps
+  the slider feeling responsive without queuing dozens of jobs while a
+  drag is in progress.
 -->
 <script lang="ts">
   import type { CostClass, JSONSchemaField } from '$lib/api';
@@ -41,24 +45,45 @@
     onchange
   }: Props = $props();
 
-  // Partition properties by UI section. Hidden fields drop out entirely;
-  // anything without a tag defaults to "basic" so a freshly-added param
-  // shows up by default rather than silently disappearing.
+  // Effective value: override wins, else default. Used for both reading the
+  // visible state of each control and for evaluating ui_when dependencies.
+  function effective(name: string): unknown {
+    return name in overrides ? overrides[name] : defaults[name];
+  }
+
+  // ui_when: a field is visible only when every dependency it lists matches
+  // the current effective value of the depended-on param. Scalar dep value
+  // = exact match; list = "any of these"; missing dep = treat as no match
+  // (defensively hide the dependent field). Returning true here means
+  // "render this field"; false means "skip it".
+  function isVisible(field: JSONSchemaField): boolean {
+    if (!field.ui_when) return true;
+    for (const [dep, expected] of Object.entries(field.ui_when)) {
+      const actual = effective(dep);
+      if (Array.isArray(expected)) {
+        if (!expected.includes(actual)) return false;
+      } else if (actual !== expected) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Partition properties by UI section, filtering out anything that's hidden
+  // or whose ui_when says it shouldn't show right now. Anything without a
+  // section tag defaults to "basic" so freshly-added params surface by
+  // default rather than silently disappearing.
   const partitioned = $derived.by(() => {
     const basic: [string, JSONSchemaField][] = [];
     const advanced: [string, JSONSchemaField][] = [];
     for (const [name, field] of Object.entries(schemaProps)) {
       if (field.ui_hidden === true) continue;
+      if (!isVisible(field)) continue;
       if (field.ui_section === 'advanced') advanced.push([name, field]);
       else basic.push([name, field]);
     }
     return { basic, advanced };
   });
-
-  // Effective value: override wins, else default.
-  function effective(name: string): unknown {
-    return name in overrides ? overrides[name] : defaults[name];
-  }
 
   function emit(name: string, value: unknown) {
     // Drop the override if the new value matches the default — keeps the
@@ -103,6 +128,32 @@
     const next: Record<string, unknown> = { ...overrides };
     delete next[name];
     onchange(next);
+  }
+
+  // Live values for range/number controls: while the user drags a slider,
+  // the displayed number updates per `oninput` but we don't push the change
+  // up to the parent (no PATCH gets queued). On release / blur we fire
+  // `onchange` once, which goes through the debounce on the parent. Keeps
+  // sliders feeling responsive without spawning a job per pixel of drag.
+  let liveValues = $state<Record<string, number>>({});
+
+  function liveOrEffective(name: string): unknown {
+    return name in liveValues ? liveValues[name] : effective(name);
+  }
+
+  function setLive(name: string, value: number) {
+    liveValues = { ...liveValues, [name]: value };
+  }
+
+  function commitLive(name: string, value: number) {
+    // Clear local draft first so the next render reads from the (possibly
+    // re-derived) effective value rather than stale draft state.
+    if (name in liveValues) {
+      const next = { ...liveValues };
+      delete next[name];
+      liveValues = next;
+    }
+    emit(name, value);
   }
 
   // Count of overridden params split by section so the badges + disclosure
@@ -160,6 +211,7 @@
           {/each}
         </select>
       {:else if ft === 'range'}
+        {@const live = liveOrEffective(name) as number}
         <div class="range-wrap">
           <input
             id="{nodeId}-{name}"
@@ -167,8 +219,9 @@
             min={field.minimum ?? field.exclusiveMinimum}
             max={field.maximum ?? field.exclusiveMaximum}
             step={rangeStep(field)}
-            value={val as number}
-            oninput={(e) => emit(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+            value={live}
+            oninput={(e) => setLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+            onchange={(e) => commitLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
           />
           <input
             type="number"
@@ -176,16 +229,19 @@
             min={field.minimum ?? field.exclusiveMinimum}
             max={field.maximum ?? field.exclusiveMaximum}
             step={rangeStep(field)}
-            value={val as number}
-            oninput={(e) => emit(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+            value={live}
+            oninput={(e) => setLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+            onchange={(e) => commitLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
           />
         </div>
       {:else if ft === 'number'}
+        {@const live = liveOrEffective(name) as number}
         <input
           id="{nodeId}-{name}"
           type="number"
-          value={val as number}
-          oninput={(e) => emit(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+          value={live}
+          oninput={(e) => setLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+          onchange={(e) => commitLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
         />
       {:else if ft === 'boolean'}
         <label class="toggle">

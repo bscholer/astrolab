@@ -20,6 +20,7 @@ In both modes seqapplyreg writes the actual r_<basename>_*.fit files.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -47,9 +48,8 @@ class SeqRegisterParams(BaseModel):
         description="Operate on a FITSEQ container instead of per-frame files.",
         json_schema_extra={"ui_hidden": True},
     )
-    method: str = Field(
+    method: Literal["platesolve", "star"] = Field(
         default="platesolve",
-        pattern=r"^(platesolve|star)$",
         description="Alignment strategy: 'platesolve' (default) writes WCS via "
         "seqplatesolve and reprojects frames; 'star' uses star-pattern matching "
         "via register -2pass. Platesolve is what Naztronomy uses and what we "
@@ -61,39 +61,48 @@ class SeqRegisterParams(BaseModel):
         description="Pass -disto=ps_distortion to seqplatesolve so optical "
         "distortion is modeled when reprojecting. Almost always wanted on "
         "wide-field smart telescopes.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "platesolve"},
+        },
     )
     # --- star method ---
     two_pass: bool = Field(
         default=True,
         description="(star method only) Pass -2pass for the refinement step.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "star"},
+        },
     )
-    transform: str = Field(
+    transform: Literal["homography", "affine", "similarity", "shift"] = Field(
         default="homography",
-        pattern=r"^(homography|affine|similarity|shift)$",
         description="(star method only) Transform model.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "star"},
+        },
     )
     min_pairs: int = Field(
         default=10,
         ge=4,
         le=200,
         description="(star method only) Minimum star pairs needed.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "star"},
+        },
     )
     # --- shared seqapplyreg flags ---
-    framing: str = Field(
+    framing: Literal["max", "min", "cog", "first", "none"] = Field(
         default="max",
-        pattern=r"^(max|min|cog|first|none)$",
         description="seqapplyreg framing: 'max' (default) keeps the union of "
         "all frame footprints, so dithered captures don't get cropped to the "
         "intersection. 'min' is the old default and crops aggressively.",
         json_schema_extra={"ui_section": "advanced"},
     )
-    kernel: str = Field(
+    kernel: Literal["square", "nearest", "cubic", "lanczos2", "lanczos3"] = Field(
         default="square",
-        pattern=r"^(square|nearest|cubic|lanczos2|lanczos3)$",
         description="seqapplyreg interpolation kernel. 'square' (Naztronomy "
         "default) preserves flux; 'lanczos3' is sharper but can introduce "
         "ringing on bright stars.",

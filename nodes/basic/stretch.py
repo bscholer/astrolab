@@ -42,29 +42,38 @@ class StretchParams(BaseModel):
     # --- autostretch ---
     linked: bool = Field(
         default=True,
-        description="(autostretch only) -linked stretches all three channels with "
-        "the same curve, preserving color. -unlinked stretches each channel "
-        "independently which often gives a flatter, more 'auto' look but can "
-        "wash out color casts you'd want to keep. Default linked.",
-        json_schema_extra={"ui_section": "advanced"},
+        description="-linked stretches all three channels with the same curve, "
+        "preserving color. -unlinked stretches each channel independently which "
+        "often gives a flatter, more 'auto' look but can wash out color casts "
+        "you'd want to keep. Default linked.",
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "autostretch"},
+        },
     )
     shadows_clip: float = Field(
         default=-2.8,
         ge=-10.0,
         le=0.0,
-        description="(autostretch only) Sigma offset below the median where shadows "
-        "get clipped. More negative keeps more shadow detail; closer to zero "
-        "produces a punchier image with crushed blacks. Siril default is -2.8.",
-        json_schema_extra={"hash_precision": 3},
+        description="Sigma offset below the median where shadows get clipped. "
+        "More negative keeps more shadow detail; closer to zero produces a "
+        "punchier image with crushed blacks. Siril default is -2.8.",
+        json_schema_extra={
+            "hash_precision": 3,
+            "ui_when": {"method": "autostretch"},
+        },
     )
     target_bg: float = Field(
         default=0.25,
         ge=0.0,
         le=1.0,
-        description="(autostretch only) Target background level in [0,1]. 0.25 "
-        "(Siril default) places the sky a quarter of the way up; lower values "
-        "darken the background, higher values brighten it.",
-        json_schema_extra={"hash_precision": 3},
+        description="Target background level in [0,1]. 0.25 (Siril default) "
+        "places the sky a quarter of the way up; lower values darken the "
+        "background, higher values brighten it.",
+        json_schema_extra={
+            "hash_precision": 3,
+            "ui_when": {"method": "autostretch"},
+        },
     )
 
     # --- mtf ---
@@ -72,23 +81,32 @@ class StretchParams(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="(mtf only) Black point. Anything below this becomes pure black.",
-        json_schema_extra={"hash_precision": 4},
+        description="Black point. Anything below this becomes pure black.",
+        json_schema_extra={
+            "hash_precision": 4,
+            "ui_when": {"method": "mtf"},
+        },
     )
     mtf_midtones: float = Field(
         default=0.25,
         ge=0.0,
         le=1.0,
-        description="(mtf only) Midtone balance. Lower values brighten faint detail "
+        description="Midtone balance. Lower values brighten faint detail "
         "(typical 0.1-0.3 for deep-sky); 0.5 is no-op.",
-        json_schema_extra={"hash_precision": 4},
+        json_schema_extra={
+            "hash_precision": 4,
+            "ui_when": {"method": "mtf"},
+        },
     )
     mtf_highlights: float = Field(
         default=1.0,
         ge=0.0,
         le=1.0,
-        description="(mtf only) White point. Anything above this clips to pure white.",
-        json_schema_extra={"hash_precision": 4},
+        description="White point. Anything above this clips to pure white.",
+        json_schema_extra={
+            "hash_precision": 4,
+            "ui_when": {"method": "mtf"},
+        },
     )
 
     # --- asinh ---
@@ -96,24 +114,33 @@ class StretchParams(BaseModel):
         default=10.0,
         ge=1.0,
         le=1000.0,
-        description="(asinh only) Stretch factor. Higher pulls fainter detail up; "
-        "10-50 is typical for galaxies, 100+ for very dim targets.",
-        json_schema_extra={"hash_precision": 2},
+        description="Stretch factor. Higher pulls fainter detail up; 10-50 is "
+        "typical for galaxies, 100+ for very dim targets.",
+        json_schema_extra={
+            "hash_precision": 2,
+            "ui_when": {"method": "asinh"},
+        },
     )
     asinh_offset: float = Field(
         default=0.0,
         ge=-1.0,
         le=1.0,
-        description="(asinh only) Black-point offset applied before the asinh curve. "
+        description="Black-point offset applied before the asinh curve. "
         "Slightly negative (e.g. -0.01) suppresses the noise floor.",
-        json_schema_extra={"hash_precision": 4},
+        json_schema_extra={
+            "hash_precision": 4,
+            "ui_when": {"method": "asinh"},
+        },
     )
     asinh_human: bool = Field(
         default=False,
-        description="(asinh only) Use the human-vision-weighted variant (-human). "
-        "Preserves color saturation better but can over-emphasize green channels "
-        "on OSC data.",
-        json_schema_extra={"ui_section": "advanced"},
+        description="Use the human-vision-weighted variant (-human). Preserves "
+        "color saturation better but can over-emphasize green channels on OSC "
+        "data.",
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "asinh"},
+        },
     )
 
 

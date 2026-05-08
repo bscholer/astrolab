@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,30 +38,32 @@ class SeqStackParams(BaseModel):
         default=True,
         json_schema_extra={"ui_hidden": True},
     )
-    method: str = Field(
+    method: Literal["rej", "mean", "median", "min", "max", "sum"] = Field(
         default="rej",
-        pattern=r"^(rej|mean|median|min|max|sum)$",
         description="Stacking algorithm. 'rej' (default) is sigma-clipped rejection "
         "and is what you almost always want for deep-sky lights.",
     )
     sigma_low: float = Field(
         default=3.0, ge=0.5, le=10.0,
         description="Lower sigma threshold for rejection. Only used when method='rej'.",
+        json_schema_extra={"ui_when": {"method": "rej"}},
     )
     sigma_high: float = Field(
         default=3.0, ge=0.5, le=10.0,
         description="Upper sigma threshold for rejection.",
+        json_schema_extra={"ui_when": {"method": "rej"}},
     )
-    rejection_type: str = Field(
+    rejection_type: Literal["w", "s", "p", "l", "m", "n"] = Field(
         default="w",
-        pattern=r"^(w|s|p|l|m|n)$",
         description="Rejection algorithm: w=winsorized, s=sigma, p=percentile, "
         "l=linearfit, m=median, n=none.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"method": "rej"},
+        },
     )
-    norm: str = Field(
+    norm: Literal["no", "add", "addscale", "mul", "mulscale"] = Field(
         default="addscale",
-        pattern=r"^(no|add|addscale|mul|mulscale)$",
         description="Normalization. 'addscale' (additive + scale) is the standard for "
         "deep-sky lights with varying transparency.",
         json_schema_extra={"ui_section": "advanced"},

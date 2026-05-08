@@ -306,6 +306,12 @@ export interface JSONSchemaField {
   hash_precision?: number;
   ui_hidden?: boolean;
   ui_section?: 'basic' | 'advanced';
+  // Conditional visibility: a map of {paramName: expectedValue}. The field
+  // is rendered only when every dependency in the map matches the current
+  // effective value of that param (overrides ?? defaults). A list value
+  // means "any of these"; a scalar means exact match. Useful for showing
+  // method-specific knobs (mtf_* only when method=mtf, etc.).
+  ui_when?: Record<string, unknown>;
   [k: string]: unknown;
 }
 

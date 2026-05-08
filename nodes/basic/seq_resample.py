@@ -24,6 +24,7 @@ everything past that operates fine on resampled data.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -49,26 +50,27 @@ class SeqResampleParams(BaseModel):
         description="Operate on a FITSEQ container instead of per-frame files.",
         json_schema_extra={"ui_hidden": True},
     )
-    scale: float = Field(
-        default=1.0,
-        ge=0.1,
-        le=1.0,
-        description="Downscale factor applied to every frame before the heavy "
-        "register/stack stages run. 1.0 = native resolution (default). 0.5 "
-        "halves each side (~4x faster downstream); 0.25 quarters each side "
-        "(~16x faster). Use small values for fast iteration on stretch / "
-        "pedestal / rejection params; bump back to 1.0 for the final render. "
-        "Each (scale, params) pairing has its own cache lineage, so flipping "
-        "between draft and final is cheap once both have been built.",
-        json_schema_extra={"hash_precision": 3},
+    mode: Literal["full", "draft"] = Field(
+        default="full",
+        description="'full' resamples at native resolution (passthrough — "
+        "downstream sees frames unchanged). 'draft' downscales each frame to "
+        "half resolution before the heavy register/stack stages run, giving "
+        "~4x speedup. Use 'draft' for fast iteration on stretch / pedestal / "
+        "rejection params; flip back to 'full' for the final render. Each "
+        "mode has its own cache lineage so toggling is cheap once both are "
+        "built.",
     )
-    interp: str = Field(
+    interp: Literal[
+        "nearest", "bilinear", "cubic", "lanczos2", "lanczos3", "area", "nogrid"
+    ] = Field(
         default="cubic",
-        pattern=r"^(nearest|bilinear|cubic|lanczos2|lanczos3|area|nogrid)$",
         description="Interpolation kernel passed to Siril seqresample. 'cubic' "
         "(default) is a good speed/quality compromise; 'lanczos3' is sharper "
         "but slower; 'area' is best for downscaling without aliasing.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"mode": "draft"},
+        },
     )
 
 
@@ -105,15 +107,21 @@ class SeqResampleNode(Node[SeqResampleParams]):
                 f"'{params.input_basename}' under {seq_in}"
             )
 
+        # 'full' mode is a passthrough: we still go through Siril seqresample
+        # at scale=1.0 so the rs_ prefix is consistent for downstream
+        # basenames. Siril's resample at unity is essentially a copy/rename;
+        # the overhead is dwarfed by register/stack downstream.
+        scale = 1.0 if params.mode == "full" else 0.5
         ctx.progress(
             0.2,
-            f"seq_resample: scale={params.scale:g} on {len(staged)} frames",
+            f"seq_resample: mode={params.mode} (scale={scale:g}) on "
+            f"{len(staged)} frames",
         )
         commands = [
             f"cd {_quote(seq_out.resolve())}",
             (
                 f"seqresample {params.input_basename} "
-                f"-scale={params.scale:g} "
+                f"-scale={scale:g} "
                 f"-interp={params.interp} "
                 f"-prefix=rs_"
             ),
