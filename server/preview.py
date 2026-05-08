@@ -169,9 +169,15 @@ def _render_via_siril(src: Path, dst: Path) -> bool:
         if not out_png.exists():
             log.warning("siril preview ran but produced no PNG at %s", out_png)
             return False
-        # Siril savepng writes 16-bit PNG at full resolution; thumbnail it
-        # down so the cached preview stays small.
-        img = Image.open(out_png).convert("RGB")
+        # Siril savepng writes 16-bit PNG at full resolution. PIL opens 16-bit
+        # mono PNGs as mode 'I' (32-bit int with 0..65535 values); a naive
+        # .convert('RGB') clips everything >255 to white instead of scaling.
+        # Scale down to 8-bit ourselves before letting PIL touch RGB.
+        img = Image.open(out_png)
+        if img.mode in ("I", "I;16"):
+            arr = np.asarray(img, dtype=np.uint32)
+            img = Image.fromarray(np.clip(arr // 256, 0, 255).astype(np.uint8), mode="L")
+        img = img.convert("RGB")
         img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
         img.save(dst, "PNG", optimize=True)
     return True
