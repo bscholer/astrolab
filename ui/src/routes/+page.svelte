@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { api, type TargetSummary, type TargetDetail, type CalibrationStatus } from '$lib/api';
+  import { goto } from '$app/navigation';
+  import {
+    api,
+    type CalibrationMode,
+    type CalibrationStatus,
+    type Template,
+    type TargetDetail,
+    type TargetSummary
+  } from '$lib/api';
 
   let targets = $state<TargetSummary[] | null>(null);
   let error = $state<string | null>(null);
@@ -9,6 +17,14 @@
   let scanning = $state(false);
   let scanRoot = $state('');
   let scanResult = $state<string | null>(null);
+
+  // Runs UI: which session's Run panel is open, plus its in-progress form state.
+  let templates = $state<Template[] | null>(null);
+  let runOpenSessionId = $state<number | null>(null);
+  let runTemplateId = $state<string>('calibrate_register_stack');
+  let runCalibrationMode = $state<CalibrationMode>('auto');
+  let runError = $state<string | null>(null);
+  let running = $state(false);
 
   async function load() {
     error = null;
@@ -54,7 +70,33 @@
 
   $effect(() => {
     load();
+    // Templates rarely change; one fetch at mount is plenty.
+    api.listTemplates()
+      .then((t) => (templates = t))
+      .catch((e) => console.error('listTemplates failed', e));
   });
+
+  function toggleRun(sessionId: number) {
+    runError = null;
+    runOpenSessionId = runOpenSessionId === sessionId ? null : sessionId;
+  }
+
+  async function submitRun(sessionId: number) {
+    runError = null;
+    running = true;
+    try {
+      const res = await api.submitFromSession({
+        session_id: sessionId,
+        template_id: runTemplateId,
+        calibration: { mode: runCalibrationMode },
+      });
+      goto(`/jobs/${res.job_id}`);
+    } catch (e) {
+      runError = (e as Error).message;
+    } finally {
+      running = false;
+    }
+  }
 
   function shortDate(iso: string | null): string {
     if (!iso) return '';
@@ -202,7 +244,51 @@
                           </button>
                         {/each}
                       </span>
+                      <button
+                        type="button"
+                        class="run-btn"
+                        onclick={() => toggleRun(s.id)}
+                        aria-expanded={runOpenSessionId === s.id}
+                      >
+                        {runOpenSessionId === s.id ? 'Cancel' : 'Run…'}
+                      </button>
                     </div>
+                    {#if runOpenSessionId === s.id}
+                      <div class="run-panel">
+                        <label class="run-row">
+                          <span>Template</span>
+                          <select bind:value={runTemplateId}>
+                            {#if templates === null}
+                              <option>loading…</option>
+                            {:else}
+                              {#each templates as t (t.id)}
+                                <option value={t.id}>{t.id}</option>
+                              {/each}
+                            {/if}
+                          </select>
+                        </label>
+                        <label class="run-row">
+                          <span>Calibration</span>
+                          <select bind:value={runCalibrationMode}>
+                            <option value="auto">auto (use catalog match)</option>
+                            <option value="none">none (skip masters)</option>
+                          </select>
+                        </label>
+                        <div class="run-actions">
+                          <button
+                            type="button"
+                            class="run-go"
+                            onclick={() => submitRun(s.id)}
+                            disabled={running}
+                          >
+                            {running ? 'Submitting…' : 'Run pipeline'}
+                          </button>
+                          {#if runError}
+                            <span class="run-err">{runError}</span>
+                          {/if}
+                        </div>
+                      </div>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -513,6 +599,76 @@
 
   .legend-swatch::after {
     display: none !important;
+  }
+
+  .run-btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--accent, #7aa2ff);
+    padding: 0.2rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    margin-left: 0.5rem;
+  }
+  .run-btn:hover {
+    background: rgba(122, 162, 255, 0.1);
+  }
+  .run-btn[aria-expanded='true'] {
+    background: rgba(122, 162, 255, 0.18);
+  }
+  .run-panel {
+    margin-top: 0.4rem;
+    padding: 0.5rem 0.6rem;
+    background: rgba(122, 162, 255, 0.06);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+  }
+  .run-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .run-row > span {
+    min-width: 5.5rem;
+    color: var(--fg-mute);
+  }
+  .run-row select {
+    flex: 1;
+    padding: 0.25rem 0.4rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font: inherit;
+  }
+  .run-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .run-go {
+    background: var(--accent, #7aa2ff);
+    color: #0a0c10;
+    border: none;
+    padding: 0.3rem 0.9rem;
+    border-radius: 999px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .run-go:disabled {
+    opacity: 0.6;
+    cursor: progress;
+  }
+  .run-err {
+    color: var(--bad, #f88);
+    font-size: 0.8rem;
   }
 
   @media (max-width: 600px) {

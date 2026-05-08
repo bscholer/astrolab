@@ -1,0 +1,43 @@
+id: calibrate_register_stack
+version: 1
+description: |
+  Standard 4-step OSC light pipeline: convert raw subs into a Siril sequence,
+  apply a master dark + cosmetic correction, register frames with two-pass
+  alignment + seqapplyreg, then sigma-clipped (winsorized) stack.
+  Inputs the Job must supply:
+    convert.lights  -> a directory of raw .fits subs (typically a Dwarf 3 session folder)
+    calibrate.dark  -> a master_dark .fits matched on instrument/exptime/gain/temp
+
+nodes:
+  - id: convert
+    kind: convert_lights
+    params:
+      basename: light
+      fitseq: false
+  - id: calibrate
+    kind: calibrate
+    params:
+      input_basename: light
+      fitseq: false
+      cosmetic: true
+    inputs:
+      sequence: convert.sequence
+  - id: register
+    kind: seq_register
+    params:
+      input_basename: pp_light
+      fitseq: false
+      two_pass: true
+    inputs:
+      sequence: calibrate.sequence
+  - id: stack
+    kind: seq_stack
+    params:
+      input_basename: r_pp_light
+      fitseq: false
+      method: rej
+    inputs:
+      sequence: register.sequence
+
+outputs:
+  image: stack.image

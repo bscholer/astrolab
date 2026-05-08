@@ -145,6 +145,18 @@ export interface JobEvent {
   kind?: string;
 }
 
+export type CalibrationMode = 'auto' | 'explicit' | 'none';
+export interface CalibrationSpec {
+  mode: CalibrationMode;
+  master_ids?: Record<string, number>;
+}
+
+export interface SubmitFromSessionRequest {
+  session_id: number;
+  template_id: string;
+  calibration?: CalibrationSpec;
+}
+
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
@@ -153,6 +165,9 @@ export const api = {
   listJobs: () => getJSON<JobSummary[]>('/api/jobs'),
   getJob: (id: string) => getJSON<JobSummary>(`/api/jobs/${id}`),
   getJobEvents: (id: string) => getJSON<JobEvent[]>(`/api/jobs/${id}/events`),
+  listTemplates: () => getJSON<Template[]>('/api/templates'),
+  submitFromSession: (req: SubmitFromSessionRequest) =>
+    postJSON<{ job_id: string }>('/api/jobs/from_session', req),
   /**
    * Open a WebSocket for live event streaming. The server replays buffered
    * history and then closes when the job hits a terminal state.

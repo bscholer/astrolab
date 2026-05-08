@@ -36,9 +36,16 @@ import server.catalog.adapters  # noqa: F401  registers ingest adapters
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.scanner import scan as run_scan
+from server.job_builder import (
+    CalibrationMissing,
+    JobBuildError,
+    SessionNotFound,
+    build_from_session,
+)
 from server.jobs import JobManager
-from server.models import Job, Template
+from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_preview
+from server.templates import TemplateNotFound, list_templates, load_template
 
 log = logging.getLogger("astrolab.api")
 
@@ -354,6 +361,46 @@ class SubmitJobResponse(BaseModel):
 def submit_job(req: SubmitJobRequest) -> SubmitJobResponse:
     job_id = job_manager.submit(req.template, req.job)
     log.info("job submitted: %s template=%s", job_id, req.template.id)
+    return SubmitJobResponse(job_id=job_id)
+
+
+@app.get("/api/templates")
+def list_templates_endpoint() -> list[dict]:
+    return [t.model_dump(mode="json") for t in list_templates()]
+
+
+class SubmitFromSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: int
+    template_id: str
+    calibration: CalibrationSpec | None = None
+
+
+@app.post("/api/jobs/from_session", response_model=SubmitJobResponse)
+def submit_from_session(req: SubmitFromSessionRequest, conn: DBDep) -> SubmitJobResponse:
+    """Build a Job from a catalog session and submit it.
+
+    Resolves the session's lights folder + matched master (per calibration
+    spec) into the template's external inputs. Surfaces 404 when session or
+    template is unknown, 400 when calibration can't be resolved.
+    """
+    try:
+        template = load_template(req.template_id)
+    except TemplateNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"template {exc} not found") from exc
+    try:
+        job = build_from_session(conn, req.session_id, template, req.calibration)
+    except SessionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CalibrationMissing as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except JobBuildError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = job_manager.submit(template, job)
+    log.info(
+        "job submitted from session: %s session=%s template=%s",
+        job_id, req.session_id, req.template_id,
+    )
     return SubmitJobResponse(job_id=job_id)
 
 
