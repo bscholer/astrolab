@@ -9,9 +9,44 @@
       entries (used by other projects) stay on disk.
 -->
 <script lang="ts">
-  import { api, type Project, type StorageSnapshot } from '$lib/api';
+  import { api, type Project, type ProjectCapture, type StorageSnapshot } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
-  import { formatBytes, shortAgo, templateDisplayName } from '$lib/format';
+  import {
+    failPctClass,
+    formatBytes,
+    formatFailPct,
+    shortAgo,
+    templateDisplayName
+  } from '$lib/format';
+
+  function shortDate(iso: string | null): string {
+    return iso ? iso.slice(0, 10) : '';
+  }
+
+  /** Format the date span of the project's source sessions: a single
+   * date when start/end fall on the same day, otherwise 'YYYY-MM-DD →
+   * YYYY-MM-DD'. Empty string when nothing's known. */
+  function captureDateRange(c: ProjectCapture | undefined): string {
+    if (!c) return '';
+    const s = shortDate(c.started_at);
+    const e = shortDate(c.ended_at);
+    if (!s && !e) return '';
+    if (!e || s === e) return s || e;
+    return `${s} → ${e}`;
+  }
+
+  /** Class hint for the Astro/Duo-Band/etc. filter chip. Narrowband
+   * filters get the magenta treatment, broadband (Astro / UV/IR / L)
+   * the cool steel-blue. Falls through to a neutral chip otherwise. */
+  function filterClass(f: string | null | undefined): string {
+    if (!f) return '';
+    const k = f.toLowerCase();
+    if (k.includes('duo') || k.includes('ha') || k.includes('oiii') || k.includes('sii') || k.includes('narrow'))
+      return 'duoband';
+    if (k.includes('astro') || k.includes('uv/ir') || k === 'l' || k.includes('lum') || k.includes('rgb') || k.includes('broad'))
+      return 'astro';
+    return '';
+  }
 
   let projects = $state<Project[] | null>(null);
   let storage = $state<StorageSnapshot | null>(null);
@@ -128,12 +163,44 @@
         {/if}
         <a class="prow-link" href="/projects/{r.id}">
           <div class="prow-name">
-            {r.name}
+            {#if r.capture?.target_common_name && r.capture.target_common_name !== r.name}
+              {r.capture.target_common_name}
+              <span class="prow-cat muted">{r.name}</span>
+            {:else}
+              {r.name}
+            {/if}
             {#if !r.preview_hash}
               <span class="version-chip">v{r.current_seq + 1}</span>
             {/if}
           </div>
           <div class="prow-template">{templateDisplayName(r.template_id)}</div>
+          {#if r.capture && r.capture.frame_count > 0}
+            <div class="prow-meta muted small">
+              <span class="meta-strong num">{r.capture.frame_count.toLocaleString()} frames</span>
+              <span class="dot" aria-hidden="true">·</span>
+              <span class="fail-pct {failPctClass(r.capture.failed_count, r.capture.frame_count)}">
+                {formatFailPct(r.capture.failed_count, r.capture.frame_count)}
+              </span>
+              {#if r.capture.session_count > 0}
+                <span class="dot" aria-hidden="true">·</span>
+                <span>{r.capture.session_count} session{r.capture.session_count === 1 ? '' : 's'}</span>
+              {/if}
+              {#if r.capture.exptime != null || r.capture.gain != null}
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="num">
+                  {#if r.capture.exptime != null}{r.capture.exptime}s{/if}{#if r.capture.exptime != null && r.capture.gain != null} · {/if}{#if r.capture.gain != null}gain {r.capture.gain}{/if}
+                </span>
+              {/if}
+              {#if r.capture.filter}
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="filter-pill {filterClass(r.capture.filter)}">{r.capture.filter}</span>
+              {/if}
+              {#if captureDateRange(r.capture)}
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="num">{captureDateRange(r.capture)}</span>
+              {/if}
+            </div>
+          {/if}
           <div class="prow-foot muted small">
             <span class="num" title={r.updated_at}>edited {shortAgo(r.updated_at)}</span>
           </div>
@@ -286,12 +353,73 @@
     font-variant: small-caps;
     letter-spacing: 0.02em;
   }
+  /* Mid-row meta: frames + % failed + sessions + capture details. The
+     same dot/strong/filter pattern Library uses inside session rows. */
+  .prow-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+  }
+  .prow-meta .dot { opacity: 0.5; }
+  .meta-strong {
+    color: var(--fg);
+    font-weight: 500;
+  }
   .prow-foot {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
     font-size: 0.78rem;
     opacity: 0.85;
+  }
+
+  /* Catalog id (M 33, NGC 7380) sits next to the friendly name in mono.
+     Nudge the baseline because the serif name sits taller than mono. */
+  .prow-cat {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    position: relative;
+    top: -0.1em;
+  }
+
+  /* Failure percentage — semantic color, matches Library tokens. */
+  .fail-pct {
+    color: var(--warn);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .fail-pct.fail-zero {
+    color: var(--good);
+    opacity: 0.85;
+  }
+  .fail-pct.fail-high {
+    color: var(--bad);
+    font-weight: 500;
+  }
+
+  /* Filter chip — narrowband / broadband at a glance. */
+  .filter-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    letter-spacing: 0.02em;
+    border: 1px solid currentColor;
+    line-height: 1.4;
+    color: var(--fg-mute);
+  }
+  .filter-pill.astro {
+    color: #a3d8ff;
+    background: rgba(163, 216, 255, 0.10);
+  }
+  .filter-pill.duoband {
+    color: var(--bad);
+    background: color-mix(in oklab, var(--bad) 12%, transparent);
   }
 
   /* Project thumbnail — real preview from the current job's output.

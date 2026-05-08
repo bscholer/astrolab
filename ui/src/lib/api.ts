@@ -247,6 +247,19 @@ export interface ProjectHistoryEntry {
   created_at: string;
 }
 
+export interface ProjectCapture {
+  session_count: number;
+  frame_count: number;
+  failed_count: number;
+  exptime: number | null;
+  gain: number | null;
+  filter: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  target_name: string | null;
+  target_common_name: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -267,6 +280,9 @@ export interface Project {
   // api.previewUrl() to render a row thumbnail.
   preview_hash?: string;
   preview_port?: string;
+  // Aggregated capture summary (frames + exposure + filter + dates) for
+  // the project's source sessions. Optional for older API responses.
+  capture?: ProjectCapture;
 }
 
 export interface CreateProjectFromSessionRequest {

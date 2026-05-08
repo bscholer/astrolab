@@ -725,6 +725,69 @@ def create_project_from_session(
     return project.to_public_dict()
 
 
+class ProjectCapture(BaseModel):
+    """Aggregate of the source sessions a project was built from. Surfaced
+    on /api/projects so each row in the Projects list can show frame
+    counts, exposure, gain, filter, and date range without the UI having
+    to fan out per-session lookups."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_count: int = 0
+    frame_count: int = 0
+    failed_count: int = 0
+    exptime: float | None = None
+    gain: int | None = None
+    filter: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    target_name: str | None = None
+    target_common_name: str | None = None
+
+
+def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> ProjectCapture:
+    """Aggregate the project's source sessions into a single capture
+    line. exptime/gain/filter are taken from the first session — typical
+    projects are built from one session, so the simple read is right
+    almost always; multi-session aggregations would need richer UI to
+    render mixed values anyway."""
+    if not session_ids:
+        return ProjectCapture()
+    try:
+        ids = [int(s) for s in session_ids]
+    except ValueError:
+        return ProjectCapture()
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT s.exptime, s.gain, s.filter, s.frame_count, s.failed_count,
+               s.started_at, s.ended_at, t.name AS target_name
+        FROM sessions s
+        LEFT JOIN targets t ON t.id = s.target_id
+        WHERE s.id IN ({placeholders})
+        ORDER BY s.started_at
+        """,
+        ids,
+    ).fetchall()
+    if not rows:
+        return ProjectCapture()
+    head = rows[0]
+    target_name = head["target_name"]
+    common_name, _ = _resolve_target_meta(target_name) if target_name else (None, None)
+    return ProjectCapture(
+        session_count=len(rows),
+        frame_count=sum((r["frame_count"] or 0) for r in rows),
+        failed_count=sum((r["failed_count"] or 0) for r in rows),
+        exptime=head["exptime"],
+        gain=head["gain"],
+        filter=head["filter"],
+        started_at=min((r["started_at"] for r in rows if r["started_at"]), default=None),
+        ended_at=max((r["ended_at"] for r in rows if r["ended_at"]), default=None),
+        target_name=target_name,
+        target_common_name=common_name,
+    )
+
+
 def _attach_preview(project_dict: dict) -> dict:
     """Resolve a (preview_hash, preview_port) pair for the project so
     the UI can render a thumbnail without a second roundtrip.
@@ -769,19 +832,28 @@ def _attach_preview(project_dict: dict) -> dict:
     return project_dict
 
 
+def _project_to_response(project, conn: sqlite3.Connection) -> dict:
+    payload = project.to_public_dict()
+    _attach_preview(payload)
+    payload["capture"] = _capture_for_project(
+        conn, payload.get("source_session_ids") or []
+    ).model_dump(mode="json")
+    return payload
+
+
 @app.get("/api/projects")
-def list_projects() -> list[dict]:
-    out = [_attach_preview(p.to_public_dict()) for p in project_manager.list()]
+def list_projects(conn: DBDep) -> list[dict]:
+    out = [_project_to_response(p, conn) for p in project_manager.list()]
     out.sort(key=lambda p: p["updated_at"], reverse=True)
     return out
 
 
 @app.get("/api/projects/{project_id}")
-def get_project(project_id: str) -> dict:
+def get_project(project_id: str, conn: DBDep) -> dict:
     project = project_manager.get(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"project {project_id} not found")
-    return _attach_preview(project.to_public_dict())
+    return _project_to_response(project, conn)
 
 
 @app.patch("/api/projects/{project_id}")

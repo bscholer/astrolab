@@ -53,6 +53,21 @@
   let nodeStartedAt = $state<Record<string, number>>({});
   let nodeDurationMs = $state<Record<string, number>>({});
 
+  // Per-node preview-image load state. The browser may take a noticeable
+  // beat to fetch / decode the PNG (especially for the first hit, which
+  // forces server-side render_preview). The flow card shows a skeleton
+  // shimmer until onload fires so the gap reads as "generating preview"
+  // instead of "broken".
+  let previewLoaded = $state<Record<string, boolean>>({});
+  function onPreviewLoad(nid: string) {
+    previewLoaded = { ...previewLoaded, [nid]: true };
+  }
+  function onPreviewError(nid: string) {
+    // Keep skeleton visible; clear the flag so a subsequent successful
+    // fetch flips it back to true and fades the image in.
+    previewLoaded = { ...previewLoaded, [nid]: false };
+  }
+
   let ws: WebSocket | null = null;
   const seenEventKey = new Set<string>();
   let subscribedJobId: string | null = null;
@@ -432,12 +447,17 @@
             {@const kind = nodeKind[nid] ?? schema.nodes.find((n) => n.node_id === nid)?.kind ?? nid}
             <li class="flow-card flow-{s}">
               {#if (s === 'completed' || s === 'cached') && h}
+                {#if !previewLoaded[nid]}
+                  <div class="flow-skeleton" aria-hidden="true"></div>
+                {/if}
                 <img
                   class="flow-preview"
+                  class:loaded={previewLoaded[nid]}
                   src={api.previewUrl(h, port)}
                   alt="{nid} preview"
                   loading="lazy"
-                  onerror={(e) => ((e.currentTarget as HTMLImageElement).style.opacity = '0')}
+                  onload={() => onPreviewLoad(nid)}
+                  onerror={() => onPreviewError(nid)}
                 />
               {:else}
                 <div class="flow-preview placeholder">
@@ -650,7 +670,35 @@
     height: 100%;
     object-fit: cover;
     display: block;
-    transition: opacity 120ms ease;
+    opacity: 0;
+    transition: opacity 280ms ease;
+  }
+  .flow-preview.loaded { opacity: 1; }
+
+  /* Skeleton shimmer underlay — visible until the preview img fires
+     onload, so the gap between 'node completed' and 'preview decoded
+     in the browser' reads as 'generating' instead of 'broken'. */
+  @keyframes flow-skeleton-shimmer {
+    0%   { background-position: -150% 0, 0 0; }
+    100% { background-position: 250% 0, 0 0; }
+  }
+  .flow-skeleton {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(110deg,
+        transparent 30%,
+        var(--accent-soft) 50%,
+        transparent 70%),
+      linear-gradient(180deg,
+        var(--bg-elev) 0%,
+        var(--bg-elev-2) 100%);
+    background-size: 200% 100%, 100% 100%;
+    background-repeat: no-repeat;
+    animation: flow-skeleton-shimmer 1.6s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flow-skeleton { animation: none; }
   }
   .flow-preview.placeholder {
     display: flex;
