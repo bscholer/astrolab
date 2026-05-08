@@ -78,6 +78,12 @@ export class ApiError extends Error {
   }
 }
 
+// Stable per-tab cache-buster so within a session the browser can cache
+// previews freely, but a fresh tab/reload gets fresh URLs (and dodges any
+// stale `immutable` PNGs from earlier renderer versions).
+const PREVIEW_CACHE_KEY =
+  typeof window !== 'undefined' ? Date.now().toString(36) : 'ssr';
+
 async function _readErrorDetail(r: Response): Promise<string> {
   // FastAPI errors come back as { detail: "..." }; non-JSON bodies fall
   // through to the raw text. Either way we never want to dump the raw
@@ -233,6 +239,11 @@ export const api = {
     return ws;
   },
   previewUrl(nodeHash: string, port: string): string {
-    return `/api/preview/${nodeHash}/${encodeURIComponent(port)}`;
+    // Cache-buster: previously we promised previews were `immutable` for 24h,
+    // which means stale renders linger in browser caches even after the
+    // server-side renderer changes. Each page load starts a new "session",
+    // so we tag URLs with that session id; within the session the browser
+    // can cache freely, across sessions it refetches.
+    return `/api/preview/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}`;
   }
 };
