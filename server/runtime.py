@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -47,6 +48,21 @@ class RunError(RuntimeError):
 
     def __init__(self, node_id: str, message: str) -> None:
         super().__init__(f"node {node_id!r} failed: {message}")
+        self.node_id = node_id
+
+
+class JobCancelled(RuntimeError):
+    """Raised when a job is cooperatively cancelled mid-run.
+
+    Distinct from RunError so JobManager can mark the record as
+    'interrupted' (resumable) instead of 'failed' (broken). The payload
+    carries the node id where cancellation took effect, for telemetry.
+    """
+
+    def __init__(self, node_id: str | None = None) -> None:
+        super().__init__(
+            f"cancelled at node {node_id!r}" if node_id else "cancelled"
+        )
         self.node_id = node_id
 
 
@@ -107,6 +123,7 @@ def run_job(
     progress: ProgressFn | None = None,
     events: EventFn | None = None,
     force: bool = False,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Ref]:
     """Execute a Job and return a map of declared template outputs to Refs.
 
@@ -122,10 +139,16 @@ def run_job(
     fresh outputs back into it. Used by the 'Reprocess' affordance so users
     can re-run a job from scratch (eg after a node version bump) without
     invalidating the cache for everyone else.
+
+    `cancel`: a cooperative cancellation Event. Checked between nodes and
+    propagated into each node's RunContext so subprocess-wrapping nodes can
+    abort mid-run. Set this when the job is superseded (eg the user tweaked
+    a slider mid-pipeline) to free the worker for the new job.
     """
     cache_obj: ContentCache = cache if cache is not None else ContentCache()
     on_progress: ProgressFn = progress if progress is not None else _noop_progress
     on_event: EventFn = events if events is not None else _noop_events
+    cancel_event: threading.Event = cancel if cancel is not None else threading.Event()
 
     by_id = {n.id: n for n in template.nodes}
     order = _topo_order(template)
@@ -134,6 +157,8 @@ def run_job(
     refs: dict[str, Ref] = dict(job.inputs)
 
     for nid in order:
+        if cancel_event.is_set():
+            raise JobCancelled(nid)
         spec = by_id[nid]
         node_cls: type[Node] = registry_lookup(spec.kind, spec.variant)
         node_inst: Node = node_cls()
@@ -223,9 +248,14 @@ def run_job(
                 tmpdir=Path(td),
                 progress=_node_progress,
                 log=log.getChild(nid),
+                cancel=cancel_event,
             )
             try:
                 produced = node_inst.run(resolved_inputs, params, ctx, out_dir)
+            except JobCancelled:
+                shutil.rmtree(out_dir, ignore_errors=True)
+                on_event({"type": "node_failed", "node_id": nid, "error": "cancelled"})
+                raise
             except Exception as exc:
                 shutil.rmtree(out_dir, ignore_errors=True)
                 on_event(

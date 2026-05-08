@@ -159,6 +159,7 @@ class StretchNode(Node[StretchParams]):
             commands,
             working_dir=out_dir_path,
             on_log=make_progress_handler(ctx),
+            cancel=ctx.cancel,
         )
         if result.returncode != 0:
             raise RuntimeError(

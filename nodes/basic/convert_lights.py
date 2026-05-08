@@ -121,6 +121,7 @@ class ConvertLightsNode(Node[ConvertLightsParams]):
             commands,
             working_dir=staging,
             on_log=make_progress_handler(ctx),
+            cancel=ctx.cancel,
         )
         if result.returncode != 0:
             raise RuntimeError(

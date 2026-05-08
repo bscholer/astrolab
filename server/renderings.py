@@ -312,6 +312,12 @@ class RenderingManager:
         Reruns with `force=True` and no param changes still append a history
         entry so the run is visible in the timeline.
 
+        Cancels the rendering's currently-active job before submitting the
+        new one: an in-flight pipeline that's about to be superseded by
+        fresh edits is wasted work, so we tell it to wind up cooperatively.
+        The cancelled job lands in history with status 'interrupted' and
+        the user can resume it later by re-submitting its overrides.
+
         Raises RenderingNotFound if the id is unknown.
         """
         with self._lock:
@@ -328,6 +334,12 @@ class RenderingManager:
 
         if draft_mode is not None:
             rendering.draft_mode = draft_mode
+
+        # Drop the prior active job before queuing a new one. Cooperative
+        # cancellation: the worker drains the cancel into 'interrupted'
+        # status; we don't block here.
+        prev_job_id = rendering.current_entry().job_id
+        self._jobs.cancel(prev_job_id)
 
         # Submit a fresh job. Even if overrides == prev_overrides AND not
         # forced, we still go through the submit path so the timeline records

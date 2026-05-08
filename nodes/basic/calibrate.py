@@ -152,6 +152,7 @@ class CalibrateNode(Node[CalibrateParams]):
             commands,
             working_dir=seq_out,
             on_log=make_progress_handler(ctx),
+            cancel=ctx.cancel,
         )
         if result.returncode != 0:
             raise RuntimeError(

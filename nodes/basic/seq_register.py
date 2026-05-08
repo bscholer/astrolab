@@ -190,6 +190,7 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
             # the second command's fresh 0% sweep advances to the upper half
             # instead of visually rewinding the bar to zero.
             on_log=make_progress_handler(ctx, phases=2),
+            cancel=ctx.cancel,
         )
         if result.returncode != 0:
             raise RuntimeError(

@@ -556,7 +556,7 @@ async def stream_job_events(ws: WebSocket, job_id: str) -> None:
         while True:
             event = await queue.get()
             await ws.send_json(event.to_dict())
-            if event.type in ("job_completed", "job_failed"):
+            if event.type in ("job_completed", "job_failed", "job_interrupted"):
                 break
     except WebSocketDisconnect:
         pass

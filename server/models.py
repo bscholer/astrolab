@@ -7,6 +7,7 @@ runtime, the cache, and (later) the catalog and UI all agree on data shapes.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -139,6 +140,12 @@ class RunContext(BaseModel):
     logger. The siril() callable lands in Phase 0+ once we ship the first Siril
     node; the field is intentionally absent here so the foundation runs on
     macOS without any Siril dependency.
+
+    `cancel` is a cooperative cancellation token. The runner sets it when a
+    job is superseded (eg the user tweaks a slider mid-run); long-running
+    nodes should pass it to subprocess wrappers so they can terminate
+    cleanly instead of finishing wasted work. Default is a fresh, never-set
+    Event so unaware nodes Just Work.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
@@ -146,3 +153,7 @@ class RunContext(BaseModel):
     tmpdir: Path
     progress: Annotated[Callable[[float, str], None], Field(repr=False)]
     log: Annotated[logging.Logger, Field(repr=False)]
+    cancel: Annotated[
+        threading.Event,
+        Field(repr=False, default_factory=threading.Event),
+    ]

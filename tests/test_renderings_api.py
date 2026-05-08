@@ -203,3 +203,68 @@ def test_template_schema_endpoint(client) -> None:
 def test_template_schema_unknown_404(client) -> None:
     r = client.get("/api/templates/not-real/schema")
     assert r.status_code == 404
+
+
+def test_cancel_running_job_marks_interrupted(client, tmp_path: Path) -> None:
+    """Set the cancel token on a record before the worker picks it up; the
+    worker should see it on entry, mark the job interrupted, and never run
+    a node. This is the path RenderingManager.patch uses to abandon stale
+    in-flight pipelines when the user tweaks a slider mid-render."""
+    src = _make_png(tmp_path / "in.png")
+    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+
+    body = client.patch(
+        f"/api/renderings/{rid}",
+        json={"overrides": {"ds": {"target_size_px": 32}}},
+    ).json()
+    job_id = body["history"][1]["job_id"]
+
+    from server.api import job_manager
+
+    # Whether we beat the worker or not is timing-dependent; the contract is
+    # that a job either finishes normally or ends up 'interrupted', never
+    # stuck in queue, never 'failed'.
+    job_manager.cancel(job_id)
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        rec = job_manager.get(job_id)
+        if rec is not None and rec.status in ("completed", "failed", "interrupted"):
+            break
+        time.sleep(0.05)
+    rec = job_manager.get(job_id)
+    assert rec is not None
+    assert rec.status in ("completed", "interrupted")
+
+
+def test_patch_signals_prior_running_job(monkeypatch, client, tmp_path: Path) -> None:
+    """Auto-cancel happens inside RenderingManager.patch: prior active job
+    (if still queued/running) gets its cancel token flipped before the new
+    job is queued. Verified here by stubbing JobManager.cancel and checking
+    the call history."""
+    from server.api import rendering_manager
+
+    src = _make_png(tmp_path / "in.png")
+    rid = client.post("/api/renderings", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/renderings/{rid}").json()["current_job_id"])
+
+    # Track what RenderingManager asks JobManager to cancel.
+    cancelled: list[str] = []
+    real_cancel = rendering_manager._jobs.cancel
+
+    def tracking_cancel(job_id: str) -> bool:
+        cancelled.append(job_id)
+        return real_cancel(job_id)
+
+    monkeypatch.setattr(rendering_manager._jobs, "cancel", tracking_cancel)
+
+    prior_job = client.get(f"/api/renderings/{rid}").json()["current_job_id"]
+    body = client.patch(
+        f"/api/renderings/{rid}",
+        json={"overrides": {"ds": {"target_size_px": 32}}},
+    ).json()
+    _wait_for_job(client, body["history"][1]["job_id"])
+
+    assert prior_job in cancelled, \
+        "patch should have asked JobManager to cancel the prior active job"

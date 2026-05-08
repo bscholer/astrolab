@@ -142,8 +142,14 @@ def _apply_offset(
             f"under {seq_in}"
         )
 
+    from server.runtime import JobCancelled  # local to dodge import cycle
+
     n = len(sources)
     for i, src in enumerate(sources):
+        # 200-frame sequences take real seconds; check cancel between frames
+        # so a mid-edit supersede doesn't have to wait for the loop to drain.
+        if ctx.cancel.is_set():
+            raise JobCancelled()
         dst = seq_out / src.name
         if pedestal == 0.0:
             shutil.copy(src.resolve(), dst)

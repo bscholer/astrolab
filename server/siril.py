@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -274,6 +275,7 @@ class SirilRuntime:
         on_log: LogFn | None = None,
         timeout: float | None = None,
         require_version: str = "1.4.0",
+        cancel: threading.Event | None = None,
     ) -> SirilResult:
         """Run a list of Siril commands as one .ssf script.
 
@@ -281,7 +283,17 @@ class SirilRuntime:
         <require_version>` so a script written against 1.4 fails fast on an
         older binary. Lines that already start with `requires` or `#` are
         passed through.
+
+        `cancel` is an optional cooperative cancellation token. When set, a
+        watchdog thread terminates the Siril subprocess and the call raises
+        JobCancelled. Used to interrupt long stack/register operations when
+        the rendering they belong to has been superseded by a fresh edit.
         """
+        from .runtime import JobCancelled  # local to dodge import cycle
+
+        if cancel is not None and cancel.is_set():
+            raise JobCancelled()
+
         ssf_text = self._compose_ssf(commands, require_version=require_version)
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -299,6 +311,10 @@ class SirilRuntime:
             "-s",
             str(ssf_path),
         ]
+
+        watchdog_stop = threading.Event()
+        watchdog: threading.Thread | None = None
+
         try:
             proc = subprocess.Popen(
                 argv,
@@ -307,6 +323,27 @@ class SirilRuntime:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+
+            if cancel is not None:
+                # Background poll: when cancel fires, terminate the Siril
+                # subprocess (its stdout closes, the read loop ends, we
+                # detect cancellation post-loop).
+                def _watch() -> None:
+                    while not watchdog_stop.is_set():
+                        if cancel.wait(timeout=0.5):
+                            log.info("siril: cancel event set, terminating pid %d", proc.pid)
+                            with contextlib.suppress(ProcessLookupError):
+                                proc.terminate()
+                            try:
+                                proc.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                with contextlib.suppress(ProcessLookupError):
+                                    proc.kill()
+                            return
+
+                watchdog = threading.Thread(target=_watch, daemon=True)
+                watchdog.start()
+
             stdout_chunks: list[str] = []
             assert proc.stdout is not None
             for raw_line in proc.stdout:
@@ -316,6 +353,12 @@ class SirilRuntime:
                     on_log(line)
             proc.wait(timeout=timeout)
             stderr = proc.stderr.read() if proc.stderr is not None else ""
+
+            if cancel is not None and cancel.is_set():
+                # Subprocess was killed by the watchdog. Surface as cancellation
+                # so JobManager can mark the run 'interrupted', not 'failed'.
+                raise JobCancelled()
+
             return SirilResult(
                 returncode=proc.returncode,
                 stdout="\n".join(stdout_chunks),
@@ -323,6 +366,9 @@ class SirilRuntime:
                 ssf=ssf_text,
             )
         finally:
+            watchdog_stop.set()
+            if watchdog is not None:
+                watchdog.join(timeout=1.0)
             with contextlib.suppress(FileNotFoundError):
                 ssf_path.unlink()
 

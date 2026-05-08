@@ -29,7 +29,7 @@ from .cache import ContentCache
 from .catalog.db import connect as open_catalog_db
 from .models import Job, Ref, Template
 from .ports import PortType
-from .runtime import RunError, run_job
+from .runtime import JobCancelled, RunError, run_job
 
 log = logging.getLogger("astrolab.jobs")
 
@@ -91,6 +91,10 @@ class JobRecord:
     error: str | None = None
     force: bool = False
     """Whether this submission should bypass the cache (set on Reprocess)."""
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    """Cooperative cancel token. Set externally to abort a running job; the
+    runtime checks between nodes and SirilRuntime watchdogs the subprocess.
+    Not persisted: the token is only meaningful for the current process."""
     events: list[JobEvent] = field(default_factory=list)
     _subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = field(
         default_factory=list
@@ -223,6 +227,24 @@ class JobManager:
         with self._lock:
             return list(self._records.values())
 
+    def cancel(self, job_id: str) -> bool:
+        """Set the cancel token for `job_id`. Returns True if the job was
+        live (queued/running) and signaled, False if no such job or it was
+        already terminal.
+
+        The runtime checks the token between nodes and SirilRuntime
+        watchdogs the subprocess; cancellation is cooperative, so a node
+        that ignores the token (or is already past every checkpoint) will
+        run to completion. JobCancelled is then translated into the
+        'interrupted' status by _run."""
+        record = self.get(job_id)
+        if record is None:
+            return False
+        if record.status not in ("queued", "running"):
+            return False
+        record.cancel_event.set()
+        return True
+
     def subscribe(self, job_id: str) -> asyncio.Queue | None:
         """Async-side: get a queue that receives buffered events + new ones live.
 
@@ -258,6 +280,13 @@ class JobManager:
     # -- worker side -------------------------------------------------------
 
     def _run(self, record: JobRecord) -> None:
+        # If the job was cancelled while still queued, short-circuit before
+        # advertising it as running. Saves a node_started event the UI
+        # would only have to walk back.
+        if record.cancel_event.is_set():
+            self._interrupt(record, "cancelled while queued")
+            return
+
         with self._lock:
             record.status = "running"
             record.started_at = _now()
@@ -284,6 +313,7 @@ class JobManager:
                 cache=self._cache,
                 events=event_sink,
                 force=record.force,
+                cancel=record.cancel_event,
             )
             with self._lock:
                 record.status = "completed"
@@ -291,6 +321,14 @@ class JobManager:
                 record.finished_at = _now()
             self._persist_record(record, kind="update")
             self._emit(record, JobEvent(type="job_completed", timestamp=_now()))
+        except JobCancelled as exc:
+            # Cancellation is a first-class outcome, not a failure: the
+            # rendering's history entry stays around with status 'interrupted'
+            # and the user can hit Resume to re-submit those overrides (cache
+            # makes already-completed nodes a free skip).
+            self._interrupt(
+                record, f"cancelled at node {exc.node_id!r}" if exc.node_id else "cancelled"
+            )
         except RunError as exc:
             self._fail(record, str(exc))
         except Exception as exc:  # pragma: no cover  (defensive)
@@ -304,6 +342,14 @@ class JobManager:
             record.finished_at = _now()
         self._persist_record(record, kind="update")
         self._emit(record, JobEvent(type="job_failed", timestamp=_now(), error=message))
+
+    def _interrupt(self, record: JobRecord, message: str) -> None:
+        with self._lock:
+            record.status = "interrupted"
+            record.error = message
+            record.finished_at = _now()
+        self._persist_record(record, kind="update")
+        self._emit(record, JobEvent(type="job_interrupted", timestamp=_now(), error=message))
 
     def _emit(self, record: JobRecord, event: JobEvent) -> None:
         with self._lock:

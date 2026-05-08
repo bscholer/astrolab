@@ -23,7 +23,7 @@ class FakeRuntime:
         self._on_run = on_run
 
     def run(self, commands, *, working_dir=None, on_log=None, timeout=None,
-            require_version="1.4.0") -> SirilResult:
+            require_version="1.4.0", cancel=None) -> SirilResult:
         self.calls.append(
             {"commands": list(commands), "working_dir": working_dir, "require": require_version}
         )

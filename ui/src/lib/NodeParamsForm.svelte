@@ -130,6 +130,15 @@
     <div class="param" class:overridden>
       <div class="param-head">
         <label for="{nodeId}-{name}">{name}</label>
+        {#if field.description}
+          <button
+            type="button"
+            class="info-icon"
+            data-tip={field.description}
+            aria-label={field.description}
+            tabindex="0"
+          >?</button>
+        {/if}
         {#if overridden}
           <button
             type="button"
@@ -197,9 +206,6 @@
         />
       {/if}
 
-      {#if field.description}
-        <p class="param-help muted small">{field.description}</p>
-      {/if}
     </div>
   {/snippet}
 
@@ -311,6 +317,64 @@
     text-decoration: underline;
   }
 
+  /* Help affordance: a tiny ? next to the param name. The full description
+     surfaces as a tooltip on hover/focus instead of taking permanent
+     vertical space; param descriptions are often a paragraph and pushed
+     the form to ridiculous heights. */
+  .info-icon {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border, #333);
+    color: var(--fg-mute, #888);
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    font-size: 0.65rem;
+    line-height: 1;
+    padding: 0;
+    cursor: help;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .info-icon:hover,
+  .info-icon:focus-visible {
+    color: var(--fg, #ddd);
+    border-color: var(--accent, #7aa2ff);
+    outline: none;
+  }
+  .info-icon[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    white-space: pre-line;
+    max-width: min(320px, 60vw);
+    width: max-content;
+    text-align: left;
+    background: var(--bg-elev, #14171d);
+    color: var(--fg, #ddd);
+    border: 1px solid var(--border, #333);
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 400;
+    line-height: 1.4;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 120ms ease, transform 120ms ease;
+    z-index: 5;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .info-icon:hover[data-tip]::after,
+  .info-icon:focus-visible[data-tip]::after {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
   .param input[type='text'],
   .param input[type='number'],
   .param select {
@@ -342,12 +406,6 @@
     gap: 0.4rem;
     font-size: 0.85rem;
     cursor: pointer;
-  }
-
-  .param-help {
-    font-size: 0.72rem;
-    line-height: 1.3;
-    margin: 0.1rem 0 0;
   }
 
   .advanced {

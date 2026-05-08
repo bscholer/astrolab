@@ -169,6 +169,7 @@ class SeqStackNode(Node[SeqStackParams]):
             commands,
             working_dir=work_dir,
             on_log=make_progress_handler(ctx),
+            cancel=ctx.cancel,
         )
         if result.returncode != 0:
             raise RuntimeError(
