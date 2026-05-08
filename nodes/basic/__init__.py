@@ -5,5 +5,6 @@ from . import save_image as _save_image  # noqa: F401  registers on import
 from . import seq_bg_extract as _seq_bg_extract  # noqa: F401  registers on import
 from . import seq_offset as _seq_offset  # noqa: F401  registers on import
 from . import seq_register as _seq_register  # noqa: F401  registers on import
+from . import seq_resample as _seq_resample  # noqa: F401  registers on import
 from . import seq_stack as _seq_stack  # noqa: F401  registers on import
 from . import stretch as _stretch  # noqa: F401  registers on import

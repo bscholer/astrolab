@@ -120,6 +120,7 @@
     if (
       kind === 'convert_lights' ||
       kind === 'calibrate' ||
+      kind === 'seq_resample' ||
       kind === 'seq_offset' ||
       kind === 'seq_register' ||
       kind === 'seq_bg_extract'
