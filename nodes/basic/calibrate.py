@@ -46,9 +46,11 @@ class CalibrateParams(BaseModel):
         "files. Must match the upstream convert_lights setting.",
     )
     cfa: bool = Field(
-        default=False,
+        default=True,
         description="Pass -cfa for OSC sensors so darks and flats are scaled per "
-        "Bayer pattern. Off by default for already-debayered or mono data.",
+        "Bayer pattern. On by default — this is the right behavior for any sensor "
+        "with BAYERPAT in the FITS header (Dwarf 3, Seestar, ZWO OSC). Flip off "
+        "only for mono cameras or already-debayered inputs.",
     )
     cosmetic: bool = Field(
         default=True,
@@ -56,9 +58,10 @@ class CalibrateParams(BaseModel):
         "Cheap and almost always wanted.",
     )
     equalize_cfa: bool = Field(
-        default=False,
-        description="Pass -equalize_cfa when calibrating CFA flats (fixes channel "
-        "offsets). Only meaningful with cfa=True.",
+        default=True,
+        description="Pass -equalize_cfa when calibrating CFA flats; equalizes the two "
+        "G channels of the Bayer pattern so post-debayer colors are balanced. Only "
+        "meaningful with cfa=True; on by default for the OSC pipeline.",
     )
     debayer: bool = Field(
         default=True,

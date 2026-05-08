@@ -1,15 +1,20 @@
-"""seq_register: align a sequence with Siril 1.4's `register` + `seqapplyreg`.
+"""seq_register: align a sequence (platesolve-based by default).
 
-Input port  : sequence (SEQUENCE_FITS) - typically the output of calibrate
+Input port  : sequence (SEQUENCE_FITS) - typically bg-extracted calibrated lights
 Output port : sequence (SEQUENCE_FITS) - r_<basename>_*.fit or r_<basename>.fit
 
-Siril 1.4 splits registration into two phases: `register` computes per-frame
-transforms (and writes them into the .seq file), `seqapplyreg` materializes
-the aligned frames as `r_<basename>_*.fit`. We always run both so the output
-is a usable sequence regardless of -2pass/-noout flags.
+Two alignment methods are supported:
 
-Optional filter-* options on seqapplyreg drop low-quality frames before they
-reach the stacker, which is the standard Naztronomy-style flow.
+- `platesolve` (default): runs `seqplatesolve` which writes WCS into each
+  frame, then `seqapplyreg` which reprojects them onto a common grid using
+  the astrometry. This is what Naztronomy's smart-telescope pipeline does
+  and is more robust against star-poor fields, dithered captures, and
+  moving targets — Dwarf 3 frames carry RA/DEC headers so it Just Works.
+
+- `star` (legacy): `register -2pass` (star-pattern matching) plus
+  `seqapplyreg`. Useful when frames have no usable astrometric headers.
+
+In both modes seqapplyreg writes the actual r_<basename>_*.fit files.
 """
 
 from __future__ import annotations
@@ -28,33 +33,63 @@ from server.siril import SirilRuntime
 
 class SeqRegisterParams(BaseModel):
     input_basename: str = Field(
-        default="pp_light",
+        default="bkg_pp_light",
         min_length=1,
         max_length=64,
         pattern=r"^[A-Za-z0-9_]+$",
-        description="Basename of the input sequence. Output is prefixed with 'r_'.",
+        description="Basename of the input sequence. Output is prefixed with 'r_'. "
+        "Default 'bkg_pp_light' assumes the canned pipeline order: convert -> "
+        "calibrate -> bg_extract -> register.",
     )
     fitseq: bool = Field(
         default=True,
         description="Operate on a FITSEQ container instead of per-frame files.",
     )
+    method: str = Field(
+        default="platesolve",
+        pattern=r"^(platesolve|star)$",
+        description="Alignment strategy: 'platesolve' (default) writes WCS via "
+        "seqplatesolve and reprojects frames; 'star' uses star-pattern matching "
+        "via register -2pass. Platesolve is what Naztronomy uses and what we "
+        "want for OSC smart-telescope captures with proper RA/DEC headers.",
+    )
+    # --- platesolve method ---
+    distortion: bool = Field(
+        default=True,
+        description="Pass -disto=ps_distortion to seqplatesolve so optical "
+        "distortion is modeled when reprojecting. Almost always wanted on "
+        "wide-field smart telescopes.",
+    )
+    # --- star method ---
     two_pass: bool = Field(
         default=True,
-        description="Pass -2pass for the global star alignment refinement step. "
-        "Roughly halves residuals at the cost of one extra pass.",
+        description="(star method only) Pass -2pass for the refinement step.",
     )
     transform: str = Field(
         default="homography",
         pattern=r"^(homography|affine|similarity|shift)$",
-        description="Transform model. Homography handles atmospheric turbulence and "
-        "field rotation; shift is fastest but only works for tracked mounts.",
+        description="(star method only) Transform model.",
     )
     min_pairs: int = Field(
         default=10,
         ge=4,
         le=200,
-        description="Minimum star pairs Siril must find to register a frame. Frames "
-        "below the threshold are dropped from the registered sequence.",
+        description="(star method only) Minimum star pairs needed.",
+    )
+    # --- shared seqapplyreg flags ---
+    framing: str = Field(
+        default="max",
+        pattern=r"^(max|min|cog|first|none)$",
+        description="seqapplyreg framing: 'max' (default) keeps the union of "
+        "all frame footprints, so dithered captures don't get cropped to the "
+        "intersection. 'min' is the old default and crops aggressively.",
+    )
+    kernel: str = Field(
+        default="square",
+        pattern=r"^(square|nearest|cubic|lanczos2|lanczos3)$",
+        description="seqapplyreg interpolation kernel. 'square' (Naztronomy "
+        "default) preserves flux; 'lanczos3' is sharper but can introduce "
+        "ringing on bright stars.",
     )
     filter_fwhm: float | None = Field(
         default=None, ge=0.0, le=1.0,
@@ -100,24 +135,43 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
                 f"'{params.input_basename}' under {seq_in}"
             )
 
-        reg_opts: list[str] = [f"-transf={params.transform}", f"-minpairs={params.min_pairs}"]
-        if params.two_pass:
-            reg_opts.append("-2pass")
-
-        # seqapplyreg writes the actual r_<basename>_*.fit files. Without it,
-        # `register -2pass` only updates the .seq metadata and no aligned frames
-        # land on disk. Filter options drop low-quality frames pre-stack.
-        apply_opts: list[str] = []
+        # seqapplyreg writes the r_<basename>_*.fit files in both methods.
+        # Filter options drop low-quality frames pre-stack.
+        apply_opts: list[str] = [
+            f"-framing={params.framing}",
+            f"-kernel={params.kernel}",
+        ]
         if params.filter_fwhm is not None:
             apply_opts.append(f"-filter-fwhm={params.filter_fwhm}")
         if params.filter_round is not None:
             apply_opts.append(f"-filter-round={params.filter_round}")
 
-        ctx.progress(0.2, f"seq_register: aligning {len(staged)} frames")
+        align_commands: list[str]
+        if params.method == "platesolve":
+            ctx.progress(0.2, f"seq_register: plate-solving {len(staged)} frames")
+            ps_opts = ["-nocache", "-force"]
+            if params.distortion:
+                ps_opts.append("-disto=ps_distortion")
+            align_commands = [
+                f"seqplatesolve {params.input_basename} {' '.join(ps_opts)}",
+                f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+            ]
+        else:  # star
+            ctx.progress(0.2, f"seq_register: star-aligning {len(staged)} frames")
+            reg_opts: list[str] = [
+                f"-transf={params.transform}",
+                f"-minpairs={params.min_pairs}",
+            ]
+            if params.two_pass:
+                reg_opts.append("-2pass")
+            align_commands = [
+                f"register {params.input_basename} {' '.join(reg_opts)}",
+                f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+            ]
+
         commands = [
             f"cd {_quote(seq_out.resolve())}",
-            f"register {params.input_basename} {' '.join(reg_opts)}",
-            f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+            *align_commands,
         ]
         runtime = SirilRuntime()
         result = runtime.run(

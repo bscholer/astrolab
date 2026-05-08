@@ -49,7 +49,49 @@ def _make_seq_dir(root: Path, basename: str, n_frames: int = 3) -> Path:
     return root
 
 
-def test_register_fitseq_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_platesolve_default_emits_seqplatesolve_and_seqapplyreg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default mode runs seqplatesolve + seqapplyreg, no `register` command."""
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    (seq_in / "bkg_pp_light.fit").write_bytes(b"FAKE")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        (out_dir / "sequence" / "r_bkg_pp_light.fit").write_bytes(b"FAKE")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
+
+    SeqRegisterNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+        },
+        params=SeqRegisterParams(),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    cmds = fake_rt.calls[0]["commands"]
+    assert any(c.startswith("seqplatesolve bkg_pp_light") for c in cmds)
+    assert not any(c.startswith("register ") for c in cmds)
+    apply_cmd = next(c for c in cmds if c.startswith("seqapplyreg "))
+    assert apply_cmd.startswith("seqapplyreg bkg_pp_light")
+    # Naztronomy-style flags on seqapplyreg.
+    assert "-framing=max" in apply_cmd
+    assert "-kernel=square" in apply_cmd
+    # seqplatesolve flags.
+    ps_cmd = next(c for c in cmds if c.startswith("seqplatesolve "))
+    assert "-nocache" in ps_cmd
+    assert "-force" in ps_cmd
+    assert "-disto=ps_distortion" in ps_cmd
+
+
+def test_star_method_emits_register_two_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     seq_in = tmp_path / "in"
     seq_in.mkdir()
     (seq_in / "pp_light.fit").write_bytes(b"FAKE")
@@ -62,90 +104,34 @@ def test_register_fitseq_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     fake_rt = FakeRuntime(on_run=fake)
     monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
 
-    refs = SeqRegisterNode().run(
-        inputs={
-            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
-                            type=PortType.SEQUENCE_FITS),
-        },
-        params=SeqRegisterParams(),
-        ctx=_ctx(tmp_path),
-        out_dir=out_dir,
-    )
-    assert refs["sequence"].path == out_dir / "sequence"
-    assert (refs["sequence"].path / "r_pp_light.fit").exists()
-    cmds = fake_rt.calls[0]["commands"]
-    reg = next(c for c in cmds if c.startswith("register "))
-    assert reg.startswith("register pp_light ")
-    assert "-2pass" in reg
-    assert "-transf=homography" in reg
-    assert "-minpairs=10" in reg
-    apply_cmd = next(c for c in cmds if c.startswith("seqapplyreg "))
-    assert apply_cmd.startswith("seqapplyreg pp_light")
-
-
-def test_register_per_frame_no_count_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Register can drop frames it cannot align; we don't enforce input==output count."""
-    seq_in = _make_seq_dir(tmp_path / "in", "pp_light", n_frames=5)
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    def fake(cmds, wd):
-        # Pretend siril dropped 1 frame for low star count.
-        seq_dir = out_dir / "sequence"
-        for i in (1, 2, 3, 4):  # 4 of 5 inputs make it through
-            (seq_dir / f"r_pp_light_{i:05d}.fit").write_bytes(b"")
-
-    fake_rt = FakeRuntime(on_run=fake)
-    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
-    refs = SeqRegisterNode().run(
-        inputs={
-            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
-                            type=PortType.SEQUENCE_FITS),
-        },
-        params=SeqRegisterParams(fitseq=False),
-        ctx=_ctx(tmp_path),
-        out_dir=out_dir,
-    )
-    frames = sorted((refs["sequence"].path).glob("r_pp_light_*.fit"))
-    assert len(frames) == 4
-
-
-def test_register_param_options_propagate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    seq_in = tmp_path / "in"
-    seq_in.mkdir()
-    (seq_in / "pp_light.fit").write_bytes(b"FAKE")
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    def fake(cmds, wd):
-        (out_dir / "sequence" / "r_pp_light.fit").write_bytes(b"")
-
-    fake_rt = FakeRuntime(on_run=fake)
-    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
     SeqRegisterNode().run(
         inputs={
             "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
                             type=PortType.SEQUENCE_FITS),
         },
-        params=SeqRegisterParams(two_pass=False, transform="shift", min_pairs=20),
+        params=SeqRegisterParams(method="star", input_basename="pp_light"),
         ctx=_ctx(tmp_path),
         out_dir=out_dir,
     )
-    reg = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("register "))
-    assert "-2pass" not in reg
-    assert "-transf=shift" in reg
-    assert "-minpairs=20" in reg
+    cmds = fake_rt.calls[0]["commands"]
+    reg = next(c for c in cmds if c.startswith("register "))
+    assert reg.startswith("register pp_light ")
+    assert "-2pass" in reg
+    assert "-transf=homography" in reg
+    assert not any(c.startswith("seqplatesolve ") for c in cmds)
 
 
-def test_register_filter_options_propagate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_filter_options_propagate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     seq_in = tmp_path / "in"
     seq_in.mkdir()
-    (seq_in / "pp_light.fit").write_bytes(b"")
+    (seq_in / "bkg_pp_light.fit").write_bytes(b"")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
     def fake(cmds, wd):
-        (out_dir / "sequence" / "r_pp_light.fit").write_bytes(b"")
+        (out_dir / "sequence" / "r_bkg_pp_light.fit").write_bytes(b"")
 
     fake_rt = FakeRuntime(on_run=fake)
     monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
@@ -163,10 +149,40 @@ def test_register_filter_options_propagate(tmp_path: Path, monkeypatch: pytest.M
     assert "-filter-round=0.1" in apply_cmd
 
 
-def test_register_raises_when_siril_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_per_frame_no_count_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """seqapplyreg can drop frames; we don't enforce input==output count."""
+    seq_in = _make_seq_dir(tmp_path / "in", "bkg_pp_light", n_frames=5)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        seq_dir = out_dir / "sequence"
+        for i in (1, 2, 3, 4):  # 4 of 5 inputs make it through
+            (seq_dir / f"r_bkg_pp_light_{i:05d}.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
+    refs = SeqRegisterNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+        },
+        params=SeqRegisterParams(fitseq=False),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    frames = sorted((refs["sequence"].path).glob("r_bkg_pp_light_*.fit"))
+    assert len(frames) == 4
+
+
+def test_raises_when_siril_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     seq_in = tmp_path / "in"
     seq_in.mkdir()
-    (seq_in / "pp_light.fit").write_bytes(b"")
+    (seq_in / "bkg_pp_light.fit").write_bytes(b"")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 

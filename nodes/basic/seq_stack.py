@@ -68,6 +68,25 @@ class SeqStackParams(BaseModel):
         description="Pass -weight=wfwhm to weight by FWHM. Cheap quality boost when "
         "frames vary in seeing; harmless to leave off.",
     )
+    rgb_equal: bool = Field(
+        default=True,
+        description="Pass -rgb_equal so Siril rescales each channel mean to match. "
+        "Fixes the pink/green color cast that OSC stacks tend to come out with; "
+        "Naztronomy's smart-telescope script always sets this.",
+    )
+    maximize: bool = Field(
+        default=True,
+        description="Pass -maximize: stack output spans the union of every frame's "
+        "footprint instead of just the first frame's. Matters for dithered or "
+        "drift-corrected sessions where edges would otherwise be cropped to the "
+        "least-common rectangle.",
+    )
+    filter_included: bool = Field(
+        default=True,
+        description="Pass -filter-included so frames marked excluded by upstream "
+        "quality assessment (eg seqapplyreg's filter-fwhm/round) are dropped from "
+        "the stack. Cheap, off only if you want to ignore prior filtering.",
+    )
 
 
 @register("seq_stack")
@@ -119,6 +138,12 @@ class SeqStackNode(Node[SeqStackParams]):
             cmd_parts.append(f"-norm={params.norm}")
         if params.output_norm:
             cmd_parts.append("-output_norm")
+        if params.rgb_equal:
+            cmd_parts.append("-rgb_equal")
+        if params.maximize:
+            cmd_parts.append("-maximize")
+        if params.filter_included:
+            cmd_parts.append("-filter-included")
         if params.weight_from_quality:
             cmd_parts.append("-weight=wfwhm")
         cmd_parts.append(f"-out={_quote(out_image.resolve())}")

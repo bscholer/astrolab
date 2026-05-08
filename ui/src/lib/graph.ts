@@ -16,6 +16,7 @@ import type { NodeSpec, Template } from './api';
 const NODE_DISPLAY_NAMES: Record<string, string> = {
   convert_lights: 'Convert',
   calibrate: 'Calibrate',
+  seq_bg_extract: 'Background',
   seq_register: 'Register',
   seq_stack: 'Stack',
   downscale: 'Downscale'

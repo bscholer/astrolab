@@ -14,9 +14,16 @@ def test_canned_template_parses() -> None:
 
 def test_load_template_by_id() -> None:
     t = load_template("calibrate_register_stack")
-    assert t.version == 1
+    assert t.version == 2
     kinds = [n.kind for n in t.nodes]
-    assert kinds == ["convert_lights", "calibrate", "seq_register", "seq_stack"]
+    # Naztronomy-aligned 5-step pipeline.
+    assert kinds == [
+        "convert_lights",
+        "calibrate",
+        "seq_bg_extract",
+        "seq_register",
+        "seq_stack",
+    ]
     # Output port wired through to the stacker.
     assert t.outputs == {"image": "stack.image"}
 

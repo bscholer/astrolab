@@ -1,9 +1,9 @@
 id: calibrate_register_stack
-version: 1
+version: 2
 description: |
-  Standard 4-step OSC light pipeline: convert raw subs into a Siril sequence,
-  apply a master dark + cosmetic correction, register frames with two-pass
-  alignment + seqapplyreg, then sigma-clipped (winsorized) stack.
+  OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
+    convert -> calibrate (CFA-aware, debayer) -> background extract
+            -> plate-solve register -> rejection stack with rgb_equal.
   Inputs the Job must supply:
     convert.lights  -> a directory of raw .fits subs (typically a Dwarf 3 session folder)
     calibrate.dark  -> a master_dark .fits matched on instrument/exptime/gain/temp
@@ -14,28 +14,42 @@ nodes:
     params:
       basename: light
       fitseq: false
+
   - id: calibrate
     kind: calibrate
     params:
       input_basename: light
       fitseq: false
-      cosmetic: true
+      # cfa, equalize_cfa, debayer, cosmetic all default-on for OSC.
     inputs:
       sequence: convert.sequence
-  - id: register
-    kind: seq_register
+
+  - id: bg_extract
+    kind: seq_bg_extract
     params:
       input_basename: pp_light
       fitseq: false
-      two_pass: true
+      degree: 1
+      samples: 10
     inputs:
       sequence: calibrate.sequence
+
+  - id: register
+    kind: seq_register
+    params:
+      input_basename: bkg_pp_light
+      fitseq: false
+      method: platesolve
+    inputs:
+      sequence: bg_extract.sequence
+
   - id: stack
     kind: seq_stack
     params:
-      input_basename: r_pp_light
+      input_basename: r_bkg_pp_light
       fitseq: false
       method: rej
+      # rgb_equal / maximize / filter_included default-on.
     inputs:
       sequence: register.sequence
 
