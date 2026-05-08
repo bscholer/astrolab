@@ -28,7 +28,7 @@ from nodes.basic.calibrate import _quote, _stage_sequence
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
-from server.siril import SirilRuntime
+from server.siril import SirilRuntime, make_progress_handler
 
 
 class SeqRegisterParams(BaseModel):
@@ -177,7 +177,10 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
         result = runtime.run(
             commands,
             working_dir=seq_out,
-            on_log=lambda line: ctx.log.debug("siril: %s", line),
+            # Two Siril sub-commands run in succession (platesolve+applyreg or
+            # register+applyreg); each emits its own 0..100 sweep, so the bar
+            # may briefly reset within the node — the message text shows where.
+            on_log=make_progress_handler(ctx),
         )
         if result.returncode != 0:
             raise RuntimeError(

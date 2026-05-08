@@ -21,7 +21,7 @@ from nodes.basic.calibrate import _quote, _stage_sequence
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
-from server.siril import SirilRuntime
+from server.siril import SirilRuntime, make_progress_handler
 
 
 class SeqBgExtractParams(BaseModel):
@@ -96,7 +96,7 @@ class SeqBgExtractNode(Node[SeqBgExtractParams]):
         result = runtime.run(
             commands,
             working_dir=seq_out,
-            on_log=lambda line: ctx.log.debug("siril: %s", line),
+            on_log=make_progress_handler(ctx),
         )
         if result.returncode != 0:
             raise RuntimeError(

@@ -17,6 +17,7 @@ from server.siril import (
     SirilRuntime,
     _parse_version,
     find_siril,
+    parse_progress,
 )
 
 
@@ -140,6 +141,30 @@ def test_runtime_init_uses_passed_binary(tmp_path: Path) -> None:
     fake.touch()
     rt = SirilRuntime(binary=SirilBinary(path=fake, source="env"))
     assert rt.binary.path == fake
+
+
+def test_parse_progress_pulls_message_and_fraction() -> None:
+    line = "progress: Rejection stacking in progress..., 50.00%"
+    parsed = parse_progress(line)
+    assert parsed is not None
+    msg, frac = parsed
+    assert msg == "Rejection stacking in progress..."
+    assert frac == 0.5
+
+
+def test_parse_progress_clamps_and_handles_zero() -> None:
+    parsed = parse_progress("progress: Finalizing stacking..., 99.91%")
+    assert parsed is not None
+    assert parsed[0] == "Finalizing stacking..."
+    assert abs(parsed[1] - 0.9991) < 1e-6
+    parsed0 = parse_progress("progress: starting, 0%")
+    assert parsed0 is not None and parsed0[1] == 0.0
+
+
+def test_parse_progress_returns_none_for_log_lines() -> None:
+    assert parse_progress("log: Welcome to siril 1.4.3") is None
+    assert parse_progress("Reading sequence failed.") is None
+    assert parse_progress("") is None
 
 
 def test_run_invokes_subprocess(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

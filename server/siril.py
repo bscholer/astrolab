@@ -26,6 +26,58 @@ from pathlib import Path
 
 log = logging.getLogger("astrolab.siril")
 
+
+# ---------------------------------------------------------------------------
+# Progress parsing
+# ---------------------------------------------------------------------------
+
+# Siril emits lines like 'progress: Rejection stacking in progress..., 50.00%'
+# while a long-running command runs. We forward those into ctx.progress so the
+# UI bar moves continuously instead of jumping 20 -> 100.
+_PROGRESS_RE = re.compile(r"^progress:\s*(.+?),\s*(\d+(?:\.\d+)?)\s*%\s*$")
+
+
+def parse_progress(line: str) -> tuple[str, float] | None:
+    """Pull (message, fraction in [0, 1]) from a Siril `progress:` line.
+
+    Returns None for lines that don't match (the vast majority — most of
+    Siril's stdout is `log:` chatter).
+    """
+    m = _PROGRESS_RE.match(line)
+    if m is None:
+        return None
+    pct = float(m.group(2)) / 100.0
+    return m.group(1).strip(), max(0.0, min(pct, 1.0))
+
+
+def make_progress_handler(
+    ctx,
+    *,
+    low: float = 0.2,
+    high: float = 0.95,
+    prefix: str = "",
+):
+    """Return an on_log handler that forwards Siril progress lines through
+    `ctx.progress`, mapping 0..100% onto the [low, high] sub-range so the
+    node's pre/post work still has room. Non-progress lines are sent to
+    `ctx.log` at debug level.
+
+    `prefix` is prepended to every progress message; useful for nodes that
+    emit multiple Siril commands in a row, where the same 0..100% sweep
+    happens twice and the message text is what tells the user where they are.
+    """
+
+    def handler(line: str) -> None:
+        ctx.log.debug("siril: %s", line)
+        parsed = parse_progress(line)
+        if parsed is None:
+            return
+        msg, frac = parsed
+        scaled = low + frac * (high - low)
+        ctx.progress(scaled, f"{prefix}{msg}" if prefix else msg)
+
+    return handler
+
 # ---------------------------------------------------------------------------
 # Binary discovery
 # ---------------------------------------------------------------------------
