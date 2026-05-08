@@ -122,19 +122,10 @@
 
   function calTitle(c: CalibrationStatus): string {
     const base = `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
-    return c.reason ? `${base}\n${c.reason}` : base;
-  }
-
-  function calProblems(cs: CalibrationStatus[]): string[] {
-    // Concise human-readable reasons for non-'exact' calibration kinds, used
-    // to flag sessions whose Run will be rejected (or run uncalibrated).
-    return cs
-      .filter((c) => c.quality !== 'exact')
-      .map((c) => {
-        const k = KIND_NAME[c.kind] ?? c.kind;
-        if (c.reason) return `${k.toLowerCase()}: ${c.reason}`;
-        return `${k.toLowerCase()}: ${QUALITY_HELP[c.quality] ?? c.quality}`;
-      });
+    // Only append the matcher's reason when it adds real info beyond the
+    // quality label (it's redundant for 'exact', sometimes useful for
+    // 'approx', always useful for 'none').
+    return c.reason && c.quality !== 'exact' ? `${base}\n${c.reason}` : base;
   }
 </script>
 
@@ -259,13 +250,6 @@
                         {runOpenSessionId === s.id ? 'Cancel' : 'Run…'}
                       </button>
                     </div>
-                    {#if calProblems(s.calibration).length > 0}
-                      <ul class="cal-problems muted">
-                        {#each calProblems(s.calibration) as p}
-                          <li>{p}</li>
-                        {/each}
-                      </ul>
-                    {/if}
                     {#if runOpenSessionId === s.id}
                       <div class="run-panel">
                         <label class="run-row">
@@ -508,13 +492,18 @@
     position: absolute;
     bottom: calc(100% + 6px);
     right: 0;
-    white-space: nowrap;
+    /* Allow wrapping for multi-line reasons (e.g. "no dark within +/-3C..."). */
+    white-space: pre-line;
+    max-width: min(280px, 75vw);
+    width: max-content;
+    text-align: left;
     background: var(--bg-elev);
     color: var(--fg);
     border: 1px solid var(--border);
-    padding: 0.3rem 0.55rem;
+    padding: 0.35rem 0.55rem;
     border-radius: 6px;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
+    line-height: 1.35;
     font-weight: 500;
     pointer-events: none;
     opacity: 0;
@@ -675,19 +664,6 @@
   .run-go:disabled {
     opacity: 0.6;
     cursor: progress;
-  }
-  .cal-problems {
-    list-style: none;
-    margin: 0.3rem 0 0;
-    padding: 0.3rem 0.55rem;
-    font-size: 0.75rem;
-    color: var(--warn, #f0b35e);
-    background: rgba(240, 179, 94, 0.08);
-    border: 1px solid rgba(240, 179, 94, 0.25);
-    border-radius: 6px;
-  }
-  .cal-problems li + li {
-    margin-top: 0.15rem;
   }
 
   @media (max-width: 600px) {
