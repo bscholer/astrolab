@@ -46,14 +46,14 @@
         <th>Capture</th>
         <th>Status</th>
         <th>Duration</th>
-        <th class="muted">Submitted</th>
+        <th>Submitted</th>
       </tr>
     </thead>
     <tbody>
-      {#each jobs as j (j.id)}
-        <tr>
+      {#each jobs as j, i (j.id)}
+        <tr style="--stagger: {i}">
           <td>
-            <a class="target" href="/jobs/{j.id}">
+            <a class="target-link" href="/jobs/{j.id}">
               {#if j.capture?.target_name}
                 {j.capture.target_name}
               {:else}
@@ -61,10 +61,10 @@
               {/if}
             </a>
           </td>
-          <td class="muted">{formatExposure(j) || '—'}</td>
+          <td class="muted small num">{formatExposure(j) || '—'}</td>
           <td><span class="status status-{j.status}">{j.status}</span></td>
-          <td class="muted">{formatDuration(j.started_at, j.finished_at)}</td>
-          <td class="muted small" title={j.submitted_at}>{shortAgo(j.submitted_at)}</td>
+          <td class="muted small num">{formatDuration(j.started_at, j.finished_at)}</td>
+          <td class="muted small num" title={j.submitted_at}>{shortAgo(j.submitted_at)}</td>
         </tr>
       {/each}
     </tbody>
@@ -79,50 +79,59 @@
   }
   table.jobs th,
   table.jobs td {
-    padding: 0.5rem 0.75rem;
+    padding: 0.55rem 0.85rem;
     text-align: left;
-    border-bottom: 1px solid var(--border, #333);
+    border-bottom: 1px solid var(--hairline);
     font-size: 0.9rem;
+  }
+  table.jobs th {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+  }
+  table.jobs tbody tr {
+    animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation-delay: calc(var(--stagger, 0) * 40ms + 80ms);
   }
   .status {
     display: inline-block;
-    padding: 0.1rem 0.5rem;
+    padding: 0.15rem 0.6rem;
     border-radius: 999px;
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
   .status-queued {
-    background: #444;
-    color: #ccc;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--fg-mute);
   }
   .status-running {
-    background: #234;
-    color: #6cf;
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   .status-completed {
-    background: #243;
-    color: #6c9;
+    background: color-mix(in oklab, var(--good) 18%, transparent);
+    color: var(--good);
   }
   .status-failed {
-    background: #422;
-    color: #f88;
+    background: color-mix(in oklab, var(--bad) 18%, transparent);
+    color: var(--bad);
   }
-  .err {
-    color: #f88;
-  }
-  .muted {
-    color: var(--muted, #888);
-  }
-  .small {
-    font-size: 0.8rem;
-  }
-  .target {
-    color: var(--fg, #ddd);
+  .muted { color: var(--fg-mute); }
+  .small { font-size: 0.82rem; }
+  /* Target column gets the serif treatment per design.md. */
+  .target-link {
+    color: var(--fg);
     text-decoration: none;
-    font-weight: 600;
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.01em;
   }
-  .target:hover {
-    color: var(--accent, #7aa2ff);
+  .target-link:hover {
+    color: var(--accent);
   }
 </style>

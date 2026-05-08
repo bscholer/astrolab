@@ -14,11 +14,45 @@
   import { formatBytes } from '$lib/format';
 
   const GIB = 1024 * 1024 * 1024;
+  const CAPTURE_ROOT_KEY = 'astrolab.capture_root';
+  const LAST_SCAN_KEY = 'astrolab.last_scan_at';
 
   let storage = $state<StorageSnapshot | null>(null);
   let cacheMaxBytes = $state<number>(200 * GIB);
   let saving = $state(false);
   let cleaning = $state(false);
+  let captureRoot = $state('');
+  let scanning = $state(false);
+
+  function readCaptureRoot(): string {
+    if (typeof localStorage === 'undefined') return '';
+    return localStorage.getItem(CAPTURE_ROOT_KEY) ?? '';
+  }
+  function writeCaptureRoot(v: string) {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CAPTURE_ROOT_KEY, v.trim());
+  }
+
+  async function scanNow() {
+    const root = captureRoot.trim();
+    if (!root) {
+      toast.error('Set a capture root first.');
+      return;
+    }
+    writeCaptureRoot(root);
+    scanning = true;
+    try {
+      const r = await api.scan(root, 'dwarf3');
+      localStorage.setItem(LAST_SCAN_KEY, new Date().toISOString());
+      toast.success(
+        `Scanned: +${r.inserted} frames, +${r.masters_inserted} masters, -${r.removed} orphans`
+      );
+    } catch (e) {
+      toast.error(`Scan failed: ${(e as Error).message}`);
+    } finally {
+      scanning = false;
+    }
+  }
 
   async function load() {
     try {
@@ -35,6 +69,7 @@
 
   $effect(() => {
     load();
+    captureRoot = readCaptureRoot();
   });
 
   // Slider operates on GiB to give us friendly round-number values; we
@@ -88,9 +123,35 @@
 </script>
 
 <div class="header">
-  <a href="/projects" class="back">← projects</a>
   <h1>Settings</h1>
 </div>
+
+<section class="panel">
+  <h2>Capture</h2>
+  <p class="muted small">
+    Where the scope drops new frames. Refresh on the Library page
+    re-scans this path.
+  </p>
+  <div class="capture-row">
+    <input
+      type="text"
+      class="capture-input"
+      placeholder="~/Pictures/Siril"
+      bind:value={captureRoot}
+      onblur={() => writeCaptureRoot(captureRoot)}
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button
+      type="button"
+      class="btn primary"
+      onclick={scanNow}
+      disabled={scanning || !captureRoot.trim()}
+    >
+      {scanning ? 'Scanning…' : 'Scan now'}
+    </button>
+  </div>
+</section>
 
 {#if storage === null}
   <p class="muted">Loading…</p>
@@ -166,37 +227,36 @@
     display: flex;
     align-items: baseline;
     gap: 0.75rem;
-    margin-bottom: 1rem;
+    margin: 0.5rem 0 1.25rem;
   }
   .header h1 {
     margin: 0;
     flex: 1;
     font-size: 1.5rem;
   }
-  .back {
-    color: var(--fg-mute, #888);
-    text-decoration: none;
-  }
+
   .small {
     font-size: 0.85em;
   }
   .muted {
-    color: var(--fg-mute, #888);
+    color: var(--fg-mute);
   }
 
   .panel {
     margin-bottom: 1.5rem;
-    padding: 0.85rem 1rem;
-    background: var(--bg-elev, #14171d);
-    border: 1px solid var(--border, #333);
-    border-radius: 8px;
+    padding: 1.05rem 1.2rem;
+    background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow);
   }
   .panel h2 {
     margin: 0 0 0.5rem;
-    font-size: 1rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--fg-mute, #888);
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
+    font-weight: 600;
   }
 
   .stats {
@@ -212,14 +272,15 @@
     min-width: 8rem;
   }
   .stat-label {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--fg-mute, #888);
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
   }
   .stat-val {
-    font-size: 1.4rem;
-    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 1.5rem;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
   .stat-sub {
@@ -229,6 +290,26 @@
     font-family: ui-monospace, monospace;
     font-size: 0.75rem;
     word-break: break-all;
+  }
+
+  .capture-row {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .capture-input {
+    flex: 1 1 280px;
+    min-width: 0;
+    padding: 0.5rem 0.85rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
   }
 
   .slider-row {
@@ -242,55 +323,61 @@
   }
   .slider-row .num {
     width: 5rem;
-    padding: 0.25rem 0.4rem;
-    background: var(--bg, #0a0c10);
-    color: var(--fg, #ddd);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     font: inherit;
+    font-family: var(--font-mono);
   }
   .slider-row .unit {
-    color: var(--fg-mute, #888);
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .actions {
     display: flex;
     gap: 0.5rem;
-    margin-top: 0.5rem;
+    margin-top: 0.6rem;
   }
   .btn {
     appearance: none;
     background: transparent;
-    border: 1px solid var(--border, #333);
-    color: var(--fg, #ddd);
-    padding: 0.35rem 0.9rem;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.4rem 0.95rem;
     border-radius: 999px;
     font: inherit;
     font-size: 0.85rem;
     cursor: pointer;
+    transition: border-color 160ms ease, color 160ms ease, transform 160ms ease;
   }
   .btn:hover:not(:disabled) {
-    border-color: var(--accent, #7aa2ff);
-    color: var(--accent, #7aa2ff);
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
   .btn.primary {
-    background: var(--accent, #7aa2ff);
-    color: #0a0c10;
-    border-color: var(--accent, #7aa2ff);
+    background: linear-gradient(135deg, var(--accent), var(--good));
+    color: var(--accent-ink);
+    border-color: transparent;
     font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 0 18px var(--accent-soft);
   }
   .btn.primary:hover:not(:disabled) {
-    color: #0a0c10;
+    color: var(--accent-ink);
+    transform: translateY(-1px);
+    filter: brightness(1.08);
   }
 
   .warn {
     margin-top: 0.5rem;
     font-size: 0.85rem;
-    color: var(--warn, #f0b35e);
+    color: var(--warn);
   }
 </style>

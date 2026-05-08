@@ -1,19 +1,17 @@
 <!--
-  Project list with storage management built in.
+  Projects list — full-width rows. See ui/design.md for the layout.
 
-  Per-row affordances:
-    - "Free intermediates" — drops the heavy mid-pipeline cache while
-      keeping the saved final image so the UI still has a thumbnail.
+  Per-row affordances on the right rail:
+    - Storage size (owned + shared sub-line if any)
+    - Broom — drops the heavy mid-pipeline cache while keeping the
+      saved final image so the UI still has a thumbnail.
     - Trash — deletes the project AND its owned cache entries. Shared
       entries (used by other projects) stay on disk.
-
-  Header pill shows total cache + a "Run cleanup" link to /settings for
-  the system-wide budget knobs.
 -->
 <script lang="ts">
   import { api, type Project, type StorageSnapshot } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
-  import { formatBytes, shortAgo } from '$lib/format';
+  import { formatBytes, shortAgo, templateDisplayName } from '$lib/format';
 
   let projects = $state<Project[] | null>(null);
   let storage = $state<StorageSnapshot | null>(null);
@@ -84,61 +82,84 @@
 </script>
 
 <div class="header">
-  <a href="/" class="back">← library</a>
   <h1>Projects</h1>
   {#if storage}
     <a href="/settings" class="storage-pill" title="Open storage settings">
-      cache {formatBytes(storage.total_bytes)}
+      cache <span class="num">{formatBytes(storage.total_bytes)}</span>
       {#if storage.unreachable_bytes > 0}
         <span class="muted">· {formatBytes(storage.unreachable_bytes)} dead</span>
       {/if}
     </a>
   {/if}
-  <a href="/jobs" class="muted small debug">debug: jobs</a>
 </div>
 
 {#if projects === null}
   <p class="muted">Loading…</p>
 {:else if projects.length === 0}
   <p class="muted">
-    No projects yet. Click "Run…" on a session in the library to start one.
+    No projects yet. Click "Run…" on a session in the
+    <a href="/" class="link">Library</a> to start one.
   </p>
 {:else}
   <ul class="list">
-    {#each projects as r (r.id)}
+    {#each projects as r, i (r.id)}
       {@const s = storageById.get(r.id)}
-      <li class="row" class:busy={busyId === r.id}>
-        <a class="row-link" href="/projects/{r.id}">
-          <div class="row-name">{r.name}</div>
-          <div class="row-meta muted small">
-            <span title={r.template_id}>{r.template_id}</span>
-            <span aria-hidden="true">·</span>
-            <span>v{r.current_seq + 1} of {r.history.length}</span>
-            <span aria-hidden="true">·</span>
-            <span title={r.updated_at}>{shortAgo(r.updated_at)}</span>
-            {#if s}
-              <span aria-hidden="true">·</span>
-              <span class="storage" title="Owned: cache only this project references. Shared: counted toward other projects too.">
-                {formatBytes(s.owned_bytes)} owned{#if s.shared_bytes > 0}, +{formatBytes(s.shared_bytes)} shared{/if}
-              </span>
-            {/if}
+      <li class="prow" class:busy={busyId === r.id} style="--stagger: {i}">
+        <a class="prow-link" href="/projects/{r.id}">
+          <div class="prow-name">
+            {r.name}
+            <span class="version-chip">v{r.current_seq + 1}</span>
+          </div>
+          <div class="prow-template">{templateDisplayName(r.template_id)}</div>
+          <div class="prow-foot muted small">
+            <span class="num" title={r.updated_at}>edited {shortAgo(r.updated_at)}</span>
           </div>
         </a>
-        <div class="row-actions">
-          <button
-            type="button"
-            class="action-btn"
-            onclick={() => freeIntermediates(r)}
-            disabled={busyId !== null}
-            title="Drop cached intermediate stages; keep the saved image"
-          >free intermediates</button>
-          <button
-            type="button"
-            class="action-btn danger"
-            onclick={() => deleteProject(r)}
-            disabled={busyId !== null}
-            title="Delete project + its owned cache"
-          >🗑</button>
+        <div class="prow-side">
+          {#if s}
+            <div class="prow-storage">
+              <span class="storage-main num">{formatBytes(s.owned_bytes)}</span>
+              {#if s.shared_bytes > 0}
+                <span class="storage-sub muted num">+{formatBytes(s.shared_bytes)} shared</span>
+              {/if}
+            </div>
+          {/if}
+          <div class="prow-actions">
+            <button
+              type="button"
+              class="icon-btn"
+              onclick={() => freeIntermediates(r)}
+              disabled={busyId !== null}
+              aria-label="Free intermediates"
+              title="Free intermediates — keep the saved image, drop cached stages"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 3 L12 11" />
+                <path d="M10 9 L14 13" />
+                <path d="M10 9 L3 16" />
+                <path d="M14 13 L8 21" />
+                <path d="M3 16 L8 21" />
+                <path d="M7 13 L5 18" />
+                <path d="M10 16 L8 20" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="icon-btn danger"
+              onclick={() => deleteProject(r)}
+              disabled={busyId !== null}
+              aria-label="Delete project"
+              title="Delete project + its owned cache"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+            </button>
+          </div>
         </div>
       </li>
     {/each}
@@ -150,7 +171,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.75rem;
-    margin-bottom: 1rem;
+    margin: 0.5rem 0 1.25rem;
     flex-wrap: wrap;
   }
   .header h1 {
@@ -158,38 +179,28 @@
     flex: 1;
     font-size: 1.5rem;
   }
-  .back {
-    color: var(--fg-mute, #888);
-    text-decoration: none;
-  }
 
   .storage-pill {
-    text-decoration: none;
-    background: var(--bg-elev, #14171d);
-    border: 1px solid var(--border, #333);
-    color: var(--fg, #ddd);
-    padding: 0.2rem 0.6rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.25rem 0.7rem;
     border-radius: 999px;
     font-size: 0.8rem;
-    font-variant-numeric: tabular-nums;
     cursor: pointer;
+    transition: border-color 160ms ease;
   }
   .storage-pill:hover {
-    border-color: var(--accent, #7aa2ff);
+    border-color: var(--accent);
   }
 
-  .debug {
-    text-decoration: none;
-  }
-  .debug:hover {
+  .link {
+    color: var(--accent);
     text-decoration: underline;
+    text-decoration-color: var(--accent-soft);
+    text-underline-offset: 2px;
   }
-  .small {
-    font-size: 0.85em;
-  }
-  .muted {
-    color: var(--fg-mute, #888);
-  }
+  .link:hover { text-decoration-color: var(--accent); }
 
   .list {
     list-style: none;
@@ -197,72 +208,150 @@
     margin: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.55rem;
   }
-  .row {
+
+  /* Project row — see design.md "Project row layout".
+     Stagger animation pulled from app.css. */
+  .prow {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    background: var(--bg-elev, #14171d);
-    border: 1px solid var(--border, #333);
-    border-radius: 8px;
-    transition: opacity 120ms ease;
+    align-items: stretch;
+    gap: 1rem;
+    padding: 0.95rem 1.15rem;
+    background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow);
+    animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation-delay: calc(var(--stagger, 0) * 60ms + 80ms);
+    transition: border-color 160ms ease, transform 160ms ease, opacity 160ms ease;
   }
-  .row.busy {
+  .prow:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+  }
+  .prow.busy {
     opacity: 0.55;
     pointer-events: none;
   }
-  .row:hover {
-    border-color: var(--accent, #7aa2ff);
-  }
-  .row-link {
+
+  /* Left column: name + template + foot. */
+  .prow-link {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
+    gap: 0.2rem;
     flex: 1;
-    text-decoration: none;
-    color: inherit;
     min-width: 0;
+    color: inherit;
+    text-decoration: none;
   }
-  .row-name {
-    font-weight: 600;
-    font-size: 1rem;
+  .prow-name {
+    /* Project names are entities in their own right — serif per design.md. */
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 1.2rem;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
-  .row-meta {
+  .prow-template {
+    font-size: 0.88rem;
+    color: var(--fg);
+    opacity: 0.85;
+    font-variant: small-caps;
+    letter-spacing: 0.02em;
+  }
+  .prow-foot {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+    font-size: 0.78rem;
+    opacity: 0.85;
   }
-  .storage {
-    font-variant-numeric: tabular-nums;
+
+  /* Inline version chip — hugs the project name. */
+  .version-chip {
+    padding: 0.05rem 0.45rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    line-height: 1.4;
+    /* Mono baseline sits low under serif; nudge up to align. */
+    position: relative;
+    top: -0.15em;
   }
-  .row-actions {
+
+  /* Right rail — storage on top, action icons under it, hairline left
+     edge. Storage lives next to the actions because the actions act on
+     it ("how much will I free?"). */
+  .prow-side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-shrink: 0;
+    padding-left: 0.85rem;
+    border-left: 1px solid var(--hairline);
+  }
+  .prow-storage {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.05rem;
+    line-height: 1.15;
+    text-align: right;
+  }
+  .storage-main {
+    font-weight: 500;
+    font-size: 0.92rem;
+    color: var(--fg);
+  }
+  .storage-sub {
+    font-size: 0.7rem;
+  }
+
+  .prow-actions {
     display: flex;
     gap: 0.4rem;
-    flex-shrink: 0;
   }
-  .action-btn {
+  .icon-btn {
     appearance: none;
     background: transparent;
-    border: 1px solid var(--border, #333);
-    color: var(--fg-mute, #888);
-    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--border);
+    color: var(--fg-mute);
+    width: 28px;
+    height: 28px;
+    padding: 0;
     border-radius: 6px;
-    font: inherit;
-    font-size: 0.75rem;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 160ms ease, border-color 160ms ease;
   }
-  .action-btn:hover:not(:disabled) {
-    border-color: var(--accent, #7aa2ff);
-    color: var(--accent, #7aa2ff);
+  .icon-btn:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
   }
-  .action-btn.danger:hover:not(:disabled) {
-    border-color: var(--bad, #ff7a8a);
-    color: var(--bad, #ff7a8a);
+  .icon-btn.danger:hover:not(:disabled) {
+    color: var(--bad);
+    border-color: var(--bad);
   }
-  .action-btn:disabled {
+  .icon-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
+  .icon-btn svg {
+    display: block;
+    transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .icon-btn:hover:not(:disabled) svg { transform: rotate(-6deg); }
+  .icon-btn.danger:hover:not(:disabled) svg { transform: translateY(-1px); }
 </style>

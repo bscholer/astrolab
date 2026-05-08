@@ -9,14 +9,25 @@
     type TargetSummary
   } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import { shortAgo, formatFailPct, failPctClass } from '$lib/format';
 
   let targets = $state<TargetSummary[] | null>(null);
   let openTargetId = $state<number | null>(null);
   let openTarget = $state<TargetDetail | null>(null);
   let openLoading = $state(false);
   let scanning = $state(false);
-  let scanRoot = $state('');
-  let scanResult = $state<string | null>(null);
+  let lastScanAt = $state<string | null>(null);
+  let nowTick = $state(Date.now());
+
+  // Capture root used to live in a top-of-page text input. It now lives
+  // in Settings; the Library only exposes a Refresh action that scans
+  // the saved root.
+  const CAPTURE_ROOT_KEY = 'astrolab.capture_root';
+  const LAST_SCAN_KEY = 'astrolab.last_scan_at';
+  function getCaptureRoot(): string {
+    if (typeof localStorage === 'undefined') return '';
+    return localStorage.getItem(CAPTURE_ROOT_KEY) ?? '';
+  }
 
   // Runs UI: which session's Run panel is open, plus its in-progress form state.
   let templates = $state<Template[] | null>(null);
@@ -52,13 +63,20 @@
   }
 
   async function rescan() {
-    if (!scanRoot.trim()) return;
+    const root = getCaptureRoot();
+    if (!root.trim()) {
+      toast.error('No capture root set — open Settings and add one.');
+      return;
+    }
     scanning = true;
-    scanResult = null;
     try {
-      const r = await api.scan(scanRoot.trim(), 'dwarf3');
-      scanResult = `+${r.inserted} frames, +${r.masters_inserted} masters, -${r.removed} orphans`;
-      toast.success(`Scan complete: ${scanResult}`);
+      const r = await api.scan(root.trim(), 'dwarf3');
+      const stamp = new Date().toISOString();
+      localStorage.setItem(LAST_SCAN_KEY, stamp);
+      lastScanAt = stamp;
+      toast.success(
+        `Scanned: +${r.inserted} frames, +${r.masters_inserted} masters, -${r.removed} orphans`
+      );
       await load();
     } catch (e) {
       toast.error(`Scan failed: ${(e as Error).message}`);
@@ -73,6 +91,21 @@
     api.listTemplates()
       .then((t) => (templates = t))
       .catch((e) => toast.error(`listTemplates failed: ${(e as Error).message}`));
+    // Hydrate last-scan timestamp from previous sessions.
+    if (typeof localStorage !== 'undefined') {
+      lastScanAt = localStorage.getItem(LAST_SCAN_KEY);
+    }
+    // Tick the clock so the muted "scanned 3m ago" line stays fresh
+    // without the user reloading.
+    const handle = setInterval(() => (nowTick = Date.now()), 30_000);
+    return () => clearInterval(handle);
+  });
+
+  // Read of nowTick keeps this derived reactive to the 30s ticker.
+  const lastScanLabel = $derived.by(() => {
+    void nowTick;
+    if (!lastScanAt) return null;
+    return shortAgo(lastScanAt);
   });
 
   function toggleRun(sessionId: number) {
@@ -132,21 +165,32 @@
   }
 </script>
 
-<section class="scan-bar">
-  <input
-    type="text"
-    placeholder="Capture root (e.g. ~/Pictures/Siril)"
-    bind:value={scanRoot}
-    autocomplete="off"
-    spellcheck="false"
-  />
-  <button onclick={rescan} disabled={scanning || !scanRoot.trim()}>
-    {scanning ? 'Scanning…' : 'Scan'}
+<div class="lib-header">
+  <h1>Library</h1>
+  <button
+    type="button"
+    class="refresh-btn"
+    class:spinning={scanning}
+    onclick={rescan}
+    disabled={scanning}
+    aria-label={scanning ? 'Scanning…' : 'Refresh library'}
+    title={scanning ? 'Scanning…' : 'Refresh — re-scan the capture root'}
+  >
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" />
+      <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" />
+      <path d="M21 4v4h-4" />
+      <path d="M3 20v-4h4" />
+    </svg>
   </button>
-  {#if scanResult}
-    <span class="muted scan-result">{scanResult}</span>
+  {#if lastScanLabel}
+    <span class="muted small last-scan" title={lastScanAt ?? ''}>
+      scanned {lastScanLabel}
+    </span>
+  {:else}
+    <span class="muted small last-scan">never scanned</span>
   {/if}
-</section>
+</div>
 
 <details class="legend">
   <summary>
@@ -181,12 +225,13 @@
   <p class="muted">Loading targets…</p>
 {:else if targets.length === 0}
   <p class="muted">
-    No targets yet. Point the scan field at a Dwarf 3 capture root and hit Scan.
+    No targets yet. Open <a href="/settings" class="link">Settings</a> to set
+    a capture root, then come back and hit refresh.
   </p>
 {:else}
   <ul class="target-list">
-    {#each targets as t (t.id)}
-      <li class="target" class:open={openTargetId === t.id}>
+    {#each targets as t, i (t.id)}
+      <li class="target" class:open={openTargetId === t.id} style="--stagger: {i}">
         <button class="target-row" onclick={() => openTarget_(t.id)}>
           <div class="target-name">
             {#if t.common_name}
@@ -199,14 +244,16 @@
           <div class="target-meta muted">
             <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
             <span aria-hidden="true">·</span>
-            <span>
-              {(t.frame_count - t.failed_count).toLocaleString()}<!--
-              -->{#if t.failed_count > 0}<span class="failed-frac">/{t.frame_count.toLocaleString()}</span>{/if}
-              frames
-            </span>
+            <span class="num">{t.frame_count.toLocaleString()} frames</span>
+            {#if t.frame_count > 0}
+              <span aria-hidden="true">·</span>
+              <span class="fail-pct {failPctClass(t.failed_count, t.frame_count)}">
+                {formatFailPct(t.failed_count, t.frame_count)}
+              </span>
+            {/if}
             {#if t.last_session_at}
               <span aria-hidden="true">·</span>
-              <span>last {shortDate(t.last_session_at)}</span>
+              <span class="num">last {shortDate(t.last_session_at)}</span>
             {/if}
           </div>
         </button>
@@ -226,11 +273,18 @@
                       </span>
                     </div>
                     <div class="session-body">
-                      <span>
-                        {(s.frame_count - s.failed_count).toLocaleString()}<!--
-                        -->{#if s.failed_count > 0}<span class="failed-frac" title="{s.failed_count} failed sub{s.failed_count === 1 ? '' : 's'}">/{s.frame_count.toLocaleString()}</span>{/if}
-                        frame{s.frame_count === 1 ? '' : 's'}
+                      <span class="num">
+                        {s.frame_count.toLocaleString()} frame{s.frame_count === 1 ? '' : 's'}
                       </span>
+                      {#if s.frame_count > 0}
+                        <span aria-hidden="true" class="muted">·</span>
+                        <span
+                          class="fail-pct {failPctClass(s.failed_count, s.frame_count)}"
+                          title="{s.failed_count} of {s.frame_count} failed"
+                        >
+                          {formatFailPct(s.failed_count, s.frame_count)}
+                        </span>
+                      {/if}
                       <span class="cal-row">
                         {#each s.calibration as c (c.kind)}
                           <button
@@ -298,34 +352,43 @@
 {/if}
 
 <style>
-  .scan-bar {
+  .lib-header {
     display: flex;
-    gap: 0.5rem;
     align-items: center;
-    margin: 1rem 0 1.5rem;
-    flex-wrap: wrap;
+    gap: 0.7rem;
+    margin: 0.5rem 0 1.25rem;
   }
-
-  .scan-bar input {
-    flex: 1 1 240px;
-    min-width: 0;
-    padding: 0.5rem 0.8rem;
-    border-radius: 999px;
-    background: var(--bg-elev);
-    color: var(--fg);
+  .lib-header h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    flex: 0 0 auto;
+  }
+  .refresh-btn {
+    appearance: none;
+    background: transparent;
     border: 1px solid var(--border);
-    font: inherit;
+    color: var(--fg-mute);
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 160ms ease, border-color 160ms ease;
   }
-
-  .scan-bar input:focus {
-    outline: none;
+  .refresh-btn:hover:not(:disabled) {
+    color: var(--accent);
     border-color: var(--accent);
   }
-
-  .scan-result {
-    font-size: 0.85rem;
-    flex-basis: 100%;
+  .refresh-btn:disabled { opacity: 0.6; cursor: progress; }
+  .refresh-btn svg { transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+  @keyframes refresh-spin {
+    to { transform: rotate(360deg); }
   }
+  .refresh-btn.spinning svg { animation: refresh-spin 900ms linear infinite; }
+  .last-scan { font-variant-numeric: tabular-nums; }
 
   .error {
     color: var(--bad);
@@ -347,35 +410,45 @@
   .target {
     background: var(--bg-elev);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-card);
     overflow: hidden;
-    transition: border-color 120ms ease;
+    box-shadow: var(--shadow);
+    animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation-delay: calc(var(--stagger, 0) * 60ms + 80ms);
+    transition: border-color 160ms ease, transform 160ms ease;
   }
 
+  .target:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+  }
   .target.open {
-    border-color: var(--accent);
+    border-color: var(--border-strong);
   }
 
   .target-row {
     width: 100%;
     background: transparent;
     border: none;
-    padding: 0.85rem 1rem;
+    padding: 0.95rem 1.15rem;
     border-radius: 0;
     text-align: left;
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: 0.25rem;
     cursor: pointer;
   }
 
   .target-row:hover {
-    background: rgba(122, 162, 255, 0.05);
+    background: rgba(94, 234, 212, 0.04);
   }
 
+  /* Target/project names get the serif treatment per design.md. */
   .target-name {
-    font-weight: 600;
-    font-size: 1.05rem;
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 1.35rem;
+    letter-spacing: -0.01em;
     display: flex;
     align-items: baseline;
     gap: 0.5rem;
@@ -383,13 +456,17 @@
   }
 
   .target-common {
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .target-cat {
+    font-family: var(--font-mono);
     font-weight: 500;
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     font-variant-numeric: tabular-nums;
+    /* Mono digits sit lower than the serif baseline; nudge up. */
+    position: relative;
+    top: -0.1em;
   }
 
   .target-meta {
@@ -397,15 +474,22 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+    align-items: baseline;
   }
 
-  .bad {
+  /* Failure percentage — semantic color, mono numerals. */
+  .fail-pct {
+    color: var(--warn);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .fail-pct.fail-zero {
+    color: var(--good);
+    opacity: 0.85;
+  }
+  .fail-pct.fail-high {
     color: var(--bad);
-  }
-
-  .failed-frac {
-    color: var(--fg-mute);
-    opacity: 0.65;
+    font-weight: 500;
   }
 
   .target-detail {
@@ -423,9 +507,10 @@
   }
 
   .session {
-    padding: 0.55rem 0.6rem;
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.2);
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius);
+    background: var(--bg-elev-2);
+    border: 1px solid var(--hairline);
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
@@ -439,6 +524,7 @@
   }
 
   .session-when {
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
   }
@@ -523,19 +609,19 @@
   }
 
   .cal-exact {
-    background: rgba(94, 211, 168, 0.18);
+    background: color-mix(in oklab, var(--good) 14%, transparent);
     border-color: var(--good);
     color: var(--good);
   }
 
   .cal-approx {
-    background: rgba(240, 179, 94, 0.18);
+    background: color-mix(in oklab, var(--warn) 14%, transparent);
     border-color: var(--warn);
     color: var(--warn);
   }
 
   .cal-none {
-    background: rgba(255, 122, 138, 0.12);
+    background: color-mix(in oklab, var(--bad) 12%, transparent);
     border-color: var(--bad);
     color: var(--bad);
   }
@@ -607,7 +693,7 @@
     appearance: none;
     background: transparent;
     border: 1px solid var(--border);
-    color: var(--accent, #7aa2ff);
+    color: var(--accent);
     padding: 0.2rem 0.7rem;
     border-radius: 999px;
     font-size: 0.75rem;
@@ -615,10 +701,12 @@
     margin-left: 0.5rem;
   }
   .run-btn:hover {
-    background: rgba(122, 162, 255, 0.1);
+    background: var(--accent-soft);
+    border-color: var(--accent);
   }
   .run-btn[aria-expanded='true'] {
-    background: rgba(122, 162, 255, 0.18);
+    background: var(--accent-soft);
+    border-color: var(--accent);
   }
   .run-panel {
     margin-top: 0.4rem;
@@ -655,18 +743,34 @@
     gap: 0.5rem;
   }
   .run-go {
-    background: var(--accent, #7aa2ff);
-    color: #0a0c10;
-    border: none;
-    padding: 0.3rem 0.9rem;
+    background: linear-gradient(135deg, var(--accent), var(--good));
+    color: var(--accent-ink);
+    border: 1px solid transparent;
+    padding: 0.32rem 0.95rem;
     border-radius: 999px;
     font-weight: 600;
     cursor: pointer;
     font-size: 0.85rem;
+    box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 0 18px var(--accent-soft);
+    transition: filter 160ms ease, transform 160ms ease;
+  }
+  .run-go:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
   }
   .run-go:disabled {
     opacity: 0.6;
     cursor: progress;
+  }
+
+  .link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: var(--accent-soft);
+    text-underline-offset: 2px;
+  }
+  .link:hover {
+    text-decoration-color: var(--accent);
   }
 
   @media (max-width: 600px) {

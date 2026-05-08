@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Push local commits to origin, pull on the Linux processing box, and
+# restart the FastAPI server so it picks up backend changes (the catalog
+# loader, new endpoints, etc.). Vite HMR on the Linux box catches UI
+# edits automatically — no UI restart needed.
+#
+# Usage: scripts/deploy-linux.sh [--no-push]
+#
+# Idempotent. Safe to run from a clean working tree.
+
+set -euo pipefail
+
+HOST="${ASTROLAB_LINUX_HOST:-192.168.1.254}"
+REMOTE_REPO="${ASTROLAB_LINUX_REPO:-/home/bscholer/projects/astrolab}"
+REMOTE_VENV="${ASTROLAB_LINUX_VENV:-.venv}"
+PORT="${ASTROLAB_API_PORT:-8000}"
+LOG_PATH="${ASTROLAB_LOG_PATH:-/tmp/astrolab-server.log}"
+
+skip_push=0
+for arg in "$@"; do
+  case "$arg" in
+    --no-push) skip_push=1 ;;
+    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+step() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
+
+# --- 1. Push local commits -------------------------------------------------
+if [[ $skip_push -eq 0 ]]; then
+  step "git push origin"
+  git push origin
+else
+  warn "skipping local push (--no-push)"
+fi
+
+# --- 2. Pull + restart on the Linux box ------------------------------------
+# Single SSH invocation: less authentication overhead, and any failure aborts
+# the whole sequence cleanly via `set -e` inside the remote shell.
+step "ssh $HOST: pull + restart uvicorn"
+ssh -o ConnectTimeout=10 "$HOST" \
+  REMOTE_REPO="$REMOTE_REPO" \
+  REMOTE_VENV="$REMOTE_VENV" \
+  PORT="$PORT" \
+  LOG_PATH="$LOG_PATH" \
+  bash -s <<'REMOTE'
+set -euo pipefail
+cd "$REMOTE_REPO"
+
+echo "▸ git pull"
+git fetch --quiet origin
+git pull --ff-only origin "$(git rev-parse --abbrev-ref HEAD)"
+
+# uv-managed venv? Run a quick sync so dependency changes show up. If
+# the venv was created with a different tool, this is a no-op or a
+# harmless error we ignore.
+if command -v uv >/dev/null 2>&1; then
+  echo "▸ uv sync"
+  uv sync --frozen 2>/dev/null || uv sync || true
+fi
+
+echo "▸ stopping existing uvicorn"
+# pkill on the cmdline pattern. Matches our own runner regardless of pid.
+# `|| true` keeps things idempotent on cold boots.
+pkill -f "uvicorn server.api:app" || true
+# Give the process a moment to release the port before we re-bind.
+for _ in 1 2 3 4 5; do
+  if ss -ltnp 2>/dev/null | grep -q ":$PORT "; then sleep 1; else break; fi
+done
+
+echo "▸ starting uvicorn (detached) -> $LOG_PATH"
+# nohup + & + disown puts uvicorn in its own session so it survives
+# this SSH connection closing. Output goes to LOG_PATH for postmortems.
+nohup "$REMOTE_VENV/bin/uvicorn" server.api:app \
+  --host 0.0.0.0 --port "$PORT" --log-level info \
+  > "$LOG_PATH" 2>&1 &
+disown
+
+# Wait for the port to start accepting connections so the script doesn't
+# return success before the server is actually ready.
+echo "▸ waiting for :$PORT to come up"
+for i in $(seq 1 20); do
+  if curl -sS -o /dev/null -w "%{http_code}" --max-time 2 \
+       "http://127.0.0.1:$PORT/api/templates" | grep -q '^200$'; then
+    echo "  up after ${i}s"
+    break
+  fi
+  sleep 1
+  if [[ "$i" == "20" ]]; then
+    echo "  port $PORT didn't come up — last 40 lines of $LOG_PATH:" >&2
+    tail -n 40 "$LOG_PATH" >&2 || true
+    exit 1
+  fi
+done
+REMOTE
+
+ok "deployed — http://$HOST:$PORT/api/templates"

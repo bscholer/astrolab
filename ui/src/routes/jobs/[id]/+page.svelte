@@ -184,7 +184,6 @@
 </script>
 
 <div class="header">
-  <a href="/jobs" class="back">← jobs</a>
   {#if job}
     <h1>
       {#if job.capture?.target_name}

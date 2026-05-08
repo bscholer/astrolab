@@ -361,7 +361,6 @@
 
 <div class="project-root">
   <div class="header">
-    <a href="/" class="back">← library</a>
     {#if project}
       <h1>{project.name}</h1>
       <span class="version muted small">

@@ -1,18 +1,49 @@
+/* ---------------------------------------------------------------------
+   astrolab — global theme tokens
+   Canonical reference: ui/design.md and ui/src/routes/playground/themes
+   --------------------------------------------------------------------- */
+
 :root {
-  --bg: #0b1020;
-  --bg-elev: #131a31;
-  --fg: #e8edf6;
-  --fg-mute: #9aa3bd;
-  --accent: #7aa2ff;
-  --good: #5ed3a8;
-  --warn: #f0b35e;
-  --bad: #ff7a8a;
-  --border: #1f2747;
-  --radius: 12px;
+  /* Surfaces */
+  --bg: #02030a;
+  --bg-elev: #0a0f1c;
+  --bg-elev-2: #111a2e;
+
+  /* Type colors */
+  --fg: #e9f1ff;
+  --fg-mute: #6f8099;
+
+  /* Semantic accents */
+  --accent: #5eead4;                          /* teal — primary CTA, focus, running */
+  --accent-soft: rgba(94, 234, 212, 0.14);
+  --accent-ink: #022a23;
+  --good: #34d399;                            /* completed, exact match, 0% failed */
+  --warn: #fbbf24;                            /* approx match, fail % under threshold */
+  --bad: #ec4899;                             /* magenta — danger, failed, no match */
+
+  /* Borders */
+  --border: rgba(94, 234, 212, 0.14);
+  --border-strong: rgba(236, 72, 153, 0.45);
+  --hairline: rgba(94, 234, 212, 0.06);
+
+  /* Radii */
+  --radius: 8px;
+  --radius-card: 12px;
+
+  /* Shadows */
+  --shadow:
+    0 0 0 1px rgba(94, 234, 212, 0.04),
+    0 16px 36px rgba(0, 0, 0, 0.5),
+    0 0 32px rgba(94, 234, 212, 0.025);
+
+  /* Type — Inter for body, JetBrains Mono for numbers/paths/code, Fraunces
+     for display only (use SPARINGLY — see design.md). */
+  --font-display: 'Fraunces', 'Times New Roman', serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 
   color-scheme: dark;
-
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-feature-settings: 'tnum';
 }
 
@@ -24,13 +55,22 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
   color: var(--fg);
   min-height: 100dvh;
 }
 
 body {
   -webkit-font-smoothing: antialiased;
+  /* Layered void background: deep base + two soft radial atmospheres
+     (teal top-left, magenta bottom-right). The gradients are global so
+     the page background stays alive even on tall content. */
+  background:
+    radial-gradient(1200px 600px at 5% -10%, rgba(94, 234, 212, 0.07), transparent 60%),
+    radial-gradient(1000px 500px at 100% 110%, rgba(236, 72, 153, 0.05), transparent 65%),
+    var(--bg);
+  background-attachment: fixed;
+  /* Cross-fade colors so any future theme tweaks ripple smoothly. */
+  transition: background-color 360ms ease, color 360ms ease;
 }
 
 a {
@@ -43,26 +83,55 @@ button {
   color: inherit;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  padding: 0.5rem 0.9rem;
+  padding: 0.45rem 0.95rem;
   border-radius: 999px;
   cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
-button:hover {
-  border-color: var(--accent);
+button:hover:not(:disabled) {
+  border-color: var(--border-strong);
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: progress;
 }
 
+input,
+select,
+textarea {
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.7rem;
+  font: inherit;
+  font-size: 0.92rem;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+input[type='range'] {
+  accent-color: var(--accent);
+  padding: 0;
+  border: none;
+  box-shadow: none;
+}
+
 .container {
-  max-width: 980px;
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 1rem;
+  padding: 1rem 1.25rem;
   padding-top: max(1rem, env(safe-area-inset-top));
-  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-bottom: max(2rem, env(safe-area-inset-bottom));
 }
 
 /* Project editor needs more horizontal room: 8 pipeline previews + a
@@ -80,4 +149,33 @@ body.project-page .container {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.small {
+  font-size: 0.85em;
+}
+
+/* Mono numerals + tabular figures so columns of frames/sizes/durations
+   line up across rows. Apply via class to spans you want aligned. */
+.num,
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stagger fade-up: each row reads in turn so lists land instead of
+   slamming. Set --stagger inline (0,1,2,…) per row. */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0ms !important;
+  }
 }

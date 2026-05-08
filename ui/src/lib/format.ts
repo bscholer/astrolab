@@ -1,7 +1,58 @@
 /**
- * Display helpers shared across the jobs list + detail views.
+ * Display helpers shared across pages. See ui/design.md for the rules
+ * these enforce (friendly names, no snake_case, integer percentages, etc.).
  */
 import type { JobSummary } from './api';
+
+/**
+ * Pretty-print a template id. Templates are stored as snake_case ids
+ * (`calibrate_register_stack`); the UI shows them with bullets and
+ * Title Case, matching design.md "no snake_case in the UI".
+ *
+ * Add overrides here as new templates ship.
+ */
+const TEMPLATE_DISPLAY_NAMES: Record<string, string> = {
+  calibrate_register_stack: 'Calibrate · Register · Stack',
+  hoo_dwarf3_dualband: 'HOO Recombine',
+  hoo_recombine: 'HOO Recombine',
+  hso_recombine: 'HSO Recombine'
+};
+
+export function templateDisplayName(id: string): string {
+  if (TEMPLATE_DISPLAY_NAMES[id]) return TEMPLATE_DISPLAY_NAMES[id];
+  // Fallback: split on underscores, title-case, join with bullets so it
+  // at least reads like a phrase rather than a slug.
+  return id
+    .split('_')
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(' · ');
+}
+
+/**
+ * Failure percentage for a frame count. Whole percent only — design.md
+ * forbids decimals here. A returned string of '' means "don't render
+ * anything" (zero frames).
+ */
+export function formatFailPct(failed: number, total: number): string {
+  if (!total) return '';
+  const pct = Math.round((failed / total) * 100);
+  return `${pct}% failed`;
+}
+
+/**
+ * CSS class hint for the failure pill. Pairs with .fail-pct in page
+ * styles: zero gets a quiet good-color treatment, normal gets warn,
+ * a quarter or more gets the loud bad treatment.
+ */
+export function failPctClass(failed: number, total: number): string {
+  if (!total) return '';
+  const pct = (failed / total) * 100;
+  if (pct === 0) return 'fail-zero';
+  if (pct >= 25) return 'fail-high';
+  return '';
+}
+
 
 export function shortAgo(iso: string): string {
   const t = new Date(iso).getTime();

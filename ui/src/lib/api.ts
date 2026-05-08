@@ -32,10 +32,19 @@ export interface SessionSummary {
   calibration: CalibrationStatus[];
 }
 
+export interface SkyInfo {
+  ra_deg: number | null;
+  dec_deg: number | null;
+  magnitude: number | null;
+  constellation: string | null;
+  object_type: string | null;
+}
+
 export interface TargetSummary {
   id: number;
   name: string;
   common_name: string | null;
+  sky: SkyInfo | null;
   session_count: number;
   frame_count: number;
   failed_count: number;
@@ -46,6 +55,7 @@ export interface TargetDetail {
   id: number;
   name: string;
   common_name: string | null;
+  sky: SkyInfo | null;
   sessions: SessionSummary[];
 }
 

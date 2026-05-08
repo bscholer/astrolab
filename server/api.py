@@ -46,6 +46,7 @@ from pydantic import BaseModel, ConfigDict
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 from server.catalog.common_names import lookup as lookup_common_name
+from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.db import open_db
 from server.catalog.scanner import scan as run_scan
 from server.job_builder import (
@@ -132,12 +133,46 @@ DBDep = Annotated[sqlite3.Connection, Depends(db_dep)]
 # ---------------------------------------------------------------------------
 
 
+class SkyInfo(BaseModel):
+    """Sub-payload bundled into target responses when we recognize the
+    catalog id. Pulled from the OpenNGC vendored CSVs at boot time;
+    units are decimal degrees (J2000), V-band magnitude preferred."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ra_deg: float | None = None
+    dec_deg: float | None = None
+    magnitude: float | None = None
+    constellation: str | None = None
+    object_type: str | None = None
+
+
+def _resolve_target_meta(name: str) -> tuple[str | None, SkyInfo | None]:
+    """Look the target's catalog id up in OpenNGC. Falls back to the
+    curated common_names.json for any custom entries OpenNGC doesn't
+    cover. Returns (common_name, sky_info)."""
+    entry = openngc_enrich(name)
+    if entry is not None:
+        sky = SkyInfo(
+            ra_deg=entry.ra_deg,
+            dec_deg=entry.dec_deg,
+            magnitude=entry.magnitude,
+            constellation=entry.constellation,
+            object_type=entry.object_type,
+        )
+        # If OpenNGC has no friendly name for this row, fall back to the
+        # curated table (e.g. local nicknames or names we patched in).
+        return entry.common_name or lookup_common_name(name), sky
+    return lookup_common_name(name), None
+
+
 class TargetSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int
     name: str
     common_name: str | None = None
+    sky: SkyInfo | None = None
     session_count: int
     frame_count: int
     failed_count: int
@@ -182,6 +217,7 @@ class TargetDetail(BaseModel):
     id: int
     name: str
     common_name: str | None = None
+    sky: SkyInfo | None = None
     sessions: list[SessionSummary]
 
 
@@ -305,18 +341,22 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
         ORDER BY t.name
         """
     ).fetchall()
-    return [
-        TargetSummary(
-            id=r["id"],
-            name=r["name"],
-            common_name=lookup_common_name(r["name"]),
-            session_count=r["session_count"],
-            frame_count=r["frame_count"],
-            failed_count=r["failed_count"],
-            last_session_at=r["last_session_at"],
+    summaries: list[TargetSummary] = []
+    for r in rows:
+        common, sky = _resolve_target_meta(r["name"])
+        summaries.append(
+            TargetSummary(
+                id=r["id"],
+                name=r["name"],
+                common_name=common,
+                sky=sky,
+                session_count=r["session_count"],
+                frame_count=r["frame_count"],
+                failed_count=r["failed_count"],
+                last_session_at=r["last_session_at"],
+            )
         )
-        for r in rows
-    ]
+    return summaries
 
 
 @app.get("/api/targets/{target_id}", response_model=TargetDetail)
@@ -337,10 +377,12 @@ def get_target(
         """,
         (target_id,),
     ).fetchall()
+    common, sky = _resolve_target_meta(target["name"])
     return TargetDetail(
         id=target["id"],
         name=target["name"],
-        common_name=lookup_common_name(target["name"]),
+        common_name=common,
+        sky=sky,
         sessions=[
             _row_to_session_summary(conn, s, target_name=target["name"])
             for s in sessions
