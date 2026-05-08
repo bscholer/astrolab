@@ -156,8 +156,20 @@ def run_job(
             log.info("cache hit: %s -> %s", nid, h[:12])
             on_progress(0.0, f"{nid}: cached")
             for out_port, port_type in node_cls.outputs.items():
-                # Files were written as '<port>.<ext>' but we don't know ext from
-                # the type alone. Probe for any file beginning with '<port>.'.
+                # Outputs land at one of two shapes inside the entry dir:
+                #   - file: <out_dir>/<port>.<ext>  (downscale, single PNG)
+                #   - dir:  <out_dir>/<port>/...    (convert_lights, sequence)
+                # Probe for both. Prefer the directory form when present so a
+                # node that writes both leaves the dir as the canonical handle.
+                dir_match = cached_dir / out_port
+                if dir_match.is_dir():
+                    refs[f"{nid}.{out_port}"] = Ref(
+                        node_hash=h,
+                        port=out_port,
+                        path=dir_match,
+                        type=port_type,
+                    )
+                    continue
                 matches = sorted(cached_dir.glob(f"{out_port}.*"))
                 matches = [m for m in matches if m.name != "_done"]
                 if not matches:
