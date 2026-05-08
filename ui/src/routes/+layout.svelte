@@ -6,8 +6,12 @@
 
 <header class="container topbar">
   <div class="row">
-    <span class="logo">astrolab</span>
-    <span class="muted phase-pill">Phase 1 · Library</span>
+    <a href="/" class="logo">astrolab</a>
+    <nav class="row nav">
+      <a href="/">Library</a>
+      <a href="/jobs">Jobs</a>
+    </nav>
+    <span class="muted phase-pill">Phase 2</span>
   </div>
 </header>
 
@@ -24,6 +28,21 @@
     font-weight: 600;
     letter-spacing: 0.02em;
     font-size: 1.1rem;
+    text-decoration: none;
+    color: inherit;
+  }
+  .nav {
+    gap: 1rem;
+    margin-left: 1.5rem;
+    flex: 1;
+  }
+  .nav a {
+    color: var(--muted, #888);
+    text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .nav a:hover {
+    color: var(--fg, #ddd);
   }
 
   .phase-pill {

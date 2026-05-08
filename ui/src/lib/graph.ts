@@ -1,0 +1,139 @@
+/**
+ * Layered DAG layout for Template visualization.
+ *
+ * Each node lands at column = max(parent column) + 1. Within a column nodes
+ * stack vertically with even spacing. Edges are straight segments between
+ * the right edge of the source rect and the left edge of the target rect.
+ *
+ * This is intentionally tiny: enough to render a 5-10 node pipeline. If we
+ * end up with branchy templates that look cramped, swap in dagre-d3 later.
+ */
+import type { NodeSpec, Template } from './api';
+
+export interface LayoutNode {
+  id: string;
+  kind: string;
+  col: number;
+  row: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface LayoutEdge {
+  fromId: string;
+  toId: string;
+  fromPort: string;
+  toPort: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface Layout {
+  nodes: LayoutNode[];
+  edges: LayoutEdge[];
+  width: number;
+  height: number;
+}
+
+const NODE_W = 160;
+const NODE_H = 64;
+const COL_GAP = 60;
+const ROW_GAP = 24;
+const MARGIN = 24;
+
+export function layoutTemplate(template: Template): Layout {
+  // Build adjacency from explicit input edges.
+  const byId = new Map<string, NodeSpec>();
+  for (const n of template.nodes) byId.set(n.id, n);
+
+  const parents = new Map<string, string[]>();
+  for (const n of template.nodes) {
+    const ps: string[] = [];
+    for (const src of Object.values(n.inputs)) {
+      const srcId = src.split('.', 1)[0];
+      if (byId.has(srcId)) ps.push(srcId);
+    }
+    parents.set(n.id, ps);
+  }
+
+  // Compute column = longest path from a source. Memoized topo over `parents`.
+  const col = new Map<string, number>();
+  const visiting = new Set<string>();
+  function colOf(id: string): number {
+    if (col.has(id)) return col.get(id)!;
+    if (visiting.has(id)) return 0; // cycle guard, shouldn't happen
+    visiting.add(id);
+    const ps = parents.get(id) ?? [];
+    const c = ps.length === 0 ? 0 : Math.max(...ps.map(colOf)) + 1;
+    visiting.delete(id);
+    col.set(id, c);
+    return c;
+  }
+  for (const n of template.nodes) colOf(n.id);
+
+  // Group nodes by column to assign rows.
+  const byCol = new Map<number, string[]>();
+  for (const n of template.nodes) {
+    const c = col.get(n.id)!;
+    if (!byCol.has(c)) byCol.set(c, []);
+    byCol.get(c)!.push(n.id);
+  }
+  for (const [, ids] of byCol) ids.sort();
+
+  // Place nodes.
+  const nodes: LayoutNode[] = [];
+  const placed = new Map<string, LayoutNode>();
+  const colCount = Math.max(...Array.from(byCol.keys()), 0) + 1;
+  const totalRows = Math.max(...Array.from(byCol.values(), (a) => a.length));
+  for (const [c, ids] of byCol) {
+    ids.forEach((id, row) => {
+      const x = MARGIN + c * (NODE_W + COL_GAP);
+      const y = MARGIN + row * (NODE_H + ROW_GAP);
+      const node: LayoutNode = {
+        id,
+        kind: byId.get(id)!.kind,
+        col: c,
+        row,
+        x,
+        y,
+        width: NODE_W,
+        height: NODE_H
+      };
+      nodes.push(node);
+      placed.set(id, node);
+    });
+  }
+
+  // Edges: one per (target, input_port).
+  const edges: LayoutEdge[] = [];
+  for (const n of template.nodes) {
+    const target = placed.get(n.id);
+    if (!target) continue;
+    for (const [toPort, src] of Object.entries(n.inputs)) {
+      const [fromId, fromPort] = src.split('.', 2);
+      const source = placed.get(fromId);
+      if (!source) continue;
+      edges.push({
+        fromId,
+        toId: n.id,
+        fromPort,
+        toPort,
+        x1: source.x + source.width,
+        y1: source.y + source.height / 2,
+        x2: target.x,
+        y2: target.y + target.height / 2
+      });
+    }
+  }
+
+  return {
+    nodes,
+    edges,
+    width: MARGIN * 2 + colCount * NODE_W + (colCount - 1) * COL_GAP,
+    height: MARGIN * 2 + totalRows * NODE_H + (totalRows - 1) * ROW_GAP
+  };
+}

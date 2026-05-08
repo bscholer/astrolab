@@ -87,9 +87,9 @@ class JobRecord:
         default_factory=list
     )
 
-    def public_dict(self) -> dict[str, Any]:
+    def public_dict(self, *, include_template: bool = False) -> dict[str, Any]:
         """Serializable summary for GET /api/jobs[/{id}]."""
-        return {
+        d: dict[str, Any] = {
             "id": self.id,
             "status": self.status,
             "template_id": self.template.id,
@@ -105,6 +105,11 @@ class JobRecord:
                 else None
             ),
         }
+        if include_template:
+            # Pydantic model_dump gives the canonical Template JSON shape that
+            # the UI can graph without further translation.
+            d["template"] = self.template.model_dump(mode="json")
+        return d
 
 
 def _now() -> str:

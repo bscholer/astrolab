@@ -369,7 +369,8 @@ def get_job(job_id: str) -> dict:
     record = job_manager.get(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
-    return record.public_dict()
+    # Detail view includes the template so the UI can render the DAG.
+    return record.public_dict(include_template=True)
 
 
 @app.get("/api/jobs/{job_id}/events")

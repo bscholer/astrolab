@@ -82,9 +82,91 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+// ----- jobs --------------------------------------------------------------
+
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+export interface JobOutputRef {
+  path: string;
+  type: string;
+  node_hash: string;
+}
+
+export interface NodeSpec {
+  id: string;
+  kind: string;
+  variant: string | null;
+  params: Record<string, unknown>;
+  inputs: Record<string, string>;
+}
+
+export interface Template {
+  id: string;
+  version: number;
+  description: string;
+  profile: string | null;
+  nodes: NodeSpec[];
+  outputs: Record<string, string>;
+}
+
+export interface JobSummary {
+  id: string;
+  status: JobStatus;
+  template_id: string;
+  template_version: number;
+  submitted_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  outputs: Record<string, JobOutputRef> | null;
+  // Only populated by GET /api/jobs/{id}, not the list endpoint.
+  template?: Template;
+}
+
+export type JobEventType =
+  | 'job_queued'
+  | 'job_started'
+  | 'node_started'
+  | 'node_progress'
+  | 'node_cached'
+  | 'node_completed'
+  | 'node_failed'
+  | 'job_completed'
+  | 'job_failed';
+
+export interface JobEvent {
+  type: JobEventType;
+  timestamp: string;
+  node_id?: string;
+  fraction?: number;
+  message?: string;
+  error?: string;
+  hash?: string;
+  kind?: string;
+}
+
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
   scan: (root: string, scope_id = 'dwarf3') =>
-    postJSON<ScanResponse>('/api/scan', { root, scope_id })
+    postJSON<ScanResponse>('/api/scan', { root, scope_id }),
+  listJobs: () => getJSON<JobSummary[]>('/api/jobs'),
+  getJob: (id: string) => getJSON<JobSummary>(`/api/jobs/${id}`),
+  getJobEvents: (id: string) => getJSON<JobEvent[]>(`/api/jobs/${id}/events`),
+  /**
+   * Open a WebSocket for live event streaming. The server replays buffered
+   * history and then closes when the job hits a terminal state.
+   */
+  subscribeJobEvents(id: string, onEvent: (ev: JobEvent) => void): WebSocket {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProto}//${window.location.host}/api/jobs/${id}/events`);
+    ws.onmessage = (m) => {
+      try {
+        onEvent(JSON.parse(m.data));
+      } catch (err) {
+        console.error('bad event payload', err);
+      }
+    };
+    return ws;
+  }
 };
