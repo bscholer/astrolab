@@ -38,6 +38,18 @@ class CalibrationMissing(JobBuildError):
     """Raised when the template needs a master and none is available."""
 
 
+class TooFewFrames(JobBuildError):
+    """Raised when the session doesn't have enough frames to stack.
+
+    Siril's `calibrate <basename>` rejects single-frame inputs as 'No
+    sequence found', and stacking <3 frames is rarely useful anyway. We
+    surface this pre-flight rather than letting the pipeline blow up
+    halfway through."""
+
+
+MIN_FRAMES_FOR_STACK = 3
+
+
 def session_lights_folder(conn: sqlite3.Connection, session_id: int) -> Path:
     """Return the on-disk directory holding the session's raw subs.
 
@@ -97,6 +109,25 @@ def build_from_session(
     cal = calibration if calibration is not None else CalibrationSpec()
 
     lights_dir = session_lights_folder(conn, session_id)
+
+    # Reject single-frame / two-frame sessions up front. Siril's stack-style
+    # commands (calibrate, register, stack) want a real sequence; you also
+    # can't get any noise reduction from <3 frames, so this is mostly a
+    # protection against running pipelines on degenerate sessions.
+    n_lights = conn.execute(
+        """
+        SELECT COUNT(*) FROM frames
+        WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
+          AND image_type = 'LIGHT'
+        """,
+        (session_id,),
+    ).fetchone()[0]
+    if n_lights < MIN_FRAMES_FOR_STACK:
+        raise TooFewFrames(
+            f"session {session_id} has only {n_lights} light frame(s); "
+            f"the pipeline needs at least {MIN_FRAMES_FOR_STACK}"
+        )
+
     inputs: dict[str, Ref] = {}
 
     for node in template.nodes:

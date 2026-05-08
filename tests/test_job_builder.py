@@ -12,6 +12,7 @@ from server.job_builder import (
     CalibrationMissing,
     JobBuildError,
     SessionNotFound,
+    TooFewFrames,
     build_from_session,
     session_lights_folder,
 )
@@ -169,6 +170,13 @@ def test_build_from_session_explicit_master_id(db, tmp_path: Path) -> None:
         calibration=CalibrationSpec(mode="explicit", master_ids={"dark": 42}),
     )
     assert job.inputs["calibrate.dark"].path == tmp_path / "masters" / "explicit.fit"
+
+
+def test_build_rejects_single_frame_session(db, tmp_path: Path) -> None:
+    _seed_session(db, folder=tmp_path / "tiny", n_frames=1)
+    template = load_template("calibrate_register_stack")
+    with pytest.raises(TooFewFrames, match="only 1 light frame"):
+        build_from_session(db, 1, template)
 
 
 def test_build_from_session_explicit_master_missing_404s(db, tmp_path: Path) -> None:

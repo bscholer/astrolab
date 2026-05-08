@@ -40,6 +40,7 @@ from server.job_builder import (
     CalibrationMissing,
     JobBuildError,
     SessionNotFound,
+    TooFewFrames,
     build_from_session,
 )
 from server.jobs import JobManager
@@ -398,7 +399,7 @@ def submit_from_session(req: SubmitFromSessionRequest, conn: DBDep) -> SubmitJob
         job = build_from_session(conn, req.session_id, template, req.calibration)
     except SessionNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except CalibrationMissing as exc:
+    except (CalibrationMissing, TooFewFrames) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except JobBuildError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
