@@ -55,6 +55,7 @@ def make_progress_handler(
     *,
     low: float = 0.2,
     high: float = 0.95,
+    phases: int = 1,
     prefix: str = "",
 ):
     """Return an on_log handler that forwards Siril progress lines through
@@ -62,10 +63,24 @@ def make_progress_handler(
     node's pre/post work still has room. Non-progress lines are sent to
     `ctx.log` at debug level.
 
-    `prefix` is prepended to every progress message; useful for nodes that
-    emit multiple Siril commands in a row, where the same 0..100% sweep
-    happens twice and the message text is what tells the user where they are.
+    `phases`: how many sequential Siril commands the node runs. Each phase
+    gets an equal slice of [low, high]; when we see the progress fraction
+    drop sharply (the next sub-command's fresh 0% sweep starting), we
+    advance to the next phase so the bar keeps moving forward instead of
+    visually rewinding to 0. Pass `phases=2` for nodes that run, eg,
+    seqplatesolve+seqapplyreg in one shot.
+
+    `prefix` is prepended to every progress message — useful for noting
+    which phase ('Plate solve / Applying registration') in addition to
+    Siril's own message text.
     """
+
+    state: dict[str, float | int] = {"last": 0.0, "phase": 0}
+    phase_size = (high - low) / max(phases, 1)
+    # Threshold for 'this is a regression, not just noise' — protects against
+    # Siril emitting 99 -> 0 between sub-commands without misreading a small
+    # 0.5 -> 0.4 jitter as a phase change.
+    phase_reset_drop = 0.5
 
     def handler(line: str) -> None:
         ctx.log.debug("siril: %s", line)
@@ -73,7 +88,12 @@ def make_progress_handler(
         if parsed is None:
             return
         msg, frac = parsed
-        scaled = low + frac * (high - low)
+        if frac + phase_reset_drop < state["last"]:
+            state["phase"] = min(int(state["phase"]) + 1, phases - 1)
+        state["last"] = frac
+        scaled = low + state["phase"] * phase_size + frac * phase_size
+        # Clamp to high so a stray >1.0 never escapes the band.
+        scaled = min(scaled, high)
         ctx.progress(scaled, f"{prefix}{msg}" if prefix else msg)
 
     return handler

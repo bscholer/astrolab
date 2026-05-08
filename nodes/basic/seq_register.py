@@ -177,10 +177,11 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
         result = runtime.run(
             commands,
             working_dir=seq_out,
-            # Two Siril sub-commands run in succession (platesolve+applyreg or
-            # register+applyreg); each emits its own 0..100 sweep, so the bar
-            # may briefly reset within the node — the message text shows where.
-            on_log=make_progress_handler(ctx),
+            # Two Siril sub-commands in succession (platesolve+applyreg or
+            # register+applyreg). phases=2 partitions the [0.2, 0.95] band so
+            # the second command's fresh 0% sweep advances to the upper half
+            # instead of visually rewinding the bar to zero.
+            on_log=make_progress_handler(ctx, phases=2),
         )
         if result.returncode != 0:
             raise RuntimeError(

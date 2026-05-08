@@ -15,6 +15,7 @@ Strategy:
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ from astropy.io import fits
 from PIL import Image
 
 from .cache import DONE_MARKER, ContentCache
+from .siril import SirilNotFound, SirilRuntime, find_siril
 
 log = logging.getLogger("astrolab.preview")
 
@@ -104,12 +106,73 @@ def _locate_artifact(entry: Path, port: str) -> Path | None:
 def _render_fits_to_png(src: Path, dst: Path) -> None:
     """Read a FITS file, autostretch, downscale, write a PNG.
 
-    OSC raws (Dwarf 3 lights, calibrated subs that haven't been debayered yet,
-    most stacks where the pipeline didn't apply -debayer) come through as a
-    2D Bayer-patterned plane with BAYERPAT in the header. Treating those as
-    mono produces a sparkly noise field where alternating R/G/B pixels look
-    like dust. We do a half-resolution debayer first when BAYERPAT is set.
+    Strategy: try Siril's `autostretch -linked` first (gold standard, matches
+    what the user sees opening the FITS in Siril directly). Fall back to a
+    numpy MTF stretch when Siril isn't available — Mac dev / CI / etc.
+
+    OSC raws (Dwarf 3 lights pre-debayer) carry BAYERPAT='RGGB' as a 2D
+    plane; in the numpy fallback we half-res debayer first because mono
+    rendering of a Bayer mosaic looks like sparkly noise.
     """
+    if _render_via_siril(src, dst):
+        return
+    _render_fits_to_png_numpy(src, dst)
+
+
+def _render_via_siril(src: Path, dst: Path) -> bool:
+    """Render `src` via Siril's autostretch and resize into `dst`. Returns
+    False (no exception) when Siril isn't available or the run fails, so
+    the caller can fall back to the numpy path."""
+    try:
+        binary = find_siril()
+    except SirilNotFound:
+        return False
+
+    runtime = SirilRuntime(binary=binary)
+    with tempfile.TemporaryDirectory(prefix="astrolab-preview-") as td:
+        td_path = Path(td)
+        out_stem = td_path / "preview"
+        commands = [
+            f"load {_siril_quote(src.resolve())}",
+            "autostretch -linked",
+            f"savepng {_siril_quote(out_stem)}",
+        ]
+        try:
+            result = runtime.run(commands, working_dir=td_path, timeout=60.0)
+        except Exception:
+            log.exception("siril preview crashed for %s; falling back to numpy", src)
+            return False
+        if result.returncode != 0:
+            log.warning(
+                "siril preview returned %d for %s; falling back to numpy.\n%s",
+                result.returncode,
+                src,
+                result.stdout[-1500:],
+            )
+            return False
+        out_png = out_stem.with_suffix(".png")
+        if not out_png.exists():
+            log.warning("siril preview ran but produced no PNG at %s", out_png)
+            return False
+        # Siril savepng writes 16-bit PNG at full resolution; thumbnail it
+        # down so the cached preview stays small.
+        img = Image.open(out_png).convert("RGB")
+        img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
+        img.save(dst, "PNG", optimize=True)
+    return True
+
+
+def _siril_quote(path: Path) -> str:
+    """Quote a path for inclusion in a Siril SSF command."""
+    s = str(path)
+    if any(c in s for c in (" ", "\t", '"')):
+        return '"' + s.replace('"', r"\"") + '"'
+    return s
+
+
+def _render_fits_to_png_numpy(src: Path, dst: Path) -> None:
+    """Numpy fallback path: percentile + MTF autostretch, half-res debayer
+    when BAYERPAT is set. Used when Siril isn't on $PATH (Mac dev, CI)."""
     with fits.open(src, memmap=False) as hdul:
         data = hdul[0].data
         header = hdul[0].header
