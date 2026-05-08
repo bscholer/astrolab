@@ -78,12 +78,13 @@ def test_convert_lights_invokes_siril_and_returns_seq_dir(
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
-    fake = FakeRuntime(
-        on_run=lambda cmds, wd: (
-            (out_dir / "sequence").mkdir(exist_ok=True),
-            (out_dir / "sequence" / "light_.seq").write_text("# fake seq\n"),
-        )
-    )
+    def fake_convert(cmds, wd):
+        # Default params have fitseq=True, so emit one FITSEQ container.
+        seq_dir = out_dir / "sequence"
+        seq_dir.mkdir(exist_ok=True)
+        (seq_dir / "light.fit").write_text("# fake fitseq\n")
+
+    fake = FakeRuntime(on_run=fake_convert)
     monkeypatch.setattr(
         "nodes.basic.convert_lights.SirilRuntime", lambda *a, **k: fake
     )
@@ -107,7 +108,8 @@ def test_convert_lights_invokes_siril_and_returns_seq_dir(
     seq_ref = refs["sequence"]
     assert seq_ref.type is PortType.SEQUENCE_FITS
     assert seq_ref.path == out_dir / "sequence"
-    assert (seq_ref.path / "light_.seq").exists()
+    # Default fitseq=True produces a single FITSEQ container.
+    assert (seq_ref.path / "light.fit").exists()
 
     # Verify Siril command shape.
     assert len(fake.calls) == 1
@@ -131,12 +133,12 @@ def test_convert_lights_debayer_flag(tmp_path: Path, monkeypatch: pytest.MonkeyP
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
-    fake = FakeRuntime(
-        on_run=lambda cmds, wd: (
-            (out_dir / "sequence").mkdir(exist_ok=True),
-            (out_dir / "sequence" / "light_.seq").write_text("# fake\n"),
-        )
-    )
+    def fake_convert(cmds, wd):
+        seq_dir = out_dir / "sequence"
+        seq_dir.mkdir(exist_ok=True)
+        (seq_dir / "light.fit").write_text("# fake\n")
+
+    fake = FakeRuntime(on_run=fake_convert)
     monkeypatch.setattr(
         "nodes.basic.convert_lights.SirilRuntime", lambda *a, **k: fake
     )
@@ -185,14 +187,14 @@ def test_convert_lights_raises_when_siril_returns_nonzero(
         )
 
 
-def test_convert_lights_raises_when_seq_missing(
+def test_convert_lights_raises_when_fitseq_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     src = _make_session_dir(tmp_path / "session")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
-    # Siril returns 0 but produces no .seq file.
+    # Siril returns 0 but the FITSEQ container is missing.
     fake = FakeRuntime(on_run=lambda cmds, wd: None)
     monkeypatch.setattr(
         "nodes.basic.convert_lights.SirilRuntime", lambda *a, **k: fake
@@ -207,10 +209,81 @@ def test_convert_lights_raises_when_seq_missing(
                     type=PortType.SEQUENCE_FITS,
                 )
             },
-            params=ConvertLightsParams(),
+            params=ConvertLightsParams(),  # fitseq=True default
             ctx=_ctx(tmp_path),
             out_dir=out_dir,
         )
+
+
+def test_convert_lights_non_fitseq_validates_frame_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = _make_session_dir(tmp_path / "session", n_frames=3)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake_convert_short(cmds, wd):
+        # Pretend Siril only emitted 2 frames out of 3 inputs.
+        seq_dir = out_dir / "sequence"
+        seq_dir.mkdir(exist_ok=True)
+        (seq_dir / "light_00001.fit").write_text("")
+        (seq_dir / "light_00002.fit").write_text("")
+
+    fake = FakeRuntime(on_run=fake_convert_short)
+    monkeypatch.setattr(
+        "nodes.basic.convert_lights.SirilRuntime", lambda *a, **k: fake
+    )
+    with pytest.raises(RuntimeError, match="expected 3"):
+        ConvertLightsNode().run(
+            inputs={
+                "lights": Ref(
+                    node_hash="ext",
+                    port="lights",
+                    path=src,
+                    type=PortType.SEQUENCE_FITS,
+                )
+            },
+            params=ConvertLightsParams(fitseq=False),
+            ctx=_ctx(tmp_path),
+            out_dir=out_dir,
+        )
+
+
+def test_convert_lights_non_fitseq_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = _make_session_dir(tmp_path / "session", n_frames=3)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake_convert_full(cmds, wd):
+        seq_dir = out_dir / "sequence"
+        seq_dir.mkdir(exist_ok=True)
+        for i in range(1, 4):
+            (seq_dir / f"light_{i:05d}.fit").write_text("")
+
+    fake = FakeRuntime(on_run=fake_convert_full)
+    monkeypatch.setattr(
+        "nodes.basic.convert_lights.SirilRuntime", lambda *a, **k: fake
+    )
+    refs = ConvertLightsNode().run(
+        inputs={
+            "lights": Ref(
+                node_hash="ext",
+                port="lights",
+                path=src,
+                type=PortType.SEQUENCE_FITS,
+            )
+        },
+        params=ConvertLightsParams(fitseq=False),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    assert refs["sequence"].path.is_dir()
+    assert sum(1 for _ in refs["sequence"].path.glob("light_*.fit")) == 3
+    # Convert command must NOT have included -fitseq.
+    convert_cmd = next(c for c in fake.calls[0]["commands"] if c.startswith("convert "))
+    assert "-fitseq" not in convert_cmd
 
 
 def test_convert_lights_rejects_empty_input(

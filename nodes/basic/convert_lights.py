@@ -125,15 +125,41 @@ class ConvertLightsNode(Node[ConvertLightsParams]):
                 f"--- ssf ---\n{result.ssf}\n--- stderr ---\n{result.stderr}"
             )
 
-        # Sanity-check the expected output exists.
-        seq_file = seq_dir / f"{params.basename}_.seq"
-        if not seq_file.exists():
-            raise RuntimeError(
-                f"convert_lights: siril returned 0 but {seq_file} is missing.\n"
-                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
+        # Sanity-check the expected output exists. Siril 1.4's `convert` writes
+        # one entry per input frame: with -fitseq a single `<basename>.fit`
+        # FITSEQ container, otherwise one `<basename>_NNNNN.fit` per input
+        # (symlink in 1.4) plus a `<basename>_conversion.txt` log. The .seq
+        # index file is generated lazily by downstream commands like
+        # `seqplatesolve` or `seqload`, so we don't insist on it here.
+        if params.fitseq:
+            expected = seq_dir / f"{params.basename}.fit"
+            if not expected.exists():
+                raise RuntimeError(
+                    f"convert_lights: siril returned 0 but FITSEQ container "
+                    f"{expected} is missing.\n--- stdout (tail) ---\n"
+                    f"{result.stdout[-2000:]}"
+                )
+            wrote = expected.name
+        else:
+            frames = sorted(
+                p
+                for p in seq_dir.iterdir()
+                if p.name.startswith(f"{params.basename}_") and p.suffix in (".fit", ".fits")
             )
+            if not frames:
+                raise RuntimeError(
+                    f"convert_lights: siril returned 0 but no "
+                    f"{params.basename}_*.fit* frames landed in {seq_dir}.\n"
+                    f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
+                )
+            if len(frames) != len(fits_files):
+                raise RuntimeError(
+                    f"convert_lights: expected {len(fits_files)} converted "
+                    f"frames, got {len(frames)}"
+                )
+            wrote = f"{len(frames)} frames + {params.basename}_conversion.txt"
 
-        ctx.progress(1.0, f"convert_lights: wrote {seq_file.name}")
+        ctx.progress(1.0, f"convert_lights: wrote {wrote}")
         return {
             "sequence": Ref(
                 node_hash="",
