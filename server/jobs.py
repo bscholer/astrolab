@@ -524,6 +524,30 @@ class JobManager:
                 )
             except (ValueError, TypeError):
                 node_hashes = []
+            # Backfill for jobs that ran before we started persisting hashes:
+            # walk the event log, collect any `hash` keys we find on
+            # node_started / node_cached events, and persist them so the
+            # storage layer can attribute their cache back to the right
+            # rendering. One-time cost on the first rehydrate after the
+            # upgrade; subsequent rehydrates see the column already filled.
+            if not node_hashes:
+                hash_rows = conn.execute(
+                    "SELECT extra_json FROM job_events "
+                    "WHERE job_id = ? AND type IN ('node_started', 'node_cached')",
+                    (row["id"],),
+                ).fetchall()
+                seen: set[str] = set()
+                for hr in hash_rows:
+                    if not hr["extra_json"]:
+                        continue
+                    try:
+                        extra = json.loads(hr["extra_json"])
+                    except (ValueError, TypeError):
+                        continue
+                    h = extra.get("hash")
+                    if isinstance(h, str) and h not in seen:
+                        seen.add(h)
+                        node_hashes.append(h)
             record = JobRecord(
                 id=row["id"],
                 status=status,
