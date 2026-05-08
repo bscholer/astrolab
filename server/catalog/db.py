@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -147,6 +147,49 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "INSERT INTO schema_version (version) VALUES (2)",
+    ],
+    3: [
+        # Jobs and their event streams. Phase 2 keeps in-memory state for
+        # speed; this gives durability across restarts. template_json and
+        # job_json hold the full Pydantic dumps so we can reconstruct on
+        # load without joining anything else. outputs_json is null until the
+        # job completes; error is null unless something blew up.
+        """
+        CREATE TABLE jobs (
+            id                TEXT PRIMARY KEY,
+            status            TEXT NOT NULL,
+            template_id       TEXT NOT NULL,
+            template_version  INTEGER NOT NULL,
+            template_json     TEXT NOT NULL,
+            job_json          TEXT NOT NULL,
+            outputs_json      TEXT,
+            error             TEXT,
+            submitted_at      TEXT NOT NULL,
+            started_at        TEXT,
+            finished_at       TEXT
+        )
+        """,
+        "CREATE INDEX idx_jobs_status ON jobs(status)",
+        "CREATE INDEX idx_jobs_submitted ON jobs(submitted_at DESC)",
+        # Append-only event log per job. Event ordering = insertion order.
+        # node_id / fraction / message / error are pulled out of the payload
+        # for cheap querying; extra_json holds anything else (e.g. node hash).
+        """
+        CREATE TABLE job_events (
+            id              INTEGER PRIMARY KEY,
+            job_id          TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            seq             INTEGER NOT NULL,
+            type            TEXT NOT NULL,
+            timestamp       TEXT NOT NULL,
+            node_id         TEXT,
+            fraction        REAL,
+            message         TEXT,
+            error           TEXT,
+            extra_json      TEXT
+        )
+        """,
+        "CREATE INDEX idx_job_events_job ON job_events(job_id, seq)",
+        "INSERT INTO schema_version (version) VALUES (3)",
     ],
 }
 

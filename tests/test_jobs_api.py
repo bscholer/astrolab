@@ -8,7 +8,6 @@ empty so the API can boot without filesystem state.
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -22,14 +21,10 @@ from server.cache import ContentCache
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # Each test gets a clean cache and a fresh executor; the lifespan handler
-    # shuts the previous one down between TestClient sessions.
+    # Per-test cache + DB so persistence writes don't leak across tests or
+    # touch the user's real catalog.
     monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
-    monkeypatch.setattr(job_manager, "_records", {})
-    monkeypatch.setattr(
-        job_manager, "_executor",
-        ThreadPoolExecutor(max_workers=1, thread_name_prefix="astrolab-job-test"),
-    )
+    job_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
     with TestClient(app) as c:
         yield c
 

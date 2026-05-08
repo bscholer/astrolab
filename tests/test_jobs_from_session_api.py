@@ -8,7 +8,6 @@ calibration. The point is exercising the resolver + endpoint, not Siril.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -53,11 +52,7 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_module, "default_db_path", lambda: db_path)
     monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
-    monkeypatch.setattr(job_manager, "_records", {})
-    monkeypatch.setattr(
-        job_manager, "_executor",
-        ThreadPoolExecutor(max_workers=1, thread_name_prefix="t"),
-    )
+    job_manager.reset_for_tests(db_path=db_path)
     with TestClient(app) as c:
         yield c
 

@@ -57,6 +57,12 @@ from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Pull persisted jobs into memory so /jobs lists them and the detail page
+    # can replay events even after a server restart.
+    try:
+        job_manager.rehydrate()
+    except Exception:  # pragma: no cover  (defensive: server starts even if DB is wedged)
+        log.exception("job rehydrate failed; continuing with empty state")
     yield
     job_manager.shutdown(wait=False)
 
