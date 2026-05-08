@@ -65,6 +65,38 @@ def test_render_fits_image(tmp_path: Path) -> None:
     assert arr.std() > 5
 
 
+def test_render_bayer_fits_yields_color(tmp_path: Path) -> None:
+    """OSC raws (BAYERPAT='RGGB' etc.) must be debayered before stretch,
+    otherwise the alternating R/G/B pixels render as monochrome sparkles."""
+    cache = ContentCache(root=tmp_path / "cache")
+    rng = np.random.default_rng(0)
+    # Build a 2x2 super-pixel where R, G, and B each have a distinct mean
+    # signal so the debayered image must show channel separation.
+    h, w = 64, 64
+    arr = np.zeros((h, w), dtype=np.float32)
+    arr[0::2, 0::2] = rng.normal(2000, 50, ((h + 1) // 2, (w + 1) // 2))   # R
+    arr[0::2, 1::2] = rng.normal(1000, 50, ((h + 1) // 2, (w + 1) // 2))   # G1
+    arr[1::2, 0::2] = rng.normal(1000, 50, ((h + 1) // 2, (w + 1) // 2))   # G2
+    arr[1::2, 1::2] = rng.normal(500,  50, ((h + 1) // 2, (w + 1) // 2))   # B
+    src = tmp_path / "bayer.fit"
+    fits.PrimaryHDU(data=arr, header=fits.Header({"BAYERPAT": "RGGB"})).writeto(
+        src, overwrite=True
+    )
+    _commit_entry(cache, "hbayer", {"image.fit": src.read_bytes()})
+
+    out = render_preview(cache, "hbayer", "image")
+    img = np.array(Image.open(out))
+    # Half-res because of the 2x2 collapse.
+    assert img.shape[0] <= 32 and img.shape[1] <= 32
+    # If the renderer had treated this as mono, R == G == B per pixel; the
+    # debayered version must have at least some channel divergence because
+    # R came from different pixels than B.
+    rg_diff = np.abs(img[..., 0].astype(int) - img[..., 1].astype(int))
+    rb_diff = np.abs(img[..., 0].astype(int) - img[..., 2].astype(int))
+    assert rg_diff.max() > 0
+    assert rb_diff.max() > 0
+
+
 def test_render_sequence_picks_middle_frame(tmp_path: Path) -> None:
     cache = ContentCache(root=tmp_path / "cache")
     seq_dir = tmp_path / "seq"

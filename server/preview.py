@@ -102,22 +102,37 @@ def _locate_artifact(entry: Path, port: str) -> Path | None:
 
 
 def _render_fits_to_png(src: Path, dst: Path) -> None:
-    """Read a FITS file, autostretch, downscale, write a PNG."""
+    """Read a FITS file, autostretch, downscale, write a PNG.
+
+    OSC raws (Dwarf 3 lights, calibrated subs that haven't been debayered yet,
+    most stacks where the pipeline didn't apply -debayer) come through as a
+    2D Bayer-patterned plane with BAYERPAT in the header. Treating those as
+    mono produces a sparkly noise field where alternating R/G/B pixels look
+    like dust. We do a half-resolution debayer first when BAYERPAT is set.
+    """
     with fits.open(src, memmap=False) as hdul:
         data = hdul[0].data
+        header = hdul[0].header
         if data is None:
             for hdu in hdul[1:]:
                 if hdu.data is not None:
                     data = hdu.data
+                    header = hdu.header
                     break
     if data is None:
         raise PreviewError(f"FITS at {src} has no image data")
 
     arr = np.asarray(data)
-    # Common Siril output is 1-channel 32-bit float. Some captures are
-    # 3-channel cubes (R, G, B as separate planes). Handle both.
+
+    # Common Siril output is 1-channel 32-bit float, possibly Bayer-patterned.
+    # Some captures are 3-channel cubes (R, G, B as separate planes).
     if arr.ndim == 2:
-        rgb = _stretch_mono(arr)
+        bayerpat = str(header.get("BAYERPAT") or "").strip().upper()
+        rgb = (
+            _debayer_half_res(arr, bayerpat)
+            if bayerpat in _BAYER_OFFSETS
+            else _stretch_mono(arr)
+        )
     elif arr.ndim == 3 and arr.shape[0] in (3, 4):
         rgb = np.stack([_stretch_mono(arr[i]) for i in range(3)], axis=-1)
     elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
@@ -133,6 +148,46 @@ def _render_fits_to_png(src: Path, dst: Path) -> None:
 
     img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
     img.save(dst, "PNG", optimize=True)
+
+
+# Each entry maps a Bayer pattern to (r_offset, g1_offset, g2_offset, b_offset)
+# where each offset is (row, col) inside the 2x2 super-pixel. Example RGGB:
+#   R G       R = (0,0)  G1 = (0,1)
+#   G B       G2 = (1,0)  B = (1,1)
+_BayerOffsets = tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
+_BAYER_OFFSETS: dict[str, _BayerOffsets] = {
+    "RGGB": ((0, 0), (0, 1), (1, 0), (1, 1)),
+    "BGGR": ((1, 1), (0, 1), (1, 0), (0, 0)),
+    "GRBG": ((0, 1), (0, 0), (1, 1), (1, 0)),
+    "GBRG": ((1, 0), (0, 0), (1, 1), (0, 1)),
+}
+
+
+def _debayer_half_res(plane: np.ndarray, pattern: str) -> np.ndarray:
+    """Half-resolution debayer of a 2D Bayer plane to a stretched RGB uint8.
+
+    Each 2x2 super-pixel collapses to one RGB sample (R from R, B from B,
+    G as the average of the two G sites). Half-res is fine for a 512px
+    thumbnail and avoids pulling in cv2 / colour-demosaicing as deps.
+    """
+    h, w = plane.shape
+    # Crop to even dims so the 2:: slicing is clean.
+    if h % 2:
+        plane = plane[:-1]
+    if w % 2:
+        plane = plane[:, :-1]
+
+    (r_off, g1_off, g2_off, b_off) = _BAYER_OFFSETS[pattern]
+    r = plane[r_off[0]::2, r_off[1]::2].astype(np.float32)
+    g1 = plane[g1_off[0]::2, g1_off[1]::2].astype(np.float32)
+    g2 = plane[g2_off[0]::2, g2_off[1]::2].astype(np.float32)
+    b = plane[b_off[0]::2, b_off[1]::2].astype(np.float32)
+    g = (g1 + g2) * 0.5
+
+    return np.stack(
+        [_stretch_mono(r), _stretch_mono(g), _stretch_mono(b)],
+        axis=-1,
+    )
 
 
 def _stretch_mono(plane: np.ndarray) -> np.ndarray:
