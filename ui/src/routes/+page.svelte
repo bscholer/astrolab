@@ -68,6 +68,22 @@
   function calLabel(kind: string): string {
     return kind[0].toUpperCase();
   }
+
+  const KIND_NAME: Record<string, string> = {
+    dark: 'Dark',
+    flat: 'Flat',
+    bias: 'Bias'
+  };
+
+  const QUALITY_HELP: Record<string, string> = {
+    exact: 'exact match',
+    approx: 'approximate match (within tolerance)',
+    none: 'no match found'
+  };
+
+  function calTitle(c: CalibrationStatus): string {
+    return `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
+  }
 </script>
 
 <section class="scan-bar">
@@ -85,6 +101,35 @@
     <span class="muted scan-result">{scanResult}</span>
   {/if}
 </section>
+
+<details class="legend">
+  <summary>
+    <span class="legend-cluster" aria-hidden="true">
+      <span class="cal cal-exact legend-swatch">D</span>
+      <span class="cal cal-approx legend-swatch">F</span>
+      <span class="cal cal-none legend-swatch">B</span>
+    </span>
+    <span class="legend-summary-text">Calibration legend</span>
+  </summary>
+  <div class="legend-body">
+    <div class="legend-row">
+      <span class="cal cal-exact legend-swatch">D</span>
+      <span><strong>D</strong> dark, <strong>F</strong> flat, <strong>B</strong> bias</span>
+    </div>
+    <div class="legend-row">
+      <span class="cal cal-exact legend-swatch">·</span>
+      <span><strong>green</strong> exact match</span>
+    </div>
+    <div class="legend-row">
+      <span class="cal cal-approx legend-swatch">·</span>
+      <span><strong>amber</strong> approximate (within tolerance, e.g. &plusmn;3&deg;C for darks)</span>
+    </div>
+    <div class="legend-row">
+      <span class="cal cal-none legend-swatch">·</span>
+      <span><strong>red</strong> no match found</span>
+    </div>
+  </div>
+</details>
 
 {#if error}
   <p class="error">{error}</p>
@@ -105,11 +150,11 @@
           <div class="target-meta muted">
             <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
             <span aria-hidden="true">·</span>
-            <span>{t.frame_count.toLocaleString()} frames</span>
-            {#if t.failed_count > 0}
-              <span aria-hidden="true">·</span>
-              <span class="bad">{t.failed_count} failed</span>
-            {/if}
+            <span>
+              {(t.frame_count - t.failed_count).toLocaleString()}<!--
+              -->{#if t.failed_count > 0}<span class="failed-frac">/{t.frame_count.toLocaleString()}</span>{/if}
+              frames
+            </span>
             {#if t.last_session_at}
               <span aria-hidden="true">·</span>
               <span>last {shortDate(t.last_session_at)}</span>
@@ -132,15 +177,22 @@
                       </span>
                     </div>
                     <div class="session-body">
-                      <span>{s.frame_count} frame{s.frame_count === 1 ? '' : 's'}</span>
-                      {#if s.failed_count > 0}
-                        <span class="bad">{s.failed_count} failed</span>
-                      {/if}
+                      <span>
+                        {(s.frame_count - s.failed_count).toLocaleString()}<!--
+                        -->{#if s.failed_count > 0}<span class="failed-frac" title="{s.failed_count} failed sub{s.failed_count === 1 ? '' : 's'}">/{s.frame_count.toLocaleString()}</span>{/if}
+                        frame{s.frame_count === 1 ? '' : 's'}
+                      </span>
                       <span class="cal-row">
                         {#each s.calibration as c (c.kind)}
-                          <span class={calBadgeClass(c)} title="{c.kind}: {c.quality}">
+                          <button
+                            type="button"
+                            class={calBadgeClass(c)}
+                            title={calTitle(c)}
+                            aria-label={calTitle(c)}
+                            data-tip={calTitle(c)}
+                          >
                             {calLabel(c.kind)}
-                          </span>
+                          </button>
                         {/each}
                       </span>
                     </div>
@@ -247,6 +299,11 @@
     color: var(--bad);
   }
 
+  .failed-frac {
+    color: var(--fg-mute);
+    opacity: 0.65;
+  }
+
   .target-detail {
     border-top: 1px solid var(--border);
     padding: 0.5rem 1rem 1rem;
@@ -301,6 +358,16 @@
   }
 
   .cal {
+    /* Buttons inherit a lot of UA styling; reset what we don't want. */
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    line-height: 1;
+
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -310,6 +377,40 @@
     font-size: 0.75rem;
     font-weight: 600;
     border: 1px solid var(--border);
+    cursor: help;
+  }
+
+  .cal:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Custom tooltip via data-tip; works on hover (desktop) and focus (mobile tap). */
+  .cal[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    white-space: nowrap;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.55rem;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 120ms ease, transform 120ms ease;
+    z-index: 5;
+  }
+
+  .cal[data-tip]:hover::after,
+  .cal[data-tip]:focus-visible::after,
+  .cal[data-tip]:focus::after {
+    opacity: 1;
+    transform: translateY(0);
   }
 
   .cal-exact {
@@ -328,6 +429,69 @@
     background: rgba(255, 122, 138, 0.12);
     border-color: var(--bad);
     color: var(--bad);
+  }
+
+  .legend {
+    margin: 0 0 1rem;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-elev);
+    overflow: hidden;
+  }
+
+  .legend > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.55rem 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    user-select: none;
+  }
+
+  .legend > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .legend-cluster {
+    display: inline-flex;
+    gap: 0.25rem;
+  }
+
+  .legend-summary-text {
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+  }
+
+  .legend[open] > summary {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .legend-body {
+    padding: 0.6rem 0.8rem 0.8rem;
+    font-size: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .legend-swatch {
+    /* Inline swatches inherit cal sizing; just disable cursor/tooltip. */
+    cursor: default;
+    width: 1.4rem;
+    height: 1.4rem;
+    font-size: 0.7rem;
+  }
+
+  .legend-swatch::after {
+    display: none !important;
   }
 
   @media (max-width: 600px) {
