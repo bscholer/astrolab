@@ -1,8 +1,11 @@
 <script lang="ts">
   import '../app.css';
+  import Toasts from '$lib/Toasts.svelte';
 
   let { children } = $props();
 </script>
+
+<Toasts />
 
 <header class="container topbar">
   <div class="row">

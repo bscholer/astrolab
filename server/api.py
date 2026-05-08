@@ -121,6 +121,11 @@ class CalibrationStatus(BaseModel):
     kind: str
     quality: str
     master_id: int | None = None
+    reason: str | None = None
+    """Matcher's explanation, surfaced to the UI so users see why a session
+    has no calibration before they try to Run it. Sourced from
+    calibration_matches.details (JSON blob); we extract the 'reason' key when
+    present and ignore the rest."""
 
 
 class SessionSummary(BaseModel):
@@ -199,16 +204,30 @@ def _calibration_for_session(
     conn: sqlite3.Connection, session_id: int
 ) -> list[CalibrationStatus]:
     rows = conn.execute(
-        "SELECT kind, master_id, match_quality FROM calibration_matches "
+        "SELECT kind, master_id, match_quality, details FROM calibration_matches "
         "WHERE session_id = ? ORDER BY kind",
         (session_id,),
     ).fetchall()
-    return [
-        CalibrationStatus(
-            kind=r["kind"], quality=r["match_quality"], master_id=r["master_id"]
+    out: list[CalibrationStatus] = []
+    for r in rows:
+        reason: str | None = None
+        if r["details"]:
+            try:
+                import json as _json
+                payload = _json.loads(r["details"])
+                if isinstance(payload, dict):
+                    reason = payload.get("reason") or None
+            except (ValueError, TypeError):
+                pass
+        out.append(
+            CalibrationStatus(
+                kind=r["kind"],
+                quality=r["match_quality"],
+                master_id=r["master_id"],
+                reason=reason,
+            )
         )
-        for r in rows
-    ]
+    return out
 
 
 def _row_to_session_summary(
@@ -394,14 +413,18 @@ def submit_from_session(req: SubmitFromSessionRequest, conn: DBDep) -> SubmitJob
     try:
         template = load_template(req.template_id)
     except TemplateNotFound as exc:
+        log.warning("from_session rejected: unknown template %r", req.template_id)
         raise HTTPException(status_code=404, detail=f"template {exc} not found") from exc
     try:
         job = build_from_session(conn, req.session_id, template, req.calibration)
     except SessionNotFound as exc:
+        log.warning("from_session rejected (session=%s): %s", req.session_id, exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (CalibrationMissing, TooFewFrames) as exc:
+        log.warning("from_session rejected (session=%s): %s", req.session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except JobBuildError as exc:
+        log.warning("from_session rejected (session=%s): %s", req.session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job_id = job_manager.submit(template, job)
     log.info(

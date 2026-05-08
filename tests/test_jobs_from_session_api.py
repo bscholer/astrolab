@@ -20,24 +20,29 @@ from server.cache import ContentCache
 from server.catalog.db import open_db
 
 
-def _seed_session_with_png(conn, folder: Path) -> None:
+def _seed_session_with_png(conn, folder: Path, n_frames: int = 3) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    src = folder / "frame.png"
-    Image.new("RGB", (200, 100), (32, 64, 96)).save(src)
+    paths = []
+    for i in range(n_frames):
+        p = folder / f"frame_{i}.png"
+        Image.new("RGB", (200, 100), (32, 64, 96)).save(p)
+        paths.append(p)
     with conn:
         conn.execute("INSERT INTO targets (id, name) VALUES (1, 'M 33')")
         conn.execute(
             """INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
-               VALUES (1, 'dwarf3', 'k1', 1, 1)"""
+               VALUES (1, 'dwarf3', 'k1', 1, ?)""",
+            (n_frames,),
         )
-        cur = conn.execute(
-            "INSERT INTO frames (path, image_type, session_key) VALUES (?, 'LIGHT', 'k1')",
-            (str(src),),
-        )
-        conn.execute(
-            "INSERT INTO session_frames (session_id, frame_id) VALUES (1, ?)",
-            (cur.lastrowid,),
-        )
+        for p in paths:
+            cur = conn.execute(
+                "INSERT INTO frames (path, image_type, session_key) VALUES (?, 'LIGHT', 'k1')",
+                (str(p),),
+            )
+            conn.execute(
+                "INSERT INTO session_frames (session_id, frame_id) VALUES (1, ?)",
+                (cur.lastrowid,),
+            )
 
 
 @pytest.fixture

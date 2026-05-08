@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { api, type JobEvent, type JobSummary } from '$lib/api';
   import { layoutTemplate, type Layout } from '$lib/graph';
+  import { toast } from '$lib/toast.svelte';
 
   let job = $state<JobSummary | null>(null);
   let layout = $state<Layout | null>(null);
@@ -12,7 +13,6 @@
   let nodeKind = $state<Record<string, string>>({});
   let nodePort = $state<Record<string, string>>({});
   let recentEvents = $state<JobEvent[]>([]);
-  let error = $state<string | null>(null);
   let ws: WebSocket | null = null;
   // Dedupe events seen via the GET /events bootstrap vs WS replay.
   const seenEventKey = new Set<string>();
@@ -67,7 +67,7 @@
       // Refresh top-level info to capture outputs and final status.
       api.getJob(id)
         .then((j) => (job = j))
-        .catch((err) => (error = (err as Error).message));
+        .catch((err) => toast.error(`Couldn't refresh job: ${(err as Error).message}`));
     }
   }
 
@@ -115,7 +115,7 @@
         ws = api.subscribeJobEvents(id, applyEvent);
       }
     } catch (e) {
-      error = (e as Error).message;
+      toast.error(`Couldn't load job ${id}: ${(e as Error).message}`);
     }
   });
 
@@ -141,9 +141,7 @@
   {/if}
 </div>
 
-{#if error}
-  <p class="err">Error: {error}</p>
-{:else if job === null}
+{#if job === null}
   <p class="muted">Loading…</p>
 {:else}
   <p class="muted small">job <code>{job.id}</code></p>

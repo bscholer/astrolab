@@ -12,6 +12,7 @@ export interface CalibrationStatus {
   kind: CalibrationKind;
   quality: MatchQuality;
   master_id: number | null;
+  reason?: string | null;
 }
 
 export interface SessionSummary {
@@ -61,10 +62,42 @@ export interface ScanResponse {
   masters_skipped: number;
 }
 
+/**
+ * Custom error subclass that carries the HTTP status and the parsed
+ * `detail` field from a FastAPI error response. UI code can pull `.detail`
+ * straight into a toast without scrubbing JSON.
+ */
+export class ApiError extends Error {
+  status: number;
+  detail: string;
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function _readErrorDetail(r: Response): Promise<string> {
+  // FastAPI errors come back as { detail: "..." }; non-JSON bodies fall
+  // through to the raw text. Either way we never want to dump the raw
+  // braces to the user.
+  const text = await r.text();
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && typeof parsed.detail === 'string') {
+      return parsed.detail;
+    }
+  } catch {
+    // not JSON; fall through
+  }
+  return text || `${r.status} ${r.statusText}`;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) {
-    throw new Error(`${r.status} ${r.statusText}: ${path}`);
+    throw new ApiError(r.status, await _readErrorDetail(r));
   }
   return (await r.json()) as T;
 }
@@ -76,8 +109,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body)
   });
   if (!r.ok) {
-    const detail = await r.text();
-    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    throw new ApiError(r.status, await _readErrorDetail(r));
   }
   return (await r.json()) as T;
 }

@@ -1,17 +1,16 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api, type JobSummary } from '$lib/api';
+  import { toast } from '$lib/toast.svelte';
 
   let jobs = $state<JobSummary[] | null>(null);
-  let error = $state<string | null>(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
 
   async function load() {
     try {
       jobs = await api.listJobs();
-      error = null;
     } catch (e) {
-      error = (e as Error).message;
+      toast.error(`Failed to load jobs: ${(e as Error).message}`);
     }
   }
 
@@ -41,9 +40,7 @@
 
 <h1>Jobs</h1>
 
-{#if error}
-  <p class="err">Error: {error}</p>
-{:else if jobs === null}
+{#if jobs === null}
   <p class="muted">Loading…</p>
 {:else if jobs.length === 0}
   <p class="muted">

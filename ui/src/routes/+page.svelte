@@ -8,9 +8,9 @@
     type TargetDetail,
     type TargetSummary
   } from '$lib/api';
+  import { toast } from '$lib/toast.svelte';
 
   let targets = $state<TargetSummary[] | null>(null);
-  let error = $state<string | null>(null);
   let openTargetId = $state<number | null>(null);
   let openTarget = $state<TargetDetail | null>(null);
   let openLoading = $state(false);
@@ -23,15 +23,13 @@
   let runOpenSessionId = $state<number | null>(null);
   let runTemplateId = $state<string>('calibrate_register_stack');
   let runCalibrationMode = $state<CalibrationMode>('auto');
-  let runError = $state<string | null>(null);
   let running = $state(false);
 
   async function load() {
-    error = null;
     try {
       targets = await api.listTargets();
     } catch (e) {
-      error = (e as Error).message;
+      toast.error(`Failed to load targets: ${(e as Error).message}`);
     }
   }
 
@@ -47,7 +45,7 @@
     try {
       openTarget = await api.getTarget(id);
     } catch (e) {
-      error = (e as Error).message;
+      toast.error(`Failed to load target ${id}: ${(e as Error).message}`);
     } finally {
       openLoading = false;
     }
@@ -60,9 +58,10 @@
     try {
       const r = await api.scan(scanRoot.trim(), 'dwarf3');
       scanResult = `+${r.inserted} frames, +${r.masters_inserted} masters, -${r.removed} orphans`;
+      toast.success(`Scan complete: ${scanResult}`);
       await load();
     } catch (e) {
-      scanResult = `error: ${(e as Error).message}`;
+      toast.error(`Scan failed: ${(e as Error).message}`);
     } finally {
       scanning = false;
     }
@@ -73,16 +72,14 @@
     // Templates rarely change; one fetch at mount is plenty.
     api.listTemplates()
       .then((t) => (templates = t))
-      .catch((e) => console.error('listTemplates failed', e));
+      .catch((e) => toast.error(`listTemplates failed: ${(e as Error).message}`));
   });
 
   function toggleRun(sessionId: number) {
-    runError = null;
     runOpenSessionId = runOpenSessionId === sessionId ? null : sessionId;
   }
 
   async function submitRun(sessionId: number) {
-    runError = null;
     running = true;
     try {
       const res = await api.submitFromSession({
@@ -92,7 +89,7 @@
       });
       goto(`/jobs/${res.job_id}`);
     } catch (e) {
-      runError = (e as Error).message;
+      toast.error(`Couldn't start job: ${(e as Error).message}`);
     } finally {
       running = false;
     }
@@ -124,7 +121,20 @@
   };
 
   function calTitle(c: CalibrationStatus): string {
-    return `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
+    const base = `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
+    return c.reason ? `${base}\n${c.reason}` : base;
+  }
+
+  function calProblems(cs: CalibrationStatus[]): string[] {
+    // Concise human-readable reasons for non-'exact' calibration kinds, used
+    // to flag sessions whose Run will be rejected (or run uncalibrated).
+    return cs
+      .filter((c) => c.quality !== 'exact')
+      .map((c) => {
+        const k = KIND_NAME[c.kind] ?? c.kind;
+        if (c.reason) return `${k.toLowerCase()}: ${c.reason}`;
+        return `${k.toLowerCase()}: ${QUALITY_HELP[c.quality] ?? c.quality}`;
+      });
   }
 </script>
 
@@ -172,10 +182,6 @@
     </div>
   </div>
 </details>
-
-{#if error}
-  <p class="error">{error}</p>
-{/if}
 
 {#if targets === null}
   <p class="muted">Loading targets…</p>
@@ -253,6 +259,13 @@
                         {runOpenSessionId === s.id ? 'Cancel' : 'Run…'}
                       </button>
                     </div>
+                    {#if calProblems(s.calibration).length > 0}
+                      <ul class="cal-problems muted">
+                        {#each calProblems(s.calibration) as p}
+                          <li>{p}</li>
+                        {/each}
+                      </ul>
+                    {/if}
                     {#if runOpenSessionId === s.id}
                       <div class="run-panel">
                         <label class="run-row">
@@ -283,9 +296,6 @@
                           >
                             {running ? 'Submitting…' : 'Run pipeline'}
                           </button>
-                          {#if runError}
-                            <span class="run-err">{runError}</span>
-                          {/if}
                         </div>
                       </div>
                     {/if}
@@ -666,9 +676,18 @@
     opacity: 0.6;
     cursor: progress;
   }
-  .run-err {
-    color: var(--bad, #f88);
-    font-size: 0.8rem;
+  .cal-problems {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0.3rem 0.55rem;
+    font-size: 0.75rem;
+    color: var(--warn, #f0b35e);
+    background: rgba(240, 179, 94, 0.08);
+    border: 1px solid rgba(240, 179, 94, 0.25);
+    border-radius: 6px;
+  }
+  .cal-problems li + li {
+    margin-top: 0.15rem;
   }
 
   @media (max-width: 600px) {
