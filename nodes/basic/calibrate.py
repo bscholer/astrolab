@@ -129,7 +129,9 @@ class CalibrateNode(Node[CalibrateParams]):
         if result.returncode != 0:
             raise RuntimeError(
                 f"calibrate: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n--- stderr ---\n{result.stderr}"
+                f"--- ssf ---\n{result.ssf}\n"
+                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                f"--- stderr ---\n{result.stderr}"
             )
 
         out_basename = f"pp_{params.input_basename}"

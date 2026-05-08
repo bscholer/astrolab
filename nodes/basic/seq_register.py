@@ -128,7 +128,9 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
         if result.returncode != 0:
             raise RuntimeError(
                 f"seq_register: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n--- stderr ---\n{result.stderr}"
+                f"--- ssf ---\n{result.ssf}\n"
+                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                f"--- stderr ---\n{result.stderr}"
             )
 
         out_basename = f"r_{params.input_basename}"

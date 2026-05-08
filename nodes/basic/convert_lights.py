@@ -122,7 +122,9 @@ class ConvertLightsNode(Node[ConvertLightsParams]):
         if result.returncode != 0:
             raise RuntimeError(
                 f"convert_lights: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n--- stderr ---\n{result.stderr}"
+                f"--- ssf ---\n{result.ssf}\n"
+                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                f"--- stderr ---\n{result.stderr}"
             )
 
         # Sanity-check the expected output exists. Siril 1.4's `convert` writes
