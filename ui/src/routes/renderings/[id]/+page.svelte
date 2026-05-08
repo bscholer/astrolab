@@ -47,6 +47,11 @@
   let nodeHash = $state<Record<string, string>>({});
   let nodeKind = $state<Record<string, string>>({});
   let nodePort = $state<Record<string, string>>({});
+  // Per-node timing. Captured from event timestamps so we can show
+  // "completed (1.3s)" on the status badge — useful for spotting which
+  // step is the actual bottleneck without diving into the events list.
+  let nodeStartedAt = $state<Record<string, number>>({});
+  let nodeDurationMs = $state<Record<string, number>>({});
 
   let ws: WebSocket | null = null;
   const seenEventKey = new Set<string>();
@@ -83,9 +88,13 @@
     if (ev.kind && ev.node_id) nodeKind = { ...nodeKind, [ev.node_id]: ev.kind };
     if (ev.hash && ev.node_id) nodeHash = { ...nodeHash, [ev.node_id]: ev.hash };
     if (ev.node_id) {
+      const ts = Date.parse(ev.timestamp);
       switch (ev.type) {
         case 'node_started':
           nodeStatus = { ...nodeStatus, [ev.node_id]: 'running' };
+          if (!Number.isNaN(ts)) {
+            nodeStartedAt = { ...nodeStartedAt, [ev.node_id]: ts };
+          }
           break;
         case 'node_progress':
           if (ev.fraction !== undefined && ev.message !== undefined) {
@@ -99,11 +108,17 @@
           nodeStatus = { ...nodeStatus, [ev.node_id]: 'cached' };
           break;
         case 'node_completed':
-          nodeStatus = { ...nodeStatus, [ev.node_id]: 'completed' };
+        case 'node_failed': {
+          nodeStatus = { ...nodeStatus, [ev.node_id]: ev.type === 'node_completed' ? 'completed' : 'failed' };
+          // Compute duration from the matching node_started event if we
+          // saw it. Cached and post-replay paths don't have a started_at,
+          // and that's fine — we just don't render a duration for them.
+          const startedAt = nodeStartedAt[ev.node_id];
+          if (startedAt !== undefined && !Number.isNaN(ts)) {
+            nodeDurationMs = { ...nodeDurationMs, [ev.node_id]: Math.max(0, ts - startedAt) };
+          }
           break;
-        case 'node_failed':
-          nodeStatus = { ...nodeStatus, [ev.node_id]: 'failed' };
-          break;
+        }
       }
     }
     if (ev.type === 'job_completed' || ev.type === 'job_failed') {
@@ -134,7 +149,22 @@
     nodeHash = {};
     nodeKind = {};
     nodePort = {};
+    nodeStartedAt = {};
+    nodeDurationMs = {};
     seenEventKey.clear();
+  }
+
+  function formatStepDuration(ms: number | undefined): string {
+    // Sub-second: "0.4s" reads better than "400ms" on a status badge that
+    // already trends toward seconds; keep two-digit precision until 10s
+    // then drop decimals so the pill doesn't drift wider with wall-clock.
+    if (ms === undefined) return '';
+    if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
+    if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+    const m = Math.floor(ms / 60_000);
+    const s = Math.round((ms % 60_000) / 1000);
+    return `${m}m ${s}s`;
   }
 
   async function attachToJob(jobId: string) {
@@ -423,7 +453,9 @@
               {/if}
               <div class="flow-overlay">
                 <span class="flow-title">{nodeDisplayName(kind)}</span>
-                <span class="status status-mini status-{s}">{s}</span>
+                <span class="status status-mini status-{s}">
+                  {s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid]}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
+                </span>
               </div>
               {#if s === 'running' && p}
                 <div class="flow-progress" style:width="{(p.fraction ?? 0) * 100}%"></div>
