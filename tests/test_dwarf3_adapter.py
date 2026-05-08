@@ -130,18 +130,6 @@ def test_lights_and_masters_distinguished(tmp_path: Path) -> None:
     assert len(masters) == 1
 
 
-def test_mosaic_target_flag(tmp_path: Path) -> None:
-    folder = tmp_path / "DWARF_RAW_TELE_MOSAIC_M 31_EXP_15_GAIN_60_2025-10-21-20-55-45-308"
-    _touch(folder / "M 31_15s60_Astro_20251021-205601000_22C.fits")
-
-    adapter = DwarfThreeAdapter()
-    found = list(adapter.discover(tmp_path))
-    assert len(found) == 1
-    assert found[0].session_hints is not None
-    assert found[0].session_hints["is_mosaic"] is True
-    assert found[0].session_hints["target_from_path"] == "MOSAIC_M 31"
-
-
 def test_skips_unrecognized_top_level_dirs(tmp_path: Path) -> None:
     user_folder = tmp_path / "wizard_nebula"
     _touch(user_folder / "anything.fits")

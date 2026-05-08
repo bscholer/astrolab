@@ -6,10 +6,16 @@ pre-reads the first 2880-byte block lazily, so this is cheap (~ms per file).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from astropy.io import fits
+
+_PANEL_SUFFIX_RE = re.compile(r"\s*\(\d+\)\s*$")
+"""Trailing panel suffix used by Dwarf 3 mosaic mode in the OBJECT header,
+e.g. 'M 31(1)' for panel 1 of an M 31 mosaic. We strip this so all panels
+of one mosaic land under the same target row."""
 
 HEADER_KEYS_TO_KEEP: tuple[str, ...] = (
     "OBJECT",
@@ -57,5 +63,6 @@ def read_primary_header(path: Path) -> dict[str, Any]:
 
 
 def normalize_target(name: str) -> str:
-    """Collapse whitespace runs in a target name and strip the result."""
-    return " ".join(name.split())
+    """Collapse whitespace, strip trailing mosaic '(N)' panel suffix."""
+    collapsed = " ".join(name.split())
+    return _PANEL_SUFFIX_RE.sub("", collapsed).strip()

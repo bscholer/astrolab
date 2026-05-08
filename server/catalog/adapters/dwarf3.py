@@ -79,13 +79,28 @@ class DwarfThreeAdapter:
 
     def _walk_lights(self, folder: Path, hints: dict) -> Iterator[DiscoveredFrame]:
         session_key = f"dwarf3:{folder.name}"
+        raw_target = hints["target"]
+        is_mosaic = raw_target.startswith("MOSAIC_")
+        # Strip the MOSAIC_ prefix so all panels share one target row.
+        target = raw_target[len("MOSAIC_"):] if is_mosaic else raw_target
         session_hints = {
-            "target_from_path": hints["target"],
+            "target_from_path": target,
             "exptime_from_path": float(hints["exp"]),
             "gain_from_path": int(hints["gain"]),
             "started_at_from_path": _path_ts_to_iso(hints["ts"]),
-            "is_mosaic": hints["target"].startswith("MOSAIC_"),
+            "is_mosaic": is_mosaic,
         }
+
+        # Mosaic captures nest one panel folder per panel under the outer
+        # session folder, each itself matching DWARF_RAW_TELE_*. Treat the
+        # outer folder as the session and yield frames from every panel under
+        # the same session_key.
+        if is_mosaic:
+            for child in sorted(folder.iterdir()):
+                if child.is_dir() and LIGHT_FOLDER_RE.match(child.name):
+                    yield from self._walk_panel(child, session_key, session_hints)
+            return
+
         for f in sorted(folder.iterdir()):
             if not f.is_file() or f.suffix.lower() != ".fits":
                 continue
@@ -95,6 +110,24 @@ class DwarfThreeAdapter:
             # poison the session aggregate if treated as a raw light. Skip; if
             # we want to track Dwarf-built masters they belong in the (deferred)
             # masters table, not the frames table.
+            if name.startswith("stacked-") or name.startswith("img_"):
+                continue
+            quality = "failed" if name.startswith("failed_") else "ok"
+            yield DiscoveredFrame(
+                path=f,
+                image_type="LIGHT",
+                quality=quality,
+                session_key=session_key,
+                session_hints=session_hints,
+            )
+
+    def _walk_panel(
+        self, panel_dir: Path, session_key: str, session_hints: dict
+    ) -> Iterator[DiscoveredFrame]:
+        for f in sorted(panel_dir.iterdir()):
+            if not f.is_file() or f.suffix.lower() != ".fits":
+                continue
+            name = f.name
             if name.startswith("stacked-") or name.startswith("img_"):
                 continue
             quality = "failed" if name.startswith("failed_") else "ok"
