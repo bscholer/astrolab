@@ -202,7 +202,11 @@ def _stage_sequence(
             continue
         if not f.name.startswith(f"{basename}_"):
             continue
-        if f.suffix not in (".fit", ".fits"):
+        # Stage matching .fit/.fits frames AND the Siril `.seq` index file so
+        # downstream commands (stack, calibrate w/ existing alignment) can read
+        # the sequence metadata. .seq references frames by relative name, which
+        # works because the .fit symlinks land in the same staging dir.
+        if f.suffix not in (".fit", ".fits", ".seq"):
             continue
         link = seq_out / f.name
         if link.exists() or link.is_symlink():
