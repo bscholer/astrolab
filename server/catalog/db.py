@@ -306,7 +306,13 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     """
     target = path if path is not None else default_db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target)
+    # check_same_thread=False because FastAPI's
+    # contextmanager_in_threadpool can land __enter__ and __exit__ on
+    # different worker threads. We never share a single connection
+    # across threads concurrently — open_db() yields a fresh one per
+    # call and closes it on exit — so SQLite's check is just a noisy
+    # tripwire here that throws 500s under load.
+    conn = sqlite3.connect(target, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
