@@ -14,12 +14,14 @@ def test_canned_template_parses() -> None:
 
 def test_load_template_by_id() -> None:
     t = load_template("calibrate_register_stack")
-    assert t.version == 3
+    assert t.version == 4
     kinds = [n.kind for n in t.nodes]
-    # Naztronomy-aligned chain plus stretch + save_image (Phase 3 finishing).
+    # Naztronomy-aligned chain plus seq_offset (pedestal — keeps subsky
+    # happy on near-zero data) and stretch + save_image (Phase 3 finishing).
     assert kinds == [
         "convert_lights",
         "calibrate",
+        "seq_offset",
         "seq_bg_extract",
         "seq_register",
         "seq_stack",

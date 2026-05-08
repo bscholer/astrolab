@@ -1,10 +1,16 @@
 id: calibrate_register_stack
-version: 3
+version: 4
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
-    convert -> calibrate (CFA-aware, debayer) -> background extract
-            -> plate-solve register -> rejection stack with rgb_equal
-            -> stretch (autostretch by default) -> save 16-bit PNG.
+    convert -> calibrate (CFA-aware, debayer) -> pedestal offset
+            -> background extract -> plate-solve register
+            -> rejection stack with rgb_equal -> stretch (autostretch by
+            default) -> save 16-bit PNG.
+
+  The pedestal offset between calibrate and bg_extract pushes any
+  near-zero negatives back into positive territory; Siril 1.4's
+  seqsubsky refuses to operate on negative pixel data, and OSC factory
+  darks (Dwarf 3 et al.) routinely leave a faint sky just under zero.
   Inputs the Job must supply:
     convert.lights  -> a directory of raw .fits subs (typically a Dwarf 3 session folder)
     calibrate.dark  -> a master_dark .fits matched on instrument/exptime/gain/temp
@@ -25,6 +31,15 @@ nodes:
     inputs:
       sequence: convert.sequence
 
+  - id: offset
+    kind: seq_offset
+    params:
+      input_basename: pp_light
+      fitseq: false
+      pedestal: 0.01
+    inputs:
+      sequence: calibrate.sequence
+
   - id: bg_extract
     kind: seq_bg_extract
     params:
@@ -33,7 +48,7 @@ nodes:
       degree: 1
       samples: 10
     inputs:
-      sequence: calibrate.sequence
+      sequence: offset.sequence
 
   - id: register
     kind: seq_register
