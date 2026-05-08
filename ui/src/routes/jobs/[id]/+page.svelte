@@ -172,6 +172,15 @@
       rerunning = false;
     }
   }
+
+  async function copyToClipboard(text: string, label = 'Copied to clipboard') {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(label);
+    } catch (e) {
+      toast.error(`Copy failed: ${(e as Error).message}`);
+    }
+  }
 </script>
 
 <div class="header">
@@ -301,7 +310,17 @@
     {@const ref = finalOutput[1]}
     <section class="final">
       <h2>Output: {name}</h2>
-      <p class="muted small"><code>{ref.path}</code> <span>[{ref.type}]</span></p>
+      <p class="path-line muted small">
+        <code class="path">{ref.path}</code>
+        <button
+          type="button"
+          class="copy-btn"
+          title="Copy path"
+          aria-label="Copy path"
+          onclick={() => copyToClipboard(ref.path, 'Copied output path')}
+        >📋</button>
+        <span class="type-tag">[{ref.type}]</span>
+      </p>
       <a class="big-preview-link" href={api.previewUrl(ref.node_hash, name)} target="_blank" rel="noopener">
         <img class="big-preview" src={api.previewUrl(ref.node_hash, name)} alt="output preview" />
       </a>
@@ -560,6 +579,34 @@
 
   .final {
     margin-top: 1.5rem;
+  }
+  .path-line {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 0.25rem 0 0.5rem;
+  }
+  .path {
+    font-family: ui-monospace, monospace;
+    word-break: break-all;
+  }
+  .copy-btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border, #444);
+    border-radius: 6px;
+    padding: 0.1rem 0.4rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    color: var(--fg, #ddd);
+    opacity: 0.7;
+  }
+  .copy-btn:hover { opacity: 1; }
+  .type-tag {
+    color: var(--muted, #888);
+    font-size: 0.75rem;
   }
   .big-preview-link {
     display: inline-block;

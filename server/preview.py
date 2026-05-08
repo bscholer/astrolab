@@ -191,23 +191,48 @@ def _debayer_half_res(plane: np.ndarray, pattern: str) -> np.ndarray:
 
 
 def _stretch_mono(plane: np.ndarray) -> np.ndarray:
-    """Asinh stretch a single channel -> uint8 array.
+    """Autostretch a single channel via median-MAD + midtones transfer function.
 
-    Robust min/max via percentiles so a few hot pixels don't blow out the
-    stretch. Asinh softens highlights (like Siril's default ScreenStretch).
+    Mirrors Siril's autostretch / PixInsight's STF: pick the shadow point
+    from `median - 2.8*MAD` (so background noise lands near zero), then
+    solve for the midtone parameter that maps the median to `BG_TARGET`
+    (~0.25, a tasteful dark gray). The MTF curve preserves star pinpoints
+    where the old percentile+asinh was washing the stack into pure white.
     """
     arr = plane.astype(np.float32)
     finite = np.isfinite(arr)
     if not finite.all():
-        arr = np.where(finite, arr, np.nan)
-        lo, hi = np.nanpercentile(arr, [0.5, 99.5])
-        arr = np.where(np.isnan(arr), lo, arr)
-    else:
-        lo, hi = np.percentile(arr, [0.5, 99.5])
+        arr = np.where(finite, arr, 0.0)
 
-    span = max(hi - lo, 1e-9)
-    norm = np.clip((arr - lo) / span, 0.0, 1.0)
-    # Asinh stretch with knee at 0.1 brightens the midtones without crushing
-    # bright stars. Naztronomy-style.
-    stretched = np.arcsinh(norm * 10.0) / np.arcsinh(10.0)
-    return (stretched * 255.0).astype(np.uint8)
+    # Pre-normalize to [0, 1] using a tiny shadow nudge to absorb dead pixels
+    # without throwing away real signal. amax = true max so bright stars
+    # can saturate at 1.0 (we want them white).
+    amin = float(np.percentile(arr, 0.01))
+    amax = float(arr.max())
+    span = max(amax - amin, 1e-9)
+    norm = np.clip((arr - amin) / span, 0.0, 1.0)
+
+    median = float(np.median(norm))
+    mad = float(np.median(np.abs(norm - median))) or 1e-6
+
+    # Shadow clip: a few MADs below the median, never below zero. After this
+    # rescale the median sits at `nm` in [shadow, 1].
+    shadow = max(median - 2.8 * mad, 0.0)
+    nm = max((median - shadow) / max(1.0 - shadow, 1e-9), 1e-6)
+
+    # Solve for the midtone `m` such that MTF(nm, m) == BG_TARGET. Standard
+    # closed form; clamp `m` to a sane range so a degenerate input (constant
+    # plane, etc.) doesn't blow up the curve.
+    bg_target = 0.25
+    denom = nm * (2.0 * bg_target - 1.0) - bg_target
+    m_param = (nm * (bg_target - 1.0)) / denom if abs(denom) > 1e-9 else 0.5
+    m_param = float(np.clip(m_param, 0.01, 0.99))
+
+    x = np.clip((norm - shadow) / max(1.0 - shadow, 1e-9), 0.0, 1.0)
+    # MTF: f(x) = (m-1)x / ((2m-1)x - m). Vectorized; avoid divide-by-zero
+    # by leaning on the clamp on m_param plus a small epsilon on the denom.
+    d = (2.0 * m_param - 1.0) * x - m_param
+    d = np.where(np.abs(d) < 1e-9, -m_param, d)
+    out = (m_param - 1.0) * x / d
+    out = np.clip(out, 0.0, 1.0)
+    return (out * 255.0).astype(np.uint8)
