@@ -13,6 +13,7 @@
     <nav class="row nav">
       <a href="/">Library</a>
       <a href="/renderings">Renderings</a>
+      <a href="/settings">Settings</a>
       <a href="/jobs" class="dim">Jobs</a>
     </nav>
     <span class="muted phase-pill">Phase 3</span>

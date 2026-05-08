@@ -95,6 +95,10 @@ class JobRecord:
     """Cooperative cancel token. Set externally to abort a running job; the
     runtime checks between nodes and SirilRuntime watchdogs the subprocess.
     Not persisted: the token is only meaningful for the current process."""
+    node_hashes: list[str] = field(default_factory=list)
+    """Every cache hash this job touched (committed or hit). Persisted on
+    terminal events so the storage layer can map cache entries back to the
+    renderings that own them without re-walking the event log."""
     events: list[JobEvent] = field(default_factory=list)
     _subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = field(
         default_factory=list
@@ -199,6 +203,13 @@ class JobManager:
     def cache(self) -> ContentCache:
         return self._cache
 
+    @property
+    def db_path(self) -> Path | None:
+        """Where this manager persists. None means 'use platform default'.
+        Exposed so other modules (storage accounting) can read from the
+        same DB without round-tripping through env vars."""
+        return self._db_path
+
     # -- public API --------------------------------------------------------
 
     def submit(self, template: Template, job: Job, *, force: bool = False) -> str:
@@ -294,6 +305,13 @@ class JobManager:
         self._emit(record, JobEvent(type="job_started", timestamp=_now()))
 
         def event_sink(payload: dict[str, Any]) -> None:
+            # Capture node_hashes as they're announced by the runtime; we
+            # persist the rolled-up set on the terminal event so the
+            # storage layer can look up "what did this job touch?" without
+            # walking the event log.
+            h = payload.get("hash")
+            if isinstance(h, str) and h not in record.node_hashes:
+                record.node_hashes.append(h)
             ev = JobEvent(
                 type=payload["type"],  # type: ignore[arg-type]
                 timestamp=_now(),
@@ -414,7 +432,8 @@ class JobManager:
                     conn.execute(
                         """
                         UPDATE jobs
-                        SET status=?, outputs_json=?, error=?, started_at=?, finished_at=?
+                        SET status=?, outputs_json=?, error=?, started_at=?, finished_at=?,
+                            node_hashes_json=?
                         WHERE id=?
                         """,
                         (
@@ -423,6 +442,7 @@ class JobManager:
                             record.error,
                             record.started_at,
                             record.finished_at,
+                            json.dumps(record.node_hashes) if record.node_hashes else None,
                             record.id,
                         ),
                     )
@@ -496,6 +516,14 @@ class JobManager:
                 error = error or "server interrupted before this job finished"
                 finished_at = finished_at or _now()
 
+            try:
+                node_hashes = (
+                    json.loads(row["node_hashes_json"])
+                    if row["node_hashes_json"]
+                    else []
+                )
+            except (ValueError, TypeError):
+                node_hashes = []
             record = JobRecord(
                 id=row["id"],
                 status=status,
@@ -506,6 +534,7 @@ class JobManager:
                 finished_at=finished_at,
                 outputs=outputs,
                 error=error,
+                node_hashes=node_hashes,
             )
 
             # Pull the persisted event log so /events HTTP endpoint and

@@ -373,6 +373,13 @@ class RenderingManager:
         )
         return rendering
 
+    def forget(self, rendering_id: str) -> bool:
+        """Drop a rendering from the in-memory map. Used by the API after
+        the storage layer has already deleted the DB row + cache entries.
+        Returns True if the id was known."""
+        with self._lock:
+            return self._records.pop(rendering_id, None) is not None
+
     def revert(self, rendering_id: str, seq: int) -> Rendering:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.

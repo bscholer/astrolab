@@ -71,3 +71,58 @@ class ContentCache:
                 )
         (d / DONE_MARKER).touch()
         return dict(outputs)
+
+    def evict(self, node_hash: str) -> int:
+        """Remove a committed cache entry. Returns bytes freed (best-effort
+        rollup of file sizes within the entry dir before deletion).
+
+        No-op if the entry doesn't exist. Used by storage cleanup; the
+        runtime never calls this on a live entry because entries are only
+        evicted when no live job references them.
+        """
+        d = self.entry_dir(node_hash)
+        if not d.exists():
+            return 0
+        bytes_freed = 0
+        for path in d.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                try:
+                    bytes_freed += path.stat().st_size
+                except OSError:
+                    pass
+        shutil.rmtree(d, ignore_errors=True)
+        return bytes_freed
+
+    def all_committed_hashes(self) -> list[str]:
+        """List every committed node_hash directory under the cache root.
+
+        Skips half-written entries (no _done marker). Used by storage
+        accounting to enumerate everything currently on disk.
+        """
+        if not self.root.exists():
+            return []
+        out: list[str] = []
+        for child in self.root.iterdir():
+            if not child.is_dir():
+                continue
+            if (child / DONE_MARKER).exists():
+                out.append(child.name)
+        return out
+
+    def entry_size(self, node_hash: str) -> int:
+        """Return the total bytes occupied by a single cache entry. 0 if
+        the entry is missing. Hardlinks count toward the size from the
+        cache's perspective even though they share inodes — disambiguating
+        across-cache hardlink savings would require an inode-set walk we
+        don't need yet."""
+        d = self.entry_dir(node_hash)
+        if not d.exists():
+            return 0
+        total = 0
+        for path in d.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    pass
+        return total

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -235,6 +235,24 @@ MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX idx_rh_rendering ON rendering_history(rendering_id, seq)",
         "INSERT INTO schema_version (version) VALUES (4)",
+    ],
+    5: [
+        # Two storage-management additions:
+        #   1. node_hashes on jobs lets us reverse-map cache entries back to
+        #      the renderings that touched them, without re-walking the
+        #      event log every time we render the storage UI.
+        #   2. A simple key/value settings table holds system-wide knobs
+        #      (cache budget cap, etc.). We use JSON-encoded values so the
+        #      schema doesn't need to change per setting type.
+        "ALTER TABLE jobs ADD COLUMN node_hashes_json TEXT",
+        """
+        CREATE TABLE settings (
+            key             TEXT PRIMARY KEY,
+            value_json      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (5)",
     ],
 }
 

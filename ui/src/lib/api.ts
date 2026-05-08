@@ -322,6 +322,46 @@ export interface TemplateSchema {
   outputs: Record<string, string>;
 }
 
+// ----- storage -----------------------------------------------------------
+
+export interface ProjectStorage {
+  rendering_id: string;
+  name: string;
+  updated_at: string;
+  owned_bytes: number;
+  shared_bytes: number;
+  entry_count: number;
+}
+
+export interface StorageSnapshot {
+  total_bytes: number;
+  entry_count: number;
+  unreachable_bytes: number;
+  unreachable_count: number;
+  cache_root: string;
+  per_project: ProjectStorage[];
+}
+
+export interface CleanupResponse {
+  evicted_count: number;
+  bytes_freed: number;
+  bytes_remaining: number;
+  over_budget: boolean;
+  max_bytes: number;
+}
+
+export interface SettingsResponse {
+  cache_max_bytes: number;
+}
+
+async function deleteJSON<T>(path: string): Promise<T> {
+  const r = await fetch(path, { method: 'DELETE' });
+  if (!r.ok) {
+    throw new ApiError(r.status, await _readErrorDetail(r));
+  }
+  return (await r.json()) as T;
+}
+
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
@@ -345,6 +385,20 @@ export const api = {
     patchJSON<Rendering>(`/api/renderings/${id}`, req),
   revertRendering: (id: string, seq: number) =>
     postJSON<Rendering>(`/api/renderings/${id}/revert/${seq}`, {}),
+  deleteRendering: (id: string) =>
+    deleteJSON<{ evicted_count: number; bytes_freed: number }>(
+      `/api/renderings/${id}`
+    ),
+  purgeRenderingCache: (id: string, keepOutputs = false) =>
+    deleteJSON<{ evicted_count: number; bytes_freed: number }>(
+      `/api/renderings/${id}/cache?keep_outputs=${keepOutputs}`
+    ),
+  getStorage: () => getJSON<StorageSnapshot>('/api/storage'),
+  storageCleanup: (max_bytes?: number) =>
+    postJSON<CleanupResponse>('/api/storage/cleanup', max_bytes !== undefined ? { max_bytes } : {}),
+  getSettings: () => getJSON<SettingsResponse>('/api/settings'),
+  patchSettings: (req: { cache_max_bytes?: number }) =>
+    patchJSON<SettingsResponse>('/api/settings', req),
   /**
    * Open a WebSocket for live event streaming. The server replays buffered
    * history and then closes when the job hits a terminal state.

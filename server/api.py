@@ -48,6 +48,16 @@ from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_preview
 from server.registry import lookup as registry_lookup
 from server.renderings import RenderingManager, RenderingNotFound
+from server.storage import (
+    DEFAULT_CACHE_MAX_BYTES,
+    SETTING_CACHE_MAX_BYTES,
+    delete_rendering,
+    get_setting,
+    purge_rendering_cache,
+    run_cleanup,
+    set_setting,
+    system_storage,
+)
 from server.templates import TemplateNotFound, list_templates, load_template
 
 log = logging.getLogger("astrolab.api")
@@ -85,7 +95,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
     allow_credentials=False,
 )
@@ -715,6 +725,149 @@ def revert_rendering(rendering_id: str, seq: int) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return rendering.to_public_dict()
+
+
+@app.delete("/api/renderings/{rendering_id}")
+def delete_rendering_endpoint(rendering_id: str) -> dict:
+    """Remove a rendering and any cache entries it owns alone. Shared
+    entries are left in place — purging them would invalidate other
+    projects."""
+    if rendering_manager.get(rendering_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"rendering {rendering_id} not found"
+        )
+    # Cancel any in-flight job before pulling state out from under it.
+    rec = rendering_manager.get(rendering_id)
+    if rec is not None:
+        for entry in rec.history:
+            job_manager.cancel(entry.job_id)
+    evicted, freed = delete_rendering(
+        rendering_id, job_manager.cache, db_path=job_manager.db_path
+    )
+    rendering_manager.forget(rendering_id)
+    log.info(
+        "rendering deleted: %s evicted=%d freed=%d",
+        rendering_id, evicted, freed,
+    )
+    return {"evicted_count": evicted, "bytes_freed": freed}
+
+
+@app.delete("/api/renderings/{rendering_id}/cache")
+def purge_rendering_cache_endpoint(
+    rendering_id: str, keep_outputs: bool = False
+) -> dict:
+    """Evict the rendering's owned cache entries without deleting the
+    rendering itself. With keep_outputs=true, terminal-output hashes
+    survive (the user keeps the saved final image, loses the
+    intermediates)."""
+    if rendering_manager.get(rendering_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"rendering {rendering_id} not found"
+        )
+    evicted, freed = purge_rendering_cache(
+        job_manager.cache, rendering_id,
+        keep_outputs=keep_outputs, db_path=job_manager.db_path,
+    )
+    return {"evicted_count": evicted, "bytes_freed": freed}
+
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/storage")
+def get_storage() -> dict:
+    """System-wide storage snapshot: total cache bytes, dead bytes, and a
+    per-project breakdown of owned vs shared bytes."""
+    snap = system_storage(job_manager.cache, db_path=job_manager.db_path)
+    return {
+        "total_bytes": snap.total_bytes,
+        "entry_count": snap.entry_count,
+        "unreachable_bytes": snap.unreachable_bytes,
+        "unreachable_count": snap.unreachable_count,
+        "cache_root": snap.cache_root,
+        "per_project": [
+            {
+                "rendering_id": p.rendering_id,
+                "name": p.name,
+                "updated_at": p.updated_at,
+                "owned_bytes": p.owned_bytes,
+                "shared_bytes": p.shared_bytes,
+                "entry_count": p.entry_count,
+            }
+            for p in snap.per_project
+        ],
+    }
+
+
+class CleanupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_bytes: int | None = None
+    """Override the configured budget for this run. Defaults to whatever's
+    in settings (or DEFAULT_CACHE_MAX_BYTES if unset)."""
+
+
+@app.post("/api/storage/cleanup")
+def storage_cleanup(req: CleanupRequest | None = None) -> dict:
+    """Run an eviction pass against the configured (or override) budget."""
+    if req and req.max_bytes is not None:
+        max_bytes = req.max_bytes
+    else:
+        max_bytes = int(
+            get_setting(
+                SETTING_CACHE_MAX_BYTES,
+                DEFAULT_CACHE_MAX_BYTES,
+                db_path=job_manager.db_path,
+            )
+        )
+    result = run_cleanup(
+        job_manager.cache, max_bytes=max_bytes, db_path=job_manager.db_path
+    )
+    log.info(
+        "storage cleanup: evicted=%d freed=%d remaining=%d over_budget=%s",
+        result.evicted_count, result.bytes_freed, result.bytes_remaining,
+        result.over_budget,
+    )
+    return {
+        "evicted_count": result.evicted_count,
+        "bytes_freed": result.bytes_freed,
+        "bytes_remaining": result.bytes_remaining,
+        "over_budget": result.over_budget,
+        "max_bytes": max_bytes,
+    }
+
+
+@app.get("/api/settings")
+def get_settings() -> dict:
+    return {
+        SETTING_CACHE_MAX_BYTES: int(
+            get_setting(
+                SETTING_CACHE_MAX_BYTES,
+                DEFAULT_CACHE_MAX_BYTES,
+                db_path=job_manager.db_path,
+            )
+        ),
+    }
+
+
+class PatchSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cache_max_bytes: int | None = None
+
+
+@app.patch("/api/settings")
+def patch_settings(req: PatchSettingsRequest) -> dict:
+    if req.cache_max_bytes is not None:
+        if req.cache_max_bytes < 1024 * 1024 * 1024:  # 1 GiB floor
+            raise HTTPException(
+                status_code=400,
+                detail="cache_max_bytes must be at least 1 GiB",
+            )
+        set_setting(
+            SETTING_CACHE_MAX_BYTES, req.cache_max_bytes, db_path=job_manager.db_path
+        )
+    return get_settings()
 
 
 # ---------------------------------------------------------------------------

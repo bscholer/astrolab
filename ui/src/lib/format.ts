@@ -34,3 +34,22 @@ export function formatExposure(j: Pick<JobSummary, 'capture'>): string {
   if (c.filter) parts.push(c.filter);
   return parts.join(' · ');
 }
+
+/**
+ * Render bytes as a human-readable string. Uses binary units (KiB, MiB,
+ * etc.) since these are storage numbers; we trade off the GB-vs-GiB
+ * confusion for consistency with what `du -h` and `df -h` show on the
+ * Linux box.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  let n = bytes;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  // <10 of a unit: one decimal; otherwise round to integer for compact display.
+  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+}
