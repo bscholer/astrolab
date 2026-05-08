@@ -178,7 +178,7 @@ def test_run_propagates_nonzero_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert res.returncode == 7
 
 
-@pytest.mark.skipif(os.environ.get("CI"), reason="don't run actual siril in CI")
+@pytest.mark.skipif("CI" in os.environ, reason="don't run actual siril in CI")
 def test_run_real_siril_smoke() -> None:
     """If a real Siril binary is discoverable, do a one-line dry run.
 
