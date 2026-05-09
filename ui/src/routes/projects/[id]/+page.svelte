@@ -669,23 +669,10 @@
                       <span class="type-tag">[{fref.type}]</span>
                     </p>
                   {:else}
-                    <!-- Non-output expanded body: two columns when both
-                         a preview and params exist. Preview goes on
-                         the left so the user's eye starts at 'what
-                         this stage produces' and lands on the knobs.
-                         Crop nodes get their preview embedded in the
-                         CropEditor itself, so we skip this strip. -->
-                    {#if kind !== 'crop' && (s === 'completed' || s === 'cached') && h}
-                      <a
-                        class="stage-preview-link"
-                        href={api.previewUrl(h, port)}
-                        target="_blank"
-                        rel="noopener"
-                        title="Open full-size in a new tab"
-                      >
-                        <img class="stage-preview" src={api.previewUrl(h, port)} alt="{nid} preview" />
-                      </a>
-                    {/if}
+                    <!-- The head card already shows the preview thumbnail,
+                         so the body just hosts the editor / params. Crop
+                         is a special case where the editor itself wraps
+                         a (different, upstream) preview. -->
                     {#if kind === 'crop'}
                       {@const fullDefaults = { ...nschema.defaults, ...nschema.template_params } as Record<string, unknown>}
                       {@const eff = (k: string) => (k in overrides ? overrides[k] : fullDefaults[k])}
@@ -1017,21 +1004,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
-  }
-  .stage-preview-link {
-    display: block;
-    border-radius: 6px;
-    overflow: hidden;
-    box-shadow: 0 0 0 1px var(--hairline);
-    transition: transform 160ms ease;
-  }
-  .stage-preview-link:hover { transform: scale(1.005); }
-  .stage-preview {
-    width: 100%;
-    height: auto;
-    object-fit: contain;
-    display: block;
-    background: var(--bg);
   }
   .stage-params { min-width: 0; }
 
