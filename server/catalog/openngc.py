@@ -164,7 +164,10 @@ def _alias_keys_for(entry_name: str, m: str, ngc: str, ic: str, identifiers: str
         token = raw.strip()
         if not token:
             continue
-        if any(token.upper().startswith(p) for p in ("SH ", "SH2-", "LBN ", "LDN ", "C ", "B ", "MEL ", "VDB ", "RCW ", "ABELL ")):
+        _ALIAS_PREFIXES = (
+            "SH ", "SH2-", "LBN ", "LDN ", "C ", "B ", "MEL ", "VDB ", "RCW ", "ABELL ",
+        )
+        if any(token.upper().startswith(p) for p in _ALIAS_PREFIXES):
             keys.add(token)
             keys.add(token.replace(" ", ""))
     return list(keys)

@@ -111,7 +111,11 @@ class StorageSnapshot:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {k: row[k] for k in row.keys()}
+    # sqlite3.Row iterates VALUES, not keys; .keys() is the documented way
+    # to enumerate column names. Ruff's SIM118 auto-fix to `for k in row`
+    # is wrong here — silence it explicitly so a future cleanup doesn't
+    # re-break this.
+    return {k: row[k] for k in row.keys()}  # noqa: SIM118
 
 
 def build_reachability(
@@ -310,10 +314,9 @@ def delete_project(
     evicted, freed = purge_project_cache(
         cache, project_id, keep_outputs=False, db_path=db_path
     )
-    with _conn(db_path) as conn:
-        with conn:
-            # project_history cascades via FK ON DELETE CASCADE.
-            conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    with _conn(db_path) as conn, conn:
+        # project_history cascades via FK ON DELETE CASCADE.
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     return evicted, freed
 
 
@@ -502,18 +505,17 @@ def get_setting(key: str, default: Any = None, db_path: Path | None = None) -> A
 
 def set_setting(key: str, value: Any, db_path: Path | None = None) -> None:
     now = datetime.now(UTC).isoformat()
-    with _conn(db_path) as conn:
-        with conn:
-            conn.execute(
-                """
+    with _conn(db_path) as conn, conn:
+        conn.execute(
+            """
                 INSERT INTO settings (key, value_json, updated_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value_json = excluded.value_json,
                     updated_at = excluded.updated_at
                 """,
-                (key, json.dumps(value), now),
-            )
+            (key, json.dumps(value), now),
+        )
 
 
 # ---------------------------------------------------------------------------

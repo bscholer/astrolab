@@ -27,6 +27,7 @@ shape (e.g. mosaics).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import sqlite3
 from pathlib import Path
@@ -389,10 +390,8 @@ def _stage_multi_session_lights(
     # was rescanned and frames were removed).
     for child in stage_root.iterdir():
         if child.name not in desired:
-            try:
+            with contextlib.suppress(OSError):
                 child.unlink()
-            except OSError:
-                pass
 
     for link_name, src in desired.items():
         link = stage_root / link_name

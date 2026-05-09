@@ -19,6 +19,7 @@ the cropped frame stays consistent.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import numpy as np
@@ -134,10 +135,8 @@ class AutoCropNode(Node[AutoCropParams]):
         # 1-based FITS convention: CRPIX1/2 reference the (1,1)-origin pixel.
         for key, off in (("CRPIX1", x), ("CRPIX2", y)):
             if key in header:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     header[key] = float(header[key]) - off
-                except (TypeError, ValueError):
-                    pass
 
         ctx.progress(
             0.9,

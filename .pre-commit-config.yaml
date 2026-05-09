@@ -1,0 +1,38 @@
+# Pre-commit hooks for astrolab.
+#
+# Install once:
+#   uv run pre-commit install
+#
+# Run on every staged change automatically; the same hooks run in CI so
+# nothing gets through that the Ruff lint job would block.
+#
+# To run against everything (after a fresh clone, e.g.):
+#   uv run pre-commit run --all-files
+
+repos:
+  # Ruff lint. Mirrors the CI Ruff job exactly so a clean `pre-commit run`
+  # locally maps to a green PR. We deliberately don't run `ruff-format` here
+  # yet — the existing tree wasn't formatted, and a sweeping format pass
+  # would produce a diff orthogonal to whatever bug the contributor was
+  # actually fixing. If we want repo-wide formatting later, do it in a
+  # dedicated PR.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  # Generic hygiene: trailing whitespace, missing newlines, mixed line
+  # endings. Cheap and they catch a surprising number of "why is git
+  # showing me this file as modified" diffs.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown often uses trailing spaces for hard line breaks; leave
+        # them alone there. Everything else gets stripped.
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict

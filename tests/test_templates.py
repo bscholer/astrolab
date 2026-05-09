@@ -14,10 +14,16 @@ def test_canned_template_parses() -> None:
 
 def test_load_template_by_id() -> None:
     t = load_template("calibrate_register_stack")
-    assert t.version == 5
+    # Version pin: bump this when the template's `version:` changes. The
+    # bump invalidates downstream cache entries (intentional), so a stray
+    # increment is something we want to catch in review, not let slip
+    # silently.
+    assert t.version == 8
     kinds = [n.kind for n in t.nodes]
-    # Phase 3 chain: calibrate -> resample (draft-mode toggle) -> offset
-    # (pedestal) -> bg_extract -> register -> stack -> stretch -> save.
+    # Chain: convert -> calibrate -> resample -> pedestal -> bg_extract ->
+    # register -> stack -> auto_crop -> graxpert_bg (linear) ->
+    # graxpert_denoise (linear) -> stretch -> starnet_extract (stretched)
+    # -> starnet_replace -> starnet_recombine -> crop -> save.
     assert kinds == [
         "convert_lights",
         "calibrate",
@@ -26,15 +32,27 @@ def test_load_template_by_id() -> None:
         "seq_bg_extract",
         "seq_register",
         "seq_stack",
+        "auto_crop",
+        "graxpert",
+        "graxpert",
         "stretch",
+        "starnet_extract",
+        "starnet_replace",
+        "starnet_recombine",
+        "crop",
         "save_image",
     ]
-    # Public outputs: a viewable PNG at `image`, plus intermediates so the UI
-    # can preview the linear stack and the stretched FITS independently.
+    # Public outputs cover the user-visible save plus a handful of
+    # intermediate views the UI surfaces (stack, stretch, AI splits).
     assert t.outputs == {
         "image": "save.image",
         "stacked": "stack.image",
         "stretched": "stretch.image",
+        "auto_cropped": "auto_crop.image",
+        "starless": "starnet_extract.starless",
+        "stars": "starnet_replace.image",
+        "recombined": "starnet_recombine.image",
+        "cropped": "crop.image",
     }
 
 

@@ -187,17 +187,32 @@ class JobManager:
 
         Used by test fixtures that share the module-level JobManager — keeps
         production state separate from tmp test data.
+
+        Order matters: we cancel + drain the previous executor on the
+        *current* db_path before swapping in a new one. Without that, a
+        leftover background job from the previous test races to write its
+        terminal event into the new test's DB (FK violation, since the
+        job_id only exists in the old DB), or worse, confuses migrate by
+        running concurrent CREATE TABLE statements.
         """
+        with self._lock:
+            for record in self._records.values():
+                # Cooperative; nodes that read ctx.cancel will exit
+                # promptly, nodes that don't will run to completion. Either
+                # way the executor.shutdown(wait=True) below blocks until
+                # they're done writing.
+                record.cancel_event.set()
+        old = self._executor
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="astrolab-job-test"
+        )
+        old.shutdown(wait=True)
+
         with self._lock:
             self._records.clear()
             self._event_seq.clear()
         if db_path is not None:
             self._db_path = db_path
-        old = self._executor
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="astrolab-job-test"
-        )
-        old.shutdown(wait=False)
 
     @property
     def cache(self) -> ContentCache:

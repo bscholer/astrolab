@@ -114,10 +114,8 @@ def make_line_progress_handler(
         # denominator. StarNet++ emits the total once, then per-iter lines.
         m_total = _TOTAL_ITER_RE.search(line)
         if m_total:
-            try:
+            with contextlib.suppress(ValueError):
                 state.total_iters = int(m_total.group(1))
-            except ValueError:
-                pass
 
         m_tqdm = _TQDM_PCT_RE.search(line)
         if m_tqdm:

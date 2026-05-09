@@ -180,7 +180,7 @@ def _write_offset(src: Path, dst: Path, pedestal: float) -> None:
         # Copy each HDU with its header intact; bake the offset into the data
         # arrays. astropy.io.fits.HDUList.writeto handles the header normalize.
         new_hdus = []
-        for i, hdu in enumerate(hdul):
+        for _i, hdu in enumerate(hdul):
             if hdu.data is None:
                 new_hdus.append(hdu.copy())
                 continue

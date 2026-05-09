@@ -110,7 +110,9 @@ class SeqResampleNode(Node[SeqResampleParams]):
             # passthrough ourselves: hardlink each frame from upstream into
             # our cache dir under the rs_ prefix and hand-write a .seq file
             # so downstream Siril operations recognize the sequence.
-            wrote = _passthrough_link(seq_in, seq_out, params.input_basename, out_basename, params.fitseq, ctx)
+            wrote = _passthrough_link(
+                seq_in, seq_out, params.input_basename, out_basename, params.fitseq, ctx
+            )
         else:
             staged = _stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
             if not staged:
@@ -247,9 +249,12 @@ def _passthrough_link(
     # `<base>.seq` resolve to the same data; we write the underscore form
     # since that's Siril 1.4's canonical name.
     seq_path = seq_out / f"{out_basename}_.seq"
+    # Header comments verbatim from Siril's own .seq writer; one-line each
+    # so a human comparing files in a diff finds them in the expected
+    # place. ruff E501 is silenced for these specific lines.
     lines = [
-        "#Siril sequence file. Contains list of images, selection, registration data and statistics",
-        "#S 'sequence_name' start_index nb_images nb_selected fixed_len reference_image version variable_size fz_flag drizzle",
+        "#Siril sequence file. Contains list of images, selection, registration data and statistics",  # noqa: E501
+        "#S 'sequence_name' start_index nb_images nb_selected fixed_len reference_image version variable_size fz_flag drizzle",  # noqa: E501
         f"S '{out_basename}_' 1 {n} {n} 5 -1 6 0 0 0",
         "L -1",
     ]
