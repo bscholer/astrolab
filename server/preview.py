@@ -38,10 +38,26 @@ class PreviewError(RuntimeError):
     pass
 
 
-def render_preview(cache: ContentCache, node_hash: str, port: str) -> Path:
+def render_preview(
+    cache: ContentCache,
+    node_hash: str,
+    port: str,
+    *,
+    neutral: bool = True,
+) -> Path:
     """Return the path to a cached PNG preview for `(node_hash, port)`.
 
-    Renders on first call and caches inside the entry dir as `_preview_<port>.png`.
+    Renders on first call and caches inside the entry dir as `_preview_<port>.png`
+    (or `_preview_<port>_raw.png` when neutral=False, so both lineages can
+    coexist).
+
+    `neutral=True` (default) makes OSC stages stop looking like swampy green
+    rectangles. Pre-stack pipeline outputs (calibrate → register) carry the
+    Bayer 2x-green imbalance straight through; with neutral=True we stretch
+    each channel independently so the rendered preview balances on its own.
+    The actual cache data is untouched. Pass `neutral=False` to bypass the
+    rebalance — useful for debugging when you want to see what Siril sees.
+
     Raises PreviewError if the cache entry is missing or the artifact isn't
     something we know how to render.
     """
@@ -53,7 +69,10 @@ def render_preview(cache: ContentCache, node_hash: str, port: str) -> Path:
     if target is None:
         raise PreviewError(f"port '{port}' not found in {entry}")
 
-    out = entry / f"_preview_{port}.png"
+    # Neutral and raw lineages live side by side so flipping the toggle
+    # doesn't trigger a re-render of the other.
+    suffix_tag = "" if neutral else "_raw"
+    out = entry / f"_preview_{port}{suffix_tag}.png"
     # Only re-render if missing or stale relative to the source artifact.
     if out.exists() and out.stat().st_mtime >= target.stat().st_mtime:
         return out
@@ -68,7 +87,7 @@ def render_preview(cache: ContentCache, node_hash: str, port: str) -> Path:
         return out
 
     if target.is_file() and suffix in (".fit", ".fits"):
-        _render_fits_to_png(target, out)
+        _render_fits_to_png(target, out, neutral=neutral)
         return out
 
     if target.is_dir():
@@ -83,7 +102,7 @@ def render_preview(cache: ContentCache, node_hash: str, port: str) -> Path:
         if not fits_frames:
             raise PreviewError(f"no FITS frames under {target}")
         rep = fits_frames[len(fits_frames) // 2]
-        _render_fits_to_png(rep, out)
+        _render_fits_to_png(rep, out, neutral=neutral)
         return out
 
     raise PreviewError(f"don't know how to preview {target}")
@@ -103,23 +122,30 @@ def _locate_artifact(entry: Path, port: str) -> Path | None:
     return matches[0] if matches else None
 
 
-def _render_fits_to_png(src: Path, dst: Path) -> None:
+def _render_fits_to_png(src: Path, dst: Path, *, neutral: bool = True) -> None:
     """Read a FITS file, autostretch, downscale, write a PNG.
 
-    Strategy: try Siril's `autostretch -linked` first (gold standard, matches
-    what the user sees opening the FITS in Siril directly). Fall back to a
-    numpy MTF stretch when Siril isn't available — Mac dev / CI / etc.
+    Strategy: try Siril's autostretch first (gold standard, matches what the
+    user sees opening the FITS in Siril directly). Fall back to a numpy MTF
+    stretch when Siril isn't available — Mac dev / CI / etc.
+
+    `neutral=True` switches Siril from `autostretch -linked` (one curve
+    across all channels, preserves color relationships including the OSC
+    pre-rgb_equal green dominance) to plain `autostretch` (per-channel,
+    each channel lands at the same target background). The numpy fallback
+    already stretches per-channel so it's neutral by construction; we
+    only branch the Siril path.
 
     OSC raws (Dwarf 3 lights pre-debayer) carry BAYERPAT='RGGB' as a 2D
     plane; in the numpy fallback we half-res debayer first because mono
     rendering of a Bayer mosaic looks like sparkly noise.
     """
-    if _render_via_siril(src, dst):
+    if _render_via_siril(src, dst, neutral=neutral):
         return
     _render_fits_to_png_numpy(src, dst)
 
 
-def _render_via_siril(src: Path, dst: Path) -> bool:
+def _render_via_siril(src: Path, dst: Path, *, neutral: bool = True) -> bool:
     """Render `src` via Siril's autostretch and resize into `dst`. Returns
     False (no exception) when Siril isn't available or the run fails, so
     the caller can fall back to the numpy path.
@@ -147,9 +173,14 @@ def _render_via_siril(src: Path, dst: Path) -> bool:
         if not _write_normalized_fits(src, normalized):
             return False
         out_stem = td_path / "preview"
+        # Plain `autostretch` is per-channel; `-linked` shares one curve
+        # across all channels. Pre-rgb_equal OSC data has G ~2x R/B, so
+        # linked carries that imbalance into the preview. Per-channel
+        # neutralizes it with no effect on the cached image data.
+        stretch_cmd = "autostretch" if neutral else "autostretch -linked"
         commands = [
             f"load {_siril_quote(normalized)}",
-            "autostretch -linked",
+            stretch_cmd,
             f"savepng {_siril_quote(out_stem)}",
         ]
         try:
