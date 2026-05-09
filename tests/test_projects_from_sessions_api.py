@@ -3,10 +3,18 @@
 We can't run the real calibrate_register_stack template (no Siril on the test
 box), so the assertions live at the endpoint surface: 400 for incompatible
 bundles, 200 with the canonical session_ids order for compatible ones.
+
+Note: when the API returns 200 we drain the project's current job before the
+test ends — the worker would otherwise still be writing failure events into
+the next test's DB (its mock-PNG seed isn't FITS, so convert_lights bails
+async). The drain keeps the per-test fixture isolation honest on slower CI
+runners; locally the race tends to resolve in our favor, on GH Actions it
+doesn't.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -89,6 +97,37 @@ def client(tmp_path, monkeypatch):
         yield c, db_path, tmp_path
 
 
+def _drain_project_job(client, project_body, timeout: float = 5.0) -> None:
+    """Wait for the project's current job to reach a terminal status AND
+    flush its event-persist tail.
+
+    The from_sessions endpoint kicks off a real `calibrate_register_stack`
+    pipeline — convert_lights bails on our PNG-fixture seed and the job
+    lands in 'failed', but if we don't wait, that async write happens
+    after fixture teardown and pollutes the next test's DB. The status
+    field flips to 'failed' a moment before _persist_event runs (the
+    worker writes the in-memory record before the trailing event), so
+    after we see terminal status we still need a small grace window for
+    the SQLite write to land.
+    """
+    job_id = project_body.get("current_job_id")
+    if not job_id:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = client.get(f"/api/jobs/{job_id}").json()
+        if body.get("status") in ("completed", "failed", "interrupted"):
+            # 200ms covers the in-memory -> SQLite gap on the slow CI runner;
+            # locally it's usually <10ms but it's cheap insurance.
+            time.sleep(0.2)
+            return
+        time.sleep(0.05)
+    # Worker is wedged. Cancel + grace so any terminal event still flushes
+    # before the test exits.
+    job_manager.cancel(job_id)
+    time.sleep(0.3)
+
+
 def test_from_sessions_400_on_empty(client) -> None:
     c, *_ = client
     r = c.post(
@@ -148,6 +187,7 @@ def test_from_sessions_succeeds_for_compatible_bundle(client) -> None:
     # Default name surfaces both the target and the bundle size so it's
     # distinguishable from a single-session project of the same target.
     assert body["name"] == "M 33 (2 sessions)"
+    _drain_project_job(c, body)
 
 
 def test_from_sessions_dedup_then_single_session_naming(client) -> None:
@@ -166,3 +206,4 @@ def test_from_sessions_dedup_then_single_session_naming(client) -> None:
     body = r.json()
     assert body["source_session_ids"] == ["1"]
     assert body["name"] == "M 33"
+    _drain_project_job(c, body)
