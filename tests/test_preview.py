@@ -140,3 +140,44 @@ def test_preview_is_cached_across_calls(tmp_path: Path) -> None:
     out2 = render_preview(cache, "h4", "image")
     assert out1 == out2
     assert out2.stat().st_mtime == mtime1  # not re-rendered
+
+
+def test_neutral_balances_osc_green_dominance(tmp_path: Path) -> None:
+    """Pre-rgb_equal OSC stages have G ~2-4x R/B because of the Bayer 2x-green
+    weighting; the rendered preview should NOT carry that imbalance through.
+    Build a synthetic 3-channel FITS with G dominant, render with neutral=True,
+    and assert the per-channel means in the output PNG land within 15% of each
+    other — i.e. the preview looks broadly neutral instead of swampy green."""
+    cache = ContentCache(root=tmp_path / "cache")
+    rng = np.random.default_rng(42)
+    h, w = 96, 96
+    # CHW float32 cube: channel 0 = R, 1 = G (4x), 2 = B. Same noise pattern
+    # so the stretch has structure to hold onto, just different amplitudes.
+    base = rng.normal(0, 50, (h, w)).astype(np.float32)
+    cube = np.stack([
+        base + 1000.0,   # R
+        base + 4000.0,   # G — 4x R/B
+        base + 1000.0,   # B
+    ], axis=0)
+    src = tmp_path / "osc.fit"
+    fits.PrimaryHDU(data=cube).writeto(src, overwrite=True)
+    _commit_entry(cache, "hosc", {"image.fit": src.read_bytes()})
+
+    out = render_preview(cache, "hosc", "image", neutral=True)
+    img = np.array(Image.open(out).convert("RGB"))
+    means = img.reshape(-1, 3).mean(axis=0)
+    # Within 15% of the channel mean — the user-visible 'looks balanced' bar.
+    overall = means.mean()
+    spreads = np.abs(means - overall) / max(overall, 1.0)
+    assert (spreads <= 0.15).all(), f"channel means {means} too spread: {spreads}"
+
+
+def test_neutral_false_keeps_raw_lineage_separate(tmp_path: Path) -> None:
+    """The neutral=False path writes a different file so flipping the toggle
+    in the UI doesn't invalidate the other lineage's cached PNG."""
+    cache = ContentCache(root=tmp_path / "cache")
+    _commit_entry(cache, "h5", {"image.fit": _make_fits(tmp_path / "x.fit").read_bytes()})
+    a = render_preview(cache, "h5", "image", neutral=True)
+    b = render_preview(cache, "h5", "image", neutral=False)
+    assert a != b
+    assert a.exists() and b.exists()

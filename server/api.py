@@ -1350,15 +1350,25 @@ def get_template_schema(template_id: str) -> dict:
 
 
 @app.get("/api/preview/{node_hash}/{port}")
-def get_preview(node_hash: str, port: str) -> FileResponse:
+def get_preview(
+    node_hash: str, port: str, neutral: int = 1
+) -> FileResponse:
     """Render (or return cached) thumbnail PNG for a node's output.
 
     The preview is cached inside the node's cache entry so subsequent loads
-    are a static file read. FITS artifacts get an asinh-stretched render;
+    are a static file read. FITS artifacts get an autostretched render;
     PNG artifacts pass through.
+
+    `neutral=0` bypasses the per-channel rebalance (debug affordance —
+    shows what Siril's linked autostretch produces, which is what you'd
+    see opening the FITS in Siril directly). Default `neutral=1` runs an
+    OSC-friendly per-channel stretch so pre-rgb_equal stages stop looking
+    swampy green.
     """
     try:
-        path = render_preview(job_manager.cache, node_hash, port)
+        path = render_preview(
+            job_manager.cache, node_hash, port, neutral=bool(neutral)
+        )
     except PreviewError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(
