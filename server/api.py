@@ -53,10 +53,12 @@ from server.catalog.db import open_db
 from server.catalog.scanner import scan as run_scan
 from server.job_builder import (
     CalibrationMissing,
+    IncompatibleSessions,
     JobBuildError,
     SessionNotFound,
     TooFewFrames,
     build_from_session,
+    build_from_sessions,
 )
 from server.jobs import JobManager
 from server.models import CalibrationSpec, Job, Template
@@ -664,6 +666,17 @@ class CreateProjectFromSessionRequest(BaseModel):
     calibration: CalibrationSpec | None = None
 
 
+class CreateProjectFromSessionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_ids: list[int]
+    """One or more catalog sessions, all sharing target/gain/exptime/filter.
+    Order is normalized server-side; the bundle hits the same cache lineage
+    regardless of selection order."""
+    template_id: str
+    name: str | None = None
+    calibration: CalibrationSpec | None = None
+
+
 @app.post("/api/projects")
 def create_project(req: CreateProjectRequest) -> dict:
     project = project_manager.create(
@@ -726,6 +739,72 @@ def create_project_from_session(
         template=template,
         base_job=job,
         source_session_ids=[str(req.session_id)],
+    )
+    return project.to_public_dict()
+
+
+@app.post("/api/projects/from_sessions")
+def create_project_from_sessions(
+    req: CreateProjectFromSessionsRequest, conn: DBDep
+) -> dict:
+    """Create a Project that stacks multiple compatible catalog sessions.
+
+    Compatibility rule: every session must share target/instrument/camera/
+    filter/exptime/gain/binning. The job builder enforces this and returns
+    a 400 with the offending fields named when it doesn't hold. Sessions
+    are de-duplicated and order-normalized so [3,1] and [1,3] hit the same
+    cache lineage.
+    """
+    if not req.session_ids:
+        raise HTTPException(
+            status_code=400, detail="session_ids must not be empty"
+        )
+    # build_from_sessions normalizes order and de-dupes internally; we just
+    # mirror that here so the project record stores the canonical list.
+    sids = sorted(set(req.session_ids))
+
+    try:
+        template = load_template(req.template_id)
+    except TemplateNotFound as exc:
+        log.warning("project create rejected: unknown template %r", req.template_id)
+        raise HTTPException(status_code=404, detail=f"template {exc} not found") from exc
+    try:
+        job = build_from_sessions(conn, sids, template, req.calibration)
+    except SessionNotFound as exc:
+        log.warning("project create rejected (sessions=%s): %s", sids, exc)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (CalibrationMissing, TooFewFrames, IncompatibleSessions) as exc:
+        log.warning("project create rejected (sessions=%s): %s", sids, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except JobBuildError as exc:
+        log.warning("project create rejected (sessions=%s): %s", sids, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    name = req.name
+    if not name:
+        row = conn.execute(
+            "SELECT t.name FROM sessions s LEFT JOIN targets t ON t.id = s.target_id "
+            "WHERE s.id = ?",
+            (sids[0],),
+        ).fetchone()
+        target_name = row["name"] if row and row["name"] else None
+        if target_name:
+            # Multi-session project name reads naturally with the count: the
+            # gallery view de-dupes by target anyway, so a single-target
+            # project named "M 33 (3 sessions)" is unambiguous.
+            name = (
+                f"{target_name} ({len(sids)} sessions)"
+                if len(sids) > 1
+                else target_name
+            )
+        else:
+            name = f"sessions {sids}"
+
+    project = project_manager.create(
+        name=name,
+        template=template,
+        base_job=job,
+        source_session_ids=[str(s) for s in sids],
     )
     return project.to_public_dict()
 

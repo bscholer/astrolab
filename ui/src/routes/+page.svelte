@@ -6,6 +6,7 @@
     api,
     type CalibrationMode,
     type CalibrationStatus,
+    type SessionSummary,
     type Template,
     type TargetDetail,
     type TargetSummary
@@ -40,6 +41,53 @@
   let runCalibrationMode = $state<CalibrationMode>('auto');
   let running = $state(false);
 
+  // Multi-select state: a set of session ids the user has checked in the
+  // currently-open target. Reset whenever the open target changes — bundling
+  // sessions across targets is nonsense, and we'd rather have the user
+  // re-pick than silently drop selections.
+  let selectedSessionIds = $state<Set<number>>(new Set());
+  // Track multi-mode submission so we can disable both buttons during it.
+  let runningMulti = $state(false);
+  // The first checked session 'anchors' the bundle: every other session must
+  // share its target/gain/exptime/filter/instrument/binning. The anchor is
+  // the lowest-id session in the set so the rule is stable as the user
+  // toggles checkboxes around.
+  function getAnchor(detail: TargetDetail | undefined): SessionSummary | null {
+    if (!detail || selectedSessionIds.size === 0) return null;
+    const id = Math.min(...selectedSessionIds);
+    return detail.sessions.find((s) => s.id === id) ?? null;
+  }
+  const COMPAT_KEYS = [
+    'instrument',
+    'camera',
+    'filter',
+    'exptime',
+    'gain',
+    'binning'
+  ] as const;
+  const COMPAT_LABEL: Record<(typeof COMPAT_KEYS)[number], string> = {
+    instrument: 'instrument',
+    camera: 'camera',
+    filter: 'filter',
+    exptime: 'exposure',
+    gain: 'gain',
+    binning: 'binning'
+  };
+  /** Returns null when `s` could be added to the selection anchored on
+   * `anchor`, or a short reason string when it can't. */
+  function incompatibleReason(
+    s: SessionSummary,
+    anchor: SessionSummary | null
+  ): string | null {
+    if (!anchor || s.id === anchor.id) return null;
+    const mismatches: string[] = [];
+    for (const k of COMPAT_KEYS) {
+      if (s[k] !== anchor[k]) mismatches.push(COMPAT_LABEL[k]);
+    }
+    if (mismatches.length === 0) return null;
+    return `different ${mismatches.join(', ')}`;
+  }
+
   async function load() {
     try {
       const list = await api.listTargets();
@@ -61,7 +109,42 @@
   }
 
   function openTarget_(id: number) {
-    openTargetId = openTargetId === id ? null : id;
+    const next = openTargetId === id ? null : id;
+    if (next !== openTargetId) {
+      // Clear selection across target switches: bundling sessions from
+      // different targets is never something we'd want to do silently.
+      selectedSessionIds = new Set();
+      runOpenSessionId = null;
+    }
+    openTargetId = next;
+  }
+
+  function toggleSelected(s: SessionSummary) {
+    const next = new Set(selectedSessionIds);
+    if (next.has(s.id)) next.delete(s.id);
+    else next.add(s.id);
+    selectedSessionIds = next;
+    // Hide any open per-session run panel; multi-mode owns the run
+    // affordance once anything is checked.
+    if (next.size > 0) runOpenSessionId = null;
+  }
+
+  async function submitMultiRun() {
+    if (selectedSessionIds.size === 0) return;
+    runningMulti = true;
+    try {
+      const ids = Array.from(selectedSessionIds).sort((a, b) => a - b);
+      const r = await api.createProjectFromSessions({
+        session_ids: ids,
+        template_id: runTemplateId,
+        calibration: { mode: runCalibrationMode }
+      });
+      goto(`/projects/${r.id}`);
+    } catch (e) {
+      toast.error(`Couldn't start project: ${(e as Error).message}`);
+    } finally {
+      runningMulti = false;
+    }
   }
 
   async function rescan() {
@@ -268,83 +351,150 @@
             {:else if detail.sessions.length === 0}
               <p class="muted">No sessions yet for this target.</p>
             {:else}
+              {@const anchor = getAnchor(detail)}
+              {@const multiMode = selectedSessionIds.size > 0}
+              {#if multiMode}
+                <div class="multi-bar" role="region" aria-label="Selected sessions">
+                  <span class="multi-count">
+                    {selectedSessionIds.size} session{selectedSessionIds.size === 1 ? '' : 's'} selected
+                  </span>
+                  <button
+                    type="button"
+                    class="multi-clear"
+                    onclick={() => (selectedSessionIds = new Set())}
+                  >
+                    clear
+                  </button>
+                  <label class="run-row run-row--inline">
+                    <span>Template</span>
+                    <select bind:value={runTemplateId}>
+                      {#if templates === null}
+                        <option>loading…</option>
+                      {:else}
+                        {#each templates as t (t.id)}
+                          <option value={t.id}>{t.id}</option>
+                        {/each}
+                      {/if}
+                    </select>
+                  </label>
+                  <label class="run-row run-row--inline">
+                    <span>Calibration</span>
+                    <select bind:value={runCalibrationMode}>
+                      <option value="auto">auto (use catalog match)</option>
+                      <option value="none">none (skip masters)</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="run-go"
+                    onclick={submitMultiRun}
+                    disabled={runningMulti}
+                  >
+                    {runningMulti
+                      ? 'Submitting…'
+                      : selectedSessionIds.size === 1
+                        ? 'Run pipeline'
+                        : `Run pipeline (${selectedSessionIds.size} sessions)`}
+                  </button>
+                </div>
+              {/if}
               <ul class="session-list">
                 {#each detail.sessions as s (s.id)}
-                  <li class="session">
-                    <div class="session-head">
-                      <span class="session-when">{shortDate(s.started_at)}</span>
-                      <span class="session-tags muted">
-                        {s.exptime ?? '?'}s · gain {s.gain ?? '?'} · {s.filter ?? '—'}
-                      </span>
-                    </div>
-                    <div class="session-body">
-                      <span class="num">
-                        {s.frame_count.toLocaleString()} frame{s.frame_count === 1 ? '' : 's'}
-                      </span>
-                      {#if s.frame_count > 0}
-                        <span aria-hidden="true" class="muted">·</span>
-                        <span
-                          class="fail-pct {failPctClass(s.failed_count, s.frame_count)}"
-                          title="{s.failed_count} of {s.frame_count} failed"
-                        >
-                          {formatFailPct(s.failed_count, s.frame_count)}
+                  {@const checked = selectedSessionIds.has(s.id)}
+                  {@const reason = incompatibleReason(s, anchor)}
+                  {@const blocked = !!reason && !checked}
+                  <li class="session" class:dim={blocked}>
+                    <label class="session-pick" title={reason ?? ''}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={blocked}
+                        onchange={() => toggleSelected(s)}
+                      />
+                    </label>
+                    <div class="session-content">
+                      <div class="session-head">
+                        <span class="session-when">{shortDate(s.started_at)}</span>
+                        <span class="session-tags muted">
+                          {s.exptime ?? '?'}s · gain {s.gain ?? '?'} · {s.filter ?? '—'}
                         </span>
-                      {/if}
-                      <span class="cal-row">
-                        {#each s.calibration as c (c.kind)}
-                          <button
-                            type="button"
-                            class={calBadgeClass(c)}
-                            title={calTitle(c)}
-                            aria-label={calTitle(c)}
-                            data-tip={calTitle(c)}
-                          >
-                            {calLabel(c.kind)}
-                          </button>
-                        {/each}
-                      </span>
-                      <button
-                        type="button"
-                        class="run-btn"
-                        onclick={() => toggleRun(s.id)}
-                        aria-expanded={runOpenSessionId === s.id}
-                      >
-                        {runOpenSessionId === s.id ? 'Cancel' : 'Run…'}
-                      </button>
-                    </div>
-                    {#if runOpenSessionId === s.id}
-                      <div class="run-panel">
-                        <label class="run-row">
-                          <span>Template</span>
-                          <select bind:value={runTemplateId}>
-                            {#if templates === null}
-                              <option>loading…</option>
-                            {:else}
-                              {#each templates as t (t.id)}
-                                <option value={t.id}>{t.id}</option>
-                              {/each}
-                            {/if}
-                          </select>
-                        </label>
-                        <label class="run-row">
-                          <span>Calibration</span>
-                          <select bind:value={runCalibrationMode}>
-                            <option value="auto">auto (use catalog match)</option>
-                            <option value="none">none (skip masters)</option>
-                          </select>
-                        </label>
-                        <div class="run-actions">
-                          <button
-                            type="button"
-                            class="run-go"
-                            onclick={() => submitRun(s.id)}
-                            disabled={running}
-                          >
-                            {running ? 'Submitting…' : 'Run pipeline'}
-                          </button>
-                        </div>
+                        {#if reason && !checked}
+                          <span class="incompat-chip" title={reason}>
+                            {reason}
+                          </span>
+                        {/if}
                       </div>
-                    {/if}
+                      <div class="session-body">
+                        <span class="num">
+                          {s.frame_count.toLocaleString()} frame{s.frame_count === 1 ? '' : 's'}
+                        </span>
+                        {#if s.frame_count > 0}
+                          <span aria-hidden="true" class="muted">·</span>
+                          <span
+                            class="fail-pct {failPctClass(s.failed_count, s.frame_count)}"
+                            title="{s.failed_count} of {s.frame_count} failed"
+                          >
+                            {formatFailPct(s.failed_count, s.frame_count)}
+                          </span>
+                        {/if}
+                        <span class="cal-row">
+                          {#each s.calibration as c (c.kind)}
+                            <button
+                              type="button"
+                              class={calBadgeClass(c)}
+                              title={calTitle(c)}
+                              aria-label={calTitle(c)}
+                              data-tip={calTitle(c)}
+                            >
+                              {calLabel(c.kind)}
+                            </button>
+                          {/each}
+                        </span>
+                        {#if !multiMode}
+                          <button
+                            type="button"
+                            class="run-btn"
+                            onclick={() => toggleRun(s.id)}
+                            aria-expanded={runOpenSessionId === s.id}
+                          >
+                            {runOpenSessionId === s.id ? 'Cancel' : 'Run…'}
+                          </button>
+                        {/if}
+                      </div>
+                      {#if !multiMode && runOpenSessionId === s.id}
+                        <div class="run-panel">
+                          <label class="run-row">
+                            <span>Template</span>
+                            <select bind:value={runTemplateId}>
+                              {#if templates === null}
+                                <option>loading…</option>
+                              {:else}
+                                {#each templates as t (t.id)}
+                                  <option value={t.id}>{t.id}</option>
+                                {/each}
+                              {/if}
+                            </select>
+                          </label>
+                          <label class="run-row">
+                            <span>Calibration</span>
+                            <select bind:value={runCalibrationMode}>
+                              <option value="auto">auto (use catalog match)</option>
+                              <option value="none">none (skip masters)</option>
+                            </select>
+                          </label>
+                          <div class="run-actions">
+                            <button
+                              type="button"
+                              class="run-go"
+                              onclick={() => submitRun(s.id)}
+                              disabled={running}
+                            >
+                              {running ? 'Submitting…' : 'Run pipeline'}
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
                   </li>
                 {/each}
               </ul>
@@ -517,9 +667,72 @@
     background: var(--bg-elev-2);
     border: 1px solid var(--hairline);
     display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    transition: opacity 160ms ease;
+  }
+  .session.dim {
+    opacity: 0.45;
+  }
+  .session-pick {
+    /* Stretch a tappable hitbox so the whole left column toggles selection,
+       not just the 13px native checkbox. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.25rem;
+    margin: -0.25rem 0 -0.25rem -0.2rem;
+    cursor: pointer;
+  }
+  .session-pick input[disabled] {
+    cursor: not-allowed;
+  }
+  .session-content {
+    flex: 1;
+    display: flex;
     flex-direction: column;
     gap: 0.25rem;
+    min-width: 0;
   }
+  .incompat-chip {
+    font-size: 0.72rem;
+    color: var(--warn);
+    border: 1px solid var(--warn);
+    background: color-mix(in oklab, var(--warn) 10%, transparent);
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    margin-left: auto;
+  }
+  .multi-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding: 0.55rem 0.7rem;
+    margin-bottom: 0.5rem;
+    border-radius: var(--radius);
+    background: rgba(122, 162, 255, 0.08);
+    border: 1px solid var(--accent);
+  }
+  .multi-count {
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .multi-clear {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--fg-mute);
+    font: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--hairline);
+  }
+  .multi-clear:hover { color: var(--fg); }
+  .run-row--inline > span { min-width: 5rem; }
+  .run-row--inline { font-size: 0.85rem; }
 
   .session-head {
     display: flex;

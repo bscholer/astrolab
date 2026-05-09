@@ -10,10 +10,12 @@ import nodes.basic  # noqa: F401
 from server.catalog.db import open_db
 from server.job_builder import (
     CalibrationMissing,
+    IncompatibleSessions,
     JobBuildError,
     SessionNotFound,
     TooFewFrames,
     build_from_session,
+    build_from_sessions,
     session_lights_folder,
 )
 from server.models import CalibrationSpec
@@ -28,6 +30,12 @@ def _seed_session(
     target_name: str = "M 33",
     folder: Path,
     n_frames: int = 3,
+    instrument: str = "DWARFIII",
+    exptime: float = 30.0,
+    gain: int = 60,
+    binning: int = 1,
+    filter_name: str | None = None,
+    camera: str | None = None,
 ) -> None:
     """Insert a target/session/frames triplet pointing at `folder`."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -41,19 +49,36 @@ def _seed_session(
         conn.execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, scope_id, session_key, target_id, instrument, exptime, gain, binning,
-             frame_count, failed_count)
-            VALUES (?, 'dwarf3', ?, ?, 'DWARFIII', 30.0, 60, 1, ?, 0)
+            (id, scope_id, session_key, target_id, instrument, camera, filter,
+             exptime, gain, binning, frame_count, failed_count)
+            VALUES (?, 'dwarf3', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
-            (session_id, f"key-{session_id}", target_id, n_frames),
+            (
+                session_id,
+                f"key-{session_id}",
+                target_id,
+                instrument,
+                camera,
+                filter_name,
+                exptime,
+                gain,
+                binning,
+                n_frames,
+            ),
         )
         for i in range(n_frames):
             cur = conn.execute(
                 """
                 INSERT INTO frames (path, image_type, instrument, exptime, gain, session_key)
-                VALUES (?, 'LIGHT', 'DWARFIII', 30.0, 60, ?)
+                VALUES (?, 'LIGHT', ?, ?, ?, ?)
                 """,
-                (str(folder / f"frame_{i}.fits"), f"key-{session_id}"),
+                (
+                    str(folder / f"frame_{i}.fits"),
+                    instrument,
+                    exptime,
+                    gain,
+                    f"key-{session_id}",
+                ),
             )
             conn.execute(
                 "INSERT INTO session_frames (session_id, frame_id) VALUES (?, ?)",
@@ -205,3 +230,98 @@ def test_build_from_session_explicit_master_missing_404s(db, tmp_path: Path) -> 
             db, 1, template,
             calibration=CalibrationSpec(mode="explicit", master_ids={"dark": 999}),
         )
+
+
+# ---------------------------------------------------------------------------
+# Multi-session
+# ---------------------------------------------------------------------------
+
+
+def test_build_from_sessions_n1_matches_single(db, tmp_path: Path) -> None:
+    """N=1 must hit the same lights path as build_from_session — multi-session
+    is a strict superset, not a different code path for the simple case."""
+    _seed_session(db, folder=tmp_path / "sess")
+    template = load_template("calibrate_register_stack")
+    job_single = build_from_session(db, 1, template)
+    job_multi = build_from_sessions(db, [1], template)
+    assert (
+        job_single.inputs["convert.lights"].path
+        == job_multi.inputs["convert.lights"].path
+    )
+
+
+def test_build_from_sessions_stages_symlinks(db, tmp_path: Path) -> None:
+    """Two compatible sessions get bundled into one staging dir of symlinks."""
+    _seed_session(db, session_id=1, folder=tmp_path / "s1", n_frames=3)
+    _seed_session(db, session_id=2, folder=tmp_path / "s2", n_frames=3)
+    template = load_template("calibrate_register_stack")
+    job = build_from_sessions(db, [1, 2], template)
+
+    stage = job.inputs["convert.lights"].path
+    assert stage.is_dir()
+    links = sorted(p.name for p in stage.iterdir() if p.is_symlink())
+    # Both sessions' frames land in the staging dir, prefixed by session id
+    # to avoid collisions on identical capture filenames.
+    assert any(name.startswith("s1__") for name in links)
+    assert any(name.startswith("s2__") for name in links)
+    assert len(links) == 6
+
+
+def test_build_from_sessions_deterministic_path(db, tmp_path: Path) -> None:
+    """Same bundle in any order must hit the same staging dir so re-runs
+    re-use the convert_lights cache entry."""
+    _seed_session(db, session_id=1, folder=tmp_path / "s1")
+    _seed_session(db, session_id=2, folder=tmp_path / "s2")
+    template = load_template("calibrate_register_stack")
+    a = build_from_sessions(db, [1, 2], template).inputs["convert.lights"].path
+    b = build_from_sessions(db, [2, 1], template).inputs["convert.lights"].path
+    assert a == b
+
+
+def test_build_from_sessions_rejects_mismatched_gain(db, tmp_path: Path) -> None:
+    _seed_session(db, session_id=1, folder=tmp_path / "s1", gain=60)
+    _seed_session(db, session_id=2, folder=tmp_path / "s2", gain=80)
+    template = load_template("calibrate_register_stack")
+    with pytest.raises(IncompatibleSessions, match="gain"):
+        build_from_sessions(db, [1, 2], template)
+
+
+def test_build_from_sessions_rejects_mismatched_target(db, tmp_path: Path) -> None:
+    _seed_session(
+        db, session_id=1, folder=tmp_path / "s1",
+        target_id=1, target_name="M 33",
+    )
+    _seed_session(
+        db, session_id=2, folder=tmp_path / "s2",
+        target_id=2, target_name="M 31",
+    )
+    template = load_template("calibrate_register_stack")
+    with pytest.raises(IncompatibleSessions, match="target_id"):
+        build_from_sessions(db, [1, 2], template)
+
+
+def test_build_from_sessions_uses_first_sessions_master(db, tmp_path: Path) -> None:
+    """Compat checks guarantee shared instrument/exptime/gain across the
+    bundle, so the matched master for any session matches all of them; we
+    pin to the first session's match to keep the read deterministic."""
+    _seed_session(db, session_id=1, folder=tmp_path / "s1")
+    _seed_session(db, session_id=2, folder=tmp_path / "s2")
+    _seed_master_dark(db, master_id=7, path=tmp_path / "masters" / "d.fit")
+    _set_calibration_match(db, session_id=1, master_id=7)
+    template = load_template("calibrate_register_stack")
+    job = build_from_sessions(db, [2, 1], template)
+    assert job.inputs["calibrate.dark"].path == tmp_path / "masters" / "d.fit"
+
+
+def test_build_from_sessions_rejects_too_few_total_frames(db, tmp_path: Path) -> None:
+    _seed_session(db, session_id=1, folder=tmp_path / "s1", n_frames=1)
+    _seed_session(db, session_id=2, folder=tmp_path / "s2", n_frames=1)
+    template = load_template("calibrate_register_stack")
+    with pytest.raises(TooFewFrames):
+        build_from_sessions(db, [1, 2], template)
+
+
+def test_build_from_sessions_empty_input_raises(db) -> None:
+    template = load_template("calibrate_register_stack")
+    with pytest.raises(JobBuildError, match="at least one"):
+        build_from_sessions(db, [], template)

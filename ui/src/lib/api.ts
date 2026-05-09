@@ -320,6 +320,13 @@ export interface CreateProjectFromSessionRequest {
   calibration?: CalibrationSpec;
 }
 
+export interface CreateProjectFromSessionsRequest {
+  session_ids: number[];
+  template_id: string;
+  name?: string;
+  calibration?: CalibrationSpec;
+}
+
 export interface PatchProjectRequest {
   overrides?: Record<string, Record<string, unknown> | null> | null;
   draft_mode?: boolean;
@@ -452,6 +459,8 @@ export const api = {
   getProject: (id: string) => getJSON<Project>(`/api/projects/${id}`),
   createProjectFromSession: (req: CreateProjectFromSessionRequest) =>
     postJSON<Project>('/api/projects/from_session', req),
+  createProjectFromSessions: (req: CreateProjectFromSessionsRequest) =>
+    postJSON<Project>('/api/projects/from_sessions', req),
   patchProject: (id: string, req: PatchProjectRequest) =>
     patchJSON<Project>(`/api/projects/${id}`, req),
   revertProject: (id: string, seq: number) =>
