@@ -1044,7 +1044,7 @@
     position: absolute;
     inset: 0;
     background:
-      linear-gradient(110deg, transparent 30%, var(--accent-soft) 50%, transparent 70%),
+      linear-gradient(90deg, transparent 30%, var(--accent-soft) 50%, transparent 70%),
       linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     background-size: 200% 100%, 100% 100%;
     background-repeat: no-repeat;
