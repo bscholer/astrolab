@@ -42,6 +42,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
@@ -1249,6 +1250,57 @@ def get_preview(node_hash: str, port: str) -> FileResponse:
         # render after a code change.
         headers={"Cache-Control": "public, max-age=60"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Static UI (SvelteKit static build)
+# ---------------------------------------------------------------------------
+# Serves the prebuilt UI from ui/build/ when present. On macOS dev we usually
+# don't run `npm run build`, so the directory is missing — in that case we
+# skip the mount entirely and the user keeps using `npm run dev` on :5173.
+# Hosting layout on the Linux box: `npm run build` populates ui/build/, and
+# astrolab-api serves the whole app on :8000 (no separate vite-dev process).
+
+_UI_BUILD_DIR = Path(__file__).resolve().parent.parent / "ui" / "build"
+
+
+if _UI_BUILD_DIR.is_dir():
+    # Long-cache the hashed _app/* assets — SvelteKit's static adapter
+    # fingerprints them so cache busting Just Works.
+    _app_assets = _UI_BUILD_DIR / "_app"
+    if _app_assets.is_dir():
+        app.mount(
+            "/_app",
+            StaticFiles(directory=_app_assets),
+            name="ui-app-assets",
+        )
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_ui(full_path: str) -> FileResponse:
+        """Catch-all for the UI: serve the requested file if it exists,
+        otherwise fall back to index.html (SPA-style routing).
+
+        Registered last so it doesn't shadow any /api/* route. /api/* paths
+        are handled by their respective route handlers and never reach
+        here; everything else either resolves to a real static file or
+        the SPA shell.
+        """
+        if full_path == "":
+            target = _UI_BUILD_DIR / "index.html"
+        else:
+            candidate = (_UI_BUILD_DIR / full_path).resolve()
+            # Path-traversal guard: make sure the resolved file stays under
+            # the UI build dir; reject paths that try to climb out.
+            if not str(candidate).startswith(str(_UI_BUILD_DIR.resolve())):
+                raise HTTPException(status_code=404)
+            target = candidate if candidate.is_file() else _UI_BUILD_DIR / "index.html"
+        if not target.is_file():
+            raise HTTPException(status_code=404)
+        # No long cache on index.html — the served HTML is what changes
+        # when we rebuild; assets it references are content-hashed and
+        # caching them is handled by the StaticFiles mount above.
+        headers = {"Cache-Control": "no-cache"} if target.name == "index.html" else None
+        return FileResponse(target, headers=headers)
 
 
 # ---------------------------------------------------------------------------

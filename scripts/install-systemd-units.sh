@@ -28,22 +28,29 @@ fi
 
 step "copying units into /etc/systemd/system/"
 sudo cp "$units_src"/astrolab-api.service /etc/systemd/system/
-sudo cp "$units_src"/astrolab-ui.service /etc/systemd/system/
 
-step "preparing log files"
-sudo touch /var/log/astrolab-api.log /var/log/astrolab-ui.log
-sudo chown "$USER:$USER" /var/log/astrolab-api.log /var/log/astrolab-ui.log
+step "preparing log file"
+sudo touch /var/log/astrolab-api.log
+sudo chown "$USER:$USER" /var/log/astrolab-api.log
+
+# Clean up the legacy vite-dev unit if it's still around. FastAPI now
+# serves the prebuilt UI directly on :8000 — no separate node process.
+if systemctl list-unit-files astrolab-ui.service >/dev/null 2>&1; then
+  step "removing legacy astrolab-ui (vite dev) unit"
+  sudo systemctl disable --now astrolab-ui 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/astrolab-ui.service
+fi
 
 step "daemon-reload + enable + start"
 sudo systemctl daemon-reload
-sudo systemctl enable --now astrolab-api astrolab-ui
+sudo systemctl enable --now astrolab-api
 
-sleep 4
+sleep 3
 echo
 step "status:"
-systemctl is-active astrolab-api astrolab-ui
+systemctl is-active astrolab-api
 echo
 step "ports:"
-ss -ltnp 2>/dev/null | grep -E ":(8000|5173) " || true
+ss -ltnp 2>/dev/null | grep -E ":8000 " || true
 
-ok "installed. UI: http://$(hostname -I | awk '{print $1}'):5173/"
+ok "installed. astrolab: http://$(hostname -I | awk '{print $1}'):8000/"

@@ -68,6 +68,19 @@ if command -v uv >/dev/null 2>&1; then
   uv sync --frozen 2>/dev/null || uv sync
 fi
 
+# Build the SvelteKit UI to static so astrolab-api can serve it from
+# ui/build/. We rebuild on every deploy because backend changes are
+# usually accompanied by FE changes; npm caches make this fast.
+if command -v npm >/dev/null 2>&1; then
+  echo "▸ npm run build (ui)"
+  cd ui
+  # `npm install` is a no-op when package.json hasn't changed thanks to
+  # npm's lockfile-aware cache, so it's cheap to run unconditionally.
+  npm install --silent
+  npm run build --silent
+  cd ..
+fi
+
 echo "▸ restarting astrolab-api via systemctl"
 # astrolab-api.service runs uvicorn under systemd, auto-starts on boot,
 # and reads ASTROLAB_HOME from its unit file (not from this script anymore).
@@ -77,9 +90,11 @@ echo "▸ restarting astrolab-api via systemctl"
 if systemctl list-unit-files astrolab-api.service >/dev/null 2>&1 \
      && systemctl is-enabled --quiet astrolab-api 2>/dev/null; then
   sudo systemctl restart astrolab-api
-  # Vite HMR picks up FE changes without restart, but if the user touched
-  # package.json we'd want to bounce the UI too. Cheap to restart either way.
-  sudo systemctl restart astrolab-ui
+  # Older deploys ran a separate vite-dev unit; tear it down if present.
+  # FastAPI now serves the prebuilt UI from ui/build/ on the same port.
+  if systemctl list-unit-files astrolab-ui.service >/dev/null 2>&1; then
+    sudo systemctl disable --now astrolab-ui 2>/dev/null || true
+  fi
 else
   echo "  astrolab-api.service not installed — running legacy nohup uvicorn"
   pkill -f "uvicorn server.api:app" || true
