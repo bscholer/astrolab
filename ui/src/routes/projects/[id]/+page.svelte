@@ -567,75 +567,95 @@
               </button>
 
               {#if isExpanded}
-                <div class="node-body" transition:slide={{ duration: 220, easing: cubicOut }}>
+                <div
+                  class="node-body"
+                  class:body-output={isOutput}
+                  class:body-dual={!isOutput && Object.keys(props).length > 0 && (s === 'completed' || s === 'cached') && h}
+                  transition:slide={{ duration: 220, easing: cubicOut }}
+                >
                   {#if isOutput && finalOutput}
                     {@const fname = finalOutput[0]}
                     {@const fref = finalOutput[1]}
-                    <div class="output-pane">
-                      <a class="big-preview-link" href={api.previewUrl(fref.node_hash, fname)} target="_blank" rel="noopener">
-                        <img class="big-preview" src={api.previewUrl(fref.node_hash, fname)} alt="output preview" />
+                    <a class="big-preview-link" href={api.previewUrl(fref.node_hash, fname)} target="_blank" rel="noopener">
+                      <img class="big-preview" src={api.previewUrl(fref.node_hash, fname)} alt="output preview" />
+                    </a>
+                    <div class="output-actions">
+                      <button
+                        type="button"
+                        class="cover-btn"
+                        class:active={isCover}
+                        disabled={coverBusy}
+                        onclick={toggleCover}
+                        title={isCover
+                          ? 'This version is the project cover. Click to clear.'
+                          : 'Pin this version as the project cover'}
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill={isCover ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                        </svg>
+                        {isCover ? 'Cover' : 'Set as cover'}
+                      </button>
+                      <button
+                        type="button"
+                        class="cover-btn"
+                        onclick={() => copyToClipboard(fref.path, 'Copied output path')}
+                        title="Copy filesystem path"
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <rect x="9" y="9" width="13" height="13" rx="2" />
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                        </svg>
+                        Copy path
+                      </button>
+                      <a
+                        class="cover-btn"
+                        href={api.previewUrl(fref.node_hash, fname)}
+                        target="_blank"
+                        rel="noopener"
+                        title="Open full-size in a new tab"
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                          <polyline points="15 3 21 3 21 9" />
+                          <line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
+                        Open full
                       </a>
-                      <div class="output-actions">
-                        <button
-                          type="button"
-                          class="cover-btn"
-                          class:active={isCover}
-                          disabled={coverBusy}
-                          onclick={toggleCover}
-                          title={isCover
-                            ? 'This version is the project cover. Click to clear.'
-                            : 'Pin this version as the project cover'}
-                        >
-                          <svg viewBox="0 0 24 24" width="14" height="14" fill={isCover ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-                          </svg>
-                          {isCover ? 'Cover' : 'Set as cover'}
-                        </button>
-                        <button
-                          type="button"
-                          class="cover-btn"
-                          onclick={() => copyToClipboard(fref.path, 'Copied output path')}
-                          title="Copy filesystem path"
-                        >
-                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <rect x="9" y="9" width="13" height="13" rx="2" />
-                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                          </svg>
-                          Copy path
-                        </button>
-                        <a
-                          class="cover-btn"
-                          href={api.previewUrl(fref.node_hash, fname)}
-                          target="_blank"
-                          rel="noopener"
-                          title="Open full-size in a new tab"
-                        >
-                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                            <polyline points="15 3 21 3 21 9" />
-                            <line x1="10" y1="14" x2="21" y2="3" />
-                          </svg>
-                          Open full
-                        </a>
-                      </div>
-                      <p class="path-line muted small">
-                        <code class="path">{fref.path}</code>
-                        <span class="type-tag">[{fref.type}]</span>
-                      </p>
                     </div>
-                  {/if}
-
-                  {#if Object.keys(props).length > 0}
-                    <NodeParamsForm
-                      nodeId={nid}
-                      schemaProps={props}
-                      defaults={{ ...nschema.defaults, ...nschema.template_params }}
-                      {overrides}
-                      cost={closureCost}
-                      onchange={(next) => onNodeOverrideChange(nid, next)}
-                    />
-                  {:else if !isOutput}
-                    <p class="muted small no-params">No editable parameters.</p>
+                    <p class="path-line muted small">
+                      <code class="path">{fref.path}</code>
+                      <span class="type-tag">[{fref.type}]</span>
+                    </p>
+                  {:else}
+                    <!-- Non-output expanded body: two columns when both
+                         a preview and params exist. Preview goes on
+                         the left so the user's eye starts at 'what
+                         this stage produces' and lands on the knobs. -->
+                    {#if (s === 'completed' || s === 'cached') && h}
+                      <a
+                        class="stage-preview-link"
+                        href={api.previewUrl(h, port)}
+                        target="_blank"
+                        rel="noopener"
+                        title="Open full-size in a new tab"
+                      >
+                        <img class="stage-preview" src={api.previewUrl(h, port)} alt="{nid} preview" />
+                      </a>
+                    {/if}
+                    {#if Object.keys(props).length > 0}
+                      <div class="stage-params">
+                        <NodeParamsForm
+                          nodeId={nid}
+                          schemaProps={props}
+                          defaults={{ ...nschema.defaults, ...nschema.template_params }}
+                          {overrides}
+                          cost={closureCost}
+                          onchange={(next) => onNodeOverrideChange(nid, next)}
+                        />
+                      </div>
+                    {:else}
+                      <p class="muted small no-params">No editable parameters.</p>
+                    {/if}
                   {/if}
                 </div>
               {/if}
@@ -752,12 +772,12 @@
     margin: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: 0.3rem;
   }
   .node-row {
     background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     border: 1px solid var(--border);
-    border-radius: var(--radius-card);
+    border-radius: 10px;
     overflow: hidden;
     transition: border-color 160ms ease;
   }
@@ -783,25 +803,27 @@
     border: none;
     color: inherit;
     width: 100%;
-    padding: 0.55rem 0.85rem 0.55rem 0.55rem;
+    padding: 0.3rem 0.7rem 0.3rem 0.3rem;
     display: flex;
     align-items: center;
-    gap: 0.85rem;
+    gap: 0.7rem;
     cursor: pointer;
     text-align: left;
     border-radius: 0;
+    min-height: 0;
   }
   .node-head:hover { background: rgba(94, 234, 212, 0.04); }
 
-  /* 16:9 thumbnail in the header — small enough to keep collapsed
-     rows compact, large enough to read what stage you're at. */
+  /* 16:9 thumbnail in the header — kept compact so a 12-step pipeline
+     still fits above the fold. Bumps slightly larger when the row is
+     expanded so the preview reads better. */
   .head-thumb {
     position: relative;
-    width: 96px;
+    width: 64px;
     aspect-ratio: 16 / 9;
     flex-shrink: 0;
     background: var(--bg-elev-2);
-    border-radius: 6px;
+    border-radius: 5px;
     overflow: hidden;
     box-shadow: inset 0 0 0 1px var(--hairline);
     display: flex;
@@ -844,11 +866,15 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow: hidden;
   }
   .head-name {
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 0.92rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .output-tag {
     font-family: var(--font-mono);
@@ -876,11 +902,42 @@
   .chevron.rotated { transform: rotate(180deg); }
 
   .node-body {
-    padding: 0.6rem 0.95rem 0.95rem;
+    padding: 0.7rem 0.85rem 0.85rem;
     border-top: 1px solid var(--hairline);
     display: flex;
     flex-direction: column;
-    gap: 0.85rem;
+    gap: 0.7rem;
+  }
+  /* Two-column inside an expanded non-output row: bigger preview on
+     the left so the user sees what this stage produces, params on
+     the right. Drops to single column under 720px. */
+  .node-body.body-dual {
+    display: grid;
+    grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+  .stage-preview-link {
+    display: block;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 0 0 1px var(--hairline);
+    transition: transform 160ms ease;
+  }
+  .stage-preview-link:hover {
+    transform: scale(1.005);
+  }
+  .stage-preview {
+    width: 100%;
+    height: auto;
+    max-height: 320px;
+    object-fit: cover;
+    display: block;
+  }
+  .stage-params { min-width: 0; }
+  @media (max-width: 720px) {
+    .node-body.body-dual { grid-template-columns: 1fr; }
+    .stage-preview { max-height: 220px; }
   }
 
   /* Skeleton shimmer underlay reused for the head thumbnail. */
