@@ -17,6 +17,7 @@ Pure numpy/astropy; same WCS-shift treatment as auto_crop.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from astropy.io import fits
@@ -70,7 +71,7 @@ class CropParams(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _check_box(self) -> "CropParams":
+    def _check_box(self) -> CropParams:
         # Cap width/height to whatever's left of the frame given x/y so the
         # UI doesn't have to clamp on every drag.
         if self.x + self.width > 1.0 + 1e-6:
@@ -147,10 +148,8 @@ class CropNode(Node[CropParams]):
 
         for key, off in (("CRPIX1", x), ("CRPIX2", y)):
             if key in header:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     header[key] = float(header[key]) - off
-                except (TypeError, ValueError):
-                    pass
 
         ctx.progress(0.9, f"crop: {full_w}x{full_h} -> {w}x{h}")
         fits.PrimaryHDU(data=cropped, header=header).writeto(out_image, overwrite=True)

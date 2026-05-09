@@ -48,8 +48,8 @@ from pydantic import BaseModel, ConfigDict
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 from server.catalog.common_names import lookup as lookup_common_name
-from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.db import open_db
+from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.scanner import scan as run_scan
 from server.job_builder import (
     CalibrationMissing,
@@ -66,7 +66,6 @@ from server.preview import PreviewError, render_preview
 from server.projects import ProjectManager, ProjectNotFound
 from server.registry import lookup as registry_lookup
 from server.storage import (
-    DEFAULT_CACHE_MAX_BYTES,
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,

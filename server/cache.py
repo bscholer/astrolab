@@ -13,6 +13,7 @@ is plenty.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -86,10 +87,8 @@ class ContentCache:
         bytes_freed = 0
         for path in d.rglob("*"):
             if path.is_file() and not path.is_symlink():
-                try:
+                with contextlib.suppress(OSError):
                     bytes_freed += path.stat().st_size
-                except OSError:
-                    pass
         shutil.rmtree(d, ignore_errors=True)
         return bytes_freed
 
@@ -121,8 +120,6 @@ class ContentCache:
         total = 0
         for path in d.rglob("*"):
             if path.is_file() and not path.is_symlink():
-                try:
+                with contextlib.suppress(OSError):
                     total += path.stat().st_size
-                except OSError:
-                    pass
         return total

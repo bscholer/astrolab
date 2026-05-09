@@ -20,6 +20,7 @@ LD_LIBRARY_PATH so the shipped libtensorflow_framework.so.2 resolves.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 from pathlib import Path
@@ -172,10 +173,8 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
 
         # Drop the TIFF intermediates; the cache entry only needs the FITS.
         for tmp in (in_tiff, out_tiff):
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 tmp.unlink()
-            except FileNotFoundError:
-                pass
 
         ctx.progress(1.0, "starnet_extract: done")
         return _result(starless_out, stars_out)

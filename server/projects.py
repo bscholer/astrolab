@@ -509,8 +509,12 @@ class ProjectManager:
             updated_at=row["updated_at"],
             # cover_seq is nullable in the DB. Older rows pre-migration
             # land as None which is exactly the 'auto-pick latest' default.
+            # sqlite3.Row has no .get(); membership check via keys() is the
+            # only safe shape, hence the SIM118 silence.
             cover_seq=(
-                row["cover_seq"] if "cover_seq" in row.keys() else None
+                row["cover_seq"]
+                if "cover_seq" in row.keys()  # noqa: SIM118
+                else None
             ),
         )
         history_rows = conn.execute(

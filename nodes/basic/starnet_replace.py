@@ -18,6 +18,7 @@ pipeline does too). No new external dependency.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import numpy as np
@@ -153,10 +154,8 @@ class StarnetReplaceNode(Node[StarnetReplaceParams]):
 
         # Strip intermediates so the cache entry only holds the output.
         for tmp in (recon_path, synth_full):
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 tmp.unlink()
-            except FileNotFoundError:
-                pass
 
         ctx.progress(1.0, "starnet_replace: done")
         return _result(out_image)
