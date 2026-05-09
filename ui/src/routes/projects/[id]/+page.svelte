@@ -613,7 +613,6 @@
                 <div
                   class="node-body"
                   class:body-output={isOutput}
-                  class:body-dual={!isOutput && kind !== 'crop' && Object.keys(props).length > 0 && (s === 'completed' || s === 'cached') && h}
                   transition:slide={{ duration: 220, easing: cubicOut }}
                 >
                   {#if isOutput && finalOutput}
@@ -857,11 +856,10 @@
   .node-row:hover { border-color: var(--border-strong); }
   .node-row:hover:not(.expanded) { transform: translateY(-1px); }
 
-  /* Expanded: jump out of the 4-up grid to a full-width row so the
-     larger preview + params have horizontal room. dense flow above
-     reflows the surrounding tiles to fill the gap. */
+  /* Expanded: card grows vertically in place. Keeps the grid stable —
+     no jarring full-width takeover, the body just drops down below
+     the head card. The grid row's other cards stay where they are. */
   .node-row.expanded {
-    grid-column: 1 / -1;
     border-color: var(--border-strong);
   }
 
@@ -881,6 +879,9 @@
   /* Head = the clickable card surface. Collapsed: thumb fills, title
      bar overlays at top with a gradient. Expanded: thumb shrinks to
      a small left-side preview, title bar goes flat across the top. */
+  /* The head keeps the same card layout in both states — collapsed
+     and expanded. Expanding doesn't reshape the head into a flat row;
+     it just drops a body section below. Less visual jolt. */
   .node-head {
     appearance: none;
     background: transparent;
@@ -894,13 +895,6 @@
     position: relative;
     display: block;
   }
-  .node-row.expanded .node-head {
-    display: grid;
-    grid-template-columns: 64px 1fr;
-    align-items: center;
-    gap: 0.7rem;
-    padding: 0.35rem 0.7rem 0.35rem 0.35rem;
-  }
 
   .head-thumb {
     position: relative;
@@ -910,11 +904,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-  .node-row.expanded .head-thumb {
-    width: 64px;
-    border-radius: 5px;
-    box-shadow: inset 0 0 0 1px var(--hairline);
   }
   .head-img {
     width: 100%;
@@ -947,8 +936,9 @@
     z-index: 2;
   }
 
-  /* Overlay — collapsed = absolute top strip with gradient fade,
-     expanded = inline second column with a flat row of meta. */
+  /* Overlay: a top strip on the head card with a gradient fade. Same
+     in both collapsed + expanded states so the card identity stays
+     intact while expanding. */
   .head-overlay {
     position: absolute;
     top: 0;
@@ -962,12 +952,6 @@
     gap: 0.45rem;
     pointer-events: none;
     z-index: 1;
-  }
-  .node-row.expanded .head-overlay {
-    position: static;
-    padding: 0;
-    background: none;
-    color: var(--fg);
   }
 
   .head-name {
@@ -983,7 +967,6 @@
     min-width: 0;
     flex-shrink: 1;
   }
-  .node-row.expanded .head-name { text-shadow: none; }
   .head-spacer { flex: 1 1 0; min-width: 0.25rem; }
   .head-overlay > .status,
   .head-overlay > .badge-modified,
@@ -1026,25 +1009,18 @@
      for contrast. */
   .node-row:not(.expanded) .chevron { color: rgba(255, 255, 255, 0.7); }
 
+  /* Single-column body: preview-or-editor on top, params below. Cards
+     are ~300px wide so a side-by-side layout is too tight. */
   .node-body {
-    padding: 0.85rem 1rem 1rem;
+    padding: 0.7rem 0.75rem 0.85rem;
     border-top: 1px solid var(--hairline);
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
-  }
-  /* Expanded non-output: big preview left, params right. The 1.6fr/1fr
-     split favors the preview because the user is staring at it while
-     dragging sliders — the params side just needs to be readable. */
-  .node-body.body-dual {
-    display: grid;
-    grid-template-columns: minmax(360px, 1.6fr) minmax(280px, 1fr);
-    gap: 1.25rem;
-    align-items: start;
+    gap: 0.55rem;
   }
   .stage-preview-link {
     display: block;
-    border-radius: 8px;
+    border-radius: 6px;
     overflow: hidden;
     box-shadow: 0 0 0 1px var(--hairline);
     transition: transform 160ms ease;
@@ -1053,16 +1029,11 @@
   .stage-preview {
     width: 100%;
     height: auto;
-    max-height: 60vh;
     object-fit: contain;
     display: block;
     background: var(--bg);
   }
   .stage-params { min-width: 0; }
-  @media (max-width: 720px) {
-    .node-body.body-dual { grid-template-columns: 1fr; }
-    .stage-preview { max-height: 50vh; }
-  }
 
   /* Skeleton shimmer underlay reused for the head thumbnail. */
   @keyframes flow-skeleton-shimmer {
