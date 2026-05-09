@@ -36,6 +36,34 @@ fi
 TOOLS_DIR="${ASTROLAB_TOOLS_DIR:-$HOME/tools}"
 mkdir -p "$TOOLS_DIR"
 
+# ---------- CUDA runtime libs ------------------------------------------------
+# GraXpert + StarNet ship their own onnxruntime / TensorFlow binaries built
+# against CUDA 12.x and cuDNN 8.x. Ubuntu 24.04 ships cuDNN 9; the older
+# cuDNN 8 deb has to come from NVIDIA's ubuntu2204 archive (works on 24.04
+# because it's a binary library with minimal system deps).
+#
+# Skip if we already have libcudnn.so.8 — install is idempotent.
+if ! ldconfig -p | grep -q "libcudnn.so.8 "; then
+  step "installing CUDA 12 runtime libs (cublas, cudart, etc.)"
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    libcublas12 libcublaslt12 libcudart12 libcurand10 \
+    libcufft11 libcusolver11 libcusparse12
+
+  step "fetching cuDNN 8 (cuda 12.2 build) from NVIDIA archive"
+  cudnn_deb="$(mktemp --tmpdir libcudnn8.XXXXXX.deb)"
+  trap 'rm -f "$cudnn_deb"' EXIT
+  curl -fL --progress-bar -o "$cudnn_deb" \
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/libcudnn8_8.9.7.29-1+cuda12.2_amd64.deb"
+  sudo dpkg -i "$cudnn_deb"
+  rm -f "$cudnn_deb"
+  trap - EXIT
+  ok "cuDNN 8 installed"
+else
+  ok "cuDNN 8 already present"
+fi
+
+
 # ---------- GraXpert ---------------------------------------------------------
 GRAXPERT_VERSION="${GRAXPERT_VERSION:-3.0.2}"
 GRAXPERT_ZIP_URL="https://github.com/Steffenhir/GraXpert/releases/download/${GRAXPERT_VERSION}/graxpert-linux-amd64.zip"
