@@ -53,12 +53,15 @@ echo "▸ git pull"
 git fetch --quiet origin
 git pull --ff-only origin "$(git rev-parse --abbrev-ref HEAD)"
 
-# uv-managed venv? Run a quick sync so dependency changes show up. If
-# the venv was created with a different tool, this is a no-op or a
-# harmless error we ignore.
+# uv-managed venv? Run a quick sync so dependency changes show up. We
+# add ~/.local/bin to PATH before checking because non-interactive ssh
+# shells often drop it (login configs run for interactive sessions only)
+# and silently skipping the sync is exactly how we ended up shipping a
+# starnet_extract revision the venv couldn't import (missing tifffile).
+export PATH="$HOME/.local/bin:$PATH"
 if command -v uv >/dev/null 2>&1; then
   echo "▸ uv sync"
-  uv sync --frozen 2>/dev/null || uv sync || true
+  uv sync --frozen 2>/dev/null || uv sync
 fi
 
 echo "▸ stopping existing uvicorn"
