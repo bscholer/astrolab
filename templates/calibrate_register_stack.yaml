@@ -1,16 +1,24 @@
 id: calibrate_register_stack
-version: 7
+version: 8
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
             -> pedestal offset -> background extract -> plate-solve
             register -> rejection stack with rgb_equal -> auto_crop (trim
-            registration nodata) -> graxpert_bg (AI background, optional)
-            -> stretch (autostretch by default) -> graxpert_denoise (AI
-            denoise, optional) -> starnet_extract (split, optional)
-            -> starnet_replace (synthstar, optional) -> starnet_recombine
-            (always on; identity when extract is off) -> crop (interactive
-            composition crop, off by default) -> save 16-bit PNG.
+            registration nodata) -> graxpert_bg (AI background, optional;
+            linear) -> graxpert_denoise (AI denoise, optional; linear)
+            -> stretch (autostretch by default) -> starnet_extract (split,
+            optional; needs stretched input) -> starnet_replace (synthstar,
+            optional) -> starnet_recombine (always on; identity when
+            extract is off) -> crop (interactive composition crop, off
+            by default) -> save 16-bit PNG.
+
+  Ordering rule: linear-domain ops come before stretch (BG extract and
+  GraXpert denoise prefer the noise distribution of pre-stretch data),
+  StarNet++ comes after (its model was trained on stretched 16-bit
+  data and produces mushy starless results on linear input), and the
+  final composition crop sits at the very end so it can be re-tweaked
+  without rerunning anything expensive upstream.
 
   Pull resample.scale down (e.g. 0.5) for fast iteration on
   pedestal/stretch/rejection params; bump back to 1.0 for the final
@@ -106,7 +114,8 @@ nodes:
     kind: graxpert
     # GraXpert AI background extraction. Off by default; flip on if Siril's
     # polynomial bg_extract leaves residual gradient or you have a tough
-    # light-pollution sky.
+    # light-pollution sky. Runs on linear (pre-stretch) data, where the
+    # background model is cleanest.
     params:
       enabled: false
       mode: bg_extract
@@ -115,24 +124,28 @@ nodes:
     inputs:
       image: auto_crop.image
 
-  - id: stretch
-    kind: stretch
-    params:
-      method: autostretch
-      # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
-    inputs:
-      image: graxpert_bg.image
-
   - id: graxpert_denoise
     kind: graxpert
-    # GraXpert AI denoise on the stretched stack. Off by default. Strength
-    # 0.4-0.6 is the typical sweet spot.
+    # GraXpert AI denoise. Off by default. Strength 0.4-0.6 is the typical
+    # sweet spot. Runs on linear data: GraXpert's noise model is fit on
+    # pre-stretch distributions, and stretching after denoise keeps the
+    # denoiser from over-smoothing the boosted shadow noise.
     params:
       enabled: false
       mode: denoise
       strength: 0.5
     inputs:
-      image: stretch.image
+      image: graxpert_bg.image
+
+  - id: stretch
+    kind: stretch
+    # Linear-domain processing ends here. Everything below operates on
+    # stretched data (StarNet was trained on stretched 16-bit images).
+    params:
+      method: autostretch
+      # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
+    inputs:
+      image: graxpert_denoise.image
 
   - id: starnet_extract
     kind: starnet_extract
@@ -142,7 +155,7 @@ nodes:
     params:
       enabled: false
     inputs:
-      image: graxpert_denoise.image
+      image: stretch.image
 
   - id: starnet_replace
     kind: starnet_replace
