@@ -139,6 +139,9 @@ class Project:
     created_at: str
     updated_at: str
     history: list[HistoryEntry] = field(default_factory=list)
+    cover_seq: int | None = None
+    """User-pinned history seq to render as the project's cover.
+    None = auto-pick the latest entry with outputs."""
 
     def current_entry(self) -> HistoryEntry:
         # current_seq is always a valid index into history; we never let it drift.
@@ -163,6 +166,7 @@ class Project:
             "current_overrides": self.current_overrides(),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "cover_seq": self.cover_seq,
         }
 
 
@@ -356,6 +360,24 @@ class ProjectManager:
         with self._lock:
             return self._records.pop(project_id, None) is not None
 
+    def set_cover(self, project_id: str, seq: int | None) -> Project:
+        """Pin a specific history seq as the project's cover, or pass
+        None to clear (the projects list / gallery then auto-pick the
+        latest entry that has outputs)."""
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+        if seq is not None:
+            seqs = {h.seq for h in project.history}
+            if seq not in seqs:
+                raise ValueError(f"project {project_id} has no history seq {seq}")
+        project.cover_seq = seq
+        project.updated_at = _now()
+        self._persist_project(project, kind="update")
+        log.info("project cover set: %s -> seq=%s", project_id, seq)
+        return project
+
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.
@@ -425,13 +447,14 @@ class ProjectManager:
                     conn.execute(
                         """
                         UPDATE projects
-                        SET name=?, current_seq=?, draft_mode=?, updated_at=?
+                        SET name=?, current_seq=?, draft_mode=?, cover_seq=?, updated_at=?
                         WHERE id=?
                         """,
                         (
                             project.name,
                             project.current_seq,
                             int(project.draft_mode),
+                            project.cover_seq,
                             project.updated_at,
                             project.id,
                         ),
@@ -484,6 +507,11 @@ class ProjectManager:
             source_session_ids=sessions,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            # cover_seq is nullable in the DB. Older rows pre-migration
+            # land as None which is exactly the 'auto-pick latest' default.
+            cover_seq=(
+                row["cover_seq"] if "cover_seq" in row.keys() else None
+            ),
         )
         history_rows = conn.execute(
             "SELECT * FROM project_history WHERE project_id = ? ORDER BY seq ASC",

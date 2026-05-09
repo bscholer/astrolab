@@ -77,6 +77,26 @@
   let pendingOverrides: Record<string, Record<string, unknown> | null> | null = null;
   let patching = $state(false);
   let reprocessing = $state(false);
+  let coverBusy = $state(false);
+
+  /** Toggle the cover pin: if the current seq is already the cover,
+   * clear it (server will fall back to the auto-pick). Otherwise pin
+   * the current seq. The single round-trip returns the updated
+   * project so onProjectUpdated keeps everything in sync. */
+  async function toggleCover() {
+    if (!project || coverBusy) return;
+    const seq = project.cover_seq === project.current_seq ? null : project.current_seq;
+    coverBusy = true;
+    try {
+      const next = await api.setProjectCover(project.id, seq);
+      onProjectUpdated(next);
+      toast.success(seq === null ? 'Cleared cover' : `Cover set to v${seq + 1}`);
+    } catch (e) {
+      toast.error(`Couldn't set cover: ${(e as Error).message}`);
+    } finally {
+      coverBusy = false;
+    }
+  }
 
   const id = $derived($page.params.id ?? '');
 
@@ -523,8 +543,26 @@
     {#if finalOutput}
       {@const name = finalOutput[0]}
       {@const ref = finalOutput[1]}
+      {@const isCover = project?.cover_seq === project?.current_seq}
       <section class="final">
-        <h2 class="section-h">Output: {name}</h2>
+        <div class="final-head">
+          <h2 class="section-h">Output: {name}</h2>
+          <button
+            type="button"
+            class="cover-btn"
+            class:active={isCover}
+            disabled={!project || coverBusy}
+            onclick={toggleCover}
+            title={isCover
+              ? 'This version is the project cover. Click to clear.'
+              : 'Pin this version as the project cover (shows as the thumbnail in the projects list and gallery)'}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill={isCover ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+            </svg>
+            {isCover ? 'Cover' : 'Set as cover'}
+          </button>
+        </div>
         <p class="path-line muted small">
           <code class="path">{ref.path}</code>
           <button
@@ -803,6 +841,41 @@
   }
 
   /* ---------- Output ---------- */
+
+  .final-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+  /* Cover button — accent-tinted ghost. Filled star + accent BG when
+     the current seq is already the cover. Stays light-weight so it
+     doesn't compete with Reprocess up top. */
+  .cover-btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg-mute);
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .cover-btn:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .cover-btn.active {
+    color: var(--accent-ink);
+    background: linear-gradient(135deg, var(--accent), var(--good));
+    border-color: transparent;
+    box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 0 14px var(--accent-soft);
+  }
+  .cover-btn:disabled { opacity: 0.55; cursor: progress; }
 
   .final {
     margin-top: 1.5rem;

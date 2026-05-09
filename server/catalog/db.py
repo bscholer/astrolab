@@ -268,6 +268,14 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX idx_ph_project ON project_history(project_id, seq)",
         "INSERT INTO schema_version (version) VALUES (6)",
     ],
+    7: [
+        # Per-project cover image: lets the user pin which history seq
+        # represents the project on the Projects list and Gallery. NULL
+        # means "auto-pick the latest entry with outputs" (the v6
+        # behavior, preserved as fallback in _attach_preview).
+        "ALTER TABLE projects ADD COLUMN cover_seq INTEGER",
+        "INSERT INTO schema_version (version) VALUES (7)",
+    ],
 }
 
 

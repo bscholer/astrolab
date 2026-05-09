@@ -805,10 +805,15 @@ def _attach_preview(project_dict: dict) -> dict:
     """
     history = project_dict.get("history") or []
     current_seq = project_dict.get("current_seq", 0)
-    # Try the current pointer first (typical case), then walk backward
-    # through earlier history entries, then forward through any future
-    # ones the user may have reverted past.
-    seq_order = (
+    cover_seq = project_dict.get("cover_seq")
+    # If the user pinned a cover, try it first. Then fall back through
+    # the auto-pick chain (current pointer, then earlier history, then
+    # later) so a stale cover (e.g. its cache was evicted) still
+    # produces a thumbnail instead of an empty slot.
+    seq_order: list[int] = []
+    if cover_seq is not None:
+        seq_order.append(cover_seq)
+    seq_order.extend(
         [current_seq]
         + list(range(current_seq - 1, -1, -1))
         + list(range(current_seq + 1, len(history)))
@@ -856,6 +861,61 @@ def get_project(project_id: str, conn: DBDep) -> dict:
     return _project_to_response(project, conn)
 
 
+class GalleryEntry(BaseModel):
+    """One render in the gallery: a successful project history entry,
+    surfaced as a flat row so the UI doesn't have to fan out per
+    project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    project_name: str
+    target_common_name: str | None = None
+    template_id: str
+    seq: int
+    label: str | None = None
+    created_at: str
+    preview_hash: str
+    preview_port: str
+    is_cover: bool = False
+
+
+@app.get("/api/gallery", response_model=list[GalleryEntry])
+def list_gallery(conn: DBDep) -> list[GalleryEntry]:
+    """Every successful history entry across all projects, newest
+    first. Each entry has the bits a card needs (preview pointer +
+    target/template names) so the UI doesn't have to JOIN per render."""
+    out: list[GalleryEntry] = []
+    for project in project_manager.list():
+        capture = _capture_for_project(conn, project.source_session_ids)
+        target_common = capture.target_common_name
+        for entry in project.history:
+            record = job_manager.get(entry.job_id)
+            if record is None or not record.outputs:
+                continue
+            outs = record.outputs
+            port = "image" if "image" in outs else next(iter(outs))
+            ref = outs.get(port)
+            if ref is None:
+                continue
+            out.append(
+                GalleryEntry(
+                    project_id=project.id,
+                    project_name=project.name,
+                    target_common_name=target_common,
+                    template_id=project.template.id,
+                    seq=entry.seq,
+                    label=entry.label,
+                    created_at=entry.created_at,
+                    preview_hash=ref.node_hash,
+                    preview_port=port,
+                    is_cover=(project.cover_seq == entry.seq),
+                )
+            )
+    out.sort(key=lambda e: e.created_at, reverse=True)
+    return out
+
+
 @app.patch("/api/projects/{project_id}")
 def patch_project(project_id: str, req: PatchProjectRequest) -> dict:
     """Apply param overrides (and optionally toggle draft_mode), submit a new
@@ -873,6 +933,29 @@ def patch_project(project_id: str, req: PatchProjectRequest) -> dict:
             status_code=404, detail=f"project {project_id} not found"
         ) from exc
     return project.to_public_dict()
+
+
+class SetCoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    seq: int | None = None
+
+
+@app.put("/api/projects/{project_id}/cover")
+def set_project_cover(
+    project_id: str, req: SetCoverRequest, conn: DBDep
+) -> dict:
+    """Pin the history seq used as this project's cover image. Pass
+    seq=null to clear (Projects list + Gallery fall back to the auto
+    pick: latest entry with outputs)."""
+    try:
+        project = project_manager.set_cover(project_id, req.seq)
+    except ProjectNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _project_to_response(project, conn)
 
 
 @app.post("/api/projects/{project_id}/revert/{seq}")

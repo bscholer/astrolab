@@ -142,6 +142,18 @@ async function patchJSON<T>(path: string, body: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    throw new ApiError(r.status, await _readErrorDetail(r));
+  }
+  return (await r.json()) as T;
+}
+
 // ----- jobs --------------------------------------------------------------
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -247,6 +259,19 @@ export interface ProjectHistoryEntry {
   created_at: string;
 }
 
+export interface GalleryEntry {
+  project_id: string;
+  project_name: string;
+  target_common_name: string | null;
+  template_id: string;
+  seq: number;
+  label: string | null;
+  created_at: string;
+  preview_hash: string;
+  preview_port: string;
+  is_cover: boolean;
+}
+
 export interface ProjectCapture {
   session_count: number;
   frame_count: number;
@@ -283,6 +308,9 @@ export interface Project {
   // Aggregated capture summary (frames + exposure + filter + dates) for
   // the project's source sessions. Optional for older API responses.
   capture?: ProjectCapture;
+  // Pinned cover seq. null/undefined = auto-pick the latest entry with
+  // outputs (the v6 default behavior).
+  cover_seq?: number | null;
 }
 
 export interface CreateProjectFromSessionRequest {
@@ -416,6 +444,9 @@ export const api = {
     patchJSON<Project>(`/api/projects/${id}`, req),
   revertProject: (id: string, seq: number) =>
     postJSON<Project>(`/api/projects/${id}/revert/${seq}`, {}),
+  setProjectCover: (id: string, seq: number | null) =>
+    putJSON<Project>(`/api/projects/${id}/cover`, { seq }),
+  listGallery: () => getJSON<GalleryEntry[]>('/api/gallery'),
   deleteProject: (id: string) =>
     deleteJSON<{ evicted_count: number; bytes_freed: number }>(
       `/api/projects/${id}`

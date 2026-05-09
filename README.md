@@ -523,6 +523,20 @@ Each phase ends with something demoably useful, not "infrastructure done."
 - Multi-session integration ("combine these 3 nights").
 - Plate solving against external services (astrometry.net fallback).
 - Auto-tag bad subs by metric (FWHM, eccentricity, background).
+- **"Tonight" view.** A planning surface that mixes (1) what's currently in the
+  sky for the user's lat/long with (2) what they've already captured. The
+  OpenNGC catalog (now loaded into the backend) gives RA/Dec/mag/type for
+  every named target; combine that with a configured site location to compute
+  altitude / hours-til-meridian / transit time. Overlay the user's existing
+  library so each visible target shows "captured 5 nights, last 2025-10-21"
+  inline. Add slick graphs for sky view + cloud cover + seeing. The
+  Home Assistant `astroweather` integration uses
+  https://github.com/mawinkler/pyastroweatherio under the hood — worth
+  cribbing the data sources from there (Met.no for forecast, etc.) even if
+  we don't take the dep. Goal: open the page on the couch, see "what's
+  worth pointing at tonight, here's what I already have, here's the
+  forecast." Not a replacement for Stellarium/SkySafari — a personal
+  tonight-only digest tied to the user's library.
 
 ---
 
