@@ -15,6 +15,9 @@ REMOTE_REPO="${ASTROLAB_LINUX_REPO:-/home/bscholer/projects/astrolab}"
 REMOTE_VENV="${ASTROLAB_LINUX_VENV:-.venv}"
 PORT="${ASTROLAB_API_PORT:-8000}"
 LOG_PATH="${ASTROLAB_LOG_PATH:-/tmp/astrolab-server.log}"
+# Cache + DB live on the big scratch partition (2TB ext4). Override with
+# ASTROLAB_LINUX_HOME if the box's layout differs.
+REMOTE_HOME="${ASTROLAB_LINUX_HOME:-/scratch/astrolab}"
 
 skip_push=0
 for arg in "$@"; do
@@ -45,6 +48,7 @@ ssh -o ConnectTimeout=10 "$HOST" \
   REMOTE_VENV="$REMOTE_VENV" \
   PORT="$PORT" \
   LOG_PATH="$LOG_PATH" \
+  REMOTE_HOME="$REMOTE_HOME" \
   bash -s <<'REMOTE'
 set -euo pipefail
 cd "$REMOTE_REPO"
@@ -73,10 +77,13 @@ for _ in 1 2 3 4 5; do
   if ss -ltnp 2>/dev/null | grep -q ":$PORT "; then sleep 1; else break; fi
 done
 
-echo "▸ starting uvicorn (detached) -> $LOG_PATH"
+echo "▸ starting uvicorn (detached) -> $LOG_PATH (ASTROLAB_HOME=$REMOTE_HOME)"
 # nohup + & + disown puts uvicorn in its own session so it survives
 # this SSH connection closing. Output goes to LOG_PATH for postmortems.
-nohup "$REMOTE_VENV/bin/uvicorn" server.api:app \
+# ASTROLAB_HOME is exported here (not hardcoded in the unit) so a different
+# host with a different scratch layout just sets ASTROLAB_LINUX_HOME above.
+mkdir -p "$REMOTE_HOME"
+ASTROLAB_HOME="$REMOTE_HOME" nohup "$REMOTE_VENV/bin/uvicorn" server.api:app \
   --host 0.0.0.0 --port "$PORT" --log-level info \
   > "$LOG_PATH" 2>&1 &
 disown
