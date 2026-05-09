@@ -1,5 +1,7 @@
+from . import auto_crop as _auto_crop  # noqa: F401  registers on import
 from . import calibrate as _calibrate  # noqa: F401  registers on import
 from . import convert_lights as _convert_lights  # noqa: F401  registers on import
+from . import crop as _crop  # noqa: F401  registers on import
 from . import downscale as _downscale  # noqa: F401  registers on import
 from . import save_image as _save_image  # noqa: F401  registers on import
 from . import seq_bg_extract as _seq_bg_extract  # noqa: F401  registers on import

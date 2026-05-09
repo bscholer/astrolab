@@ -1,11 +1,13 @@
 id: calibrate_register_stack
-version: 5
+version: 6
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
             -> pedestal offset -> background extract -> plate-solve
-            register -> rejection stack with rgb_equal -> stretch
-            (autostretch by default) -> save 16-bit PNG.
+            register -> rejection stack with rgb_equal -> auto_crop (trim
+            registration nodata) -> stretch (autostretch by default)
+            -> crop (interactive composition crop, off by default)
+            -> save 16-bit PNG.
 
   Pull resample.scale down (e.g. 0.5) for fast iteration on
   pedestal/stretch/rejection params; bump back to 1.0 for the final
@@ -85,20 +87,44 @@ nodes:
     inputs:
       sequence: register.sequence
 
+  - id: auto_crop
+    kind: auto_crop
+    # Trim the zero-fill border that registration leaves around the stack so
+    # stretch + save read a smaller, all-real-data frame. Threshold + padding
+    # live in advanced; the user toggles on/off if they want the full frame.
+    params:
+      enabled: true
+      threshold: 0.001
+      padding: 0
+    inputs:
+      image: stack.image
+
   - id: stretch
     kind: stretch
     params:
       method: autostretch
       # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
     inputs:
-      image: stack.image
+      image: auto_crop.image
+
+  - id: crop
+    kind: crop
+    # Interactive composition crop. Off by default — flips on once the user
+    # drags a rectangle in the project page UI. Coords are normalized [0,1]
+    # so the box stays valid across resample modes.
+    params:
+      enabled: false
+    inputs:
+      image: stretch.image
 
   - id: save
     kind: save_image
     inputs:
-      image: stretch.image
+      image: crop.image
 
 outputs:
   image: save.image
   stacked: stack.image
   stretched: stretch.image
+  auto_cropped: auto_crop.image
+  cropped: crop.image

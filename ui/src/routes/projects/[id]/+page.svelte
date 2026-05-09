@@ -38,6 +38,7 @@
   import { toast } from '$lib/toast.svelte';
   import { formatDuration, shortAgo } from '$lib/format';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
+  import CropEditor from '$lib/CropEditor.svelte';
 
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
@@ -428,6 +429,37 @@
       toast.error(`Copy failed: ${(e as Error).message}`);
     }
   }
+
+  // Resolve the preview URL for whatever node feeds `nid`'s `image` port. The
+  // crop editor needs the upstream stretched PNG to drag a rectangle on; we
+  // already have the cache hash for completed nodes via nodeHash[].
+  function upstreamPreviewFor(nid: string): string | null {
+    if (!project) return null;
+    const node = project.template.nodes.find((n) => n.id === nid);
+    if (!node) return null;
+    const src = node.inputs?.image;
+    if (!src) return null;
+    const srcId = src.split('.')[0];
+    const h = nodeHash[srcId];
+    const port = nodePort[srcId] ?? 'image';
+    if (!h) return null;
+    return api.previewUrl(h, port);
+  }
+
+  // Crop editor emits a full {enabled,x,y,width,height} bundle. Build the
+  // partial-overrides map that NodeParamsForm would have built and run it
+  // through the same debounced patch path.
+  function onCropChange(
+    nid: string,
+    next: { enabled: boolean; x: number; y: number; width: number; height: number },
+    defaults: Record<string, unknown>
+  ) {
+    const partial: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (defaults[k] !== v) partial[k] = v;
+    }
+    onNodeOverrideChange(nid, partial);
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -581,7 +613,7 @@
                 <div
                   class="node-body"
                   class:body-output={isOutput}
-                  class:body-dual={!isOutput && Object.keys(props).length > 0 && (s === 'completed' || s === 'cached') && h}
+                  class:body-dual={!isOutput && kind !== 'crop' && Object.keys(props).length > 0 && (s === 'completed' || s === 'cached') && h}
                   transition:slide={{ duration: 220, easing: cubicOut }}
                 >
                   {#if isOutput && finalOutput}
@@ -641,8 +673,10 @@
                     <!-- Non-output expanded body: two columns when both
                          a preview and params exist. Preview goes on
                          the left so the user's eye starts at 'what
-                         this stage produces' and lands on the knobs. -->
-                    {#if (s === 'completed' || s === 'cached') && h}
+                         this stage produces' and lands on the knobs.
+                         Crop nodes get their preview embedded in the
+                         CropEditor itself, so we skip this strip. -->
+                    {#if kind !== 'crop' && (s === 'completed' || s === 'cached') && h}
                       <a
                         class="stage-preview-link"
                         href={api.previewUrl(h, port)}
@@ -653,7 +687,24 @@
                         <img class="stage-preview" src={api.previewUrl(h, port)} alt="{nid} preview" />
                       </a>
                     {/if}
-                    {#if Object.keys(props).length > 0}
+                    {#if kind === 'crop'}
+                      {@const fullDefaults = { ...nschema.defaults, ...nschema.template_params } as Record<string, unknown>}
+                      {@const eff = (k: string) => (k in overrides ? overrides[k] : fullDefaults[k])}
+                      {@const upstream = upstreamPreviewFor(nid)}
+                      <div class="stage-params crop-host">
+                        <CropEditor
+                          previewUrl={upstream}
+                          enabled={Boolean(eff('enabled'))}
+                          x={Number(eff('x') ?? 0)}
+                          y={Number(eff('y') ?? 0)}
+                          width={Number(eff('width') ?? 1)}
+                          height={Number(eff('height') ?? 1)}
+                          costLabel={closureCost}
+                          onchange={(next) => onCropChange(nid, next, fullDefaults)}
+                          onreset={() => onNodeOverrideChange(nid, {})}
+                        />
+                      </div>
+                    {:else if Object.keys(props).length > 0}
                       <div class="stage-params">
                         <NodeParamsForm
                           nodeId={nid}

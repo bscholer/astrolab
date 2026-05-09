@@ -21,7 +21,9 @@ const NODE_DISPLAY_NAMES: Record<string, string> = {
   seq_bg_extract: 'Background',
   seq_register: 'Register',
   seq_stack: 'Stack',
+  auto_crop: 'Auto-trim',
   stretch: 'Stretch',
+  crop: 'Crop',
   save_image: 'Save Image',
   downscale: 'Downscale'
 };
