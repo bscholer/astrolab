@@ -70,6 +70,7 @@ from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
+    SETTING_CAPTURE_ROOT,
     default_cache_max_bytes_for,
     delete_project,
     get_setting,
@@ -1181,6 +1182,9 @@ def get_settings() -> dict:
     persisted_root = get_setting(
         SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path
     )
+    capture_root = get_setting(
+        SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path
+    )
     return {
         SETTING_CACHE_MAX_BYTES: int(
             get_setting(
@@ -1191,6 +1195,7 @@ def get_settings() -> dict:
         ),
         SETTING_CACHE_ROOT_OVERRIDE: persisted_root,
         "cache_root_active": str(job_manager.cache.root),
+        SETTING_CAPTURE_ROOT: capture_root,
     }
 
 
@@ -1202,6 +1207,10 @@ class PatchSettingsRequest(BaseModel):
     clear the override and fall back to the env-var / platform default. Takes
     effect on the next server restart — the running ContentCache won't move
     files from the old location."""
+    capture_root: str | None = None
+    """Where the user's raw captures live (Dwarf 3 SD copy, etc.). Pass ''
+    to clear. Validated as: absolute, exists, readable. Effect is immediate
+    — the next /api/scan call uses this path."""
 
 
 @app.patch("/api/settings")
@@ -1248,6 +1257,39 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
             set_setting(
                 SETTING_CACHE_ROOT_OVERRIDE,
                 str(p.resolve()),
+                db_path=job_manager.db_path,
+            )
+    if req.capture_root is not None:
+        new_capture = req.capture_root.strip()
+        if new_capture == "":
+            set_setting(
+                SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path
+            )
+        else:
+            from pathlib import Path as _Path
+            cp = _Path(new_capture).expanduser()
+            if not cp.is_absolute():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"capture_root must be an absolute path, got {new_capture!r}",
+                )
+            # Captures are read-only from astrolab's perspective; we don't
+            # mkdir on the user's behalf — the directory must already exist
+            # so a typo doesn't silently create an empty folder the rescan
+            # then walks for nothing.
+            if not cp.is_dir():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"capture_root {cp} does not exist or isn't a directory",
+                )
+            if not os.access(cp, os.R_OK):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"capture_root {cp} isn't readable",
+                )
+            set_setting(
+                SETTING_CAPTURE_ROOT,
+                str(cp.resolve()),
                 db_path=job_manager.db_path,
             )
     return get_settings()

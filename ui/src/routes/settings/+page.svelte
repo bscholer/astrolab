@@ -14,7 +14,8 @@
   import { formatBytes } from '$lib/format';
 
   const GIB = 1024 * 1024 * 1024;
-  const CAPTURE_ROOT_KEY = 'astrolab.capture_root';
+  // Last-scan timestamp is per-browser metadata (just a UI nicety); leave
+  // it in localStorage. The captures path itself is server-owned now.
   const LAST_SCAN_KEY = 'astrolab.last_scan_at';
 
   let storage = $state<StorageSnapshot | null>(null);
@@ -31,16 +32,27 @@
   let saving = $state(false);
   let savingRoot = $state(false);
   let cleaning = $state(false);
+  // Captures path lives in the settings KV alongside cache_root: the scan
+  // target is on the server, so storing it in localStorage was always
+  // wrong (didn't survive a cache clear, didn't carry across devices).
   let captureRoot = $state('');
+  let persistedCaptureRoot = $state<string | null>(null);
+  let savingCapture = $state(false);
   let scanning = $state(false);
 
-  function readCaptureRoot(): string {
-    if (typeof localStorage === 'undefined') return '';
-    return localStorage.getItem(CAPTURE_ROOT_KEY) ?? '';
-  }
-  function writeCaptureRoot(v: string) {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(CAPTURE_ROOT_KEY, v.trim());
+  async function saveCaptureRoot() {
+    const next = captureRoot.trim();
+    savingCapture = true;
+    try {
+      const r = await api.patchSettings({ capture_root: next });
+      persistedCaptureRoot = r.capture_root;
+      captureRoot = r.capture_root ?? '';
+      toast.success(next ? 'Capture path saved.' : 'Capture path cleared.');
+    } catch (e) {
+      toast.error(`Couldn't save: ${(e as Error).message}`);
+    } finally {
+      savingCapture = false;
+    }
   }
 
   async function scanNow() {
@@ -49,7 +61,17 @@
       toast.error('Set a capture root first.');
       return;
     }
-    writeCaptureRoot(root);
+    // Persist before scanning so a refresh from another browser sees the
+    // same target. Skip if it's already what's on the server.
+    if (root !== persistedCaptureRoot) {
+      try {
+        await api.patchSettings({ capture_root: root });
+        persistedCaptureRoot = root;
+      } catch (e) {
+        toast.error(`Couldn't save capture path: ${(e as Error).message}`);
+        return;
+      }
+    }
     scanning = true;
     try {
       const r = await api.scan(root, 'dwarf3');
@@ -74,9 +96,9 @@
       cacheMaxBytes = settings.cache_max_bytes;
       activeCacheRoot = settings.cache_root_active;
       persistedCacheRoot = settings.cache_root;
-      // Seed the editor with whatever's persisted (if any) or the running
-      // path. That way an unsaved field still shows something useful.
       pendingCacheRoot = settings.cache_root ?? settings.cache_root_active;
+      persistedCaptureRoot = settings.capture_root;
+      captureRoot = settings.capture_root ?? '';
     } catch (e) {
       toast.error(`Couldn't load settings: ${(e as Error).message}`);
     }
@@ -84,8 +106,11 @@
 
   $effect(() => {
     load();
-    captureRoot = readCaptureRoot();
   });
+
+  const captureDirty = $derived(
+    captureRoot.trim() !== (persistedCaptureRoot ?? '')
+  );
 
   // Slider operates on GiB to give us friendly round-number values; we
   // convert back to bytes on save. Max = the partition's total size
@@ -189,12 +214,20 @@
     <input
       type="text"
       class="capture-input"
-      placeholder="~/Pictures/Siril"
+      placeholder="/captures or /home/you/Pictures/Siril"
       bind:value={captureRoot}
-      onblur={() => writeCaptureRoot(captureRoot)}
       autocomplete="off"
       spellcheck="false"
     />
+    <button
+      type="button"
+      class="btn"
+      onclick={saveCaptureRoot}
+      disabled={savingCapture || !captureDirty}
+      title={captureDirty ? 'Save the capture path to the server' : 'No changes to save'}
+    >
+      {savingCapture ? 'Saving…' : 'Save'}
+    </button>
     <button
       type="button"
       class="btn primary"
@@ -204,6 +237,11 @@
       {scanning ? 'Scanning…' : 'Scan now'}
     </button>
   </div>
+  {#if captureDirty}
+    <p class="muted small note">
+      Unsaved. Click Save (or Scan now — that saves first) to persist.
+    </p>
+  {/if}
 </section>
 
 {#if storage === null}
