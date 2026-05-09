@@ -2,7 +2,7 @@
 name = "astrolab"
 version = "0.0.0"
 description = "Local-first astrophotography processing workbench"
-license = "WTFPL"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
