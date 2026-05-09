@@ -34,6 +34,10 @@
     overrides: Record<string, unknown>;
     cost: CostClass;
     onchange: (next: Record<string, unknown>) => void;
+    /** Field names the form should NOT render. Used for fields the parent
+     * surfaces directly (e.g. `enabled`, which has its own toggle on the
+     * card header so it doesn't clutter the body). */
+    hideFields?: string[];
   }
 
   const {
@@ -42,7 +46,8 @@
     defaults,
     overrides,
     cost,
-    onchange
+    onchange,
+    hideFields = []
   }: Props = $props();
 
   // Effective value: override wins, else default. Used for both reading the
@@ -76,7 +81,9 @@
   const partitioned = $derived.by(() => {
     const basic: [string, JSONSchemaField][] = [];
     const advanced: [string, JSONSchemaField][] = [];
+    const hide = new Set(hideFields);
     for (const [name, field] of Object.entries(schemaProps)) {
+      if (hide.has(name)) continue;
       if (field.ui_hidden === true) continue;
       if (!isVisible(field)) continue;
       if (field.ui_section === 'advanced') advanced.push([name, field]);
