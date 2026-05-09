@@ -822,6 +822,10 @@
        and 'thumbnail you have to squint at'. */
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     grid-auto-flow: dense;
+    /* Each card sits at the top of its cell instead of stretching to
+       match the row's tallest item — without this, expanding one card
+       drags every neighbor in the row to the same height. */
+    align-items: start;
     gap: 0.7rem;
   }
   .node-row {
