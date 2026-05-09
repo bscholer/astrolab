@@ -73,27 +73,50 @@ else
 fi
 
 # ---------- StarNet++ --------------------------------------------------------
-# StarNet++ is closed-source and the author distributes via a download form
-# on https://www.starnetastro.com/. We can't fetch automatically. The node
-# only needs the binary on $PATH or at the configured location, so we just
-# verify and print install instructions if it's missing.
+# StarNet++ v2 is closed-source. The starnetastro.com site usually gates
+# downloads behind a form, but the actual zip URL has been stable since 2022
+# and pulls without auth. Cache it; if the URL ever 404s, fall back to the
+# manual instructions.
+STARNET_ZIP_URL="https://starnetastro.com/wp-content/uploads/2022/03/StarNetv2CLI_linux.zip"
 STARNET_DIR="$TOOLS_DIR/starnet"
 STARNET_BIN="$STARNET_DIR/starnet++"
 
 if [[ -x "$STARNET_BIN" ]]; then
   ok "StarNet++ already at $STARNET_BIN"
 else
-  warn "StarNet++ is not installed. Manual steps:"
-  cat <<EOF
+  step "downloading StarNet++ v2"
+  mkdir -p "$STARNET_DIR"
+  tmpzip="$(mktemp --tmpdir starnet.XXXXXX.zip)"
+  trap 'rm -f "$tmpzip"' EXIT
+  if ! curl -fL --progress-bar -o "$tmpzip" "$STARNET_ZIP_URL"; then
+    warn "couldn't fetch StarNet from $STARNET_ZIP_URL. Manual steps:"
+    cat <<EOF
     1. Open https://www.starnetastro.com/ and download the Linux package.
     2. Extract the contents into $STARNET_DIR/
        - You should end up with $STARNET_BIN (the binary) plus the .pb
          model files in the same directory.
     3. chmod +x $STARNET_BIN
-
-    The starnet_extract node will fall back to a pass-through (and log
-    a clear error) until this finishes.
 EOF
+    rm -f "$tmpzip"
+    trap - EXIT
+  else
+    step "extracting into $STARNET_DIR"
+    unzip -q -o "$tmpzip" -d "$STARNET_DIR"
+    rm -f "$tmpzip"
+    trap - EXIT
+    # Some zips nest under StarNetv2CLI_linux/, others extract flat. Flatten.
+    if [[ -d "$STARNET_DIR/StarNetv2CLI_linux" ]]; then
+      mv "$STARNET_DIR/StarNetv2CLI_linux/"* "$STARNET_DIR/"
+      rmdir "$STARNET_DIR/StarNetv2CLI_linux"
+    fi
+    chmod +x "$STARNET_BIN" 2>/dev/null || true
+    if [[ -x "$STARNET_BIN" ]]; then
+      ok "StarNet++ at $STARNET_BIN"
+    else
+      err "extracted but no executable at $STARNET_BIN; check $STARNET_DIR"
+      exit 1
+    fi
+  fi
 fi
 
 ok "done. Set ASTROLAB_GRAXPERT_BIN / ASTROLAB_STARNET_BIN to override paths."
