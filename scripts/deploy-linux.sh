@@ -68,25 +68,30 @@ if command -v uv >/dev/null 2>&1; then
   uv sync --frozen 2>/dev/null || uv sync
 fi
 
-echo "▸ stopping existing uvicorn"
-# pkill on the cmdline pattern. Matches our own runner regardless of pid.
-# `|| true` keeps things idempotent on cold boots.
-pkill -f "uvicorn server.api:app" || true
-# Give the process a moment to release the port before we re-bind.
-for _ in 1 2 3 4 5; do
-  if ss -ltnp 2>/dev/null | grep -q ":$PORT "; then sleep 1; else break; fi
-done
-
-echo "▸ starting uvicorn (detached) -> $LOG_PATH (ASTROLAB_HOME=$REMOTE_HOME)"
-# nohup + & + disown puts uvicorn in its own session so it survives
-# this SSH connection closing. Output goes to LOG_PATH for postmortems.
-# ASTROLAB_HOME is exported here (not hardcoded in the unit) so a different
-# host with a different scratch layout just sets ASTROLAB_LINUX_HOME above.
-mkdir -p "$REMOTE_HOME"
-ASTROLAB_HOME="$REMOTE_HOME" nohup "$REMOTE_VENV/bin/uvicorn" server.api:app \
-  --host 0.0.0.0 --port "$PORT" --log-level info \
-  > "$LOG_PATH" 2>&1 &
-disown
+echo "▸ restarting astrolab-api via systemctl"
+# astrolab-api.service runs uvicorn under systemd, auto-starts on boot,
+# and reads ASTROLAB_HOME from its unit file (not from this script anymore).
+# If the unit isn't installed yet, fall back to the legacy nohup runner
+# so a fresh box still works until scripts/install-systemd-units.sh has
+# been run.
+if systemctl list-unit-files astrolab-api.service >/dev/null 2>&1 \
+     && systemctl is-enabled --quiet astrolab-api 2>/dev/null; then
+  sudo systemctl restart astrolab-api
+  # Vite HMR picks up FE changes without restart, but if the user touched
+  # package.json we'd want to bounce the UI too. Cheap to restart either way.
+  sudo systemctl restart astrolab-ui
+else
+  echo "  astrolab-api.service not installed — running legacy nohup uvicorn"
+  pkill -f "uvicorn server.api:app" || true
+  for _ in 1 2 3 4 5; do
+    if ss -ltnp 2>/dev/null | grep -q ":$PORT "; then sleep 1; else break; fi
+  done
+  mkdir -p "$REMOTE_HOME"
+  ASTROLAB_HOME="$REMOTE_HOME" nohup "$REMOTE_VENV/bin/uvicorn" server.api:app \
+    --host 0.0.0.0 --port "$PORT" --log-level info \
+    > "$LOG_PATH" 2>&1 &
+  disown
+fi
 
 # Wait for the port to start accepting connections so the script doesn't
 # return success before the server is actually ready.
@@ -99,8 +104,8 @@ for i in $(seq 1 20); do
   fi
   sleep 1
   if [[ "$i" == "20" ]]; then
-    echo "  port $PORT didn't come up — last 40 lines of $LOG_PATH:" >&2
-    tail -n 40 "$LOG_PATH" >&2 || true
+    echo "  port $PORT didn't come up — last 40 lines of journal:" >&2
+    sudo journalctl -u astrolab-api --no-pager -n 40 >&2 || tail -n 40 "$LOG_PATH" >&2 || true
     exit 1
   fi
 done
