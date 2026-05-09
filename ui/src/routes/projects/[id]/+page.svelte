@@ -560,7 +560,16 @@
                   {/if}
                   <span class="head-spacer"></span>
                   {#if modifiedCount > 0}
-                    <span class="badge-modified">{modifiedCount} modified</span>
+                    <span
+                      class="badge-modified"
+                      title="{modifiedCount} modified parameter{modifiedCount === 1 ? '' : 's'}"
+                    >
+                      {#if isExpanded}
+                        {modifiedCount} modified
+                      {:else}
+                        ●{modifiedCount}
+                      {/if}
+                    </span>
                   {/if}
                   <svg class="chevron" class:rotated={isExpanded} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <polyline points="6 9 12 15 18 9" />
@@ -777,9 +786,13 @@
     padding: 0;
     margin: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    /* 300px min lands at 4-across on a typical 13-15" laptop, 5 on
+       a 1600+ viewport, 2 on tablets, 1 on phones. Bumping the min
+       past 280 was the difference between 'thumbnail you can read'
+       and 'thumbnail you have to squint at'. */
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     grid-auto-flow: dense;
-    gap: 0.6rem;
+    gap: 0.7rem;
   }
   .node-row {
     background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
@@ -890,12 +903,12 @@
     top: 0;
     left: 0;
     right: 0;
-    padding: 0.4rem 0.55rem 0.7rem;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+    padding: 0.45rem 0.6rem 0.85rem;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.85) 30%, rgba(0, 0, 0, 0));
     color: #fff;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.45rem;
     pointer-events: none;
     z-index: 1;
   }
@@ -908,14 +921,36 @@
 
   .head-name {
     font-weight: 600;
-    font-size: 0.92rem;
+    font-size: 0.95rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    /* Shrink first when the row is crowded so status + modified +
+       chevron stay legible; ellipsis takes over below the natural
+       width. */
+    min-width: 0;
+    flex-shrink: 1;
   }
   .node-row.expanded .head-name { text-shadow: none; }
-  .head-spacer { flex: 1; }
+  .head-spacer { flex: 1 1 0; min-width: 0.25rem; }
+  .head-overlay > .status,
+  .head-overlay > .badge-modified,
+  .head-overlay > .output-tag,
+  .head-overlay > .chevron { flex-shrink: 0; }
+  /* Collapsed cards: shrink the modified badge to a tiny chip ('●N')
+     so it doesn't crush the title at 300px wide. Full 'N modified'
+     wording comes back when the card expands. */
+  .node-row:not(.expanded) .badge-modified {
+    border: none;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    padding: 0.05rem 0.45rem;
+    text-transform: none;
+    letter-spacing: 0;
+  }
 
   .output-tag {
     font-family: var(--font-mono);
