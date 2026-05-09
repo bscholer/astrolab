@@ -1,13 +1,16 @@
 id: calibrate_register_stack
-version: 6
+version: 7
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
             -> pedestal offset -> background extract -> plate-solve
             register -> rejection stack with rgb_equal -> auto_crop (trim
-            registration nodata) -> stretch (autostretch by default)
-            -> crop (interactive composition crop, off by default)
-            -> save 16-bit PNG.
+            registration nodata) -> graxpert_bg (AI background, optional)
+            -> stretch (autostretch by default) -> graxpert_denoise (AI
+            denoise, optional) -> starnet_extract (split, optional)
+            -> starnet_replace (synthstar, optional) -> starnet_recombine
+            (always on; identity when extract is off) -> crop (interactive
+            composition crop, off by default) -> save 16-bit PNG.
 
   Pull resample.scale down (e.g. 0.5) for fast iteration on
   pedestal/stretch/rejection params; bump back to 1.0 for the final
@@ -99,13 +102,68 @@ nodes:
     inputs:
       image: stack.image
 
+  - id: graxpert_bg
+    kind: graxpert
+    # GraXpert AI background extraction. Off by default; flip on if Siril's
+    # polynomial bg_extract leaves residual gradient or you have a tough
+    # light-pollution sky.
+    params:
+      enabled: false
+      mode: bg_extract
+      smoothing: 0.0
+      correction: Subtraction
+    inputs:
+      image: auto_crop.image
+
   - id: stretch
     kind: stretch
     params:
       method: autostretch
       # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
     inputs:
-      image: auto_crop.image
+      image: graxpert_bg.image
+
+  - id: graxpert_denoise
+    kind: graxpert
+    # GraXpert AI denoise on the stretched stack. Off by default. Strength
+    # 0.4-0.6 is the typical sweet spot.
+    params:
+      enabled: false
+      mode: denoise
+      strength: 0.5
+    inputs:
+      image: stretch.image
+
+  - id: starnet_extract
+    kind: starnet_extract
+    # StarNet++ split into starless + stars. Off by default. When off, both
+    # outputs are well-defined (starless=input, stars=zero) so the recombine
+    # math at the end of the chain stays consistent.
+    params:
+      enabled: false
+    inputs:
+      image: graxpert_denoise.image
+
+  - id: starnet_replace
+    kind: starnet_replace
+    # Siril findstar+synthstar to regenerate clean Gaussian stars. Off by
+    # default — passes the StarNet stars layer through unchanged.
+    params:
+      enabled: false
+    inputs:
+      starless: starnet_extract.starless
+      stars: starnet_extract.stars
+
+  - id: starnet_recombine
+    kind: starnet_recombine
+    # Recombine starless + (regenerated) stars. On by default; with extract
+    # off the inputs are (input, zero-image) so this is a no-op identity.
+    params:
+      enabled: true
+      blend: add
+    inputs:
+      starless: starnet_extract.starless
+      stars: starnet_replace.image
 
   - id: crop
     kind: crop
@@ -115,7 +173,7 @@ nodes:
     params:
       enabled: false
     inputs:
-      image: stretch.image
+      image: starnet_recombine.image
 
   - id: save
     kind: save_image
@@ -127,4 +185,7 @@ outputs:
   stacked: stack.image
   stretched: stretch.image
   auto_cropped: auto_crop.image
+  starless: starnet_extract.starless
+  stars: starnet_replace.image
+  recombined: starnet_recombine.image
   cropped: crop.image

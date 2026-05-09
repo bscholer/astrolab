@@ -3,10 +3,14 @@ from . import calibrate as _calibrate  # noqa: F401  registers on import
 from . import convert_lights as _convert_lights  # noqa: F401  registers on import
 from . import crop as _crop  # noqa: F401  registers on import
 from . import downscale as _downscale  # noqa: F401  registers on import
+from . import graxpert as _graxpert  # noqa: F401  registers on import
 from . import save_image as _save_image  # noqa: F401  registers on import
 from . import seq_bg_extract as _seq_bg_extract  # noqa: F401  registers on import
 from . import seq_offset as _seq_offset  # noqa: F401  registers on import
 from . import seq_register as _seq_register  # noqa: F401  registers on import
 from . import seq_resample as _seq_resample  # noqa: F401  registers on import
 from . import seq_stack as _seq_stack  # noqa: F401  registers on import
+from . import starnet_extract as _starnet_extract  # noqa: F401  registers on import
+from . import starnet_recombine as _starnet_recombine  # noqa: F401  registers on import
+from . import starnet_replace as _starnet_replace  # noqa: F401  registers on import
 from . import stretch as _stretch  # noqa: F401  registers on import

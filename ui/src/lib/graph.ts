@@ -22,13 +22,26 @@ const NODE_DISPLAY_NAMES: Record<string, string> = {
   seq_register: 'Register',
   seq_stack: 'Stack',
   auto_crop: 'Auto-trim',
+  graxpert: 'GraXpert',
   stretch: 'Stretch',
+  starnet_extract: 'Extract Stars',
+  starnet_replace: 'Synth Stars',
+  starnet_recombine: 'Recombine',
   crop: 'Crop',
   save_image: 'Save Image',
   downscale: 'Downscale'
 };
 
-export function nodeDisplayName(kind: string): string {
+// Per-node-id overrides for cases where one kind is instantiated multiple
+// times in a template (eg GraXpert lives once for bg-extract, once for
+// denoising). Falls back to kind-level naming when there's no entry.
+const NODE_ID_DISPLAY_NAMES: Record<string, string> = {
+  graxpert_bg: 'BG Extract',
+  graxpert_denoise: 'Denoise'
+};
+
+export function nodeDisplayName(kind: string, nodeId?: string): string {
+  if (nodeId && NODE_ID_DISPLAY_NAMES[nodeId]) return NODE_ID_DISPLAY_NAMES[nodeId];
   if (NODE_DISPLAY_NAMES[kind]) return NODE_DISPLAY_NAMES[kind];
   // Fallback: snake_case -> Title Case so a freshly added node still looks
   // tidy until we drop it in the map.

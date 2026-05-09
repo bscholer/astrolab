@@ -583,7 +583,7 @@
                 <!-- Title overlay: gradient strip across the top of
                      the card when collapsed, plain bar when expanded. -->
                 <div class="head-overlay">
-                  <span class="head-name">{nodeDisplayName(kind)}</span>
+                  <span class="head-name">{nodeDisplayName(kind, nid)}</span>
                   <span class="status status-mini status-{s}">
                     {s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid]}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
                   </span>
