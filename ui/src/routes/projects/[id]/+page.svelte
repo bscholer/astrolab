@@ -520,8 +520,10 @@
                 aria-expanded={isExpanded}
                 onclick={() => toggleNode(nid)}
               >
-                <!-- Tiny preview thumbnail in the row header. Same
-                     skeleton + fade-in pattern as the old strip. -->
+                <!-- Card body: 16:9 preview that fills the tile when
+                     collapsed. When the row is expanded this shrinks
+                     into a small left-side thumb (CSS handles it via
+                     .expanded). -->
                 <div class="head-thumb">
                   {#if (s === 'completed' || s === 'cached') && h}
                     {#if !previewLoaded[nid]}
@@ -546,7 +548,9 @@
                   {/if}
                 </div>
 
-                <div class="head-info">
+                <!-- Title overlay: gradient strip across the top of
+                     the card when collapsed, plain bar when expanded. -->
+                <div class="head-overlay">
                   <span class="head-name">{nodeDisplayName(kind)}</span>
                   <span class="status status-mini status-{s}">
                     {s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid]}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
@@ -554,9 +558,7 @@
                   {#if isOutput}
                     <span class="output-tag">final</span>
                   {/if}
-                </div>
-
-                <div class="head-meta">
+                  <span class="head-spacer"></span>
                   {#if modifiedCount > 0}
                     <span class="badge-modified">{modifiedCount} modified</span>
                   {/if}
@@ -766,25 +768,40 @@
      + chevron); body slides in when expanded with a NodeParamsForm
      plus, for the output node, a larger preview + share controls. */
 
+  /* Grid of preview cards. Auto-fill at min 220px lands ~4 columns
+     on a 1280-wide viewport, ~5-6 on ultrawide, 2 on tablet, 1 on
+     phone. dense flow + each tile keeping its row height makes
+     'expanded card spans the row' work without layout thrash. */
   .node-list {
     list-style: none;
     padding: 0;
     margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-auto-flow: dense;
+    gap: 0.6rem;
   }
   .node-row {
     background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     border: 1px solid var(--border);
     border-radius: 10px;
     overflow: hidden;
-    transition: border-color 160ms ease;
+    transition: border-color 160ms ease, transform 160ms ease;
+    /* Each non-expanded card keeps its 16:9 footprint via head-thumb.
+       Expanded cards override grid-column to span the full row. */
   }
   .node-row:hover { border-color: var(--border-strong); }
-  .node-row.expanded { border-color: var(--border-strong); }
-  /* Output row stands out so the user knows where the final preview
-     lives without having to read the 'final' tag. */
+  .node-row:hover:not(.expanded) { transform: translateY(-1px); }
+
+  /* Expanded: jump out of the 4-up grid to a full-width row so the
+     larger preview + params have horizontal room. dense flow above
+     reflows the surrounding tiles to fill the gap. */
+  .node-row.expanded {
+    grid-column: 1 / -1;
+    border-color: var(--border-strong);
+  }
+
+  /* Output card — accent halo so the eye lands on it. */
   .node-row.output {
     box-shadow: 0 0 0 1px var(--accent-soft);
   }
@@ -797,38 +814,43 @@
   .node-row.node-cached { border-left-color: var(--fg-mute); }
   .node-row.node-failed { border-left-color: var(--bad); }
 
+  /* Head = the clickable card surface. Collapsed: thumb fills, title
+     bar overlays at top with a gradient. Expanded: thumb shrinks to
+     a small left-side preview, title bar goes flat across the top. */
   .node-head {
     appearance: none;
     background: transparent;
     border: none;
     color: inherit;
     width: 100%;
-    padding: 0.3rem 0.7rem 0.3rem 0.3rem;
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
+    padding: 0;
     cursor: pointer;
     text-align: left;
     border-radius: 0;
-    min-height: 0;
+    position: relative;
+    display: block;
   }
-  .node-head:hover { background: rgba(94, 234, 212, 0.04); }
+  .node-row.expanded .node-head {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.35rem 0.7rem 0.35rem 0.35rem;
+  }
 
-  /* 16:9 thumbnail in the header — kept compact so a 12-step pipeline
-     still fits above the fold. Bumps slightly larger when the row is
-     expanded so the preview reads better. */
   .head-thumb {
     position: relative;
-    width: 64px;
     aspect-ratio: 16 / 9;
-    flex-shrink: 0;
     background: var(--bg-elev-2);
-    border-radius: 5px;
     overflow: hidden;
-    box-shadow: inset 0 0 0 1px var(--hairline);
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+  .node-row.expanded .head-thumb {
+    width: 64px;
+    border-radius: 5px;
+    box-shadow: inset 0 0 0 1px var(--hairline);
   }
   .head-img {
     width: 100%;
@@ -844,7 +866,7 @@
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     color: var(--accent);
-    font-size: 0.85rem;
+    font-size: 1.15rem;
   }
   .head-status {
     font-size: 0.7rem;
@@ -858,24 +880,43 @@
     height: 2px;
     background: var(--accent);
     transition: width 200ms ease;
+    z-index: 2;
   }
 
-  .head-info {
-    flex: 1;
-    min-width: 0;
+  /* Overlay — collapsed = absolute top strip with gradient fade,
+     expanded = inline second column with a flat row of meta. */
+  .head-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 0.4rem 0.55rem 0.7rem;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+    color: #fff;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    flex-wrap: nowrap;
-    overflow: hidden;
+    pointer-events: none;
+    z-index: 1;
   }
+  .node-row.expanded .head-overlay {
+    position: static;
+    padding: 0;
+    background: none;
+    color: var(--fg);
+  }
+
   .head-name {
     font-weight: 600;
     font-size: 0.92rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
   }
+  .node-row.expanded .head-name { text-shadow: none; }
+  .head-spacer { flex: 1; }
+
   .output-tag {
     font-family: var(--font-mono);
     font-size: 0.6rem;
@@ -889,32 +930,30 @@
     border-radius: 999px;
   }
 
-  .head-meta {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-shrink: 0;
-  }
   .chevron {
     color: var(--fg-mute);
     transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    flex-shrink: 0;
   }
   .chevron.rotated { transform: rotate(180deg); }
+  /* Collapsed cards: chevron sits on the dark gradient, so use white
+     for contrast. */
+  .node-row:not(.expanded) .chevron { color: rgba(255, 255, 255, 0.7); }
 
   .node-body {
-    padding: 0.7rem 0.85rem 0.85rem;
+    padding: 0.85rem 1rem 1rem;
     border-top: 1px solid var(--hairline);
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
   }
-  /* Two-column inside an expanded non-output row: bigger preview on
-     the left so the user sees what this stage produces, params on
-     the right. Drops to single column under 720px. */
+  /* Expanded non-output: big preview left, params right. The 1.6fr/1fr
+     split favors the preview because the user is staring at it while
+     dragging sliders — the params side just needs to be readable. */
   .node-body.body-dual {
     display: grid;
-    grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr);
-    gap: 1rem;
+    grid-template-columns: minmax(360px, 1.6fr) minmax(280px, 1fr);
+    gap: 1.25rem;
     align-items: start;
   }
   .stage-preview-link {
@@ -924,20 +963,19 @@
     box-shadow: 0 0 0 1px var(--hairline);
     transition: transform 160ms ease;
   }
-  .stage-preview-link:hover {
-    transform: scale(1.005);
-  }
+  .stage-preview-link:hover { transform: scale(1.005); }
   .stage-preview {
     width: 100%;
     height: auto;
-    max-height: 320px;
-    object-fit: cover;
+    max-height: 60vh;
+    object-fit: contain;
     display: block;
+    background: var(--bg);
   }
   .stage-params { min-width: 0; }
   @media (max-width: 720px) {
     .node-body.body-dual { grid-template-columns: 1fr; }
-    .stage-preview { max-height: 220px; }
+    .stage-preview { max-height: 50vh; }
   }
 
   /* Skeleton shimmer underlay reused for the head thumbnail. */
