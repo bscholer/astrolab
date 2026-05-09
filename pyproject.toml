@@ -8,6 +8,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pillow>=10.0",
     "astropy>=6.1",
+    "tifffile>=2024.1",
     "xxhash>=3.4",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

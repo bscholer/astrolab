@@ -1,20 +1,21 @@
 """starnet_extract: split a stretched image into starless + stars layers.
 
-Wraps the StarNet++ binary (https://www.starnetastro.com/). StarNet emits a
-'starless' image; the 'stars' layer is just original minus starless. Cheap
-arithmetic, but having it as an explicit output port lets downstream nodes
-(starnet_replace, starnet_recombine) treat the layers as first-class data.
+Wraps the StarNet++ v2 CLI (https://www.starnetastro.com/). StarNet only
+reads/writes 16-bit TIFF, so this node:
+  1. converts the input FITS (float32 in [0,1] post-stretch) to a 16-bit TIFF,
+  2. runs `starnet++ input.tif starless.tif <stride>` with LD_LIBRARY_PATH
+     pointed at the bundled tensorflow .so files,
+  3. reads the starless TIFF back into FITS (with the original header),
+  4. derives the stars layer as `original - starless` (clipped at 0).
 
-Disabled by default. When off, both outputs are well-defined so the
-recombine math at the end of the chain reduces to identity:
-  starless = input
-  stars    = zero image (same shape/dtype as input)
-
-That way users can leave the entire StarNet trio wired-but-disabled in
-the template and only flip `enabled` when they want the workflow.
+Outputs are both IMAGE_FITS so they slot straight into the rest of the
+pipeline. Disabled by default; when off, starless = input and stars = a
+zero-filled FITS of the same shape, which keeps recombine's identity
+math correct.
 
 Binary location: $ASTROLAB_STARNET_BIN, then ~/tools/starnet/starnet++,
-then $PATH. Models (.pb files) are expected to sit next to the binary.
+then $PATH. Whatever directory the binary lives in is added to
+LD_LIBRARY_PATH so the shipped libtensorflow_framework.so.2 resolves.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+import tifffile
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
@@ -43,12 +45,12 @@ class StarnetExtractParams(BaseModel):
         "recombining.",
     )
     stride: int = Field(
-        default=128,
+        default=256,
         ge=64,
         le=512,
         description="StarNet++ tile stride in pixels. Smaller = more "
-        "overlap = cleaner edges, but slower. 128 is the typical default; "
-        "drop to 64 for very dense star fields.",
+        "overlap = cleaner edges, but slower. 256 is StarNet's default; "
+        "drop to 128 for very dense star fields.",
         json_schema_extra={"ui_section": "advanced"},
     )
 
@@ -56,7 +58,8 @@ class StarnetExtractParams(BaseModel):
 @register("starnet_extract")
 class StarnetExtractNode(Node[StarnetExtractParams]):
     id = "starnet_extract"
-    version = 1
+    version = 2  # bumped: now does FITS<->TIFF + LD_LIBRARY_PATH
+
     cost = "expensive"
 
     inputs = {"image": PortType.IMAGE_FITS}
@@ -100,17 +103,33 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
                 "models alongside the binary) or set ASTROLAB_STARNET_BIN."
             )
 
-        # StarNet++ rewrites in-place when called with one positional, or
-        # writes to <output> when given two. We want the second form.
-        # Run from a clean cwd so the .pb model files (which StarNet looks
-        # for next to the binary) are reachable via the binary's directory.
-        starnet_cwd = binary.parent
-        cmd = [str(binary), str(src.resolve()), str(starless_out.resolve()), str(params.stride)]
+        # FITS -> 16-bit TIFF for StarNet. Track the channel layout so we
+        # can write the result back as FITS in the same shape.
+        ctx.progress(0.1, "starnet_extract: FITS -> TIFF")
+        in_tiff = out_dir_path / "input.tif"
+        out_tiff = out_dir_path / "starless.tif"
+        layout = _fits_to_tiff_uint16(data, in_tiff)
 
-        ctx.progress(0.1, "starnet_extract: running starnet++")
+        # StarNet looks for libtensorflow*.so + the .pb model in its CWD or
+        # on LD_LIBRARY_PATH. Set both: cwd to the binary's dir (where the
+        # weights live) and LD_LIBRARY_PATH so the dynamic linker resolves.
+        starnet_dir = binary.parent.resolve()
+        env = os.environ.copy()
+        prev_lib = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{starnet_dir}:{prev_lib}" if prev_lib else str(starnet_dir)
+
+        cmd = [
+            str(binary),
+            str(in_tiff.resolve()),
+            str(out_tiff.resolve()),
+            str(params.stride),
+        ]
+
+        ctx.progress(0.2, "starnet_extract: running starnet++")
         result = subprocess.run(
             cmd,
-            cwd=starnet_cwd,
+            cwd=starnet_dir,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -123,24 +142,86 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
                 f"--- stdout (tail) ---\n{result.stdout[-3000:]}\n"
                 f"--- stderr ---\n{result.stderr[-2000:]}"
             )
-        if not starless_out.exists():
+        if not out_tiff.exists():
             raise RuntimeError(
-                f"starnet_extract: starnet++ returned 0 but {starless_out} "
-                f"is missing.\n--- stdout (tail) ---\n{result.stdout[-2000:]}"
+                f"starnet_extract: starnet++ returned 0 but {out_tiff} is missing.\n"
+                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
             )
 
-        # Stars layer = original minus starless. Clip negatives because the
-        # StarNet model can occasionally produce a starless that's slightly
-        # brighter than the original on some pixels (rounding noise).
-        ctx.progress(0.9, "starnet_extract: deriving stars layer")
-        starless_data, _ = _read_fits(starless_out)
-        stars = np.clip(data.astype(np.float32) - starless_data.astype(np.float32), 0.0, None)
-        # Match dtype of the input so downstream stages stay consistent.
-        stars = stars.astype(data.dtype, copy=False)
+        # TIFF starless back into FITS.
+        ctx.progress(0.85, "starnet_extract: TIFF -> FITS")
+        starless_data = _tiff_uint16_to_fits_array(out_tiff, layout, data.dtype)
+        fits.PrimaryHDU(data=starless_data, header=header).writeto(starless_out, overwrite=True)
+
+        # Stars layer: original - starless, clipped at 0 (occasional small
+        # negatives from rounding shouldn't propagate).
+        ctx.progress(0.95, "starnet_extract: deriving stars layer")
+        stars = np.clip(
+            data.astype(np.float32) - starless_data.astype(np.float32), 0.0, None
+        ).astype(data.dtype, copy=False)
         fits.PrimaryHDU(data=stars, header=header).writeto(stars_out, overwrite=True)
+
+        # Drop the TIFF intermediates; the cache entry only needs the FITS.
+        for tmp in (in_tiff, out_tiff):
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
         ctx.progress(1.0, "starnet_extract: done")
         return _result(starless_out, stars_out)
+
+
+# ---- channel layout ----------------------------------------------------------
+
+
+class _Layout:
+    """How the source FITS organized its axes; used to round-trip cleanly."""
+
+    __slots__ = ("kind",)
+
+    def __init__(self, kind: str) -> None:
+        # 'mono' (HxW), 'chw' (CxHxW), or 'hwc' (HxWxC).
+        self.kind = kind
+
+
+def _fits_to_tiff_uint16(data: np.ndarray, dst: Path) -> _Layout:
+    """Write `data` (post-stretch float, mostly in [0,1]) as a 16-bit TIFF.
+
+    Returns a Layout token so the inverse function can rebuild the FITS in
+    the same channel layout.
+    """
+    arr = data.astype(np.float32, copy=False)
+    arr = np.clip(arr, 0.0, 1.0)
+    if arr.ndim == 2:
+        layout = _Layout("mono")
+    elif arr.ndim == 3 and arr.shape[0] in (3, 4):
+        layout = _Layout("chw")
+        arr = np.moveaxis(arr, 0, -1)  # CHW -> HWC for tifffile
+    elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        layout = _Layout("hwc")
+    else:
+        raise RuntimeError(f"starnet_extract: unsupported FITS shape {arr.shape}")
+    u16 = (arr * 65535.0 + 0.5).astype(np.uint16)
+    tifffile.imwrite(dst, u16)
+    return layout
+
+
+def _tiff_uint16_to_fits_array(src: Path, layout: _Layout, dtype: np.dtype) -> np.ndarray:
+    """Read a 16-bit TIFF and reshape it to match the original FITS layout."""
+    arr = tifffile.imread(src)
+    out = arr.astype(np.float32) / 65535.0
+    if layout.kind == "chw":
+        # tifffile stores RGB as HWC; flip back to CHW for FITS.
+        out = np.moveaxis(out, -1, 0)
+    elif layout.kind == "mono" and out.ndim == 3:
+        # If StarNet decided to write a 3-channel TIFF for a mono input
+        # (rare, but possible), collapse via the average.
+        out = out.mean(axis=-1)
+    return out.astype(dtype, copy=False)
+
+
+# ---- io / locate -------------------------------------------------------------
 
 
 def _locate_binary() -> Path | None:
