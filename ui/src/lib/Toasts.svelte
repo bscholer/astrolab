@@ -1,10 +1,16 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import { toast } from '$lib/toast.svelte';
 </script>
 
 <div class="toasts" role="status" aria-live="polite">
   {#each toast.items as t (t.id)}
-    <div class="toast toast-{t.kind}">
+    <div
+      class="toast toast-{t.kind}"
+      in:fly={{ x: 20, duration: 180, easing: cubicOut }}
+      out:fade={{ duration: 220 }}
+    >
       <span class="msg">{t.message}</span>
       <button
         type="button"
@@ -41,11 +47,6 @@
     font-size: 0.9rem;
     line-height: 1.4;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    animation: slide-in 180ms ease-out;
-  }
-  @keyframes slide-in {
-    from { transform: translateX(20px); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
   }
   .toast-error {
     border-color: var(--bad, #f88);
