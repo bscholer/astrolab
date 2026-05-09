@@ -205,7 +205,13 @@ def find_siril() -> SirilBinary:
         m = _APPIMAGE_NAME_RE.match(app.name)
         ver = _parse_version(m.group("ver")) if m else None
         if ver is not None and ver[:2] >= MIN_VERSION:
-            return SirilBinary(path=app, version=ver, source="appimage")
+            # The Siril AppImage's AppRun dispatches on its first positional
+            # arg (`siril` for the GUI, `siril-cli` for headless). Without
+            # the prefix the AppImage opens the GTK window and fails on a
+            # headless box with `cannot open display`.
+            return SirilBinary(
+                path=app, version=ver, source="appimage", args_prefix=("siril-cli",)
+            )
 
     sys = shutil.which("siril-cli") or shutil.which("siril")
     if sys is not None:
