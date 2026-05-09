@@ -192,6 +192,61 @@ def test_settings_floor_enforced(client) -> None:
     assert r.status_code == 400
 
 
+def test_capture_root_round_trip(client, tmp_path: Path) -> None:
+    """Captures path persists server-side instead of in browser localStorage,
+    so it survives across browsers/devices and isn't tied to whoever opened
+    settings first. This pins the contract that GET reflects the last PATCH."""
+    initial = client.get("/api/settings").json()
+    assert initial["capture_root"] is None
+
+    captures = tmp_path / "captures"
+    captures.mkdir()
+
+    r = client.patch("/api/settings", json={"capture_root": str(captures)})
+    assert r.status_code == 200
+    assert r.json()["capture_root"] == str(captures.resolve())
+    # Survives a fresh GET (the persistence step works, not just the in-memory
+    # echo we get inside the PATCH response body).
+    assert (
+        client.get("/api/settings").json()["capture_root"]
+        == str(captures.resolve())
+    )
+
+
+def test_capture_root_clear_via_empty_string(client, tmp_path: Path) -> None:
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    client.patch("/api/settings", json={"capture_root": str(captures)})
+
+    r = client.patch("/api/settings", json={"capture_root": ""})
+    assert r.status_code == 200
+    assert r.json()["capture_root"] is None
+
+
+def test_capture_root_rejects_relative_path(client) -> None:
+    r = client.patch("/api/settings", json={"capture_root": "relative/path"})
+    assert r.status_code == 400
+    assert "absolute" in r.json()["detail"]
+
+
+def test_capture_root_rejects_nonexistent_dir(client, tmp_path: Path) -> None:
+    """Captures are read-only from astrolab's view; we don't mkdir on the
+    user's behalf. A typo should fail loudly at PATCH time, not silently
+    create an empty directory the rescan walks for nothing."""
+    r = client.patch(
+        "/api/settings", json={"capture_root": str(tmp_path / "does-not-exist")}
+    )
+    assert r.status_code == 400
+    assert "does not exist" in r.json()["detail"]
+
+
+def test_capture_root_rejects_a_file(client, tmp_path: Path) -> None:
+    p = tmp_path / "iam-a-file.txt"
+    p.write_text("not a dir")
+    r = client.patch("/api/settings", json={"capture_root": str(p)})
+    assert r.status_code == 400
+
+
 def test_cleanup_under_budget_is_noop(client, tmp_path: Path) -> None:
     src = _make_png(tmp_path / "in.png")
     rid = client.post("/api/projects", json=_payload(src, name="alpha")).json()["id"]

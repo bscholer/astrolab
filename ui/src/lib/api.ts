@@ -430,6 +430,10 @@ export interface SettingsResponse {
   // What the running process is actually using right now. Differs from
   // cache_root when the user changed the override since the last restart.
   cache_root_active: string;
+  // Where the user's raw captures live; null when not yet configured. Used
+  // by /api/scan as its scan target. Lives server-side (not localStorage)
+  // so it survives across browsers and devices.
+  capture_root: string | null;
 }
 
 async function deleteJSON<T>(path: string): Promise<T> {
@@ -480,8 +484,11 @@ export const api = {
   storageCleanup: (max_bytes?: number) =>
     postJSON<CleanupResponse>('/api/storage/cleanup', max_bytes !== undefined ? { max_bytes } : {}),
   getSettings: () => getJSON<SettingsResponse>('/api/settings'),
-  patchSettings: (req: { cache_max_bytes?: number; cache_root?: string }) =>
-    patchJSON<SettingsResponse>('/api/settings', req),
+  patchSettings: (req: {
+    cache_max_bytes?: number;
+    cache_root?: string;
+    capture_root?: string;
+  }) => patchJSON<SettingsResponse>('/api/settings', req),
   /**
    * Open a WebSocket for live event streaming. The server replays buffered
    * history and then closes when the job hits a terminal state.

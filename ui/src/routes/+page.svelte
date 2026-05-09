@@ -24,15 +24,11 @@
   let lastScanAt = $state<string | null>(null);
   let nowTick = $state(Date.now());
 
-  // Capture root used to live in a top-of-page text input. It now lives
-  // in Settings; the Library only exposes a Refresh action that scans
-  // the saved root.
-  const CAPTURE_ROOT_KEY = 'astrolab.capture_root';
+  // Capture root lives in the server-side settings KV; the Library just
+  // calls /api/scan against whatever's saved there. last-scan timestamp
+  // is per-browser metadata and stays in localStorage.
   const LAST_SCAN_KEY = 'astrolab.last_scan_at';
-  function getCaptureRoot(): string {
-    if (typeof localStorage === 'undefined') return '';
-    return localStorage.getItem(CAPTURE_ROOT_KEY) ?? '';
-  }
+  let captureRoot = $state<string | null>(null);
 
   // Runs UI: which session's Run panel is open, plus its in-progress form state.
   let templates = $state<Template[] | null>(null);
@@ -148,14 +144,13 @@
   }
 
   async function rescan() {
-    const root = getCaptureRoot();
-    if (!root.trim()) {
+    if (!captureRoot || !captureRoot.trim()) {
       toast.error('No capture root set — open Settings and add one.');
       return;
     }
     scanning = true;
     try {
-      const r = await api.scan(root.trim(), 'dwarf3');
+      const r = await api.scan(captureRoot.trim(), 'dwarf3');
       const stamp = new Date().toISOString();
       localStorage.setItem(LAST_SCAN_KEY, stamp);
       lastScanAt = stamp;
@@ -176,7 +171,12 @@
     api.listTemplates()
       .then((t) => (templates = t))
       .catch((e) => toast.error(`listTemplates failed: ${(e as Error).message}`));
-    // Hydrate last-scan timestamp from previous sessions.
+    // Hydrate the captures path + last-scan timestamp. The path is the
+    // load-bearing one (drives whether Refresh works); a transient settings
+    // fetch failure shouldn't block the targets list.
+    api.getSettings()
+      .then((s) => (captureRoot = s.capture_root))
+      .catch(() => (captureRoot = null));
     if (typeof localStorage !== 'undefined') {
       lastScanAt = localStorage.getItem(LAST_SCAN_KEY);
     }

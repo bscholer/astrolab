@@ -457,6 +457,11 @@ def run_cleanup(
 
 SETTING_CACHE_MAX_BYTES = "cache_max_bytes"
 SETTING_CACHE_ROOT_OVERRIDE = "cache_root"
+SETTING_CAPTURE_ROOT = "capture_root"
+"""Where on disk the user's raw captures live (Dwarf 3 SD copy, etc.).
+Lives server-side rather than in browser localStorage so it survives a
+cache clear and works the same from any device pointed at the same
+astrolab instance — the scan target is server-local anyway."""
 
 # Static fallback if disk_usage() ever fails (e.g. unmounted scratch). In
 # practice we compute the per-disk default at request time instead, via
