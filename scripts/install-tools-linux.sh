@@ -55,11 +55,13 @@ else
   rm -f "$tmpzip"
   trap - EXIT
 
-  # The release zip contains a single 'GraXpert' executable plus support
-  # files. Normalize the entry point to a stable name 'graxpert' so the
-  # node doesn't have to care about casing.
-  if [[ -x "$GRAXPERT_DIR/GraXpert" ]]; then
-    ln -sf GraXpert "$GRAXPERT_DIR/graxpert"
+  # The release zip extracts to GraXpert-linux/ (or sometimes flat). The
+  # binary inside is 'GraXpert' (capital G). Normalize the entry point to
+  # a stable lowercase name 'graxpert' the node looks for.
+  if [[ -x "$GRAXPERT_DIR/GraXpert-linux/GraXpert" ]]; then
+    ln -sf GraXpert-linux/GraXpert "$GRAXPERT_BIN"
+  elif [[ -x "$GRAXPERT_DIR/GraXpert" ]]; then
+    ln -sf GraXpert "$GRAXPERT_BIN"
   elif [[ -x "$GRAXPERT_DIR/graxpert" ]]; then
     : # already named graxpert, nothing to do
   else
@@ -67,7 +69,7 @@ else
     ls -la "$GRAXPERT_DIR" >&2
     exit 1
   fi
-  ok "GraXpert at $GRAXPERT_BIN"
+  ok "GraXpert at $GRAXPERT_BIN -> $(readlink -f "$GRAXPERT_BIN")"
 fi
 
 # ---------- StarNet++ --------------------------------------------------------

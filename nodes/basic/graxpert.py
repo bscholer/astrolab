@@ -151,8 +151,8 @@ class GraxpertNode(Node[GraxpertParams]):
             ]
         else:  # denoise
             cmd += ["-strength", f"{params.strength:g}"]
-        if params.use_gpu:
-            cmd += ["-gpu"]
+        # -gpu takes 'true' / 'false' (string), not a bare flag.
+        cmd += ["-gpu", "true" if params.use_gpu else "false"]
 
         ctx.progress(0.1, f"graxpert: running {params.mode}")
         try:
