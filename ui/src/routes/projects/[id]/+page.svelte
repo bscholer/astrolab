@@ -618,9 +618,6 @@
                   {#if isOutput && finalOutput}
                     {@const fname = finalOutput[0]}
                     {@const fref = finalOutput[1]}
-                    <a class="big-preview-link" href={api.previewUrl(fref.node_hash, fname)} target="_blank" rel="noopener">
-                      <img class="big-preview" src={api.previewUrl(fref.node_hash, fname)} alt="output preview" />
-                    </a>
                     <div class="output-actions">
                       <button
                         type="button"
@@ -664,10 +661,6 @@
                         Open full
                       </a>
                     </div>
-                    <p class="path-line muted small">
-                      <code class="path">{fref.path}</code>
-                      <span class="type-tag">[{fref.type}]</span>
-                    </p>
                   {:else}
                     <!-- The head card already shows the preview thumbnail,
                          so the body just hosts the editor / params. Crop
@@ -1106,45 +1099,6 @@
     box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 0 14px var(--accent-soft);
   }
   .cover-btn:disabled { opacity: 0.55; cursor: progress; }
-
-  .path-line {
-    display: flex;
-    gap: 0.4rem;
-    align-items: center;
-    flex-wrap: wrap;
-    margin: 0.25rem 0 0.5rem;
-  }
-  .path {
-    font-family: ui-monospace, monospace;
-    word-break: break-all;
-  }
-  .copy-btn {
-    appearance: none;
-    background: transparent;
-    border: 1px solid var(--border, #444);
-    border-radius: 6px;
-    padding: 0.1rem 0.4rem;
-    cursor: pointer;
-    font-size: 0.85rem;
-    line-height: 1;
-    color: var(--fg, #ddd);
-    opacity: 0.7;
-  }
-  .copy-btn:hover { opacity: 1; }
-  .type-tag {
-    color: var(--fg-mute, #888);
-    font-size: 0.75rem;
-  }
-  .big-preview-link {
-    display: inline-block;
-    margin-top: 0.5rem;
-  }
-  .big-preview {
-    max-width: 100%;
-    max-height: 80vh;
-    border: 1px solid var(--border, #333);
-    border-radius: 6px;
-  }
 
   .error-box {
     background: #2a1818;
