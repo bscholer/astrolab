@@ -96,10 +96,14 @@
     const diskTotal = (storage?.cache_disk?.total_bytes ?? 0) / GIB;
     return diskTotal > 0 ? Math.max(2, Math.floor(diskTotal)) : 200;
   });
-  const cacheMaxGiB = $derived(cacheMaxBytes / GIB);
+  // Display in whole GiB; bytes truncated to GiB rounded down so the
+  // input doesn't show 1136.0625... when the value came back as e.g.
+  // half-of-2440-GB. setSliderGiB writes back exact GiB-aligned bytes
+  // so a save round-trip is stable.
+  const cacheMaxGiB = $derived(Math.round(cacheMaxBytes / GIB));
 
   function setSliderGiB(g: number) {
-    cacheMaxBytes = Math.round(g * GIB);
+    cacheMaxBytes = Math.round(g) * GIB;
   }
 
   // Cache-root edit state: dirty when the editor shows something other
