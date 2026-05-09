@@ -180,6 +180,27 @@ export function layoutTemplate(template: Template): Layout {
 }
 
 /**
+ * Togglable nodes: the project page surfaces an OFF/ON switch on each
+ * node card whose schema declares an `enabled` boolean. The switch
+ * piggybacks on the existing override mechanism (`overrides[nid].enabled`);
+ * when a node is OFF its run() pass-through path emits identity outputs
+ * so the rest of the DAG stays consistent. Non-togglable nodes (convert,
+ * calibrate, register, stack, save) don't expose `enabled` and so don't
+ * get a switch.
+ */
+export function isTogglable(
+  schemaProps: Record<string, { type?: string | string[]; default?: unknown }>
+): boolean {
+  const f = schemaProps['enabled'];
+  if (!f) return false;
+  // Tolerate both 'boolean' and ['boolean', 'null'] shapes that pydantic
+  // emits for Field(default=False) vs Optional[bool].
+  const t = f.type;
+  if (Array.isArray(t)) return t.includes('boolean');
+  return t === 'boolean';
+}
+
+/**
  * Cost-aware affordance helpers.
  *
  * When the user tweaks a param on node N, every downstream node has to

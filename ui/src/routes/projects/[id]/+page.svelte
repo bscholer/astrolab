@@ -33,6 +33,7 @@
   } from '$lib/api';
   import {
     blastRadiusCost,
+    isTogglable,
     nodeDisplayName
   } from '$lib/graph';
   import { toast } from '$lib/toast.svelte';
@@ -302,6 +303,43 @@
     patchTimer = setTimeout(flushPatch, PATCH_DEBOUNCE_MS);
   }
 
+  /** Project-level on/off toggle for nodes with an `enabled` schema field.
+   * Reuses the override mechanism but exposed as a header switch instead of
+   * a buried checkbox in the params body. We compute the new override map
+   * by hand (vs delegating to NodeParamsForm) because the toggle isn't
+   * inside the form. */
+  function toggleNodeEnabled(
+    nodeId: string,
+    schemaProps: Record<string, { default?: unknown }>,
+    fullDefaults: Record<string, unknown>,
+    currentOverrides: Record<string, unknown>
+  ) {
+    const cur = ('enabled' in currentOverrides
+      ? currentOverrides.enabled
+      : fullDefaults.enabled) as boolean | undefined;
+    const next = { ...currentOverrides };
+    const newValue = !cur;
+    // Match NodeParamsForm's "drop override when it equals default" rule
+    // so the cache hash and the modified-count badge stay accurate.
+    if (newValue === fullDefaults.enabled) {
+      delete next.enabled;
+    } else {
+      next.enabled = newValue;
+    }
+    onNodeOverrideChange(nodeId, next);
+  }
+
+  function effectiveEnabled(
+    fullDefaults: Record<string, unknown>,
+    overrides: Record<string, unknown>
+  ): boolean {
+    const v = 'enabled' in overrides ? overrides.enabled : fullDefaults.enabled;
+    // Default to true when schema has no `enabled` field at all (e.g. always-on
+    // nodes like stretch/save). Callers gate on isTogglable() before reading
+    // this, so the fallback only matters for defensive UI code paths.
+    return v === undefined ? true : Boolean(v);
+  }
+
   async function flushPatch() {
     patchTimer = null;
     if (!project || !pendingOverrides) return;
@@ -544,13 +582,32 @@
             {@const closureCost = blastRadiusCost(project.template, nid, costByNode)}
             {@const overrides = (project.current_overrides[nid] as Record<string, unknown>) ?? {}}
             {@const props = nschema.schema.properties ?? {}}
+            {@const fullDefaults = { ...nschema.defaults, ...nschema.template_params } as Record<string, unknown>}
+            {@const togglable = isTogglable(props)}
+            {@const enabled = togglable ? effectiveEnabled(fullDefaults, overrides) : true}
             {@const modifiedCount = Object.keys(overrides).length}
-            <li class="node-row node-{s}" class:expanded={isExpanded} class:output={isOutput}>
-              <button
-                type="button"
+            <li
+              class="node-row node-{s}"
+              class:expanded={isExpanded}
+              class:output={isOutput}
+              class:disabled={togglable && !enabled}
+            >
+              <!-- The head was a <button> until we needed to nest a toggle
+                   switch inside it; HTML disallows that. role="button" +
+                   tabindex + keydown gives us the same semantics without
+                   the SSR hydration warning. -->
+              <div
                 class="node-head"
+                role="button"
+                tabindex="0"
                 aria-expanded={isExpanded}
                 onclick={() => toggleNode(nid)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleNode(nid);
+                  }
+                }}
               >
                 <!-- Card body: 16:9 preview that fills the tile when
                      collapsed. When the row is expanded this shrinks
@@ -584,8 +641,10 @@
                      the card when collapsed, plain bar when expanded. -->
                 <div class="head-overlay">
                   <span class="head-name">{nodeDisplayName(kind, nid)}</span>
-                  <span class="status status-mini status-{s}">
-                    {s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid]}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
+                  <span class="status status-mini status-{togglable && !enabled ? 'off' : s}">
+                    {togglable && !enabled
+                      ? 'off'
+                      : s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid] && enabled}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
                   </span>
                   {#if isOutput}
                     <span class="output-tag">final</span>
@@ -603,11 +662,31 @@
                       {/if}
                     </span>
                   {/if}
+                  {#if togglable}
+                    <!-- The toggle is its own clickable region inside the
+                         head button; clicks here must NOT propagate into
+                         the expand/collapse handler on the parent. -->
+                    <button
+                      type="button"
+                      class="node-toggle"
+                      class:on={enabled}
+                      role="switch"
+                      aria-checked={enabled}
+                      aria-label={enabled ? `Disable ${nodeDisplayName(kind, nid)}` : `Enable ${nodeDisplayName(kind, nid)}`}
+                      title={enabled ? 'On — click to skip this step' : 'Off — click to run this step'}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        toggleNodeEnabled(nid, props, fullDefaults, overrides);
+                      }}
+                    >
+                      <span class="node-toggle-knob"></span>
+                    </button>
+                  {/if}
                   <svg class="chevron" class:rotated={isExpanded} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <polyline points="6 9 12 15 18 9" />
                   </svg>
                 </div>
-              </button>
+              </div>
 
               {#if isExpanded}
                 <div
@@ -667,7 +746,6 @@
                          is a special case where the editor itself wraps
                          a (different, upstream) preview. -->
                     {#if kind === 'crop'}
-                      {@const fullDefaults = { ...nschema.defaults, ...nschema.template_params } as Record<string, unknown>}
                       {@const eff = (k: string) => (k in overrides ? overrides[k] : fullDefaults[k])}
                       {@const upstream = upstreamPreviewFor(nid)}
                       <div class="stage-params crop-host">
@@ -688,9 +766,10 @@
                         <NodeParamsForm
                           nodeId={nid}
                           schemaProps={props}
-                          defaults={{ ...nschema.defaults, ...nschema.template_params }}
+                          defaults={fullDefaults}
                           {overrides}
                           cost={closureCost}
+                          hideFields={togglable ? ['enabled'] : []}
                           onchange={(next) => onNodeOverrideChange(nid, next)}
                         />
                       </div>
@@ -1056,6 +1135,88 @@
   .status-cached { background: rgba(255, 255, 255, 0.10); color: var(--fg-mute); }
   .status-completed { background: color-mix(in oklab, var(--good) 18%, transparent); color: var(--good); }
   .status-failed { background: color-mix(in oklab, var(--bad) 18%, transparent); color: var(--bad); }
+  /* OFF state: visually distinct from 'cached' so the user instantly knows
+     this step isn't running, vs running-but-served-from-cache. Muted enough
+     to recede behind active steps. */
+  .status-off {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--fg-mute);
+    border: 1px solid var(--hairline);
+  }
+
+  /* ---------- Per-node enable/disable toggle ---------- */
+  /* iOS-style switch in the card header. Lives inside the .head button so
+     we have to stop propagation on click — the toggle should not also
+     expand/collapse the card. */
+  .node-toggle {
+    appearance: none;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid var(--hairline);
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    padding: 0;
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+  .node-toggle:hover {
+    border-color: var(--border-strong);
+  }
+  .node-toggle.on {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .node-toggle-knob {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--bg);
+    transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .node-toggle.on .node-toggle-knob {
+    transform: translateX(12px);
+    background: white;
+  }
+  .node-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* When a node is toggled off, dim the whole card so the eye skips it
+     when scanning the pipeline. The header (toggle, name, chevron) stays
+     fully opaque so the controls remain reachable. */
+  .node-row.disabled .head-thumb {
+    opacity: 0.35;
+    filter: grayscale(0.6);
+  }
+  .node-row.disabled .head-thumb .head-img,
+  .node-row.disabled .head-thumb .flow-skeleton,
+  .node-row.disabled .head-thumb .head-progress {
+    /* No live progress / preview should advertise activity for an OFF node. */
+    display: none;
+  }
+  .node-row.disabled .head-thumb::after {
+    content: 'off';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-mute);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .node-row.disabled .badge-modified {
+    /* Modified-count chip is still relevant (maybe other params edited),
+       but tone it down so the off state reads first. */
+    opacity: 0.7;
+  }
 
   .badge-modified {
     background: var(--accent-soft);
