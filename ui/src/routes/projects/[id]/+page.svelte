@@ -850,11 +850,9 @@
   .node-row.output.expanded {
     box-shadow: 0 0 0 1px var(--accent-soft), 0 0 24px rgba(94, 234, 212, 0.06);
   }
-  /* Status-tinted left edge — quick scan of the pipeline state. */
-  .node-row.node-running { border-left-color: var(--accent); }
-  .node-row.node-completed { border-left-color: var(--good); }
-  .node-row.node-cached { border-left-color: var(--fg-mute); }
-  .node-row.node-failed { border-left-color: var(--bad); }
+  /* Status is conveyed by the pill in the title overlay; we used to also
+     tint the card's left border, but it fought :hover (which sets all
+     four sides) and produced two-tone borders. Pill is enough. */
 
   /* Head = the clickable card surface. Collapsed: thumb fills, title
      bar overlays at top with a gradient. Expanded: thumb shrinks to
