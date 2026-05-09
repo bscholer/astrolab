@@ -20,6 +20,8 @@
 -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import { page } from '$app/stores';
   import {
     api,
@@ -59,6 +61,20 @@
   // shimmer until onload fires so the gap reads as "generating preview"
   // instead of "broken".
   let previewLoaded = $state<Record<string, boolean>>({});
+
+  // Accordion expansion: which node rows are open. We default to just
+  // the project's output node so the user lands on the final preview;
+  // they can pop other rows open as they tweak. Multi-expansion (a
+  // Set, not a single id) so opening Stretch doesn't collapse the
+  // output preview the user is staring at.
+  let expandedNodes = $state<Set<string>>(new Set());
+
+  function toggleNode(nid: string) {
+    const next = new Set(expandedNodes);
+    if (next.has(nid)) next.delete(nid);
+    else next.add(nid);
+    expandedNodes = next;
+  }
   function onPreviewLoad(nid: string) {
     previewLoaded = { ...previewLoaded, [nid]: true };
   }
@@ -370,6 +386,28 @@
     return named ?? (entries[0] ?? null);
   });
 
+  // The schema declares its public outputs as `{ "image": "save_image.image" }`.
+  // We treat the node behind the `image` port (or the first declared
+  // output) as the project's "final/output" node — its accordion row
+  // gets the bigger preview + share/cover controls when expanded.
+  const outputNodeId = $derived.by(() => {
+    if (!schema) return null;
+    const entries = Object.entries(schema.outputs);
+    const named = entries.find(([k]) => k === 'image') ?? entries[0];
+    if (!named) return null;
+    return named[1].split('.')[0] || null;
+  });
+
+  // Land with the output node expanded so the user sees the final
+  // image immediately. Re-syncs whenever the project / schema swaps
+  // (open a different project: re-prime; same project, same schema:
+  // no-op because the set already contains it).
+  $effect(() => {
+    if (outputNodeId && expandedNodes.size === 0) {
+      expandedNodes = new Set([outputNodeId]);
+    }
+  });
+
   const undoDisabled = $derived(
     !project || !project.history.some((h) => h.seq === (project!.current_seq - 1))
   );
@@ -454,128 +492,156 @@
       {/if}
     </p>
 
-    <!-- Pipeline strip: live preview per node, title + status overlaid. -->
-    {#if schema}
-      <section class="pipeline">
+    <!-- Single accordion: each node is one row, click to expand its
+         params + larger preview. Replaces the old parallel pipeline
+         strip + params grid + output section. -->
+    {#if schema && project}
+      {@const isCover = project.cover_seq === project.current_seq}
+      <section class="nodes">
         <h2 class="section-h">Pipeline</h2>
-        <ol class="flow-strip">
-          {#each orderedNodeIds as nid (nid)}
+        <ol class="node-list">
+          {#each schema.nodes as nschema (nschema.node_id)}
+            {@const nid = nschema.node_id}
             {@const s = nodeStatus[nid] ?? 'pending'}
             {@const p = nodeProgress[nid]}
             {@const h = nodeHash[nid]}
             {@const port = nodePort[nid] ?? 'image'}
-            {@const kind = nodeKind[nid] ?? schema.nodes.find((n) => n.node_id === nid)?.kind ?? nid}
-            <li class="flow-card flow-{s}">
-              {#if (s === 'completed' || s === 'cached') && h}
-                {#if !previewLoaded[nid]}
-                  <div class="flow-skeleton" aria-hidden="true"></div>
-                {/if}
-                <img
-                  class="flow-preview"
-                  class:loaded={previewLoaded[nid]}
-                  src={api.previewUrl(h, port)}
-                  alt="{nid} preview"
-                  loading="lazy"
-                  onload={() => onPreviewLoad(nid)}
-                  onerror={() => onPreviewError(nid)}
-                />
-              {:else}
-                <div class="flow-preview placeholder">
-                  {#if s === 'running' && p}
-                    <span class="pct">{Math.round((p.fraction ?? 0) * 100)}%</span>
-                  {:else if s === 'failed'}
-                    <span class="err">failed</span>
+            {@const kind = nodeKind[nid] ?? nschema.kind ?? nid}
+            {@const isOutput = nid === outputNodeId}
+            {@const isExpanded = expandedNodes.has(nid)}
+            {@const closureCost = blastRadiusCost(project.template, nid, costByNode)}
+            {@const overrides = (project.current_overrides[nid] as Record<string, unknown>) ?? {}}
+            {@const props = nschema.schema.properties ?? {}}
+            {@const modifiedCount = Object.keys(overrides).length}
+            <li class="node-row node-{s}" class:expanded={isExpanded} class:output={isOutput}>
+              <button
+                type="button"
+                class="node-head"
+                aria-expanded={isExpanded}
+                onclick={() => toggleNode(nid)}
+              >
+                <!-- Tiny preview thumbnail in the row header. Same
+                     skeleton + fade-in pattern as the old strip. -->
+                <div class="head-thumb">
+                  {#if (s === 'completed' || s === 'cached') && h}
+                    {#if !previewLoaded[nid]}
+                      <div class="flow-skeleton" aria-hidden="true"></div>
+                    {/if}
+                    <img
+                      class="head-img"
+                      class:loaded={previewLoaded[nid]}
+                      src={api.previewUrl(h, port)}
+                      alt=""
+                      loading="lazy"
+                      onload={() => onPreviewLoad(nid)}
+                      onerror={() => onPreviewError(nid)}
+                    />
+                  {:else if s === 'running' && p}
+                    <span class="head-pct">{Math.round((p.fraction ?? 0) * 100)}%</span>
                   {:else}
-                    <span class="muted small">{s}</span>
+                    <span class="head-status muted">{s}</span>
+                  {/if}
+                  {#if s === 'running' && p}
+                    <div class="head-progress" style:width="{(p.fraction ?? 0) * 100}%"></div>
                   {/if}
                 </div>
-              {/if}
-              <div class="flow-overlay">
-                <span class="flow-title">{nodeDisplayName(kind)}</span>
-                <span class="status status-mini status-{s}">
-                  {s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid]}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
-                </span>
-              </div>
-              {#if s === 'running' && p}
-                <div class="flow-progress" style:width="{(p.fraction ?? 0) * 100}%"></div>
+
+                <div class="head-info">
+                  <span class="head-name">{nodeDisplayName(kind)}</span>
+                  <span class="status status-mini status-{s}">
+                    {s}{#if (s === 'completed' || s === 'failed') && nodeDurationMs[nid]}<span class="dur"> · {formatStepDuration(nodeDurationMs[nid])}</span>{/if}
+                  </span>
+                  {#if isOutput}
+                    <span class="output-tag">final</span>
+                  {/if}
+                </div>
+
+                <div class="head-meta">
+                  {#if modifiedCount > 0}
+                    <span class="badge-modified">{modifiedCount} modified</span>
+                  {/if}
+                  <svg class="chevron" class:rotated={isExpanded} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </div>
+              </button>
+
+              {#if isExpanded}
+                <div class="node-body" transition:slide={{ duration: 220, easing: cubicOut }}>
+                  {#if isOutput && finalOutput}
+                    {@const fname = finalOutput[0]}
+                    {@const fref = finalOutput[1]}
+                    <div class="output-pane">
+                      <a class="big-preview-link" href={api.previewUrl(fref.node_hash, fname)} target="_blank" rel="noopener">
+                        <img class="big-preview" src={api.previewUrl(fref.node_hash, fname)} alt="output preview" />
+                      </a>
+                      <div class="output-actions">
+                        <button
+                          type="button"
+                          class="cover-btn"
+                          class:active={isCover}
+                          disabled={coverBusy}
+                          onclick={toggleCover}
+                          title={isCover
+                            ? 'This version is the project cover. Click to clear.'
+                            : 'Pin this version as the project cover'}
+                        >
+                          <svg viewBox="0 0 24 24" width="14" height="14" fill={isCover ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                          </svg>
+                          {isCover ? 'Cover' : 'Set as cover'}
+                        </button>
+                        <button
+                          type="button"
+                          class="cover-btn"
+                          onclick={() => copyToClipboard(fref.path, 'Copied output path')}
+                          title="Copy filesystem path"
+                        >
+                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="13" height="13" rx="2" />
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                          </svg>
+                          Copy path
+                        </button>
+                        <a
+                          class="cover-btn"
+                          href={api.previewUrl(fref.node_hash, fname)}
+                          target="_blank"
+                          rel="noopener"
+                          title="Open full-size in a new tab"
+                        >
+                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <polyline points="15 3 21 3 21 9" />
+                            <line x1="10" y1="14" x2="21" y2="3" />
+                          </svg>
+                          Open full
+                        </a>
+                      </div>
+                      <p class="path-line muted small">
+                        <code class="path">{fref.path}</code>
+                        <span class="type-tag">[{fref.type}]</span>
+                      </p>
+                    </div>
+                  {/if}
+
+                  {#if Object.keys(props).length > 0}
+                    <NodeParamsForm
+                      nodeId={nid}
+                      schemaProps={props}
+                      defaults={{ ...nschema.defaults, ...nschema.template_params }}
+                      {overrides}
+                      cost={closureCost}
+                      onchange={(next) => onNodeOverrideChange(nid, next)}
+                    />
+                  {:else if !isOutput}
+                    <p class="muted small no-params">No editable parameters.</p>
+                  {/if}
+                </div>
               {/if}
             </li>
           {/each}
         </ol>
-      </section>
-    {/if}
-
-    <!-- Parameters grid: one card per node, form always visible. -->
-    {#if schema && project}
-      <section class="params-section">
-        <h2 class="section-h">Parameters</h2>
-        <div class="params-grid">
-          {#each schema.nodes as nschema (nschema.node_id)}
-            {@const nid = nschema.node_id}
-            {@const closureCost = blastRadiusCost(project.template, nid, costByNode)}
-            {@const overrides = (project.current_overrides[nid] as Record<string, unknown>) ?? {}}
-            {@const props = nschema.schema.properties ?? {}}
-            <article class="param-card">
-              <header class="param-card-head">
-                <span class="param-card-title">{nodeDisplayName(nschema.kind)}</span>
-                {#if Object.keys(overrides).length > 0}
-                  <span class="badge-modified">{Object.keys(overrides).length} modified</span>
-                {/if}
-              </header>
-              {#if Object.keys(props).length === 0}
-                <p class="muted small no-params">No editable parameters.</p>
-              {:else}
-                <NodeParamsForm
-                  nodeId={nid}
-                  schemaProps={props}
-                  defaults={{ ...nschema.defaults, ...nschema.template_params }}
-                  {overrides}
-                  cost={closureCost}
-                  onchange={(next) => onNodeOverrideChange(nid, next)}
-                />
-              {/if}
-            </article>
-          {/each}
-        </div>
-      </section>
-    {/if}
-
-    {#if finalOutput}
-      {@const name = finalOutput[0]}
-      {@const ref = finalOutput[1]}
-      {@const isCover = project?.cover_seq === project?.current_seq}
-      <section class="final">
-        <div class="final-head">
-          <h2 class="section-h">Output: {name}</h2>
-          <button
-            type="button"
-            class="cover-btn"
-            class:active={isCover}
-            disabled={!project || coverBusy}
-            onclick={toggleCover}
-            title={isCover
-              ? 'This version is the project cover. Click to clear.'
-              : 'Pin this version as the project cover (shows as the thumbnail in the projects list and gallery)'}
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill={isCover ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-            </svg>
-            {isCover ? 'Cover' : 'Set as cover'}
-          </button>
-        </div>
-        <p class="path-line muted small">
-          <code class="path">{ref.path}</code>
-          <button
-            type="button"
-            class="copy-btn"
-            title="Copy path"
-            onclick={() => copyToClipboard(ref.path, 'Copied output path')}
-          >📋</button>
-          <span class="type-tag">[{ref.type}]</span>
-        </p>
-        <a class="big-preview-link" href={api.previewUrl(ref.node_hash, name)} target="_blank" rel="noopener">
-          <img class="big-preview" src={api.previewUrl(ref.node_hash, name)} alt="output preview" />
-        </a>
       </section>
     {/if}
 
@@ -675,35 +741,74 @@
     color: var(--fg-mute, #888);
   }
 
-  /* ---------- Pipeline strip ---------- */
+  /* ---------- Pipeline accordion ----------
+     One row per node. Header is always visible (thumb + name + status
+     + chevron); body slides in when expanded with a NodeParamsForm
+     plus, for the output node, a larger preview + share controls. */
 
-  .flow-strip {
+  .node-list {
     list-style: none;
     padding: 0;
     margin: 0;
-    display: grid;
-    /* Auto-fill at min 220px so on ultrawide we get all 8 nodes in a row;
-       on narrow displays they wrap to two/three rows gracefully. */
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
   }
-  .flow-card {
-    position: relative;
-    aspect-ratio: 16 / 9;
-    background: #0a0c10;
-    border: 1px solid var(--border, #333);
-    border-radius: 8px;
+  .node-row {
+    background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
     overflow: hidden;
-    transition: border-color 120ms ease, transform 120ms ease;
+    transition: border-color 160ms ease;
   }
-  .flow-card.flow-running {
-    border-color: #6cf;
-    box-shadow: 0 0 0 1px rgba(108, 204, 255, 0.4);
+  .node-row:hover { border-color: var(--border-strong); }
+  .node-row.expanded { border-color: var(--border-strong); }
+  /* Output row stands out so the user knows where the final preview
+     lives without having to read the 'final' tag. */
+  .node-row.output {
+    box-shadow: 0 0 0 1px var(--accent-soft);
   }
-  .flow-card.flow-completed { border-color: #6c9; }
-  .flow-card.flow-cached { border-color: #777; }
-  .flow-card.flow-failed { border-color: var(--bad, #f88); }
-  .flow-preview {
+  .node-row.output.expanded {
+    box-shadow: 0 0 0 1px var(--accent-soft), 0 0 24px rgba(94, 234, 212, 0.06);
+  }
+  /* Status-tinted left edge — quick scan of the pipeline state. */
+  .node-row.node-running { border-left-color: var(--accent); }
+  .node-row.node-completed { border-left-color: var(--good); }
+  .node-row.node-cached { border-left-color: var(--fg-mute); }
+  .node-row.node-failed { border-left-color: var(--bad); }
+
+  .node-head {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: inherit;
+    width: 100%;
+    padding: 0.55rem 0.85rem 0.55rem 0.55rem;
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    cursor: pointer;
+    text-align: left;
+    border-radius: 0;
+  }
+  .node-head:hover { background: rgba(94, 234, 212, 0.04); }
+
+  /* 16:9 thumbnail in the header — small enough to keep collapsed
+     rows compact, large enough to read what stage you're at. */
+  .head-thumb {
+    position: relative;
+    width: 96px;
+    aspect-ratio: 16 / 9;
+    flex-shrink: 0;
+    background: var(--bg-elev-2);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .head-img {
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -711,11 +816,74 @@
     opacity: 0;
     transition: opacity 280ms ease;
   }
-  .flow-preview.loaded { opacity: 1; }
+  .head-img.loaded { opacity: 1; }
+  .head-pct {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 0.85rem;
+  }
+  .head-status {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .head-progress {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    background: var(--accent);
+    transition: width 200ms ease;
+  }
 
-  /* Skeleton shimmer underlay — visible until the preview img fires
-     onload, so the gap between 'node completed' and 'preview decoded
-     in the browser' reads as 'generating' instead of 'broken'. */
+  .head-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .head-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+  .output-tag {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+  }
+
+  .head-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+  .chevron {
+    color: var(--fg-mute);
+    transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .chevron.rotated { transform: rotate(180deg); }
+
+  .node-body {
+    padding: 0.6rem 0.95rem 0.95rem;
+    border-top: 1px solid var(--hairline);
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  /* Skeleton shimmer underlay reused for the head thumbnail. */
   @keyframes flow-skeleton-shimmer {
     0%   { background-position: -150% 0, 0 0; }
     100% { background-position: 250% 0, 0 0; }
@@ -724,57 +892,28 @@
     position: absolute;
     inset: 0;
     background:
-      linear-gradient(110deg,
-        transparent 30%,
-        var(--accent-soft) 50%,
-        transparent 70%),
-      linear-gradient(180deg,
-        var(--bg-elev) 0%,
-        var(--bg-elev-2) 100%);
+      linear-gradient(110deg, transparent 30%, var(--accent-soft) 50%, transparent 70%),
+      linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     background-size: 200% 100%, 100% 100%;
     background-repeat: no-repeat;
     animation: flow-skeleton-shimmer 1.6s linear infinite;
   }
   @media (prefers-reduced-motion: reduce) {
     .flow-skeleton { animation: none; }
+    .chevron { transition: none; }
   }
-  .flow-preview.placeholder {
+
+  /* ---------- Output pane (final node body) ---------- */
+
+  .output-pane {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
+    flex-direction: column;
+    gap: 0.6rem;
   }
-  .flow-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    padding: 0.4rem 0.6rem 0.6rem;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0));
-    color: #fff;
+  .output-actions {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    pointer-events: none;
-  }
-  .flow-title {
-    font-weight: 600;
-    font-size: 0.95rem;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  }
-  .flow-progress {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 3px;
-    background: #6cf;
-    transition: width 200ms ease;
-  }
-  .pct {
-    font-size: 1.3rem;
-    color: #6cf;
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
+    flex-wrap: wrap;
+    gap: 0.45rem;
   }
 
   /* ---------- Status pills ---------- */
@@ -783,70 +922,37 @@
     display: inline-block;
     padding: 0.15rem 0.6rem;
     border-radius: 999px;
-    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-left: auto;
   }
   .status-mini {
     font-size: 0.6rem;
     padding: 0.05rem 0.4rem;
   }
-  .status-pending { background: #2a2a2a; color: #aaa; }
-  .status-queued { background: #444; color: #ccc; }
-  .status-running { background: #234; color: #6cf; }
-  .status-cached { background: rgba(255, 255, 255, 0.12); color: #ccc; }
-  .status-completed { background: rgba(108, 204, 153, 0.25); color: #6c9; }
-  .status-failed { background: rgba(255, 122, 138, 0.25); color: var(--bad, #f88); }
+  .status-pending { background: rgba(255, 255, 255, 0.06); color: var(--fg-mute); }
+  .status-queued { background: rgba(255, 255, 255, 0.10); color: var(--fg); }
+  .status-running { background: var(--accent-soft); color: var(--accent); }
+  .status-cached { background: rgba(255, 255, 255, 0.10); color: var(--fg-mute); }
+  .status-completed { background: color-mix(in oklab, var(--good) 18%, transparent); color: var(--good); }
+  .status-failed { background: color-mix(in oklab, var(--bad) 18%, transparent); color: var(--bad); }
 
-  /* ---------- Parameters grid ---------- */
-
-  .params-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 0.75rem;
-  }
-  .param-card {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid var(--border, #333);
-    border-radius: 8px;
-    padding: 0.6rem 0.7rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-  }
-  .param-card-head {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    padding-bottom: 0.35rem;
-  }
-  .param-card-title {
-    font-weight: 600;
-  }
   .badge-modified {
-    background: rgba(122, 162, 255, 0.18);
-    color: var(--accent, #7aa2ff);
-    border: 1px solid var(--accent, #7aa2ff);
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--accent);
     padding: 0.05rem 0.45rem;
     border-radius: 999px;
     font-size: 0.6rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-left: auto;
   }
   .no-params {
     margin: 0.2rem 0;
   }
 
-  /* ---------- Output ---------- */
-
-  .final-head {
-    display: flex;
-    align-items: baseline;
-    gap: 0.75rem;
-  }
+  /* ---------- Output / share affordances ---------- */
   /* Cover button — accent-tinted ghost. Filled star + accent BG when
      the current seq is already the cover. Stays light-weight so it
      doesn't compete with Reprocess up top. */
@@ -877,9 +983,6 @@
   }
   .cover-btn:disabled { opacity: 0.55; cursor: progress; }
 
-  .final {
-    margin-top: 1.5rem;
-  }
   .path-line {
     display: flex;
     gap: 0.4rem;
