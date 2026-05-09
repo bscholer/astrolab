@@ -19,7 +19,6 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Literal
 
@@ -30,6 +29,7 @@ from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
+from server.subproc import make_line_progress_handler, run_streamed
 
 
 class GraxpertParams(BaseModel):
@@ -155,12 +155,17 @@ class GraxpertNode(Node[GraxpertParams]):
         cmd += ["-gpu", "true" if params.use_gpu else "false"]
 
         ctx.progress(0.1, f"graxpert: running {params.mode}")
+        # GraXpert prints phase markers ('Loading model', tqdm-style bars
+        # during inference) intermixed with stderr; we merge stderr into
+        # stdout in run_streamed so the parser sees everything.
+        on_line = make_line_progress_handler(
+            ctx, low=0.15, high=0.95, prefix=f"graxpert {params.mode}: "
+        )
         try:
-            result = subprocess.run(
+            result = run_streamed(
                 cmd,
-                capture_output=True,
-                text=True,
-                check=False,
+                on_line=on_line,
+                cancel=ctx.cancel,
                 timeout=60 * 60,  # AI runs can be slow on big frames; an hour is generous.
             )
         except FileNotFoundError as exc:
@@ -170,8 +175,7 @@ class GraxpertNode(Node[GraxpertParams]):
             raise RuntimeError(
                 f"graxpert ({params.mode}) exited {result.returncode}\n"
                 f"--- cmd ---\n{' '.join(cmd)}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-3000:]}\n"
-                f"--- stderr ---\n{result.stderr[-2000:]}"
+                f"--- stdout (tail) ---\n{result.stdout[-3000:]}"
             )
 
         # GraXpert sometimes appends a suffix to the requested output (e.g.

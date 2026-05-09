@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +33,7 @@ from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
+from server.subproc import make_line_progress_handler, run_streamed
 
 
 class StarnetExtractParams(BaseModel):
@@ -126,21 +126,30 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
         ]
 
         ctx.progress(0.2, "starnet_extract: running starnet++")
-        result = subprocess.run(
-            cmd,
-            cwd=starnet_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60 * 60,
+        # StarNet++ prints 'Total iterations = N' once and then per-tile
+        # 'Iteration: K' lines; the shared parser knows that pattern. Cap
+        # the band at 0.85 so the post-process FITS write is room to land.
+        on_line = make_line_progress_handler(
+            ctx, low=0.2, high=0.85, prefix="starnet++: "
         )
+        try:
+            result = run_streamed(
+                cmd,
+                cwd=starnet_dir,
+                env=env,
+                on_line=on_line,
+                cancel=ctx.cancel,
+                timeout=60 * 60,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"starnet_extract: failed to spawn {binary}: {exc}"
+            ) from exc
         if result.returncode != 0:
             raise RuntimeError(
                 f"starnet_extract: starnet++ exited {result.returncode}\n"
                 f"--- cmd ---\n{' '.join(cmd)}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-3000:]}\n"
-                f"--- stderr ---\n{result.stderr[-2000:]}"
+                f"--- stdout (tail) ---\n{result.stdout[-3000:]}"
             )
         if not out_tiff.exists():
             raise RuntimeError(
