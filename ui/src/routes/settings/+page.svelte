@@ -19,7 +19,17 @@
 
   let storage = $state<StorageSnapshot | null>(null);
   let cacheMaxBytes = $state<number>(200 * GIB);
+  // Active root = what the running process uses; pendingRoot = what the user
+  // is editing. Saving pendingRoot persists it but only takes effect on
+  // restart, hence the 'restart required' affordance.
+  let activeCacheRoot = $state<string>('');
+  let pendingCacheRoot = $state<string>('');
+  // Persisted override (may be null when no override is set; we stash it so
+  // we can tell the user 'saved, but server still on activeCacheRoot until
+  // you restart').
+  let persistedCacheRoot = $state<string | null>(null);
   let saving = $state(false);
+  let savingRoot = $state(false);
   let cleaning = $state(false);
   let captureRoot = $state('');
   let scanning = $state(false);
@@ -62,6 +72,11 @@
       ]);
       storage = snap;
       cacheMaxBytes = settings.cache_max_bytes;
+      activeCacheRoot = settings.cache_root_active;
+      persistedCacheRoot = settings.cache_root;
+      // Seed the editor with whatever's persisted (if any) or the running
+      // path. That way an unsaved field still shows something useful.
+      pendingCacheRoot = settings.cache_root ?? settings.cache_root_active;
     } catch (e) {
       toast.error(`Couldn't load settings: ${(e as Error).message}`);
     }
@@ -73,17 +88,51 @@
   });
 
   // Slider operates on GiB to give us friendly round-number values; we
-  // convert back to bytes on save. Range goes from a 1 GiB floor (the
-  // server-side minimum) up to whatever the cache currently holds + 200
-  // GiB headroom, so users can pick 'a bit larger than current'.
+  // convert back to bytes on save. Max = the partition's total size
+  // (per /api/storage cache_disk.total_bytes). On a fresh install the
+  // backend defaults the budget to half the partition, so the slider
+  // lands mid-range automatically.
   const sliderMaxGiB = $derived.by(() => {
-    const current = (storage?.total_bytes ?? 0) / GIB;
-    return Math.max(50, Math.ceil(current) + 200);
+    const diskTotal = (storage?.cache_disk?.total_bytes ?? 0) / GIB;
+    return diskTotal > 0 ? Math.max(2, Math.floor(diskTotal)) : 200;
   });
   const cacheMaxGiB = $derived(cacheMaxBytes / GIB);
 
   function setSliderGiB(g: number) {
     cacheMaxBytes = Math.round(g * GIB);
+  }
+
+  // Cache-root edit state: dirty when the editor shows something other
+  // than what's persisted, plus the live process disagrees with the
+  // persisted value (i.e. user already saved but hasn't restarted).
+  const cacheRootDirty = $derived(
+    pendingCacheRoot.trim() !== (persistedCacheRoot ?? activeCacheRoot)
+  );
+  const restartRequired = $derived(
+    persistedCacheRoot !== null &&
+    persistedCacheRoot !== '' &&
+    persistedCacheRoot !== activeCacheRoot
+  );
+
+  async function saveCacheRoot() {
+    const next = pendingCacheRoot.trim();
+    savingRoot = true;
+    try {
+      // Empty input clears the override (server falls back to default).
+      const r = await api.patchSettings({ cache_root: next });
+      persistedCacheRoot = r.cache_root;
+      pendingCacheRoot = r.cache_root ?? r.cache_root_active;
+      activeCacheRoot = r.cache_root_active;
+      if (r.cache_root && r.cache_root !== r.cache_root_active) {
+        toast.success('Saved. Restart astrolab-api to use the new cache root.');
+      } else {
+        toast.success('Saved.');
+      }
+    } catch (e) {
+      toast.error(`Couldn't save: ${(e as Error).message}`);
+    } finally {
+      savingRoot = false;
+    }
   }
 
   async function save() {
@@ -170,10 +219,40 @@
         <span class="stat-sub muted">{storage.unreachable_count} dead entries</span>
       </div>
       <div class="stat">
-        <span class="stat-label">cache root</span>
-        <code class="stat-path muted">{storage.cache_root}</code>
+        <span class="stat-label">partition</span>
+        <span class="stat-val">{formatBytes(storage.cache_disk.total_bytes)}</span>
+        <span class="stat-sub muted">
+          {formatBytes(storage.cache_disk.free_bytes)} free
+        </span>
       </div>
     </div>
+    <div class="cache-root-row">
+      <label class="cache-root-label" for="cache-root-input">cache location</label>
+      <input
+        id="cache-root-input"
+        type="text"
+        class="cache-root-input"
+        bind:value={pendingCacheRoot}
+        placeholder={activeCacheRoot}
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button
+        type="button"
+        class="btn primary"
+        onclick={saveCacheRoot}
+        disabled={savingRoot || !cacheRootDirty}
+      >
+        {savingRoot ? 'Saving…' : 'Save location'}
+      </button>
+    </div>
+    {#if restartRequired}
+      <p class="warn small">
+        Saved <code>{persistedCacheRoot}</code>. Server is still using
+        <code>{activeCacheRoot}</code> — restart <code>astrolab-api</code> to
+        switch over. Existing cache files at the old location stay put.
+      </p>
+    {/if}
   </section>
 
   <section class="panel">
@@ -286,10 +365,30 @@
   .stat-sub {
     font-size: 0.75rem;
   }
-  .stat-path {
-    font-family: ui-monospace, monospace;
-    font-size: 0.75rem;
-    word-break: break-all;
+  .cache-root-row {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+  }
+  .cache-root-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
+  }
+  .cache-root-input {
+    flex: 1 1 280px;
+    min-width: 0;
+    padding: 0.4rem 0.7rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
   }
 
   .capture-row {

@@ -83,6 +83,21 @@ class ProjectStorage:
 
 
 @dataclass
+class CacheDisk:
+    """Disk-usage stats for whatever filesystem the cache root sits on.
+
+    The UI uses this to cap the cache-budget slider at the partition size
+    instead of an arbitrary 'current + 200 GiB' guess. `total_bytes` is the
+    filesystem's full size; `free_bytes` includes everything not used by
+    any file, not just headroom relative to astrolab's own usage.
+    """
+
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+
+
+@dataclass
 class StorageSnapshot:
     """Output of `system_storage()` — what the UI renders."""
 
@@ -91,6 +106,7 @@ class StorageSnapshot:
     unreachable_bytes: int
     unreachable_count: int
     cache_root: str
+    cache_disk: CacheDisk
     per_project: list[ProjectStorage]
 
 
@@ -216,14 +232,28 @@ def system_storage(
         )
     per_project.sort(key=lambda p: p.updated_at, reverse=True)
 
+    cache_disk = _disk_usage(cache.root)
+
     return StorageSnapshot(
         total_bytes=total_bytes,
         entry_count=len(entries),
         unreachable_bytes=unreachable_bytes,
         unreachable_count=unreachable_count,
         cache_root=str(cache.root),
+        cache_disk=cache_disk,
         per_project=per_project,
     )
+
+
+def _disk_usage(path: Path) -> CacheDisk:
+    """Stat the filesystem holding `path`. Falls back to zeros if the path
+    isn't accessible (eg the cache dir was renamed under us)."""
+    import shutil
+    try:
+        u = shutil.disk_usage(path)
+        return CacheDisk(total_bytes=u.total, used_bytes=u.used, free_bytes=u.free)
+    except OSError:
+        return CacheDisk(total_bytes=0, used_bytes=0, free_bytes=0)
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +456,30 @@ def run_cleanup(
 
 
 SETTING_CACHE_MAX_BYTES = "cache_max_bytes"
+SETTING_CACHE_ROOT_OVERRIDE = "cache_root"
+
+# Static fallback if disk_usage() ever fails (e.g. unmounted scratch). In
+# practice we compute the per-disk default at request time instead, via
+# `default_cache_max_bytes_for(path)` below.
 DEFAULT_CACHE_MAX_BYTES = 200 * 1024 * 1024 * 1024  # 200 GiB
+MIN_CACHE_MAX_BYTES = 1024 * 1024 * 1024  # 1 GiB floor (matches API 400)
+
+
+def default_cache_max_bytes_for(cache_dir: Path) -> int:
+    """Half the partition holding `cache_dir`, clamped to at least 1 GiB.
+
+    Used when the user hasn't explicitly set a budget yet; gives every fresh
+    install a sane starting point that scales with the host's disk instead
+    of a hardcoded 200 GiB that's too big for laptops and too small for the
+    Linux box's 2.3 TB scratch.
+    """
+    try:
+        usage = _disk_usage(cache_dir)
+    except OSError:
+        return DEFAULT_CACHE_MAX_BYTES
+    if usage.total_bytes <= 0:
+        return DEFAULT_CACHE_MAX_BYTES
+    return max(MIN_CACHE_MAX_BYTES, usage.total_bytes // 2)
 
 
 def get_setting(key: str, default: Any = None, db_path: Path | None = None) -> Any:

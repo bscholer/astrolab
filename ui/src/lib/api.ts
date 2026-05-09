@@ -392,12 +392,19 @@ export interface ProjectStorage {
   entry_count: number;
 }
 
+export interface CacheDisk {
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+}
+
 export interface StorageSnapshot {
   total_bytes: number;
   entry_count: number;
   unreachable_bytes: number;
   unreachable_count: number;
   cache_root: string;
+  cache_disk: CacheDisk;
   per_project: ProjectStorage[];
 }
 
@@ -411,6 +418,11 @@ export interface CleanupResponse {
 
 export interface SettingsResponse {
   cache_max_bytes: number;
+  // Persisted override (null when the server is using the default location).
+  cache_root: string | null;
+  // What the running process is actually using right now. Differs from
+  // cache_root when the user changed the override since the last restart.
+  cache_root_active: string;
 }
 
 async function deleteJSON<T>(path: string): Promise<T> {
@@ -459,7 +471,7 @@ export const api = {
   storageCleanup: (max_bytes?: number) =>
     postJSON<CleanupResponse>('/api/storage/cleanup', max_bytes !== undefined ? { max_bytes } : {}),
   getSettings: () => getJSON<SettingsResponse>('/api/settings'),
-  patchSettings: (req: { cache_max_bytes?: number }) =>
+  patchSettings: (req: { cache_max_bytes?: number; cache_root?: string }) =>
     patchJSON<SettingsResponse>('/api/settings', req),
   /**
    * Open a WebSocket for live event streaming. The server replays buffered

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
@@ -63,7 +64,10 @@ from server.projects import ProjectManager, ProjectNotFound
 from server.registry import lookup as registry_lookup
 from server.storage import (
     DEFAULT_CACHE_MAX_BYTES,
+    MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
+    SETTING_CACHE_ROOT_OVERRIDE,
+    default_cache_max_bytes_for,
     delete_project,
     get_setting,
     purge_project_cache,
@@ -1032,6 +1036,11 @@ def get_storage() -> dict:
         "unreachable_bytes": snap.unreachable_bytes,
         "unreachable_count": snap.unreachable_count,
         "cache_root": snap.cache_root,
+        "cache_disk": {
+            "total_bytes": snap.cache_disk.total_bytes,
+            "used_bytes": snap.cache_disk.used_bytes,
+            "free_bytes": snap.cache_disk.free_bytes,
+        },
         "per_project": [
             {
                 "project_id": p.project_id,
@@ -1062,7 +1071,7 @@ def storage_cleanup(req: CleanupRequest | None = None) -> dict:
         max_bytes = int(
             get_setting(
                 SETTING_CACHE_MAX_BYTES,
-                DEFAULT_CACHE_MAX_BYTES,
+                default_cache_max_bytes_for(job_manager.cache.root),
                 db_path=job_manager.db_path,
             )
         )
@@ -1085,26 +1094,40 @@ def storage_cleanup(req: CleanupRequest | None = None) -> dict:
 
 @app.get("/api/settings")
 def get_settings() -> dict:
+    # cache_root_override is what's persisted; cache_root_active is what
+    # the running process is actually using. They differ when the user
+    # changed the override since the last server restart — the UI uses
+    # the gap to render a 'restart required' hint.
+    persisted_root = get_setting(
+        SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path
+    )
     return {
         SETTING_CACHE_MAX_BYTES: int(
             get_setting(
                 SETTING_CACHE_MAX_BYTES,
-                DEFAULT_CACHE_MAX_BYTES,
+                default_cache_max_bytes_for(job_manager.cache.root),
                 db_path=job_manager.db_path,
             )
         ),
+        SETTING_CACHE_ROOT_OVERRIDE: persisted_root,
+        "cache_root_active": str(job_manager.cache.root),
     }
 
 
 class PatchSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cache_max_bytes: int | None = None
+    cache_root: str | None = None
+    """A path on disk where the cache should live. Pass '' (empty string) to
+    clear the override and fall back to the env-var / platform default. Takes
+    effect on the next server restart — the running ContentCache won't move
+    files from the old location."""
 
 
 @app.patch("/api/settings")
 def patch_settings(req: PatchSettingsRequest) -> dict:
     if req.cache_max_bytes is not None:
-        if req.cache_max_bytes < 1024 * 1024 * 1024:  # 1 GiB floor
+        if req.cache_max_bytes < MIN_CACHE_MAX_BYTES:
             raise HTTPException(
                 status_code=400,
                 detail="cache_max_bytes must be at least 1 GiB",
@@ -1112,6 +1135,41 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
         set_setting(
             SETTING_CACHE_MAX_BYTES, req.cache_max_bytes, db_path=job_manager.db_path
         )
+    if req.cache_root is not None:
+        new_root = req.cache_root.strip()
+        if new_root == "":
+            # Empty string = clear the override (restart -> default location).
+            set_setting(
+                SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path
+            )
+        else:
+            # Validate: path must be absolute, must exist (or be createable),
+            # must be writeable. Catch the typo cases at PATCH time so the
+            # next restart doesn't fail.
+            from pathlib import Path as _Path
+            p = _Path(new_root).expanduser()
+            if not p.is_absolute():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"cache_root must be an absolute path, got {new_root!r}",
+                )
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"cache_root path can't be created: {exc}",
+                ) from exc
+            if not os.access(p, os.W_OK):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"cache_root {p} exists but isn't writable",
+                )
+            set_setting(
+                SETTING_CACHE_ROOT_OVERRIDE,
+                str(p.resolve()),
+                db_path=job_manager.db_path,
+            )
     return get_settings()
 
 
