@@ -20,7 +20,7 @@
 -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { slide } from 'svelte/transition';
+  import { fade, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { page } from '$app/stores';
   import {
@@ -360,6 +360,22 @@
     seenEventKey.clear();
   }
 
+  /** Lighter reset for patch / revert / reprocess: keeps nodeHash,
+   * nodePort, nodeKind, and previewLoaded so the previously-rendered
+   * preview stays visible while the new job runs. Most edits hit the
+   * cache for upstream nodes anyway, so the hash stays the same and
+   * the IMG element doesn't even reload - no flash. Only job-tied
+   * state (status, progress, durations, dedupe set) gets cleared. */
+  function softResetForNewJob() {
+    nodeStatus = Object.fromEntries(
+      (schema?.nodes ?? []).map((n) => [n.node_id, 'pending' as const])
+    );
+    nodeProgress = {};
+    nodeStartedAt = {};
+    nodeDurationMs = {};
+    seenEventKey.clear();
+  }
+
   function formatStepDuration(ms: number | undefined): string {
     // Sub-second: "0.4s" reads better than "400ms" on a status badge that
     // already trends toward seconds; keep two-digit precision until 10s
@@ -375,7 +391,11 @@
 
   async function attachToJob(jobId: string) {
     if (subscribedJobId === jobId) return;
-    detachFromJob();
+    // Don't null activeJob here - keep the previous job's metadata
+    // visible (capture line, status pill) until the new fetch resolves.
+    // attachToJob's `activeJob = fresh` swap below replaces it in
+    // place, so the user never sees an empty header during patches.
+    detachFromJob({ clearActiveJob: false });
     subscribedJobId = jobId;
     try {
       const fresh = await api.getJob(jobId);
@@ -392,11 +412,11 @@
     }
   }
 
-  function detachFromJob() {
+  function detachFromJob({ clearActiveJob = true }: { clearActiveJob?: boolean } = {}) {
     ws?.close();
     ws = null;
     subscribedJobId = null;
-    activeJob = null;
+    if (clearActiveJob) activeJob = null;
   }
 
   async function loadProject(rid: string) {
@@ -511,20 +531,7 @@
 
   function onProjectUpdated(next: Project) {
     project = next;
-    resetPipelineState();
-    if (schema) {
-      nodeStatus = Object.fromEntries(
-        schema.nodes.map((n) => [n.node_id, 'pending'] as const)
-      );
-      const initKind: Record<string, string> = {};
-      const initPort: Record<string, string> = {};
-      for (const n of next.template.nodes) {
-        initKind[n.id] = n.kind;
-        initPort[n.id] = pickPreviewPort(n.kind);
-      }
-      nodeKind = initKind;
-      nodePort = initPort;
-    }
+    softResetForNewJob();
     attachToJob(next.current_job_id);
   }
 
@@ -774,6 +781,7 @@
               class:expanded={isExpanded}
               class:output={isOutput}
               class:disabled={togglable && !enabled}
+              transition:fade={{ duration: 160, easing: cubicOut }}
             >
               <!-- The head was a `<div role="button">` so we could nest a
                    toggle <button> inside it (HTML disallows nesting real
@@ -1309,6 +1317,10 @@
     justify-content: center;
     /* Visual only - the .head-expand button underneath collects clicks. */
     pointer-events: none;
+    /* Smooth the dim/desaturate when a node is toggled off so the
+       transition reads as 'this step skipped' rather than the card
+       snapping to gray. */
+    transition: opacity 220ms ease, filter 220ms ease;
   }
   .head-img {
     width: 100%;
@@ -1542,10 +1554,12 @@
     opacity: 0.35;
     filter: grayscale(0.6);
   }
-  .node-row.disabled .head-thumb .head-img,
   .node-row.disabled .head-thumb .flow-skeleton,
   .node-row.disabled .head-thumb .head-progress {
-    /* No live progress / preview should advertise activity for an OFF node. */
+    /* No live progress should advertise activity for an OFF node.
+       The cached preview img stays visible under the parent's dim +
+       grayscale so the disable animates instead of snapping to a gray
+       box. */
     display: none;
   }
   .node-row.disabled .head-thumb::after {
