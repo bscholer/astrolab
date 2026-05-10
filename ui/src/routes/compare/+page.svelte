@@ -8,13 +8,21 @@
   just owns gallery loading + URL-pick parsing.
 -->
 <script lang="ts">
+  import { tick } from 'svelte';
   import { page } from '$app/stores';
-  import { api, type GalleryEntry } from '$lib/api';
+  import { api, type GalleryEntry, type Project } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import { templateDisplayName } from '$lib/format';
   import CompareSlider from '$lib/CompareSlider.svelte';
 
   let entries = $state<GalleryEntry[] | null>(null);
+  // Per-project cache; gallery entries don't carry overrides, so the
+  // param-diff line below has to fetch the project record for each side.
+  let projectCache = $state<Record<string, Project>>({});
+  // Bound from <CompareSlider/> so we can focus it without scraping the
+  // DOM by class. CropEditor also uses .viewport, so querySelector would
+  // be the wrong handle on any page that mounts both.
+  let sliderEl = $state<HTMLDivElement | null>(null);
 
   type Pick = { project_id: string; seq: number };
 
@@ -46,11 +54,82 @@
       .catch((e) => toast.error(`Couldn't load gallery: ${(e as Error).message}`));
   });
 
+  // Load Project records for both picks so we can read history[seq].overrides
+  // and compute the param diff. Same project on both sides? Fetch once.
+  $effect(() => {
+    const ids = new Set<string>();
+    if (aPick) ids.add(aPick.project_id);
+    if (bPick) ids.add(bPick.project_id);
+    for (const id of ids) {
+      if (projectCache[id]) continue;
+      api.getProject(id)
+        .then((p) => {
+          projectCache = { ...projectCache, [id]: p };
+        })
+        .catch((e) => {
+          // Param diff is a nicety; failing it shouldn't toast at the user,
+          // but a silent swallow is opaque during debugging.
+          console.debug(`compare: couldn't fetch project ${id}:`, e);
+        });
+    }
+  });
+
+  // Auto-focus the slider's viewport once both renders have resolved so
+  // arrow-key/Home/End wipe works without an extra Tab press. The
+  // bound `sliderEl` is the single source of truth; tick() ensures the
+  // child has mounted and assigned the binding before we focus.
+  $effect(() => {
+    if (!aEntry || !bEntry) return;
+    tick().then(() => {
+      sliderEl?.focus();
+    });
+  });
+
   function entryLabel(e: GalleryEntry): string {
     const friendly = e.target_common_name && e.target_common_name !== e.project_name
       ? `${e.target_common_name} (${e.project_name})`
       : e.project_name;
     return `${friendly} · v${e.seq + 1}`;
+  }
+
+  function overridesFor(pick: Pick | null): Record<string, Record<string, unknown>> {
+    if (!pick) return {};
+    const proj = projectCache[pick.project_id];
+    if (!proj) return {};
+    return proj.history.find((h) => h.seq === pick.seq)?.overrides ?? {};
+  }
+
+  type ParamDiff = { key: string; a: unknown; b: unknown };
+
+  function computeDiff(
+    aOv: Record<string, Record<string, unknown>>,
+    bOv: Record<string, Record<string, unknown>>
+  ): ParamDiff[] {
+    const out: ParamDiff[] = [];
+    const nodes = new Set([...Object.keys(aOv), ...Object.keys(bOv)]);
+    for (const node of nodes) {
+      const aParams = aOv[node] ?? {};
+      const bParams = bOv[node] ?? {};
+      const params = new Set([...Object.keys(aParams), ...Object.keys(bParams)]);
+      for (const p of params) {
+        const av = aParams[p];
+        const bv = bParams[p];
+        // JSON-equality is good enough here (params are scalars or small
+        // arrays); avoids dragging in a deep-equal helper.
+        if (JSON.stringify(av) !== JSON.stringify(bv)) {
+          out.push({ key: `${node}.${p}`, a: av, b: bv });
+        }
+      }
+    }
+    return out;
+  }
+
+  const paramDiff = $derived.by(() => computeDiff(overridesFor(aPick), overridesFor(bPick)));
+
+  function fmtVal(v: unknown): string {
+    if (v === undefined) return '∅';
+    if (typeof v === 'string') return v;
+    return JSON.stringify(v);
   }
 </script>
 
@@ -86,7 +165,23 @@
     </div>
   </div>
 
+  {#if paramDiff.length > 0}
+    <p class="param-diff muted small">
+      {#each paramDiff.slice(0, 4) as d, i (d.key)}
+        {#if i > 0}<span aria-hidden="true"> · </span>{/if}
+        <span class="diff-key">{d.key}</span>:
+        <code>{fmtVal(d.a)}</code>
+        <span aria-hidden="true">→</span>
+        <code>{fmtVal(d.b)}</code>
+      {/each}
+      {#if paramDiff.length > 4}
+        <span class="muted"> (+{paramDiff.length - 4} more)</span>
+      {/if}
+    </p>
+  {/if}
+
   <CompareSlider
+    bind:el={sliderEl}
     aSrc={api.previewUrl(aEntry.preview_hash, aEntry.preview_port)}
     bSrc={api.previewUrl(bEntry.preview_hash, bEntry.preview_port)}
     aLabel={entryLabel(aEntry)}
@@ -148,4 +243,21 @@
   }
   .a-dot { background: var(--accent); }
   .b-dot { background: var(--bad); }
+
+  .param-diff {
+    margin: 0 0 0.6rem;
+    line-height: 1.5;
+  }
+  .param-diff code {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    background: var(--bg-elev);
+    padding: 0.05rem 0.35rem;
+    border-radius: 4px;
+  }
+  .diff-key {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--fg);
+  }
 </style>

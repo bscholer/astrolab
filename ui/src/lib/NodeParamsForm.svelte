@@ -183,7 +183,6 @@
     <span class="cost-pill cost-{cost}" title="Editing this node re-runs {cost} downstream work">
       {cost}
     </span>
-    <span class="muted small">{nodeId}</span>
   </header>
 
   {#snippet paramControl(name: string, field: JSONSchemaField)}
@@ -362,7 +361,7 @@
     border-top: none;
   }
   .param.overridden {
-    box-shadow: inset 3px 0 0 var(--accent, #7aa2ff);
+    box-shadow: inset 3px 0 0 var(--accent, #5eead4);
     padding-left: 0.5rem;
   }
   .param-head {
@@ -379,7 +378,7 @@
     appearance: none;
     background: transparent;
     border: none;
-    color: var(--accent, #7aa2ff);
+    color: var(--accent, #5eead4);
     font-size: 0.7rem;
     cursor: pointer;
     padding: 0;
@@ -413,14 +412,18 @@
   .info-icon:hover,
   .info-icon:focus-visible {
     color: var(--fg, #ddd);
-    border-color: var(--accent, #7aa2ff);
+    border-color: var(--accent, #5eead4);
     outline: none;
   }
+  /* Anchor to the right edge of the icon so the tooltip flows leftward;
+     on phones with the params form pinned to the right of the viewport,
+     anchoring left would push a 320px tooltip off-screen. */
   .info-icon[data-tip]::after {
     content: attr(data-tip);
     position: absolute;
     bottom: calc(100% + 6px);
-    left: 0;
+    left: auto;
+    right: 0;
     white-space: pre-line;
     max-width: min(320px, 60vw);
     width: max-content;
@@ -520,9 +523,9 @@
     transform: rotate(90deg);
   }
   .adv-badge {
-    background: rgba(122, 162, 255, 0.18);
-    color: var(--accent, #7aa2ff);
-    border: 1px solid var(--accent, #7aa2ff);
+    background: rgba(94, 234, 212, 0.18);
+    color: var(--accent, #5eead4);
+    border: 1px solid var(--accent, #5eead4);
     padding: 0.05rem 0.4rem;
     border-radius: 999px;
     font-size: 0.6rem;

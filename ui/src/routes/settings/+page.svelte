@@ -230,7 +230,7 @@
     </button>
     <button
       type="button"
-      class="btn primary"
+      class="btn warn"
       onclick={scanNow}
       disabled={scanning || !captureRoot.trim()}
     >
@@ -515,8 +515,23 @@
     transform: translateY(-1px);
     filter: brightness(1.08);
   }
+  /* Amber call-to-action for buttons that kick off real, side-effecting
+     work (e.g. Scan now), as opposed to .primary which is for saving
+     config. Dark ink keeps the label legible against the bright fill. */
+  .btn.warn {
+    background: linear-gradient(135deg, var(--warn), #f59e0b);
+    color: #2a1d05;
+    border-color: transparent;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.3), 0 0 18px rgba(251, 191, 36, 0.18);
+  }
+  .btn.warn:hover:not(:disabled) {
+    color: #2a1d05;
+    transform: translateY(-1px);
+    filter: brightness(1.08);
+  }
 
-  .warn {
+  p.warn {
     margin-top: 0.5rem;
     font-size: 0.85rem;
     color: var(--warn);

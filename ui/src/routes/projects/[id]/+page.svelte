@@ -701,7 +701,7 @@
       >↷ Redo</button>
       <button
         type="button"
-        class="hbtn reprocess"
+        class="hbtn warn reprocess"
         onclick={reprocess}
         disabled={reprocessing || patching}
         title="Re-run every step from scratch (bypasses the cache)"
@@ -1171,18 +1171,28 @@
     appearance: none;
     background: transparent;
     border: 1px solid var(--border, #444);
-    color: var(--accent, #7aa2ff);
+    color: var(--accent, #5eead4);
     padding: 0.25rem 0.7rem;
     border-radius: 999px;
     font-size: 0.8rem;
     cursor: pointer;
   }
   .hbtn:hover:not(:disabled) {
-    background: rgba(122, 162, 255, 0.1);
+    background: rgba(94, 234, 212, 0.1);
   }
   .hbtn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+  /* Reprocess kicks off a real, expensive job (cache-busting full
+     pipeline rerun). Recolor the pill in amber so it visually matches
+     the .btn.warn convention used on /settings's Scan now. */
+  .hbtn.warn {
+    color: var(--warn, #fbbf24);
+    border-color: var(--warn, #fbbf24);
+  }
+  .hbtn.warn:hover:not(:disabled) {
+    background: rgba(251, 191, 36, 0.1);
   }
   .reprocess {
     margin-left: 0.25rem;
@@ -1662,8 +1672,8 @@
     border: 1px solid var(--border, #333);
   }
   .compare-status .slot.a {
-    color: var(--accent, #7aa2ff);
-    border-color: var(--accent, #7aa2ff);
+    color: var(--accent, #5eead4);
+    border-color: var(--accent, #5eead4);
   }
   .compare-status .slot.b {
     color: var(--bad, #ef4444);
@@ -1682,8 +1692,8 @@
   }
   .ghost-btn:hover {
     background: rgba(255, 255, 255, 0.04);
-    border-color: var(--accent, #7aa2ff);
-    color: var(--accent, #7aa2ff);
+    border-color: var(--accent, #5eead4);
+    color: var(--accent, #5eead4);
   }
 
   .history-strip {
@@ -1718,17 +1728,17 @@
     cursor: pointer;
   }
   .hist-entry > button:first-child:hover {
-    background: rgba(122, 162, 255, 0.06);
+    background: rgba(94, 234, 212, 0.06);
   }
   .hist-entry.active > button:first-child {
-    border-color: var(--accent, #7aa2ff);
-    background: rgba(122, 162, 255, 0.12);
+    border-color: var(--accent, #5eead4);
+    background: rgba(94, 234, 212, 0.12);
   }
   /* Armed slots tint the entire entry so the strip reads as 'these
      two are paired' even when the modal is closed. */
   .hist-entry.slot-a > button:first-child {
-    border-color: var(--accent, #7aa2ff);
-    box-shadow: inset 3px 0 0 var(--accent, #7aa2ff);
+    border-color: var(--accent, #5eead4);
+    box-shadow: inset 3px 0 0 var(--accent, #5eead4);
   }
   .hist-entry.slot-b > button:first-child {
     border-color: var(--bad, #ef4444);
@@ -1753,12 +1763,19 @@
     align-items: center;
     justify-content: center;
   }
+  /* Invisible 44x44 hit area so the icon stays visually small but the
+     button meets phone tap-target minimums. */
+  .publish-toggle::before {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
   .publish-toggle:hover:not(:disabled) {
-    color: var(--accent, #7aa2ff);
+    color: var(--accent, #5eead4);
     background: rgba(255, 255, 255, 0.04);
   }
   .publish-toggle.on {
-    color: var(--accent, #7aa2ff);
+    color: var(--accent, #5eead4);
   }
   .publish-toggle:disabled {
     opacity: 0.4;
@@ -1802,13 +1819,19 @@
     min-width: 1.4rem;
     min-height: 1.4rem;
   }
+  /* Invisible 44x44 hit area; same trick as .publish-toggle. */
+  .compare-toggle::before {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
   .compare-toggle:hover:not(:disabled) {
-    color: var(--accent, #7aa2ff);
+    color: var(--accent, #5eead4);
     background: rgba(255, 255, 255, 0.04);
   }
   .compare-toggle.armed {
-    color: var(--accent, #7aa2ff);
-    background: var(--accent-soft, rgba(122, 162, 255, 0.14));
+    color: var(--accent, #5eead4);
+    background: var(--accent-soft, rgba(94, 234, 212, 0.14));
   }
   .compare-toggle:disabled {
     opacity: 0.4;
@@ -1863,6 +1886,6 @@
     font-family: var(--font-mono, monospace);
     font-size: 0.85rem;
   }
-  .compare-titles .slot.a { color: var(--accent, #7aa2ff); }
+  .compare-titles .slot.a { color: var(--accent, #5eead4); }
   .compare-titles .slot.b { color: var(--bad, #ef4444); }
 </style>
