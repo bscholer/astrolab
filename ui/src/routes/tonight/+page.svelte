@@ -113,6 +113,57 @@
     return `${entry.session_count} (last ${last})`;
   }
 
+  // Sparkline geometry. Kept module-local so the SVG path math stays out
+  // of the markup. Width is intentionally narrow because the column has
+  // to fit a 5-column-wide table without forcing horizontal scroll.
+  const SPARK_W = 110;
+  const SPARK_H = 28;
+  const SPARK_PAD_Y = 2;
+
+  /** Build SVG points for the altitude polyline (clipped to 0..90). */
+  function sparkPoints(curve: number[]): string {
+    if (curve.length < 2) return '';
+    const dx = SPARK_W / (curve.length - 1);
+    const yScale = (alt: number) => {
+      // Clip below horizon to 0 so the line doesn't disappear off the
+      // bottom of the box; alt > 90 is impossible but we clip anyway.
+      const a = Math.max(0, Math.min(90, alt));
+      return SPARK_H - SPARK_PAD_Y - (a / 90) * (SPARK_H - SPARK_PAD_Y * 2);
+    };
+    return curve.map((alt, i) => `${(i * dx).toFixed(1)},${yScale(alt).toFixed(1)}`).join(' ');
+  }
+
+  function sparkArea(curve: number[]): string {
+    if (curve.length < 2) return '';
+    const pts = sparkPoints(curve);
+    return `0,${SPARK_H} ${pts} ${SPARK_W},${SPARK_H}`;
+  }
+
+  /** Y position of the min-alt threshold guide. */
+  function thresholdY(min: number): number {
+    const a = Math.max(0, Math.min(90, min));
+    return SPARK_H - SPARK_PAD_Y - (a / 90) * (SPARK_H - SPARK_PAD_Y * 2);
+  }
+
+  /** Fraction along [dusk, dawn] for "now". Null when we're outside the
+   *  window or the window itself is degenerate; the caller hides the
+   *  marker in either case. */
+  function nowFraction(d: TonightResponse): number | null {
+    if (!d.dusk_utc || !d.dawn_utc) return null;
+    const dusk = new Date(d.dusk_utc).getTime();
+    const dawn = new Date(d.dawn_utc).getTime();
+    const now = new Date(d.at_utc).getTime();
+    if (dawn <= dusk) return null;
+    const frac = (now - dusk) / (dawn - dusk);
+    if (frac < 0 || frac > 1) return null;
+    return frac;
+  }
+
+  function sparkTooltip(curve: number[]): string {
+    const peak = Math.max(...curve);
+    return `peak ${peak.toFixed(0)}° tonight`;
+  }
+
   function fmtWindow(d: TonightResponse): string {
     if (!d.dusk_utc || !d.dawn_utc) return '24-hour daylight';
     const dusk = new Date(d.dusk_utc).toLocaleTimeString(undefined, {
@@ -219,6 +270,7 @@
             <th class="num">Alt now</th>
             <th class="num">Transit</th>
             <th class="num">Hours up</th>
+            <th>Tonight</th>
             <th>Captured</th>
           </tr>
         </thead>
@@ -232,6 +284,46 @@
               <td class="num">{fmtAlt(entry.alt_now_deg)}</td>
               <td class="num">{fmtLocalTime(entry.transit_utc)}</td>
               <td class="num">{fmtHours(entry.hours_above_min_alt)}</td>
+              <td class="spark-cell">
+                {#if entry.alt_curve_deg && entry.alt_curve_deg.length >= 2 && data}
+                  <svg
+                    class="spark"
+                    width={SPARK_W}
+                    height={SPARK_H}
+                    viewBox="0 0 {SPARK_W} {SPARK_H}"
+                    role="img"
+                    aria-label={sparkTooltip(entry.alt_curve_deg)}
+                  >
+                    <title>{sparkTooltip(entry.alt_curve_deg)}</title>
+                    <line
+                      class="spark-threshold"
+                      x1="0"
+                      x2={SPARK_W}
+                      y1={thresholdY(data.min_alt_deg)}
+                      y2={thresholdY(data.min_alt_deg)}
+                    />
+                    <polygon
+                      class="spark-fill"
+                      points={sparkArea(entry.alt_curve_deg)}
+                    />
+                    <polyline
+                      class="spark-line"
+                      points={sparkPoints(entry.alt_curve_deg)}
+                    />
+                    {#if nowFraction(data) !== null}
+                      <line
+                        class="spark-now"
+                        x1={(nowFraction(data) ?? 0) * SPARK_W}
+                        x2={(nowFraction(data) ?? 0) * SPARK_W}
+                        y1="0"
+                        y2={SPARK_H}
+                      />
+                    {/if}
+                  </svg>
+                {:else}
+                  <span class="muted">—</span>
+                {/if}
+              </td>
               <td class="captured-cell">{fmtCaptured(entry)}</td>
             </tr>
           {/each}
@@ -398,5 +490,48 @@
     text-align: right;
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+  /* Sparkline cell: keep the cell tight and the SVG vertically aligned
+     with the numeric columns above. block display drops the inline-svg
+     baseline gap so the curve sits where the eye expects. */
+  .spark-cell {
+    width: 1%;
+    white-space: nowrap;
+  }
+  .spark {
+    display: block;
+    overflow: visible;
+  }
+  /* Threshold guide (min-alt): dim, dashed, behind the curve. Helps the
+     eye gauge how much of the night the target spends above the
+     filter cutoff without needing the Hours-up column to confirm. */
+  .spark-threshold {
+    stroke: var(--fg-mute);
+    stroke-width: 0.5;
+    stroke-dasharray: 2 2;
+    opacity: 0.5;
+  }
+  .spark-fill {
+    fill: var(--accent-soft, rgba(94, 234, 212, 0.18));
+    stroke: none;
+  }
+  .spark-line {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.25;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  /* Vertical "now" tick lets the user place the moment within the curve
+     at a glance: still rising, near peak, on the way down. */
+  .spark-now {
+    stroke: var(--fg);
+    stroke-width: 1;
+    opacity: 0.6;
+  }
+  /* Captured rows pull the curve toward the captured-row color so it
+     reads as part of the same row group instead of a separate accent. */
+  tbody tr.captured .spark-line {
+    stroke: var(--accent);
   }
 </style>

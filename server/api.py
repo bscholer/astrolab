@@ -1556,6 +1556,11 @@ class TonightEntry(BaseModel):
     """How many times the user has captured this target. Joined from the
     targets table by canonical name."""
     last_session_at: str | None = None
+    alt_curve_deg: list[float] | None = None
+    """Altitude samples in degrees, evenly spaced from `dusk_utc` to
+    `dawn_utc` at `alt_curve_step_min` cadence (top-level field). Null
+    when the night window is degenerate (polar day with no usable
+    twilight). The UI renders this as a per-row sparkline."""
 
 
 class TonightResponse(BaseModel):
@@ -1572,6 +1577,10 @@ class TonightResponse(BaseModel):
     """Astronomical (or nautical / civil fallback) twilight start, UTC.
     Null when the site is in 24h daylight (high-latitude polar summer)."""
     dawn_utc: str | None
+    alt_curve_step_min: int
+    """Spacing in minutes between consecutive samples in each entry's
+    `alt_curve_deg` array. Constant within a response so the UI can
+    reconstruct the time axis as dusk_utc + i * step."""
     entries: list[TonightEntry]
 
 
@@ -1685,6 +1694,7 @@ def get_tonight(
             max_magnitude=float(max_mag),
             dusk_utc=dusk_utc.isoformat() if dusk_utc else None,
             dawn_utc=dawn_utc.isoformat() if dawn_utc else None,
+            alt_curve_step_min=sky.SPARKLINE_STEP_MIN,
             entries=[],
         )
 
@@ -1702,12 +1712,13 @@ def get_tonight(
 
     transits: list[datetime | None] = [None] * len(visible_indices)
     hours_arr = np.zeros(len(visible_indices))
+    alt_curves = np.zeros((len(visible_indices), 0))
     if (
         dusk_utc is not None
         and dawn_utc is not None
         and len(visible_indices) > 0
     ):
-        transits, hours_arr = sky.night_transits_and_hours(
+        transits, hours_arr, alt_curves = sky.night_transits_and_hours(
             visible_ra, visible_dec, loc, dusk_utc, dawn_utc, min_alt
         )
 
@@ -1717,6 +1728,15 @@ def get_tonight(
         cap = captured.get(entry.canonical.strip().lower())
         transit = transits[k]
         transit_iso = transit.isoformat() if transit is not None else None
+        # Sparkline payload: round to one decimal so the JSON stays small;
+        # the UI is rendering this into ~32 vertical pixels and can't see
+        # tighter precision. Drop the curve entirely when the night window
+        # was degenerate (zero columns) so the UI just hides the column.
+        curve = (
+            [round(float(v), 1) for v in alt_curves[k]]
+            if alt_curves.shape[1] > 0
+            else None
+        )
         out.append(
             TonightEntry(
                 name=entry.canonical,
@@ -1732,6 +1752,7 @@ def get_tonight(
                 hours_above_min_alt=float(hours_arr[k]),
                 session_count=int(cap["session_count"]) if cap else 0,
                 last_session_at=cap["last_session_at"] if cap else None,
+                alt_curve_deg=curve,
             )
         )
 
@@ -1745,6 +1766,7 @@ def get_tonight(
         max_magnitude=float(max_mag),
         dusk_utc=dusk_utc.isoformat() if dusk_utc else None,
         dawn_utc=dawn_utc.isoformat() if dawn_utc else None,
+        alt_curve_step_min=sky.SPARKLINE_STEP_MIN,
         entries=out,
     )
 

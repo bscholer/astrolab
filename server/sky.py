@@ -308,6 +308,15 @@ def hours_above(
     return above * (step_min / 60.0)
 
 
+# Sparkline cadence for the alt curve we hand to the UI. The internal
+# transit/hours math is at 5 min; we hand back every 6th sample (30 min)
+# because a sparkline rendered into ~120px of horizontal space can't
+# show finer detail anyway, and the JSON shrinks 6x.
+SPARKLINE_STEP_MIN = 30
+_INTERNAL_STEP_MIN = 5
+_SPARKLINE_STRIDE = SPARKLINE_STEP_MIN // _INTERNAL_STEP_MIN
+
+
 def night_transits_and_hours(
     ra_deg: np.ndarray,
     dec_deg: np.ndarray,
@@ -315,8 +324,8 @@ def night_transits_and_hours(
     dusk_utc: datetime,
     dawn_utc: datetime,
     min_alt_deg: float,
-) -> tuple[list[datetime | None], np.ndarray]:
-    """Vectorized transit + hours-above for many targets across one window.
+) -> tuple[list[datetime | None], np.ndarray, np.ndarray]:
+    """Vectorized transit + hours-above + alt curve for many targets.
 
     The Tonight planner walks ~1500 candidates per request; calling the
     per-target helpers in a loop costs ~10ms each (the AltAz transform
@@ -327,19 +336,23 @@ def night_transits_and_hours(
     Returns parallel structures:
       - list of transit datetimes (None when the target doesn't culminate
         inside the window),
-      - ndarray of hours-above-min-alt per target.
+      - ndarray of hours-above-min-alt per target,
+      - ndarray (n_targets, n_sparkline_samples) of altitudes in degrees,
+        sampled at SPARKLINE_STEP_MIN cadence from dusk to dawn. Empty
+        last axis when the window is degenerate.
 
-    Sampling cadence (5 min) and transit interpolation match the
-    per-target helpers, so a switch from this batch path to the per-
-    target one is observationally identical to within sub-minute noise.
+    Internal sampling cadence (5 min) and transit interpolation match
+    the per-target helpers, so a switch from this batch path to the
+    per-target one is observationally identical to within sub-minute
+    noise.
     """
     dusk = _ensure_utc(dusk_utc)
     dawn = _ensure_utc(dawn_utc)
     n_targets = len(ra_deg)
     if n_targets == 0:
-        return [], np.zeros(0)
+        return [], np.zeros(0), np.zeros((0, 0))
     if dawn <= dusk:
-        return [None] * n_targets, np.zeros(n_targets)
+        return [None] * n_targets, np.zeros(n_targets), np.zeros((n_targets, 0))
 
     step_min = 5
     n_samples = int(math.ceil((dawn - dusk).total_seconds() / 60 / step_min)) + 1
@@ -357,6 +370,9 @@ def night_transits_and_hours(
     )
     above_counts = (alts >= min_alt_deg).sum(axis=1)
     hours = above_counts.astype(float) * (step_min / 60.0)
+    # Stride-slice the alt grid for the per-row sparkline so the UI gets
+    # an even sample spacing without paying for a second AltAz transform.
+    alt_curves = alts[:, ::_SPARKLINE_STRIDE]
 
     # Transit detection: sample LST once (cheap; location-only), find the
     # zero crossing of (LST - RA) wrapped to (-180, 180] per target.
@@ -388,4 +404,4 @@ def night_transits_and_hours(
             transits.append(
                 dusk + timedelta(minutes=step_min) * (found_idx + float(frac))
             )
-    return transits, hours
+    return transits, hours, alt_curves

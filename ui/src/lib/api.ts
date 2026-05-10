@@ -487,6 +487,10 @@ export interface TonightEntry {
   // captured. Joined by canonical name against the user's targets table.
   session_count: number;
   last_session_at: string | null;
+  // Altitude samples in degrees, evenly spaced from dusk_utc to dawn_utc
+  // at alt_curve_step_min cadence. Null when the night window is
+  // degenerate (polar day with no twilight).
+  alt_curve_deg: number[] | null;
 }
 
 export interface TonightResponse {
@@ -499,6 +503,10 @@ export interface TonightResponse {
   // Twilight window endpoints, both null at sites in 24h daylight.
   dusk_utc: string | null;
   dawn_utc: string | null;
+  // Spacing in minutes between consecutive samples in each entry's
+  // alt_curve_deg. Constant within a response so the UI reconstructs the
+  // time axis as dusk_utc + i * step.
+  alt_curve_step_min: number;
   entries: TonightEntry[];
 }
 
