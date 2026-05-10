@@ -285,8 +285,8 @@
     nodesConnectable={false}
     elementsSelectable={true}
     fitView
-    fitViewOptions={{ padding: 0.08, maxZoom: 1, minZoom: 0.35 }}
-    minZoom={0.25}
+    fitViewOptions={{ padding: 0.06, maxZoom: 1 }}
+    minZoom={0.2}
     maxZoom={1.6}
     onnodedragstop={onNodeDragStop}
     onnodeclick={onNodeClick}
