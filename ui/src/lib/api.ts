@@ -401,6 +401,10 @@ export interface JSONSchemaField {
   // means "any of these"; a scalar means exact match. Useful for showing
   // method-specific knobs (mtf_* only when method=mtf, etc.).
   ui_when?: Record<string, unknown>;
+  // Inline warning shown beneath a boolean field when its effective value
+  // is true. Used for opt-in toggles whose enablement has a meaningful
+  // cost (storage, RAM, runtime), e.g. drizzle.
+  ui_warning_when_true?: string;
   [k: string]: unknown;
 }
 

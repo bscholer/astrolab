@@ -177,6 +177,69 @@ def test_per_frame_no_count_check(
     assert len(frames) == 4
 
 
+def test_drizzle_default_off_emits_no_drizzle_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default params (drizzle=False) must not emit any drizzle-related flag.
+
+    AC from issue #13: 'Drizzle off path is bit-identical to today.'
+    """
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    (seq_in / "bkg_pp_light.fit").write_bytes(b"")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        (out_dir / "sequence" / "r_bkg_pp_light.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
+    SeqRegisterNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+        },
+        params=SeqRegisterParams(),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    apply_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("seqapplyreg "))
+    assert "-drizzle" not in apply_cmd
+    assert "-pixfrac" not in apply_cmd
+    assert "-scale=" not in apply_cmd
+
+
+def test_drizzle_on_emits_drizzle_pixfrac_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """drizzle=True attaches -drizzle, -scale, and -pixfrac to seqapplyreg."""
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    (seq_in / "bkg_pp_light.fit").write_bytes(b"")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        (out_dir / "sequence" / "r_bkg_pp_light.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
+    SeqRegisterNode().run(
+        inputs={
+            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                            type=PortType.SEQUENCE_FITS),
+        },
+        params=SeqRegisterParams(drizzle=True),  # default scale=2, pixfrac=0.7
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    apply_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("seqapplyreg "))
+    assert "-drizzle" in apply_cmd
+    assert "-scale=2" in apply_cmd
+    assert "-pixfrac=0.7" in apply_cmd
+
+
 def test_raises_when_siril_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

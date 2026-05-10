@@ -9,6 +9,11 @@
     - ui_when: {paramName: value}        -> only shown when current value of
                                             paramName equals `value` (scalar)
                                             or is in `value` (list).
+    - ui_warning_when_true: "..."        -> on a boolean field, render an
+                                            inline warning beneath the
+                                            toggle whenever the effective
+                                            value is true. For opt-ins with
+                                            real cost (drizzle, etc.).
     - (default)                          -> always shown in basic.
 
   Control rendering is heuristic on the field shape:
@@ -260,6 +265,9 @@
           />
           <span>{val ? 'on' : 'off'}</span>
         </label>
+        {#if field.ui_warning_when_true && val}
+          <p class="warn" role="note">{field.ui_warning_when_true}</p>
+        {/if}
       {:else}
         <input
           id="{nodeId}-{name}"
@@ -469,6 +477,17 @@
     gap: 0.4rem;
     font-size: 0.85rem;
     cursor: pointer;
+  }
+
+  .warn {
+    margin: 0.3rem 0 0;
+    padding: 0.35rem 0.55rem;
+    background: rgba(240, 179, 94, 0.12);
+    color: var(--warn, #f0b35e);
+    border: 1px solid rgba(240, 179, 94, 0.45);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    line-height: 1.35;
   }
 
   .advanced {
