@@ -44,6 +44,11 @@
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
   let activeJob = $state<JobSummary | null>(null);
+  // Reference to the history strip element so we can keep it scrolled
+  // to the right edge (newest entry) by default. Without this the user
+  // lands on v1 every time and has to drag right to find the version
+  // they're actually looking at.
+  let historyEl = $state<HTMLOListElement | null>(null);
 
   type NodeStatus = 'pending' | 'running' | 'cached' | 'completed' | 'failed';
   let nodeStatus = $state<Record<string, NodeStatus>>({});
@@ -447,6 +452,22 @@
     }
   });
 
+  // Keep the history strip scrolled to the right edge (newest entry).
+  // Triggers on every history.length change so a fresh PATCH that
+  // appends a new version auto-scrolls into view, and on initial load
+  // so the user lands on the most recent render instead of v1. The
+  // length read is what makes this $effect reactive.
+  $effect(() => {
+    const len = project?.history.length ?? 0;
+    if (len === 0 || !historyEl) return;
+    // Defer one frame so the new <li> is rendered before we measure
+    // scrollWidth — otherwise we scroll to the prior right edge and
+    // miss the freshly-appended entry.
+    requestAnimationFrame(() => {
+      if (historyEl) historyEl.scrollLeft = historyEl.scrollWidth;
+    });
+  });
+
   const undoDisabled = $derived(
     !project || !project.history.some((h) => h.seq === (project!.current_seq - 1))
   );
@@ -601,7 +622,17 @@
                 role="button"
                 tabindex="0"
                 aria-expanded={isExpanded}
-                onclick={() => toggleNode(nid)}
+                onclick={(e) => {
+                  // The nested toggle button calls e.stopPropagation(), but
+                  // Svelte 5's event delegation runs handlers off a single
+                  // root listener and the order vs. our outer onclick has
+                  // burned us in deployed builds — clicks on the toggle were
+                  // also expanding the card. Belt-and-braces: ignore any
+                  // click whose target lives inside .node-toggle so the
+                  // toggle is the only thing that fires.
+                  if ((e.target as HTMLElement)?.closest('.node-toggle')) return;
+                  toggleNode(nid);
+                }}
                 onkeydown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
@@ -794,7 +825,7 @@
 
     <section class="history">
       <h2 class="section-h">History <span class="muted small">({project.history.length})</span></h2>
-      <ol class="history-strip">
+      <ol class="history-strip" bind:this={historyEl}>
         {#each project.history as h (h.seq)}
           <li class="hist-entry" class:active={h.seq === project.current_seq}>
             <button type="button" onclick={() => revertTo(h.seq)} title={h.label ?? ''}>

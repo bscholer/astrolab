@@ -355,47 +355,51 @@
               {@const multiMode = selectedSessionIds.size > 0}
               {#if multiMode}
                 <div class="multi-bar" role="region" aria-label="Selected sessions">
-                  <span class="multi-count">
-                    {selectedSessionIds.size} session{selectedSessionIds.size === 1 ? '' : 's'} selected
-                  </span>
-                  <button
-                    type="button"
-                    class="multi-clear"
-                    onclick={() => (selectedSessionIds = new Set())}
-                  >
-                    clear
-                  </button>
-                  <label class="run-row run-row--inline">
-                    <span>Template</span>
-                    <select bind:value={runTemplateId}>
-                      {#if templates === null}
-                        <option>loading…</option>
-                      {:else}
-                        {#each templates as t (t.id)}
-                          <option value={t.id}>{t.id}</option>
-                        {/each}
-                      {/if}
-                    </select>
-                  </label>
-                  <label class="run-row run-row--inline">
-                    <span>Calibration</span>
-                    <select bind:value={runCalibrationMode}>
-                      <option value="auto">auto (use catalog match)</option>
-                      <option value="none">none (skip masters)</option>
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    class="run-go"
-                    onclick={submitMultiRun}
-                    disabled={runningMulti}
-                  >
-                    {runningMulti
-                      ? 'Submitting…'
-                      : selectedSessionIds.size === 1
-                        ? 'Run pipeline'
-                        : `Run pipeline (${selectedSessionIds.size} sessions)`}
-                  </button>
+                  <div class="multi-bar-head">
+                    <span class="multi-count">
+                      {selectedSessionIds.size} session{selectedSessionIds.size === 1 ? '' : 's'} selected
+                    </span>
+                    <button
+                      type="button"
+                      class="multi-clear"
+                      onclick={() => (selectedSessionIds = new Set())}
+                    >
+                      clear
+                    </button>
+                  </div>
+                  <div class="multi-bar-controls">
+                    <label class="run-row run-row--inline">
+                      <span>Template</span>
+                      <select bind:value={runTemplateId}>
+                        {#if templates === null}
+                          <option>loading…</option>
+                        {:else}
+                          {#each templates as t (t.id)}
+                            <option value={t.id}>{t.id}</option>
+                          {/each}
+                        {/if}
+                      </select>
+                    </label>
+                    <label class="run-row run-row--inline">
+                      <span>Calibration</span>
+                      <select bind:value={runCalibrationMode}>
+                        <option value="auto">auto (use catalog match)</option>
+                        <option value="none">none (skip masters)</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      class="run-go"
+                      onclick={submitMultiRun}
+                      disabled={runningMulti}
+                    >
+                      {runningMulti
+                        ? 'Submitting…'
+                        : selectedSessionIds.size === 1
+                          ? 'Run pipeline'
+                          : `Run pipeline (${selectedSessionIds.size} sessions)`}
+                    </button>
+                  </div>
                 </div>
               {/if}
               <ul class="session-list">
@@ -680,12 +684,56 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0.25rem;
-    margin: -0.25rem 0 -0.25rem -0.2rem;
+    padding: 0.35rem;
+    margin: -0.35rem 0 -0.35rem -0.2rem;
     cursor: pointer;
+  }
+  /* Custom checkbox: hide the native input, render a styled box that
+     follows the rest of the design language (rounded corners, accent on
+     hover, accent fill + check glyph when checked). The native input is
+     still present in the DOM so screen readers and keyboard nav (space
+     to toggle, focus-visible ring) work normally. */
+  .session-pick input[type='checkbox'] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: inherit;
+    display: inline-grid;
+    place-content: center;
+    transition: background-color 140ms ease, border-color 140ms ease;
+  }
+  .session-pick input[type='checkbox']::before {
+    content: '';
+    width: 10px;
+    height: 10px;
+    transform: scale(0);
+    background-color: var(--accent-ink);
+    /* Inline SVG check — recolored to currentColor by clip-path/mask. */
+    clip-path: polygon(14% 44%, 0 60%, 40% 100%, 100% 20%, 80% 6%, 38% 70%);
+    transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .session-pick input[type='checkbox']:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .session-pick input[type='checkbox']:checked::before {
+    transform: scale(1);
+  }
+  .session-pick input[type='checkbox']:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+  .session-pick input[type='checkbox']:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .session-pick input[disabled] {
     cursor: not-allowed;
+    opacity: 0.5;
   }
   .session-content {
     flex: 1;
@@ -703,21 +751,42 @@
     border-radius: 999px;
     margin-left: auto;
   }
+
+  /* ---------- Multi-select action bar ---------- */
+  /* Sticky-feeling command bar that appears above the session list when
+     the user has 1+ sessions checked. Two rows: header (count + clear)
+     on top, controls (template + calibration + run) below — keeps the
+     run button anchored at the same spot regardless of how many session
+     pills wrap. */
   .multi-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.7rem 0.85rem;
+    margin-bottom: 0.65rem;
+    border-radius: var(--radius);
+    background:
+      linear-gradient(135deg, rgba(94, 234, 212, 0.06), rgba(122, 162, 255, 0.06)),
+      var(--bg-elev);
+    border: 1px solid var(--accent);
+    box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.15) inset, 0 0 24px -6px var(--accent-soft);
+  }
+  .multi-bar-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .multi-bar-controls {
     display: flex;
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
-    padding: 0.55rem 0.7rem;
-    margin-bottom: 0.5rem;
-    border-radius: var(--radius);
-    background: rgba(122, 162, 255, 0.08);
-    border: 1px solid var(--accent);
   }
   .multi-count {
     font-weight: 600;
     color: var(--accent);
     font-variant-numeric: tabular-nums;
+    font-size: 0.95rem;
   }
   .multi-clear {
     appearance: none;
@@ -727,12 +796,61 @@
     font: inherit;
     font-size: 0.78rem;
     cursor: pointer;
-    text-decoration: underline;
-    text-decoration-color: var(--hairline);
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    transition: background-color 140ms ease, color 140ms ease;
   }
-  .multi-clear:hover { color: var(--fg); }
-  .run-row--inline > span { min-width: 5rem; }
-  .run-row--inline { font-size: 0.85rem; }
+  .multi-clear:hover {
+    color: var(--fg);
+    background: rgba(255, 255, 255, 0.05);
+  }
+  /* Inline row inside the bar: label (de-emphasized) + styled select. */
+  .run-row--inline {
+    font-size: 0.82rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0;
+  }
+  .run-row--inline > span {
+    min-width: 0;
+    color: var(--fg-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.7rem;
+  }
+  /* Custom select: kill the native chrome, paint our own chevron via an
+     inline SVG background. Looks coherent with the dark UI; the popup
+     itself is still the OS-native list (acceptable cost for not having
+     to ship a full headless dropdown). */
+  .multi-bar select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--bg);
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%239ca3af' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 0.7rem;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.85rem;
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 0.32rem 1.6rem 0.32rem 0.6rem;
+    cursor: pointer;
+    transition: border-color 140ms ease, background-color 140ms ease;
+  }
+  .multi-bar select:hover {
+    border-color: var(--border-strong);
+  }
+  .multi-bar select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .multi-bar .run-go {
+    margin-left: auto;
+  }
 
   .session-head {
     display: flex;
