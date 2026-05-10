@@ -38,7 +38,7 @@ jobs:
         # Siril is not available on the runner; the one Siril smoke test in
         # the suite skips itself when it can't find a binary, which is what
         # we want here.
-        run: uv run pytest -q
+        run: uv run pytest -q -n auto
 
   ui:
     name: svelte-check + build
