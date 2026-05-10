@@ -51,6 +51,7 @@
   let persistedSiteLon = $state<number | null>(null);
   let persistedSiteElev = $state<number | null>(null);
   let savingSite = $state(false);
+  let locating = $state(false);
 
   async function saveCaptureRoot() {
     const next = captureRoot.trim();
@@ -123,6 +124,39 @@
     } catch (e) {
       toast.error(`Couldn't load settings: ${(e as Error).message}`);
     }
+  }
+
+  function useMyLocation() {
+    if (!navigator.geolocation) {
+      toast.error("This browser doesn't expose a geolocation API.");
+      return;
+    }
+    locating = true;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        // Round to four decimal places (~11m). Browsers report sub-meter
+        // precision but the planner only resolves to degrees, so trimming
+        // the noise keeps the inputs readable.
+        siteLatInput = pos.coords.latitude.toFixed(4);
+        siteLonInput = pos.coords.longitude.toFixed(4);
+        // Browser elevation is null on most desktops (geolocation comes
+        // from IP/wifi triangulation, no altitude). Only override if we
+        // actually got a number.
+        if (Number.isFinite(pos.coords.altitude)) {
+          siteElevInput = String(Math.round(pos.coords.altitude as number));
+        }
+        toast.success('Location filled in. Click Save to persist.');
+        locating = false;
+      },
+      (err) => {
+        // PERMISSION_DENIED, POSITION_UNAVAILABLE, TIMEOUT — surface the
+        // browser's own message rather than mapping codes; it's already
+        // user-readable and we'd just rephrase.
+        toast.error(`Couldn't get location: ${err.message}`);
+        locating = false;
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 },
+    );
   }
 
   async function saveSite() {
@@ -364,6 +398,17 @@
       />
       <span class="field-unit">m</span>
     </label>
+  </div>
+  <div class="site-actions">
+    <button
+      type="button"
+      class="btn"
+      onclick={useMyLocation}
+      disabled={locating}
+      title="Fill latitude and longitude from your browser's geolocation"
+    >
+      {locating ? 'Locating…' : 'Use my location'}
+    </button>
     <button
       type="button"
       class="btn primary"
@@ -579,6 +624,12 @@
     flex-wrap: wrap;
     margin-top: 0.6rem;
     align-items: flex-end;
+  }
+  .site-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.85rem;
+    flex-wrap: wrap;
   }
   .field {
     display: flex;
