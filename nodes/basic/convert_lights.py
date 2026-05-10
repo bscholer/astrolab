@@ -20,8 +20,10 @@ let that surface as a runtime error rather than silently degrading.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
+from astropy.io import fits
 from pydantic import BaseModel, Field
 
 from nodes.base import Node
@@ -88,11 +90,36 @@ class ConvertLightsNode(Node[ConvertLightsParams]):
         staging = out_dir_path / "_inputs"
         staging.mkdir(parents=True, exist_ok=True)
 
-        fits_files = sorted(_iter_input_fits(src_dir))
-        if not fits_files:
+        candidates = sorted(_iter_input_fits(src_dir))
+        if not candidates:
             raise RuntimeError(f"convert_lights: no .fits files found under {src_dir}")
 
-        ctx.progress(0.05, f"convert_lights: staging {len(fits_files)} frames")
+        # Drop corrupt/truncated subs before they reach Siril. Dwarf 3 occasionally
+        # writes partial frames when an exposure is aborted mid-write; Siril's
+        # convert accepts them but `calibrate` aborts the entire sequence the
+        # moment it hits one, wasting the whole multi-hour run.
+        fits_files: list[Path] = []
+        skipped: list[tuple[Path, str]] = []
+        for f in candidates:
+            ok, reason = _is_complete_fits(f)
+            if ok:
+                fits_files.append(f)
+            else:
+                skipped.append((f, reason or "unknown"))
+        if skipped:
+            for f, reason in skipped:
+                ctx.log.warning("convert_lights: skipping %s (%s)", f.name, reason)
+        if not fits_files:
+            raise RuntimeError(
+                f"convert_lights: every candidate under {src_dir} was corrupt or "
+                f"unreadable ({len(skipped)} skipped)"
+            )
+
+        ctx.progress(
+            0.05,
+            f"convert_lights: staging {len(fits_files)} frames"
+            + (f" ({len(skipped)} corrupt skipped)" if skipped else ""),
+        )
         for f in fits_files:
             link = staging / f.name
             if link.exists() or link.is_symlink():
@@ -204,3 +231,45 @@ def _quote(path: Path) -> str:
     if any(c in s for c in (" ", "\t", '"')):
         return '"' + s.replace('"', r"\"") + '"'
     return s
+
+
+def _is_complete_fits(path: Path) -> tuple[bool, str | None]:
+    """Cheap header-only check that `path` is a structurally complete FITS.
+
+    Reads the primary HDU header and verifies the on-disk size is at least
+    `data_offset + padded(NAXIS1 * ... * |BITPIX|/8)`. Catches Dwarf 3
+    partial-write artifacts (a header-valid FITS truncated mid-data block)
+    without touching pixel data, so 1700-frame sessions stay millisecond-cheap.
+    """
+    try:
+        actual = path.stat().st_size
+    except OSError as exc:
+        return False, f"stat failed: {exc!r}"
+    if actual == 0:
+        return False, "zero bytes"
+    try:
+        with warnings.catch_warnings():
+            # astropy emits "may have been truncated" on the very files we want
+            # to skip; we report it ourselves, so silence the duplicate noise.
+            warnings.simplefilter("ignore", fits.verify.VerifyWarning)
+            warnings.filterwarnings("ignore", message=".*truncated.*", module="astropy.io.fits")
+            with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
+                hdu = hdul[0]
+                header = hdu.header
+                naxis = int(header.get("NAXIS", 0))
+                if naxis < 2:
+                    # No image array (e.g. table-only). Leave to downstream code.
+                    return True, None
+                bitpix = int(header["BITPIX"])
+                dims = [int(header[f"NAXIS{i + 1}"]) for i in range(naxis)]
+                data_offset = int(hdu.fileinfo()["datLoc"])
+    except Exception as exc:
+        return False, f"unreadable header: {exc!r}"
+    data_bytes = abs(bitpix) // 8
+    for d in dims:
+        data_bytes *= d
+    padded = ((data_bytes + 2879) // 2880) * 2880
+    expected = data_offset + padded
+    if actual < expected:
+        return False, f"truncated: {actual}/{expected} bytes"
+    return True, None
