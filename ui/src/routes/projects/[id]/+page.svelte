@@ -1372,23 +1372,29 @@
     color: var(--accent-ink);
   }
 
-  /* Graph layout: graph canvas on the left, optional param side panel on
-     the right when a node is selected. Side panel collapses below the
-     graph on narrow viewports so phones still get a usable layout. */
+  /* Graph layout: canvas takes the full row, side panel floats over the
+     right edge as an overlay when a node is selected. Earlier draft
+     reserved a 360px column for the panel, but that left the canvas
+     too narrow for long chains - nodes had to shrink to <60px wide to
+     fit. Full-width canvas keeps the graph readable; the overlay panel
+     only covers the right ~24% when actively in use. */
   .graph-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 360px;
-    gap: 0.75rem;
-    align-items: start;
+    position: relative;
   }
   .graph-layout > :global(.graph-host) { width: 100%; }
   .graph-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: 10px;
     overflow: hidden;
-    max-height: 70vh;
     overflow-y: auto;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+    z-index: 10;
   }
   .graph-panel-head {
     display: flex;
@@ -1433,11 +1439,16 @@
     object-fit: contain;
     display: block;
   }
-  @media (max-width: 900px) {
-    .graph-layout {
-      grid-template-columns: 1fr;
+  @media (max-width: 720px) {
+    /* On narrow viewports the floating panel would cover most of the
+       graph; let it sit below as a normal block instead. */
+    .graph-panel {
+      position: static;
+      width: 100%;
+      box-shadow: none;
+      margin-top: 0.5rem;
+      max-height: 50vh;
     }
-    .graph-panel { max-height: 50vh; }
   }
 
   /* ---------- Pipeline accordion ----------
