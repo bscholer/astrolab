@@ -4,6 +4,7 @@ from . import convert_lights as _convert_lights  # noqa: F401  registers on impo
 from . import crop as _crop  # noqa: F401  registers on import
 from . import downscale as _downscale  # noqa: F401  registers on import
 from . import graxpert as _graxpert  # noqa: F401  registers on import
+from . import narrowband_palette as _narrowband_palette  # noqa: F401  registers on import
 from . import save_image as _save_image  # noqa: F401  registers on import
 from . import seq_bg_extract as _seq_bg_extract  # noqa: F401  registers on import
 from . import seq_offset as _seq_offset  # noqa: F401  registers on import
