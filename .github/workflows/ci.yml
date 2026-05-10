@@ -90,8 +90,33 @@ jobs:
           # The webhook returns 202 the moment astrolab-deploy.service is
           # queued; the actual pull/build/restart runs out-of-band. We
           # don't wait for it here because the API is going to restart
-          # itself partway through.
-          curl --fail-with-body -sS -X POST \
+          # itself partway through. -w prints status + content type +
+          # body size so a CF Access HTML interception (which also
+          # returns 200 in some configs) is visible at a glance. Also
+          # echo a trimmed prefix of the body so we can spot a CF login
+          # page vs a real {"status":"queued"}.
+          tmp="$(mktemp)"
+          status=$(curl -sS -X POST \
+            -o "$tmp" \
+            -w "%{http_code}" \
             -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
             -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-            https://astrolab.benscholer.com/api/_deploy
+            https://astrolab.benscholer.com/api/_deploy)
+          ctype=$(file -b --mime-type "$tmp" 2>/dev/null || echo unknown)
+          size=$(wc -c < "$tmp")
+          echo "status=$status content-type=$ctype size=$size"
+          echo "---response body (first 500 bytes)---"
+          head -c 500 "$tmp" | tr -d '\r' || true
+          echo
+          echo "---"
+          if [[ "$status" != "202" ]]; then
+            echo "::error::expected 202 from /api/_deploy, got $status"
+            exit 1
+          fi
+          # Reject HTML responses even when status is 2xx: that's CF
+          # Access showing a login page through the tunnel pretending to
+          # be the origin. A real 202 is JSON.
+          if [[ "$ctype" == "text/html" ]]; then
+            echo "::error::got HTML body, almost certainly intercepted by CF Access"
+            exit 1
+          fi
