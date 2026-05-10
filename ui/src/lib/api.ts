@@ -179,6 +179,10 @@ export interface NodeSpec {
   variant: string | null;
   params: Record<string, unknown>;
   inputs: Record<string, string>;
+  // Optional: hide this node in the pipeline view when the named
+  // upstream node has enabled=false. Walks transitively through chained
+  // declarations.
+  ui_depends_on?: string | null;
 }
 
 export interface Template {
@@ -370,6 +374,9 @@ export interface TemplateNodeSchema {
   defaults: Record<string, unknown>;
   template_params: Record<string, unknown>;
   inputs: Record<string, string>;
+  // Optional id of an upstream node whose `enabled` param must be true
+  // for this node to render in the pipeline view. Walks transitively.
+  ui_depends_on?: string | null;
 }
 
 export interface JSONSchemaField {

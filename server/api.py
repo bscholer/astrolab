@@ -1444,6 +1444,7 @@ def get_template_schema(template_id: str) -> dict:
                 "defaults": defaults,
                 "template_params": spec.params,
                 "inputs": spec.inputs,
+                "ui_depends_on": spec.ui_depends_on,
             }
         )
     return {

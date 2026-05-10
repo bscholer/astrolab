@@ -18,7 +18,7 @@ def test_load_template_by_id() -> None:
     # bump invalidates downstream cache entries (intentional), so a stray
     # increment is something we want to catch in review, not let slip
     # silently.
-    assert t.version == 8
+    assert t.version == 9
     kinds = [n.kind for n in t.nodes]
     # Chain: convert -> calibrate -> resample -> pedestal -> bg_extract ->
     # register -> stack -> auto_crop -> graxpert_bg (linear) ->
