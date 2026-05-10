@@ -101,6 +101,31 @@
   let patching = $state(false);
   let reprocessing = $state(false);
   let coverBusy = $state(false);
+  // Per-seq busy guard so spam-clicks on the publish star don't fire
+  // overlapping requests against the same row.
+  let publishBusy = $state<Record<number, boolean>>({});
+
+  /** Flip a single history entry's gallery-published flag. Orthogonal
+   * to cover_seq (cover = this project's thumbnail; published = surface
+   * in the global gallery feed). */
+  async function togglePublished(seq: number, currentlyPublished: boolean) {
+    if (!project || publishBusy[seq]) return;
+    publishBusy = { ...publishBusy, [seq]: true };
+    try {
+      const next = await api.setHistoryPublished(project.id, seq, !currentlyPublished);
+      onProjectUpdated(next);
+      toast.success(
+        !currentlyPublished
+          ? `Published v${seq + 1} to the gallery`
+          : `Unpublished v${seq + 1}`
+      );
+    } catch (e) {
+      toast.error(`Couldn't update gallery: ${(e as Error).message}`);
+    } finally {
+      const { [seq]: _, ...rest } = publishBusy;
+      publishBusy = rest;
+    }
+  }
 
   /** Toggle the cover pin: if the current seq is already the cover,
    * clear it (server will fall back to the auto-pick). Otherwise pin
@@ -833,6 +858,41 @@
               <span class="hist-label">{shortHistoryLabel(h.label)}</span>
               <span class="hist-time muted small">{shortAgo(h.created_at)}</span>
             </button>
+            <button
+              type="button"
+              class="publish-toggle"
+              class:on={h.published}
+              disabled={publishBusy[h.seq]}
+              aria-pressed={h.published}
+              aria-label={h.published
+                ? `Unpublish v${h.seq + 1} from gallery`
+                : `Publish v${h.seq + 1} to gallery`}
+              title={h.published
+                ? 'In gallery — click to unpublish'
+                : 'Publish to gallery'}
+              onclick={() => togglePublished(h.seq, h.published)}
+            >
+              <!-- Filled star when published, hollow otherwise. Single
+                   path swap keeps the click target stable. -->
+              {#if h.published}
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M12 2.5l2.95 5.98 6.6.96-4.78 4.66 1.13 6.58L12 17.6l-5.9 3.1 1.13-6.58L2.45 9.44l6.6-.96L12 2.5z"
+                  />
+                </svg>
+              {:else}
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linejoin="round"
+                    d="M12 2.5l2.95 5.98 6.6.96-4.78 4.66 1.13 6.58L12 17.6l-5.9 3.1 1.13-6.58L2.45 9.44l6.6-.96L12 2.5z"
+                  />
+                </svg>
+              {/if}
+            </button>
           </li>
         {/each}
       </ol>
@@ -1318,13 +1378,16 @@
     overflow-x: auto;
     padding-bottom: 0.4rem;
   }
-  .hist-entry button {
+  .hist-entry {
+    position: relative;
+  }
+  .hist-entry > button:first-child {
     appearance: none;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid var(--border, #333);
     color: var(--fg, #ddd);
     border-radius: 6px;
-    padding: 0.4rem 0.6rem;
+    padding: 0.4rem 1.6rem 0.4rem 0.6rem;
     font: inherit;
     text-align: left;
     min-width: 14rem;
@@ -1334,12 +1397,42 @@
     gap: 0.15rem;
     cursor: pointer;
   }
-  .hist-entry button:hover {
+  .hist-entry > button:first-child:hover {
     background: rgba(122, 162, 255, 0.06);
   }
-  .hist-entry.active button {
+  .hist-entry.active > button:first-child {
     border-color: var(--accent, #7aa2ff);
     background: rgba(122, 162, 255, 0.12);
+  }
+  /* Star toggle pinned to the top-right of the entry. Off state stays
+     muted so it doesn't compete for attention; on state lights up in
+     accent. Clicking it does NOT trigger revert (separate button). */
+  .publish-toggle {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--fg-mute, #777);
+    padding: 0.2rem;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .publish-toggle:hover:not(:disabled) {
+    color: var(--accent, #7aa2ff);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .publish-toggle.on {
+    color: var(--accent, #7aa2ff);
+  }
+  .publish-toggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
   .hist-seq {
     font-variant-numeric: tabular-nums;

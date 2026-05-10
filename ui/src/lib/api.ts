@@ -257,6 +257,9 @@ export interface ProjectHistoryEntry {
   overrides: Record<string, Record<string, unknown>>;
   label: string | null;
   created_at: string;
+  // Whether this entry is opted in to the public gallery feed. Defaults
+  // to false; the user toggles it via setHistoryPublished().
+  published: boolean;
 }
 
 export interface GalleryEntry {
@@ -471,6 +474,10 @@ export const api = {
     postJSON<Project>(`/api/projects/${id}/revert/${seq}`, {}),
   setProjectCover: (id: string, seq: number | null) =>
     putJSON<Project>(`/api/projects/${id}/cover`, { seq }),
+  setHistoryPublished: (id: string, seq: number, published: boolean) =>
+    putJSON<Project>(`/api/projects/${id}/history/${seq}/published`, {
+      published,
+    }),
   listGallery: () => getJSON<GalleryEntry[]>('/api/gallery'),
   deleteProject: (id: string) =>
     deleteJSON<{ evicted_count: number; bytes_freed: number }>(

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -275,6 +275,13 @@ MIGRATIONS: dict[int, list[str]] = {
         # behavior, preserved as fallback in _attach_preview).
         "ALTER TABLE projects ADD COLUMN cover_seq INTEGER",
         "INSERT INTO schema_version (version) VALUES (7)",
+    ],
+    8: [
+        # Gallery opt-in: history entries default to unpublished. The
+        # gallery surfaces only published rows, so the user's iterate-
+        # and-compare crumbs don't drown the curated keepers.
+        "ALTER TABLE project_history ADD COLUMN published INTEGER NOT NULL DEFAULT 0",
+        "INSERT INTO schema_version (version) VALUES (8)",
     ],
 }
 

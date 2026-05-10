@@ -205,6 +205,78 @@ def test_template_schema_unknown_404(client) -> None:
     assert r.status_code == 404
 
 
+def test_history_published_default_false(client, tmp_path: Path) -> None:
+    """Fresh entries land unpublished — gallery is opt-in."""
+    src = _make_png(tmp_path / "in.png")
+    body = client.post("/api/projects", json=_payload(src)).json()
+    assert body["history"][0]["published"] is False
+
+
+def test_set_history_published_round_trips(client, tmp_path: Path) -> None:
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+
+    r = client.put(
+        f"/api/projects/{pid}/history/0/published",
+        json={"published": True},
+    )
+    assert r.status_code == 200
+    assert r.json()["history"][0]["published"] is True
+
+    # Idempotent: same call returns the same state.
+    r2 = client.put(
+        f"/api/projects/{pid}/history/0/published",
+        json={"published": True},
+    )
+    assert r2.json()["history"][0]["published"] is True
+
+    # And a flip back works.
+    r3 = client.put(
+        f"/api/projects/{pid}/history/0/published",
+        json={"published": False},
+    )
+    assert r3.json()["history"][0]["published"] is False
+
+
+def test_set_history_published_unknown_seq_400(client, tmp_path: Path) -> None:
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    r = client.put(
+        f"/api/projects/{pid}/history/99/published",
+        json={"published": True},
+    )
+    assert r.status_code == 400
+
+
+def test_set_history_published_unknown_project_404(client) -> None:
+    r = client.put(
+        "/api/projects/not-real/history/0/published",
+        json={"published": True},
+    )
+    assert r.status_code == 404
+
+
+def test_gallery_filters_to_published_only(client, tmp_path: Path) -> None:
+    """The gallery feed surfaces only opted-in history entries."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+
+    # Default state: no publishes -> empty gallery.
+    assert client.get("/api/gallery").json() == []
+
+    # Publish seq 0 -> shows up.
+    client.put(
+        f"/api/projects/{pid}/history/0/published",
+        json={"published": True},
+    )
+    body = client.get("/api/gallery").json()
+    assert len(body) == 1
+    assert body[0]["project_id"] == pid
+    assert body[0]["seq"] == 0
+
+
 def test_cancel_running_job_marks_interrupted(client, tmp_path: Path) -> None:
     """Set the cancel token on a record before the worker picks it up; the
     worker should see it on entry, mark the job interrupted, and never run
