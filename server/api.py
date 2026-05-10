@@ -372,10 +372,16 @@ def trigger_deploy(request: Request) -> dict[str, str]:
 
     Auth lives at the edge: Cloudflare Access fronts this hostname and the
     /api/_deploy path is gated by a service-token-only policy, so the only
-    callers that reach us are CI runs holding the service token. We
-    additionally require the CF-Access-Client-Id header before doing
-    anything, as defense in depth against a leaked internal IP being hit
-    directly from the LAN.
+    callers that reach us are CI runs holding the service token. CF Access
+    consumes the CF-Access-Client-Id/Secret headers itself and strips them
+    before forwarding; what reaches origin is a `Cf-Access-Jwt-Assertion`
+    header containing CF's signed JWT for the authenticated request. We
+    require that header's presence as defense in depth against direct LAN
+    hits to 192.168.1.254:8000 bypassing the tunnel entirely.
+    (The JWT signature could be verified against
+    https://benscholer.cloudflareaccess.com/cdn-cgi/access/certs, but
+    presence is sufficient since CF Access wouldn't issue one without a
+    valid policy match.)
 
     The handler shells out to `sudo systemctl start --no-block
     astrolab-deploy.service` and returns 202. The deploy unit is a
@@ -383,8 +389,8 @@ def trigger_deploy(request: Request) -> dict[str, str]:
     inside the deploy script doesn't kill the in-flight request before
     the client sees the response (the response is already sent).
     """
-    if not request.headers.get("Cf-Access-Client-Id"):
-        raise HTTPException(403, detail="missing CF Access service-token headers")
+    if not request.headers.get("Cf-Access-Jwt-Assertion"):
+        raise HTTPException(403, detail="missing CF Access JWT")
     if not shutil.which("systemctl"):
         # Local dev / Mac: pretend we did the thing so end-to-end tests
         # of the route's contract pass without systemd being present.
