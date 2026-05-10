@@ -974,6 +974,10 @@ def list_gallery(conn: DBDep) -> list[GalleryEntry]:
         capture = _capture_for_project(conn, project.source_session_ids)
         target_common = capture.target_common_name
         for entry in project.history:
+            # Opt-in: only entries the user explicitly published surface
+            # in the gallery. Iterate-and-compare crumbs stay private.
+            if not entry.published:
+                continue
             record = job_manager.get(entry.job_id)
             if record is None or not record.outputs:
                 continue
@@ -1033,6 +1037,28 @@ def set_project_cover(
     pick: latest entry with outputs)."""
     try:
         project = project_manager.set_cover(project_id, req.seq)
+    except ProjectNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _project_to_response(project, conn)
+
+
+class SetPublishedRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    published: bool
+
+
+@app.put("/api/projects/{project_id}/history/{seq}/published")
+def set_history_published(
+    project_id: str, seq: int, req: SetPublishedRequest, conn: DBDep
+) -> dict:
+    """Toggle a single history entry's gallery-visible state. The gallery
+    feed filters to published-only; this is the user's opt-in surface."""
+    try:
+        project = project_manager.set_published(project_id, seq, req.published)
     except ProjectNotFound as exc:
         raise HTTPException(
             status_code=404, detail=f"project {project_id} not found"

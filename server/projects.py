@@ -116,6 +116,7 @@ class HistoryEntry:
     overrides: dict[str, dict[str, Any]]
     label: str | None
     created_at: str
+    published: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +125,7 @@ class HistoryEntry:
             "overrides": self.overrides,
             "label": self.label,
             "created_at": self.created_at,
+            "published": self.published,
         }
 
 
@@ -378,6 +380,33 @@ class ProjectManager:
         log.info("project cover set: %s -> seq=%s", project_id, seq)
         return project
 
+    def set_published(
+        self, project_id: str, seq: int, published: bool
+    ) -> Project:
+        """Toggle the gallery 'published' flag on a single history entry.
+
+        The Gallery view filters to published-only; this is the user's
+        opt-in to surface a render publicly. Orthogonal to cover_seq
+        (cover is the project's representative thumbnail; published
+        promotes the entry to the global gallery feed).
+        """
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+        entry = next((h for h in project.history if h.seq == seq), None)
+        if entry is None:
+            raise ValueError(f"project {project_id} has no history seq {seq}")
+        entry.published = bool(published)
+        project.updated_at = _now()
+        self._persist_history_published(project_id, seq, entry.published)
+        self._persist_project(project, kind="update")
+        log.info(
+            "project history published: %s seq=%d -> %s",
+            project_id, seq, entry.published,
+        )
+        return project
+
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.
@@ -474,8 +503,9 @@ class ProjectManager:
                 conn.execute(
                     """
                     INSERT INTO project_history
-                    (project_id, seq, job_id, overrides_json, label, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (project_id, seq, job_id, overrides_json, label, created_at,
+                     published)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_id,
@@ -484,10 +514,33 @@ class ProjectManager:
                         json.dumps(entry.overrides),
                         entry.label,
                         entry.created_at,
+                        int(entry.published),
                     ),
                 )
         except sqlite3.Error:
             log.exception("DB write failed for history on project %s", project_id)
+        finally:
+            conn.close()
+
+    def _persist_history_published(
+        self, project_id: str, seq: int, published: bool
+    ) -> None:
+        try:
+            conn = self._conn()
+        except Exception:
+            return
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE project_history SET published=? "
+                    "WHERE project_id=? AND seq=?",
+                    (int(published), project_id, seq),
+                )
+        except sqlite3.Error:
+            log.exception(
+                "DB write failed updating published on %s seq=%d",
+                project_id, seq,
+            )
         finally:
             conn.close()
 
@@ -522,6 +575,13 @@ class ProjectManager:
             (row["id"],),
         ).fetchall()
         for hr in history_rows:
+            # `published` is nullable for pre-v8 rows that predate the
+            # column. Default falsy -> unpublished.
+            published = (
+                bool(hr["published"])
+                if "published" in hr.keys()  # noqa: SIM118
+                else False
+            )
             project.history.append(
                 HistoryEntry(
                     seq=hr["seq"],
@@ -529,6 +589,7 @@ class ProjectManager:
                     overrides=json.loads(hr["overrides_json"]),
                     label=hr["label"],
                     created_at=hr["created_at"],
+                    published=published,
                 )
             )
         return project
