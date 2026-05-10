@@ -1,5 +1,5 @@
 id: calibrate_register_stack
-version: 9
+version: 10
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
@@ -24,6 +24,12 @@ description: |
   pedestal/stretch/rejection params; bump back to 1.0 for the final
   render. Each scale has its own cache lineage so flipping is cheap
   once both have been built.
+
+  register.drizzle is off by default. Enable it to opt into Fruchter &
+  Hook subpixel reconstruction in seqapplyreg — meaningful for dithered
+  smart-telescope captures (Dwarf 3 dithers between subs) but at scale=2
+  it ~4x's stack memory and storage. Drizzle on/off get separate cache
+  lineages without busting upstream calibrate/convert work.
 
   The pedestal offset between resample and bg_extract pushes any
   near-zero negatives back into positive territory; Siril 1.4's

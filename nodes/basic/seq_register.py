@@ -117,6 +117,45 @@ class SeqRegisterParams(BaseModel):
         default=None, ge=0.0, le=1.0,
         description="Drop frames whose roundness is in the worst N fraction.",
     )
+    # --- drizzle (subpixel reconstruction) ---
+    # Drizzle (Fruchter & Hook) reprojects each input pixel onto a finer output
+    # grid using a shrunken footprint ('drop'), recovering subpixel detail from
+    # dithered captures. Smart telescopes like Dwarf 3 dither between subs, so
+    # this is meaningful for them. Off by default: scale=2 quadruples pixel
+    # count, RAM, and downstream stack cost.
+    drizzle: bool = Field(
+        default=False,
+        description="Enable drizzle (Fruchter & Hook subpixel reconstruction) "
+        "during seqapplyreg. Quadruples pixel count and stack memory at scale=2; "
+        "use only when you've verified your captures are sufficiently dithered.",
+        json_schema_extra={
+            "ui_warning_when_true": (
+                "Drizzle ~4x's stack storage and RAM at scale=2. "
+                "Re-stacking with drizzle off keeps the original cache lineage."
+            ),
+        },
+    )
+    drizzle_scale: Literal[1, 2, 3] = Field(
+        default=2,
+        description="Drizzle output scale factor. 2 is the standard choice and "
+        "what Dwarf 3 captures justify; 1 just bypasses the upscale; 3 is "
+        "rarely worthwhile and quickly memory-bound.",
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"drizzle": True},
+        },
+    )
+    drizzle_dropsize: float = Field(
+        default=0.7, ge=0.1, le=1.0,
+        description="Drop size as a fraction of input pixel size. 0.7 is the "
+        "Siril/HST default; smaller drops give sharper output but need more "
+        "frames to fill in coverage gaps.",
+        json_schema_extra={
+            "ui_section": "advanced",
+            "ui_when": {"drizzle": True},
+            "hash_precision": 2,
+        },
+    )
 
 
 @register("seq_register")
@@ -162,6 +201,14 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
             apply_opts.append(f"-filter-fwhm={params.filter_fwhm}")
         if params.filter_round is not None:
             apply_opts.append(f"-filter-round={params.filter_round}")
+        if params.drizzle:
+            # Drizzle reuses the same `r_` output prefix; only the dimensions
+            # change. Cache key already differs because the params are part
+            # of the seq_register hash, so drizzle-on/off get distinct cache
+            # lineages without touching upstream calibrate/convert.
+            apply_opts.append("-drizzle")
+            apply_opts.append(f"-scale={params.drizzle_scale}")
+            apply_opts.append(f"-pixfrac={params.drizzle_dropsize}")
 
         align_commands: list[str]
         if params.method == "platesolve":
