@@ -1406,6 +1406,13 @@
     flex: 1;
     font-size: 0.9rem;
     font-weight: 600;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .graph-panel-head :global(.status-mini) {
+    flex-shrink: 0;
   }
   .graph-panel :global(form) {
     padding: 0.6rem 0.75rem;

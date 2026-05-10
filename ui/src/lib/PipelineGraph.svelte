@@ -285,8 +285,8 @@
     nodesConnectable={false}
     elementsSelectable={true}
     fitView
-    fitViewOptions={{ padding: 0.18, maxZoom: 1, minZoom: 0.55 }}
-    minZoom={0.4}
+    fitViewOptions={{ padding: 0.08, maxZoom: 1, minZoom: 0.35 }}
+    minZoom={0.25}
     maxZoom={1.6}
     onnodedragstop={onNodeDragStop}
     onnodeclick={onNodeClick}
@@ -301,11 +301,10 @@
 <style>
   .graph-host {
     width: 100%;
-    /* Sized to read as a panel rather than a full-page canvas: tall
-       enough that a few rows of nodes have breathing room, short
-       enough that the page stays scrollable. fitView + minZoom keep
-       the nodes legible regardless of how wide the chain is. */
-    height: 480px;
+    /* Sized to read as a panel rather than a full-page canvas. Single-
+       row linear templates fill comfortably; branchy templates with
+       multi-rank dagre output get headroom via vertical pan. */
+    height: 360px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--bg-elev);
