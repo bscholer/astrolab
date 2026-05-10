@@ -266,6 +266,15 @@ def enrich(name: str | None) -> CatalogEntry | None:
     return index.get(key.replace(" ", ""))
 
 
+def all_entries() -> list[CatalogEntry]:
+    """All parsed catalog rows. Read-only iteration target for planners
+    (Tonight view) that walk the whole catalog instead of resolving by
+    name. The returned list aliases the cached internal list, so callers
+    must treat it as immutable."""
+    entries, _ = _load()
+    return entries
+
+
 def stats() -> dict[str, int]:
     """Tiny diagnostic — handy on a /api/health probe to confirm the
     catalog is loaded and how many rows are indexed."""

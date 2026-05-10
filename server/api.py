@@ -38,9 +38,11 @@ import sqlite3
 import subprocess
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -49,8 +51,10 @@ from pydantic import BaseModel, ConfigDict
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
+import server.sky as sky
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
+from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.scanner import scan as run_scan
 from server.job_builder import (
@@ -72,6 +76,9 @@ from server.storage import (
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_SITE_ELEVATION_M,
+    SETTING_SITE_LATITUDE,
+    SETTING_SITE_LONGITUDE,
     default_cache_max_bytes_for,
     delete_project,
     get_setting,
@@ -1342,6 +1349,11 @@ def get_settings() -> dict:
     capture_root = get_setting(
         SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path
     )
+    site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
+    site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
+    site_elev = get_setting(
+        SETTING_SITE_ELEVATION_M, None, db_path=job_manager.db_path
+    )
     return {
         SETTING_CACHE_MAX_BYTES: int(
             get_setting(
@@ -1353,6 +1365,15 @@ def get_settings() -> dict:
         SETTING_CACHE_ROOT_OVERRIDE: persisted_root,
         "cache_root_active": str(job_manager.cache.root),
         SETTING_CAPTURE_ROOT: capture_root,
+        SETTING_SITE_LATITUDE: (
+            float(site_lat) if site_lat is not None else None
+        ),
+        SETTING_SITE_LONGITUDE: (
+            float(site_lon) if site_lon is not None else None
+        ),
+        SETTING_SITE_ELEVATION_M: (
+            float(site_elev) if site_elev is not None else None
+        ),
     }
 
 
@@ -1368,6 +1389,19 @@ class PatchSettingsRequest(BaseModel):
     """Where the user's raw captures live (Dwarf 3 SD copy, etc.). Pass ''
     to clear. Validated as: absolute, exists, readable. Effect is immediate
     — the next /api/scan call uses this path."""
+    site_latitude: float | None = None
+    """Observer latitude in decimal degrees, north positive. Range
+    -90..90. Stored alongside longitude/elevation; the Tonight planner
+    needs all three before it will compute alt/az."""
+    site_longitude: float | None = None
+    """Observer longitude in decimal degrees, east positive. Range
+    -180..180."""
+    site_elevation_m: float | None = None
+    """Observer elevation in meters above sea level. Used for refraction
+    correction in alt/az; non-negative. We don't enforce a hard upper
+    bound, the highest plausible amateur site is Mauna Kea-ish at 4200m
+    so anything past 9000m almost certainly indicates a unit confusion
+    and we reject it."""
 
 
 @app.patch("/api/settings")
@@ -1449,7 +1483,270 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
                 str(cp.resolve()),
                 db_path=job_manager.db_path,
             )
+    if req.site_latitude is not None:
+        if not -90.0 <= req.site_latitude <= 90.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"site_latitude must be in [-90, 90], got {req.site_latitude}",
+            )
+        set_setting(
+            SETTING_SITE_LATITUDE, float(req.site_latitude),
+            db_path=job_manager.db_path,
+        )
+    if req.site_longitude is not None:
+        if not -180.0 <= req.site_longitude <= 180.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"site_longitude must be in [-180, 180], got {req.site_longitude}",
+            )
+        set_setting(
+            SETTING_SITE_LONGITUDE, float(req.site_longitude),
+            db_path=job_manager.db_path,
+        )
+    if req.site_elevation_m is not None:
+        # Below sea level is fine (Dead Sea, etc.); past 9000m is almost
+        # certainly a unit-confusion bug.
+        if not -500.0 <= req.site_elevation_m <= 9000.0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "site_elevation_m must be in [-500, 9000] meters, "
+                    f"got {req.site_elevation_m}"
+                ),
+            )
+        set_setting(
+            SETTING_SITE_ELEVATION_M, float(req.site_elevation_m),
+            db_path=job_manager.db_path,
+        )
     return get_settings()
+
+
+# ---------------------------------------------------------------------------
+# Tonight planner
+# ---------------------------------------------------------------------------
+
+
+class TonightEntry(BaseModel):
+    """One row in the Tonight table.
+
+    Sky positions are J2000/ICRS-aligned; alt/az are evaluated at the
+    `at` query timestamp. `transit_local_iso` is the target's upper
+    culmination during the night window in the site's wall-clock time
+    (we encode the offset implied by the longitude so the UI doesn't
+    have to redo the timezone math). `null` transit means the target
+    doesn't culminate inside dusk-to-dawn at this site, in which case
+    the UI just shows alt_now and lets the user decide."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    common_name: str | None = None
+    object_type: str | None = None
+    constellation: str | None = None
+    ra_deg: float
+    dec_deg: float
+    magnitude: float | None = None
+    alt_now_deg: float
+    az_now_deg: float
+    transit_utc: str | None = None
+    """ISO 8601 UTC instant of the target's upper culmination during the
+    night window, or null when it doesn't transit between dusk and dawn."""
+    hours_above_min_alt: float
+    session_count: int = 0
+    """How many times the user has captured this target. Joined from the
+    targets table by canonical name."""
+    last_session_at: str | None = None
+
+
+class TonightResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    at_utc: str
+    """The query timestamp echoed back, normalized to UTC ISO 8601."""
+    site_latitude: float
+    site_longitude: float
+    site_elevation_m: float
+    min_alt_deg: float
+    max_magnitude: float
+    dusk_utc: str | None
+    """Astronomical (or nautical / civil fallback) twilight start, UTC.
+    Null when the site is in 24h daylight (high-latitude polar summer)."""
+    dawn_utc: str | None
+    entries: list[TonightEntry]
+
+
+@app.get("/api/tonight", response_model=TonightResponse)
+def get_tonight(
+    conn: DBDep,
+    at: str | None = None,
+    min_alt: float = 20.0,
+    max_mag: float = 12.0,
+) -> TonightResponse:
+    """List visible deep-sky targets for the configured site at time `at`.
+
+    Site coords come from the settings KV; missing any of latitude /
+    longitude / elevation is a 400 with a clear message rather than a
+    silent fallback. We pick that strictness on purpose: silently
+    defaulting to (0,0,0) would mean the user sees a list that's wrong
+    by tens of degrees and has no idea why.
+
+    `at` defaults to now (UTC). Targets are filtered to those currently
+    above `min_alt` degrees and brighter than `max_mag` V-band, then
+    sorted by descending altitude so the highest, easiest-to-frame
+    targets surface first.
+    """
+    site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
+    site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
+    site_elev = get_setting(
+        SETTING_SITE_ELEVATION_M, None, db_path=job_manager.db_path
+    )
+    if site_lat is None or site_lon is None or site_elev is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "site location is not configured. Set site_latitude, "
+                "site_longitude, and site_elevation_m on the Settings page "
+                "before using the Tonight planner."
+            ),
+        )
+
+    if at is None:
+        at_utc = datetime.now(UTC)
+    else:
+        try:
+            parsed = datetime.fromisoformat(at)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"at must be ISO 8601, got {at!r}",
+            ) from exc
+        at_utc = (
+            parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        )
+
+    loc = sky.observer_location(
+        float(site_lat), float(site_lon), float(site_elev)
+    )
+    window = sky.twilight_window(loc, at_utc)
+    dusk_utc, dawn_utc = window if window is not None else (None, None)
+
+    # Pull every target the user has captured, keyed by the OpenNGC
+    # canonical id of the row it resolves to. This lets us join across
+    # naming conventions: a targets-table row stored as "M 31" lights
+    # up the catalog entry whose canonical is "NGC 224", because the
+    # OpenNGC alias index maps both to the same row. Targets that don't
+    # resolve to any catalog row are stored under their literal name as
+    # a fallback (e.g. user-named regions OpenNGC doesn't cover).
+    captured: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(
+        """
+        SELECT t.name AS name,
+               COUNT(s.id) AS session_count,
+               MAX(s.started_at) AS last_session_at
+        FROM targets t
+        LEFT JOIN sessions s ON s.target_id = t.id
+        GROUP BY t.id, t.name
+        """
+    ).fetchall():
+        if row["session_count"] is None or row["session_count"] == 0:
+            continue
+        catalog_hit = openngc_enrich(row["name"])
+        key = (
+            catalog_hit.canonical.strip().lower()
+            if catalog_hit is not None
+            else (row["name"] or "").strip().lower()
+        )
+        captured[key] = {
+            "session_count": row["session_count"] or 0,
+            "last_session_at": row["last_session_at"],
+        }
+
+    # Pre-filter the catalog to entries with usable RA/Dec/mag, then
+    # batch the alt/az transform. astropy's vectorized AltAz call is
+    # ~100x faster than per-entry calls on the full ~14k OpenNGC list.
+    catalog_entries = openngc_all_entries()
+    candidates = []
+    for entry in catalog_entries:
+        if entry.ra_deg is None or entry.dec_deg is None:
+            continue
+        # Treat unknown magnitude as "fail the cap" so we don't surface
+        # rows we can't tell the user how bright they are.
+        if entry.magnitude is None or entry.magnitude > max_mag:
+            continue
+        candidates.append(entry)
+
+    if not candidates:
+        return TonightResponse(
+            at_utc=at_utc.isoformat(),
+            site_latitude=float(site_lat),
+            site_longitude=float(site_lon),
+            site_elevation_m=float(site_elev),
+            min_alt_deg=float(min_alt),
+            max_magnitude=float(max_mag),
+            dusk_utc=dusk_utc.isoformat() if dusk_utc else None,
+            dawn_utc=dawn_utc.isoformat() if dawn_utc else None,
+            entries=[],
+        )
+
+    ra_arr = np.asarray([e.ra_deg for e in candidates], dtype=float)
+    dec_arr = np.asarray([e.dec_deg for e in candidates], dtype=float)
+    alts, azs = sky.alt_az_batch(ra_arr, dec_arr, loc, at_utc)
+
+    # Drop targets below the alt cutoff before the (more expensive) night-
+    # window math. At a typical mid-latitude site this halves the
+    # candidate set.
+    visible_mask = alts >= min_alt
+    visible_indices = np.where(visible_mask)[0]
+    visible_ra = ra_arr[visible_mask]
+    visible_dec = dec_arr[visible_mask]
+
+    transits: list[datetime | None] = [None] * len(visible_indices)
+    hours_arr = np.zeros(len(visible_indices))
+    if (
+        dusk_utc is not None
+        and dawn_utc is not None
+        and len(visible_indices) > 0
+    ):
+        transits, hours_arr = sky.night_transits_and_hours(
+            visible_ra, visible_dec, loc, dusk_utc, dawn_utc, min_alt
+        )
+
+    out: list[TonightEntry] = []
+    for k, idx in enumerate(visible_indices):
+        entry = candidates[int(idx)]
+        cap = captured.get(entry.canonical.strip().lower())
+        transit = transits[k]
+        transit_iso = transit.isoformat() if transit is not None else None
+        out.append(
+            TonightEntry(
+                name=entry.canonical,
+                common_name=entry.common_name,
+                object_type=entry.object_type,
+                constellation=entry.constellation,
+                ra_deg=float(entry.ra_deg),
+                dec_deg=float(entry.dec_deg),
+                magnitude=entry.magnitude,
+                alt_now_deg=float(alts[idx]),
+                az_now_deg=float(azs[idx]),
+                transit_utc=transit_iso,
+                hours_above_min_alt=float(hours_arr[k]),
+                session_count=int(cap["session_count"]) if cap else 0,
+                last_session_at=cap["last_session_at"] if cap else None,
+            )
+        )
+
+    out.sort(key=lambda e: e.alt_now_deg, reverse=True)
+    return TonightResponse(
+        at_utc=at_utc.isoformat(),
+        site_latitude=float(site_lat),
+        site_longitude=float(site_lon),
+        site_elevation_m=float(site_elev),
+        min_alt_deg=float(min_alt),
+        max_magnitude=float(max_mag),
+        dusk_utc=dusk_utc.isoformat() if dusk_utc else None,
+        dawn_utc=dawn_utc.isoformat() if dawn_utc else None,
+        entries=out,
+    )
 
 
 # ---------------------------------------------------------------------------

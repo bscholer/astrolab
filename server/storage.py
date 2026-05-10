@@ -466,6 +466,16 @@ Lives server-side rather than in browser localStorage so it survives a
 cache clear and works the same from any device pointed at the same
 astrolab instance — the scan target is server-local anyway."""
 
+SETTING_SITE_LATITUDE = "site_latitude"
+SETTING_SITE_LONGITUDE = "site_longitude"
+SETTING_SITE_ELEVATION_M = "site_elevation_m"
+"""Observer site coordinates for the Tonight planner. Latitude in
+decimal degrees (north positive), longitude in decimal degrees (east
+positive, IAU convention), elevation in meters above sea level. All
+three must be set before /api/tonight will compute alt/az; partial
+configs return 400 so the user fixes the gap explicitly instead of
+getting silently-wrong sky math from a hardcoded fallback."""
+
 # Static fallback if disk_usage() ever fails (e.g. unmounted scratch). In
 # practice we compute the per-disk default at request time instead, via
 # `default_cache_max_bytes_for(path)` below.
