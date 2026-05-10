@@ -63,6 +63,15 @@ class NodeSpec(BaseModel):
     inputs: dict[str, str] = Field(default_factory=dict)
     """Map of input_port -> '<source_node_id>.<source_port>'. Explicit edges only in Phase 0."""
 
+    ui_depends_on: str | None = None
+    """UI-only visibility gate: id of another node in the same template
+    whose `enabled` param must be true for this node to render in the
+    pipeline view. Walks transitively, so chained gates work
+    (recombine -> replace -> extract). Has no runtime effect; disabled
+    upstream nodes already passthrough at execution time, so the hide
+    just spares the user UI noise about steps that won't change the
+    output."""
+
 
 class Template(BaseModel):
     """A pipeline as a file. Hand-editable, version-controlled, fork = copy."""

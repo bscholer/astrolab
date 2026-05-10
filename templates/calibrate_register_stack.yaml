@@ -1,5 +1,5 @@
 id: calibrate_register_stack
-version: 8
+version: 9
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
@@ -166,6 +166,9 @@ nodes:
     inputs:
       starless: starnet_extract.starless
       stars: starnet_extract.stars
+    # Surface this row only when the starless workflow is on — synthstar
+    # regen is meaningless when stars haven't been extracted.
+    ui_depends_on: starnet_extract
 
   - id: starnet_recombine
     kind: starnet_recombine
@@ -177,6 +180,10 @@ nodes:
     inputs:
       starless: starnet_extract.starless
       stars: starnet_replace.image
+    # Hide along with replace so the whole starless workflow lives or dies
+    # as a unit; replace already gates on extract, so this transitively
+    # disappears when extract is off.
+    ui_depends_on: starnet_replace
 
   - id: crop
     kind: crop

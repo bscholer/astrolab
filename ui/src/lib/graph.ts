@@ -201,6 +201,48 @@ export function isTogglable(
 }
 
 /**
+ * Walk the per-template ui_depends_on chain to decide whether a node
+ * should render in the pipeline view.
+ *
+ * A node declares a single upstream id whose `enabled` param must be
+ * true. That upstream may itself declare its own upstream, so chains
+ * collapse transitively (recombine -> replace -> extract).
+ *
+ * Returns false if any link in the chain has enabled=false. Always
+ * returns true when the chain has no entry. Fails open if a chain
+ * names a non-existent node so a typo doesn't blank the whole UI.
+ */
+export function isNodeVisible(
+  nodeId: string,
+  schemaByNodeId: Record<
+    string,
+    {
+      ui_depends_on?: string | null;
+      defaults: Record<string, unknown>;
+      template_params: Record<string, unknown>;
+    }
+  >,
+  overridesByNodeId: Record<string, Record<string, unknown>>
+): boolean {
+  const seen = new Set<string>();
+  let cursor: string | null | undefined = schemaByNodeId[nodeId]?.ui_depends_on;
+  while (cursor) {
+    if (seen.has(cursor)) return true; // cycle guard, shouldn't happen
+    seen.add(cursor);
+    const upstream = schemaByNodeId[cursor];
+    if (!upstream) return true; // typo / unknown ref; fail open
+    const merged = { ...upstream.defaults, ...upstream.template_params };
+    const ov = overridesByNodeId[cursor] ?? {};
+    const v = 'enabled' in ov ? ov.enabled : merged.enabled;
+    // Nodes without an `enabled` field implicitly count as on. Otherwise
+    // any falsy value hides this whole subchain.
+    if (v !== undefined && !v) return false;
+    cursor = upstream.ui_depends_on;
+  }
+  return true;
+}
+
+/**
  * Cost-aware affordance helpers.
  *
  * When the user tweaks a param on node N, every downstream node has to

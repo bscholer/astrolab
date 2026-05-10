@@ -33,6 +33,7 @@
   } from '$lib/api';
   import {
     blastRadiusCost,
+    isNodeVisible,
     isTogglable,
     nodeDisplayName
   } from '$lib/graph';
@@ -271,6 +272,16 @@
   // how nodes are listed in the schema (we serialize them in order on the
   // server). Schema-driven so we don't need a layout pass.
   const orderedNodeIds = $derived(schema?.nodes.map((n) => n.node_id) ?? []);
+
+  // Index by node_id for the dependency-visibility walk. isNodeVisible
+  // reads {ui_depends_on, defaults, template_params}; the live overrides
+  // come from project.current_overrides at call time.
+  const schemaByNodeId = $derived.by(() => {
+    const out: Record<string, TemplateSchema['nodes'][number]> = {};
+    if (!schema) return out;
+    for (const n of schema.nodes) out[n.node_id] = n;
+    return out;
+  });
 
   function eventKey(ev: JobEvent): string {
     return `${ev.timestamp}|${ev.type}|${ev.node_id ?? ''}|${ev.fraction ?? ''}|${ev.message ?? ''}`;
@@ -756,39 +767,34 @@
             {@const togglable = isTogglable(props)}
             {@const enabled = togglable ? effectiveEnabled(fullDefaults, overrides) : true}
             {@const modifiedCount = Object.keys(overrides).length}
+            {@const visible = isNodeVisible(nid, schemaByNodeId, project.current_overrides as Record<string, Record<string, unknown>>)}
+            {#if visible}
             <li
               class="node-row node-{s}"
               class:expanded={isExpanded}
               class:output={isOutput}
               class:disabled={togglable && !enabled}
             >
-              <!-- The head was a <button> until we needed to nest a toggle
-                   switch inside it; HTML disallows that. role="button" +
-                   tabindex + keydown gives us the same semantics without
-                   the SSR hydration warning. -->
-              <div
-                class="node-head"
-                role="button"
-                tabindex="0"
-                aria-expanded={isExpanded}
-                onclick={(e) => {
-                  // The nested toggle button calls e.stopPropagation(), but
-                  // Svelte 5's event delegation runs handlers off a single
-                  // root listener and the order vs. our outer onclick has
-                  // burned us in deployed builds — clicks on the toggle were
-                  // also expanding the card. Belt-and-braces: ignore any
-                  // click whose target lives inside .node-toggle so the
-                  // toggle is the only thing that fires.
-                  if ((e.target as HTMLElement)?.closest('.node-toggle')) return;
-                  toggleNode(nid);
-                }}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggleNode(nid);
-                  }
-                }}
-              >
+              <!-- The head was a `<div role="button">` so we could nest a
+                   toggle <button> inside it (HTML disallows nesting real
+                   buttons). That worked structurally but kept regressing
+                   under Svelte 5's event delegation - click order vs.
+                   stopPropagation got us twice. Now the head is a plain
+                   relative container; the click target for expand is an
+                   invisible full-cover sibling button, and the toggle is
+                   a separate sibling. No nesting, no propagation guards,
+                   no event-order assumptions. -->
+              <div class="node-head">
+                <!-- Invisible click target. Sits at the bottom of the
+                     z-stack so visual content paints over it; visuals
+                     have pointer-events: none so clicks land here. -->
+                <button
+                  type="button"
+                  class="head-expand"
+                  aria-expanded={isExpanded}
+                  aria-label={isExpanded ? `Collapse ${nodeDisplayName(kind, nid)}` : `Expand ${nodeDisplayName(kind, nid)}`}
+                  onclick={() => toggleNode(nid)}
+                ></button>
                 <!-- Card body: 16:9 preview that fills the tile when
                      collapsed. When the row is expanded this shrinks
                      into a small left-side thumb (CSS handles it via
@@ -843,9 +849,12 @@
                     </span>
                   {/if}
                   {#if togglable}
-                    <!-- The toggle is its own clickable region inside the
-                         head button; clicks here must NOT propagate into
-                         the expand/collapse handler on the parent. -->
+                    <!-- Sibling-of-the-expand-button under the hood:
+                         .head-overlay has pointer-events: none, the
+                         toggle re-enables them locally. So even though
+                         the markup is nested, the runtime click stack
+                         is just (toggle | expand) - no propagation
+                         games. -->
                     <button
                       type="button"
                       class="node-toggle"
@@ -853,11 +862,8 @@
                       role="switch"
                       aria-checked={enabled}
                       aria-label={enabled ? `Disable ${nodeDisplayName(kind, nid)}` : `Enable ${nodeDisplayName(kind, nid)}`}
-                      title={enabled ? 'On — click to skip this step' : 'Off — click to run this step'}
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        toggleNodeEnabled(nid, props, fullDefaults, overrides);
-                      }}
+                      title={enabled ? 'On - click to skip this step' : 'Off - click to run this step'}
+                      onclick={() => toggleNodeEnabled(nid, props, fullDefaults, overrides)}
                     >
                       <span class="node-toggle-knob"></span>
                     </button>
@@ -960,6 +966,7 @@
                 </div>
               {/if}
             </li>
+            {/if}
           {/each}
         </ol>
       </section>
@@ -1262,17 +1269,34 @@
      and expanded. Expanding doesn't reshape the head into a flat row;
      it just drops a body section below. Less visual jolt. */
   .node-head {
-    appearance: none;
     background: transparent;
-    border: none;
     color: inherit;
     width: 100%;
-    padding: 0;
-    cursor: pointer;
     text-align: left;
     border-radius: 0;
     position: relative;
     display: block;
+  }
+
+  /* Invisible click target. Sits at the bottom of the stack and
+     receives any click that the visual layers (thumb, overlay) pass
+     through via pointer-events: none. The toggle, by contrast, opts
+     pointer-events back in so it captures its own clicks without any
+     stopPropagation gymnastics. */
+  .head-expand {
+    position: absolute;
+    inset: 0;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    z-index: 0;
+  }
+  .head-expand:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .head-thumb {
@@ -1283,6 +1307,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    /* Visual only - the .head-expand button underneath collects clicks. */
+    pointer-events: none;
   }
   .head-img {
     width: 100%;
@@ -1478,6 +1504,10 @@
     position: relative;
     flex-shrink: 0;
     transition: background-color 160ms ease, border-color 160ms ease;
+    /* The overlay sets pointer-events: none so visual layers don't
+       swallow clicks meant for the .head-expand sibling underneath.
+       The toggle has to opt back in to receive its own clicks. */
+    pointer-events: auto;
   }
   .node-toggle:hover {
     border-color: var(--border-strong);
