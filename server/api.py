@@ -64,6 +64,7 @@ from server.jobs import JobManager
 from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_preview
 from server.projects import ProjectManager, ProjectNotFound
+from server.registry import all_kinds as registry_all_kinds
 from server.registry import lookup as registry_lookup
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
@@ -1453,6 +1454,160 @@ def get_template_schema(template_id: str) -> dict:
         "nodes": nodes_out,
         "outputs": template.outputs,
     }
+
+
+@app.get("/api/nodes")
+def list_node_kinds() -> dict:
+    """Catalog of every registered node kind. The graph editor uses this
+    to populate its add-node palette and to validate connections (port
+    types must match between source.output and target.input)."""
+    out: list[dict] = []
+    for kind, variant in registry_all_kinds():
+        cls = registry_lookup(kind, variant)
+        schema = cls.params_schema.model_json_schema()
+        defaults = cls.params_schema().model_dump(mode="json")
+        out.append(
+            {
+                "kind": kind,
+                "variant": variant,
+                "version": cls.version,
+                "cost": cls.cost,
+                "inputs": {p: t.value for p, t in cls.inputs.items()},
+                "outputs": {p: t.value for p, t in cls.outputs.items()},
+                "optional_inputs": sorted(cls.optional_inputs),
+                "schema": schema,
+                "defaults": defaults,
+            }
+        )
+    out.sort(key=lambda r: (r["kind"], r["variant"] or ""))
+    return {"nodes": out}
+
+
+class PatchTemplateRequest(BaseModel):
+    """Replace the project's template with `template`. The runtime
+    validates the new shape exactly the way it would for a freshly
+    submitted job - unknown kinds, dangling input refs, port-type
+    mismatches, and cycles all reject."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    template: Template
+
+
+def _validate_template_topology(template: Template) -> None:
+    """Server-side sanity checks that mirror what the runtime would do
+    on submit. Centralized here so the graph editor gets a fast 400
+    instead of an opaque mid-run failure on the new shape.
+
+    Catches:
+      - kinds that aren't registered
+      - inputs referencing nodes/ports that don't exist
+      - port types that don't match between source out and target in
+      - duplicate node ids
+      - cycles in the input graph (kahn's-algorithm style topo)
+    """
+    by_id: dict[str, Any] = {}
+    for n in template.nodes:
+        if n.id in by_id:
+            raise HTTPException(
+                status_code=400, detail=f"duplicate node id: {n.id}"
+            )
+        by_id[n.id] = n
+        try:
+            cls = registry_lookup(n.kind, n.variant)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"unknown node kind: {exc}"
+            ) from exc
+        n._cls = cls  # type: ignore[attr-defined]  # internal-only stash for the next pass
+
+    for n in template.nodes:
+        cls = n._cls  # type: ignore[attr-defined]
+        for port_in, src in (n.inputs or {}).items():
+            if port_in not in cls.inputs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"node {n.id}: kind {n.kind} has no input port {port_in!r}",
+                )
+            if "." not in src:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"node {n.id}.{port_in}: source {src!r} must be 'nodeId.port'",
+                )
+            src_id, src_port = src.split(".", 1)
+            if src_id not in by_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"node {n.id}.{port_in}: refs unknown node {src_id!r}",
+                )
+            src_cls = by_id[src_id]._cls
+            if src_port not in src_cls.outputs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"node {n.id}.{port_in}: source {src} has no "
+                        f"output port {src_port!r}"
+                    ),
+                )
+            expected = cls.inputs[port_in]
+            actual = src_cls.outputs[src_port]
+            if expected != actual:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"node {n.id}.{port_in}: expects {expected.value} "
+                        f"but {src} produces {actual.value}"
+                    ),
+                )
+
+    # Cycle check: in-degree -> 0 marches forward; if any node never
+    # reaches in-degree 0, there's a cycle.
+    indeg: dict[str, int] = {n.id: 0 for n in template.nodes}
+    children: dict[str, list[str]] = {n.id: [] for n in template.nodes}
+    for n in template.nodes:
+        for src in (n.inputs or {}).values():
+            src_id = src.split(".", 1)[0]
+            if src_id in indeg:
+                indeg[n.id] += 1
+                children[src_id].append(n.id)
+    queue = [nid for nid, d in indeg.items() if d == 0]
+    seen = 0
+    while queue:
+        cur = queue.pop()
+        seen += 1
+        for c in children[cur]:
+            indeg[c] -= 1
+            if indeg[c] == 0:
+                queue.append(c)
+    if seen != len(template.nodes):
+        raise HTTPException(
+            status_code=400, detail="template has a cycle in its input graph"
+        )
+
+
+@app.patch("/api/projects/{project_id}/template")
+def patch_project_template(
+    project_id: str, req: PatchTemplateRequest, conn: DBDep
+) -> dict:
+    """Swap the project's template for a new one. Validates topology +
+    port types + acyclicity, then updates the in-memory project, kicks
+    off a new job under the new template, and persists. The cache is
+    keyed by (kind, version, inputs, params) so changes that touch the
+    chain naturally invalidate downstream entries; unchanged subgraphs
+    stay warm."""
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+
+    _validate_template_topology(req.template)
+
+    try:
+        updated = project_manager.replace_template(project_id, req.template)
+    except ProjectNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        ) from exc
+    return _project_to_response(updated, conn)
 
 
 # ---------------------------------------------------------------------------

@@ -45,12 +45,21 @@
     previewLoaded: Record<string, boolean>;
     outputNodeId: string;
     selectedNodeId: string | null;
+    /** Catalog from /api/nodes - port types per kind, used to validate
+     *  connections client-side before round-tripping to the server. */
+    kindCatalog: import('./api').NodeKindCatalog[];
     onSelectNode: (nid: string | null) => void;
     onToggleNodeEnabled: (
       nid: string,
       props: Record<string, { default?: unknown }>,
       fullDefaults: Record<string, unknown>,
       overrides: Record<string, unknown>
+    ) => void;
+    /** Apply an arbitrary topology change. The parent persists via
+     *  patchProjectTemplate; we just hand it the updated NodeSpec list. */
+    onTemplateChange: (
+      nodes: import('./api').NodeSpec[],
+      outputs: Record<string, string>
     ) => void;
     onPreviewLoad: (nid: string) => void;
     onPreviewError: (nid: string) => void;
@@ -73,12 +82,24 @@
     previewLoaded,
     outputNodeId,
     selectedNodeId,
+    kindCatalog,
     onSelectNode,
     onToggleNodeEnabled,
+    onTemplateChange,
     onPreviewLoad,
     onPreviewError,
     effectiveEnabled
   }: Props = $props();
+
+  // Quick lookup for port-type validation when a user attempts a
+  // connection. Indexed by 'kind' (variant ignored for simplicity -
+  // existing nodes pin variant on the spec, palette adds default
+  // variant=null).
+  const catalogByKind = $derived.by(() => {
+    const out: Record<string, (typeof kindCatalog)[number]> = {};
+    for (const c of kindCatalog) out[c.kind] = c;
+    return out;
+  });
 
   // ---- Position persistence ------------------------------------------
   // localStorage shape: { [nodeId]: { x, y } }. Persisted per project so
@@ -274,6 +295,139 @@
   function onPaneClick() {
     onSelectNode(null);
   }
+
+  // ---- Topology editing ---------------------------------------------
+  // Edits operate on a copy of the project's NodeSpec list, then hand
+  // it off to the parent which round-trips through patchProjectTemplate.
+  // Naming: outputs map (template.outputs) is also passed forward so
+  // we can drop dangling references when a node is deleted.
+
+  function templateNodes(): import('./api').NodeSpec[] {
+    return project.template.nodes.map((n) => ({
+      id: n.id,
+      kind: n.kind,
+      variant: n.variant,
+      params: { ...n.params },
+      inputs: { ...n.inputs },
+      ui_depends_on: n.ui_depends_on
+    }));
+  }
+  function templateOutputs(): Record<string, string> {
+    return { ...project.template.outputs };
+  }
+
+  /** xyflow's isValidConnection runs synchronously while the user is
+   *  hovering over a target handle. We check that the target's input
+   *  port type matches the source's output port type, using the
+   *  catalog for both kinds. */
+  function isValidConnection(c: {
+    source?: string | null;
+    target?: string | null;
+    sourceHandle?: string | null;
+    targetHandle?: string | null;
+  }): boolean {
+    if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return false;
+    if (c.source === c.target) return false;
+    const srcSpec = project.template.nodes.find((n) => n.id === c.source);
+    const tgtSpec = project.template.nodes.find((n) => n.id === c.target);
+    if (!srcSpec || !tgtSpec) return false;
+    const srcCat = catalogByKind[srcSpec.kind];
+    const tgtCat = catalogByKind[tgtSpec.kind];
+    if (!srcCat || !tgtCat) return false;
+    const srcType = srcCat.outputs[c.sourceHandle];
+    const tgtType = tgtCat.inputs[c.targetHandle];
+    if (!srcType || !tgtType) return false;
+    return srcType === tgtType;
+  }
+
+  function onConnect(detail: {
+    source: string;
+    target: string;
+    sourceHandle: string | null;
+    targetHandle: string | null;
+  }) {
+    if (!detail.sourceHandle || !detail.targetHandle) return;
+    if (!isValidConnection(detail)) return;
+    const next = templateNodes();
+    const tgt = next.find((n) => n.id === detail.target);
+    if (!tgt) return;
+    // Replace the target's input wiring at this port. xyflow lets you
+    // attach multiple edges to the same target handle visually but our
+    // template model is one-to-one (port -> source string), so any
+    // existing source for this port gets overwritten.
+    tgt.inputs = { ...tgt.inputs, [detail.targetHandle]: `${detail.source}.${detail.sourceHandle}` };
+    onTemplateChange(next, templateOutputs());
+  }
+
+  /** xyflow fires a single `ondelete` for the cumulative selection -
+   *  both nodes and edges - so we handle both in one pass and round-
+   *  trip a single template patch. */
+  function onDelete(detail: { nodes: FlowNode[]; edges: FlowEdge[] }) {
+    const deletedIds = new Set(detail.nodes.map((d) => d.id));
+    let next = templateNodes();
+    if (deletedIds.size > 0) {
+      next = next
+        .filter((n) => !deletedIds.has(n.id))
+        .map((n) => {
+          const inputs: Record<string, string> = {};
+          for (const [port, src] of Object.entries(n.inputs)) {
+            const srcId = src.split('.')[0];
+            if (!deletedIds.has(srcId)) inputs[port] = src;
+          }
+          return { ...n, inputs };
+        });
+    }
+    for (const e of detail.edges) {
+      const tgt = next.find((n) => n.id === e.target);
+      if (!tgt || !e.targetHandle) continue;
+      const inputs = { ...tgt.inputs };
+      const expected = `${e.source}.${e.sourceHandle}`;
+      if (inputs[e.targetHandle] === expected) {
+        delete inputs[e.targetHandle];
+        tgt.inputs = inputs;
+      }
+    }
+    const outputs = templateOutputs();
+    for (const [k, v] of Object.entries(outputs)) {
+      if (deletedIds.has(v.split('.')[0])) delete outputs[k];
+    }
+    onTemplateChange(next, outputs);
+  }
+
+  /** Insert a brand new node from the catalog with default params and
+   *  no input wiring. The user wires it up afterwards by dragging from
+   *  source handles onto the new node's input handles. Auto-positions
+   *  the new node to the right of the rightmost current node so it's
+   *  visible on the canvas. */
+  export function addNodeFromCatalog(kind: string): void {
+    const cat = catalogByKind[kind];
+    if (!cat) return;
+    let nid = `${kind}_new`;
+    const existing = new Set(project.template.nodes.map((n) => n.id));
+    let i = 1;
+    while (existing.has(nid)) {
+      i += 1;
+      nid = `${kind}_new${i}`;
+    }
+    const next = templateNodes();
+    next.push({
+      id: nid,
+      kind,
+      variant: cat.variant,
+      params: { ...cat.defaults },
+      inputs: {}
+    });
+    // Position this new node off to the right of the existing layout
+    // so it's not stacked on top of another node.
+    const xs = Object.values(positions).map((p) => p.x);
+    const xMax = xs.length ? Math.max(...xs) : 0;
+    const ys = Object.values(positions).map((p) => p.y);
+    const yAvg = ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : 0;
+    const newPos = { x: xMax + 260, y: yAvg };
+    positions = { ...positions, [nid]: newPos };
+    saveSavedPositions(positions);
+    onTemplateChange(next, templateOutputs());
+  }
 </script>
 
 <div class="graph-host">
@@ -282,8 +436,10 @@
     {edges}
     {nodeTypes}
     nodesDraggable={true}
-    nodesConnectable={false}
+    nodesConnectable={true}
     elementsSelectable={true}
+    deleteKey={['Delete', 'Backspace']}
+    {isValidConnection}
     fitView
     fitViewOptions={{ padding: 0.06, maxZoom: 1 }}
     minZoom={0.2}
@@ -291,6 +447,8 @@
     onnodedragstop={onNodeDragStop}
     onnodeclick={onNodeClick}
     onpaneclick={onPaneClick}
+    onconnect={onConnect}
+    ondelete={onDelete}
     proOptions={{ hideAttribution: true }}
   >
     <Background />
