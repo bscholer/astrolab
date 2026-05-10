@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0b1020" />
     <title>astrolab</title>
+    <!-- Brand. svg favicon is the source of truth (scales to all sizes);
+         32x32 png is a fallback for the handful of clients that still
+         choke on svg favicons. og-image is what surfaces in link
+         previews on Slack / Discord / Twitter. -->
+    <link rel="icon" href="%sveltekit.assets%/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="%sveltekit.assets%/favicon.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.png" />
+    <meta property="og:title" content="astrolab" />
+    <meta property="og:description" content="iterate-and-compare astrophotography stacking" />
+    <meta property="og:image" content="%sveltekit.assets%/og-image.png" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

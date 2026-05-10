@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="astrolab">
+  <!-- rounded square plate; matches the app's theme-color (#0b1020) so it
+       reads as "part of the UI" in browser tabs against either theme -->
+  <rect width="64" height="64" rx="12" fill="#0b1020"/>
+  <!-- three-dot constellation: apex at the top, two anchors at the base.
+       a single-colour glyph keeps the shape readable at 16px and on
+       light backgrounds (the rect handles the dark side) -->
+  <g fill="none" stroke="#5eead4" stroke-width="2" stroke-linecap="round">
+    <line x1="32" y1="16" x2="18" y2="46"/>
+    <line x1="32" y1="16" x2="48" y2="44"/>
+  </g>
+  <g fill="#5eead4">
+    <circle cx="32" cy="16" r="3.2"/>
+    <circle cx="18" cy="46" r="3.2"/>
+    <circle cx="48" cy="44" r="3.2"/>
+  </g>
+</svg>
