@@ -19,6 +19,7 @@
     <a href="/" class="logo">astrolab</a>
     <nav class="nav">
       <a href="/" class:active={$page.url.pathname === '/'}>Library</a>
+      <a href="/tonight" class:active={$page.url.pathname.startsWith('/tonight')}>Tonight</a>
       <a href="/projects" class:active={$page.url.pathname.startsWith('/projects')}>Projects</a>
       <a href="/gallery" class:active={$page.url.pathname.startsWith('/gallery')}>Gallery</a>
       <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')}>Settings</a>

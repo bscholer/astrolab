@@ -40,6 +40,18 @@
   let savingCapture = $state(false);
   let scanning = $state(false);
 
+  // Site location for the Tonight planner. We keep these as strings while
+  // the user is typing so the input doesn't fight an empty/-/decimal-in-
+  // progress state; parseFloat happens at save time. Persisted values are
+  // numbers (or null when never set).
+  let siteLatInput = $state('');
+  let siteLonInput = $state('');
+  let siteElevInput = $state('');
+  let persistedSiteLat = $state<number | null>(null);
+  let persistedSiteLon = $state<number | null>(null);
+  let persistedSiteElev = $state<number | null>(null);
+  let savingSite = $state(false);
+
   async function saveCaptureRoot() {
     const next = captureRoot.trim();
     savingCapture = true;
@@ -99,8 +111,54 @@
       pendingCacheRoot = settings.cache_root ?? settings.cache_root_active;
       persistedCaptureRoot = settings.capture_root;
       captureRoot = settings.capture_root ?? '';
+      persistedSiteLat = settings.site_latitude;
+      persistedSiteLon = settings.site_longitude;
+      persistedSiteElev = settings.site_elevation_m;
+      siteLatInput =
+        settings.site_latitude !== null ? String(settings.site_latitude) : '';
+      siteLonInput =
+        settings.site_longitude !== null ? String(settings.site_longitude) : '';
+      siteElevInput =
+        settings.site_elevation_m !== null ? String(settings.site_elevation_m) : '';
     } catch (e) {
       toast.error(`Couldn't load settings: ${(e as Error).message}`);
+    }
+  }
+
+  async function saveSite() {
+    // Local validation mirrors the server's bounds. Done client-side so
+    // the user gets immediate inline feedback instead of a toast after a
+    // round-trip.
+    const lat = parseFloat(siteLatInput);
+    const lon = parseFloat(siteLonInput);
+    const elev = parseFloat(siteElevInput);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+      toast.error('Latitude must be a number between -90 and 90.');
+      return;
+    }
+    if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+      toast.error('Longitude must be a number between -180 and 180.');
+      return;
+    }
+    if (!Number.isFinite(elev) || elev < -500 || elev > 9000) {
+      toast.error('Elevation must be a number in meters between -500 and 9000.');
+      return;
+    }
+    savingSite = true;
+    try {
+      const r = await api.patchSettings({
+        site_latitude: lat,
+        site_longitude: lon,
+        site_elevation_m: elev,
+      });
+      persistedSiteLat = r.site_latitude;
+      persistedSiteLon = r.site_longitude;
+      persistedSiteElev = r.site_elevation_m;
+      toast.success('Site location saved.');
+    } catch (e) {
+      toast.error(`Couldn't save: ${(e as Error).message}`);
+    } finally {
+      savingSite = false;
     }
   }
 
@@ -110,6 +168,12 @@
 
   const captureDirty = $derived(
     captureRoot.trim() !== (persistedCaptureRoot ?? '')
+  );
+
+  const siteDirty = $derived(
+    siteLatInput.trim() !== (persistedSiteLat !== null ? String(persistedSiteLat) : '') ||
+    siteLonInput.trim() !== (persistedSiteLon !== null ? String(persistedSiteLon) : '') ||
+    siteElevInput.trim() !== (persistedSiteElev !== null ? String(persistedSiteElev) : '')
   );
 
   // Slider operates on GiB to give us friendly round-number values; we
@@ -242,6 +306,74 @@
       Unsaved. Click Save (or Scan now — that saves first) to persist.
     </p>
   {/if}
+</section>
+
+<section class="panel">
+  <h2>Site location</h2>
+  <p class="muted small">
+    Where you observe from. The Tonight planner uses these to compute
+    altitude and transit times. Latitude is positive north, longitude
+    positive east. Elevation is in meters above sea level.
+  </p>
+  <div class="site-grid">
+    <label class="field">
+      <span class="field-label">Latitude</span>
+      <input
+        type="number"
+        class="num-input"
+        step="0.0001"
+        min={-90}
+        max={90}
+        placeholder="40.7128"
+        bind:value={siteLatInput}
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Site latitude in decimal degrees"
+      />
+      <span class="field-unit">deg</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Longitude</span>
+      <input
+        type="number"
+        class="num-input"
+        step="0.0001"
+        min={-180}
+        max={180}
+        placeholder="-74.006"
+        bind:value={siteLonInput}
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Site longitude in decimal degrees"
+      />
+      <span class="field-unit">deg</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Elevation</span>
+      <input
+        type="number"
+        class="num-input"
+        step="1"
+        min={-500}
+        max={9000}
+        placeholder="10"
+        bind:value={siteElevInput}
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Site elevation in meters"
+      />
+      <span class="field-unit">m</span>
+    </label>
+    <button
+      type="button"
+      class="btn primary"
+      onclick={saveSite}
+      disabled={savingSite || !siteDirty}
+      title={siteDirty ? 'Save site location' : 'No changes to save'}
+    >
+      {savingSite ? 'Saving…' : 'Save location'}
+    </button>
+  </div>
 </section>
 
 {#if storage === null}
@@ -439,6 +571,42 @@
     align-items: center;
     margin-top: 0.5rem;
     flex-wrap: wrap;
+  }
+
+  .site-grid {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.6rem;
+    align-items: flex-end;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 7.5rem;
+  }
+  .field-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
+  }
+  .field-unit {
+    font-size: 0.7rem;
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
+  }
+  .num-input {
+    padding: 0.4rem 0.7rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    width: 100%;
   }
   .capture-input {
     flex: 1 1 280px;

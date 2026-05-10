@@ -461,6 +461,45 @@ export interface SettingsResponse {
   // by /api/scan as its scan target. Lives server-side (not localStorage)
   // so it survives across browsers and devices.
   capture_root: string | null;
+  // Observer site for the Tonight planner; all three null until the user
+  // sets them. Tonight refuses to compute alt/az without all three.
+  site_latitude: number | null;
+  site_longitude: number | null;
+  site_elevation_m: number | null;
+}
+
+// ----- tonight ----------------------------------------------------------
+
+export interface TonightEntry {
+  name: string;
+  common_name: string | null;
+  object_type: string | null;
+  constellation: string | null;
+  ra_deg: number;
+  dec_deg: number;
+  magnitude: number | null;
+  alt_now_deg: number;
+  az_now_deg: number;
+  // ISO 8601 UTC; null when the target doesn't transit during the night.
+  transit_utc: string | null;
+  hours_above_min_alt: number;
+  // Number of capture sessions the user has on this target; 0 = never
+  // captured. Joined by canonical name against the user's targets table.
+  session_count: number;
+  last_session_at: string | null;
+}
+
+export interface TonightResponse {
+  at_utc: string;
+  site_latitude: number;
+  site_longitude: number;
+  site_elevation_m: number;
+  min_alt_deg: number;
+  max_magnitude: number;
+  // Twilight window endpoints, both null at sites in 24h daylight.
+  dusk_utc: string | null;
+  dawn_utc: string | null;
+  entries: TonightEntry[];
 }
 
 async function deleteJSON<T>(path: string): Promise<T> {
@@ -519,7 +558,22 @@ export const api = {
     cache_max_bytes?: number;
     cache_root?: string;
     capture_root?: string;
+    site_latitude?: number | null;
+    site_longitude?: number | null;
+    site_elevation_m?: number | null;
   }) => patchJSON<SettingsResponse>('/api/settings', req),
+  getTonight: (params?: {
+    at?: string;
+    min_alt?: number;
+    max_mag?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.at) qs.set('at', params.at);
+    if (params?.min_alt !== undefined) qs.set('min_alt', String(params.min_alt));
+    if (params?.max_mag !== undefined) qs.set('max_mag', String(params.max_mag));
+    const tail = qs.toString();
+    return getJSON<TonightResponse>(`/api/tonight${tail ? `?${tail}` : ''}`);
+  },
   /**
    * Open a WebSocket for live event streaming. The server replays buffered
    * history and then closes when the job hits a terminal state.
