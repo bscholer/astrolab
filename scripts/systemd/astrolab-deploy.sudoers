@@ -1,0 +1,7 @@
+# Allow bscholer to trigger the auto-deploy oneshot and restart the api
+# without a password prompt. The webhook handler in astrolab-api invokes
+# `sudo systemctl start --no-block astrolab-deploy.service`, and the
+# deploy script itself calls `sudo systemctl restart astrolab-api`.
+#
+# Installed at /etc/sudoers.d/astrolab-deploy by scripts/install-systemd-units.sh.
+bscholer ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block astrolab-deploy.service, /usr/bin/systemctl start astrolab-deploy.service, /usr/bin/systemctl restart astrolab-api.service, /usr/bin/systemctl restart astrolab-api, /usr/bin/systemctl disable --now astrolab-ui, /usr/bin/systemctl disable --now astrolab-ui.service, /usr/bin/journalctl -u astrolab-api --no-pager -n 40

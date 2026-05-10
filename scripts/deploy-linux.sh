@@ -40,90 +40,14 @@ else
 fi
 
 # --- 2. Pull + restart on the Linux box ------------------------------------
-# Single SSH invocation: less authentication overhead, and any failure aborts
-# the whole sequence cleanly via `set -e` inside the remote shell.
-step "ssh $HOST: pull + restart uvicorn"
+# Delegates the actual work to scripts/deploy-on-box.sh, which is the same
+# script the auto-deploy webhook (astrolab-deploy.service) runs. Keeping
+# both paths through one script means manual and automated deploys can't
+# drift.
+step "ssh $HOST: scripts/deploy-on-box.sh"
 ssh -o ConnectTimeout=10 "$HOST" \
-  REMOTE_REPO="$REMOTE_REPO" \
-  REMOTE_VENV="$REMOTE_VENV" \
-  PORT="$PORT" \
-  LOG_PATH="$LOG_PATH" \
-  REMOTE_HOME="$REMOTE_HOME" \
-  bash -s <<'REMOTE'
-set -euo pipefail
-cd "$REMOTE_REPO"
-
-echo "▸ git pull"
-git fetch --quiet origin
-git pull --ff-only origin "$(git rev-parse --abbrev-ref HEAD)"
-
-# uv-managed venv? Run a quick sync so dependency changes show up. We
-# add ~/.local/bin to PATH before checking because non-interactive ssh
-# shells often drop it (login configs run for interactive sessions only)
-# and silently skipping the sync is exactly how we ended up shipping a
-# starnet_extract revision the venv couldn't import (missing tifffile).
-export PATH="$HOME/.local/bin:$PATH"
-if command -v uv >/dev/null 2>&1; then
-  echo "▸ uv sync"
-  uv sync --frozen 2>/dev/null || uv sync
-fi
-
-# Build the SvelteKit UI to static so astrolab-api can serve it from
-# ui/build/. We rebuild on every deploy because backend changes are
-# usually accompanied by FE changes; npm caches make this fast.
-if command -v npm >/dev/null 2>&1; then
-  echo "▸ npm run build (ui)"
-  cd ui
-  # `npm install` is a no-op when package.json hasn't changed thanks to
-  # npm's lockfile-aware cache, so it's cheap to run unconditionally.
-  npm install --silent
-  npm run build --silent
-  cd ..
-fi
-
-echo "▸ restarting astrolab-api via systemctl"
-# astrolab-api.service runs uvicorn under systemd, auto-starts on boot,
-# and reads ASTROLAB_HOME from its unit file (not from this script anymore).
-# If the unit isn't installed yet, fall back to the legacy nohup runner
-# so a fresh box still works until scripts/install-systemd-units.sh has
-# been run.
-if systemctl list-unit-files astrolab-api.service >/dev/null 2>&1 \
-     && systemctl is-enabled --quiet astrolab-api 2>/dev/null; then
-  sudo systemctl restart astrolab-api
-  # Older deploys ran a separate vite-dev unit; tear it down if present.
-  # FastAPI now serves the prebuilt UI from ui/build/ on the same port.
-  if systemctl list-unit-files astrolab-ui.service >/dev/null 2>&1; then
-    sudo systemctl disable --now astrolab-ui 2>/dev/null || true
-  fi
-else
-  echo "  astrolab-api.service not installed — running legacy nohup uvicorn"
-  pkill -f "uvicorn server.api:app" || true
-  for _ in 1 2 3 4 5; do
-    if ss -ltnp 2>/dev/null | grep -q ":$PORT "; then sleep 1; else break; fi
-  done
-  mkdir -p "$REMOTE_HOME"
-  ASTROLAB_HOME="$REMOTE_HOME" nohup "$REMOTE_VENV/bin/uvicorn" server.api:app \
-    --host 0.0.0.0 --port "$PORT" --log-level info \
-    > "$LOG_PATH" 2>&1 &
-  disown
-fi
-
-# Wait for the port to start accepting connections so the script doesn't
-# return success before the server is actually ready.
-echo "▸ waiting for :$PORT to come up"
-for i in $(seq 1 20); do
-  if curl -sS -o /dev/null -w "%{http_code}" --max-time 2 \
-       "http://127.0.0.1:$PORT/api/templates" | grep -q '^200$'; then
-    echo "  up after ${i}s"
-    break
-  fi
-  sleep 1
-  if [[ "$i" == "20" ]]; then
-    echo "  port $PORT didn't come up — last 40 lines of journal:" >&2
-    sudo journalctl -u astrolab-api --no-pager -n 40 >&2 || tail -n 40 "$LOG_PATH" >&2 || true
-    exit 1
-  fi
-done
-REMOTE
+  ASTROLAB_REPO="$REMOTE_REPO" \
+  ASTROLAB_API_PORT="$PORT" \
+  bash "$REMOTE_REPO/scripts/deploy-on-box.sh"
 
 ok "deployed — http://$HOST:$PORT/api/templates"

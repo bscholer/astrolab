@@ -33,13 +33,15 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shutil
 import sqlite3
+import subprocess
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -362,6 +364,46 @@ def _row_to_session_summary(
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/_deploy", status_code=202)
+def trigger_deploy(request: Request) -> dict[str, str]:
+    """Internal webhook that kicks off astrolab-deploy.service on the box.
+
+    Auth lives at the edge: Cloudflare Access fronts this hostname and the
+    /api/_deploy path is gated by a service-token-only policy, so the only
+    callers that reach us are CI runs holding the service token. We
+    additionally require the CF-Access-Client-Id header before doing
+    anything, as defense in depth against a leaked internal IP being hit
+    directly from the LAN.
+
+    The handler shells out to `sudo systemctl start --no-block
+    astrolab-deploy.service` and returns 202. The deploy unit is a
+    separate cgroup, so the eventual `systemctl restart astrolab-api`
+    inside the deploy script doesn't kill the in-flight request before
+    the client sees the response (the response is already sent).
+    """
+    if not request.headers.get("Cf-Access-Client-Id"):
+        raise HTTPException(403, detail="missing CF Access service-token headers")
+    if not shutil.which("systemctl"):
+        # Local dev / Mac: pretend we did the thing so end-to-end tests
+        # of the route's contract pass without systemd being present.
+        log.warning("/api/_deploy called without systemctl on PATH; no-op")
+        return {"status": "noop", "reason": "systemctl not available"}
+    try:
+        subprocess.run(
+            ["sudo", "-n", "systemctl", "start", "--no-block",
+             "astrolab-deploy.service"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.CalledProcessError as exc:
+        log.exception("systemctl start astrolab-deploy.service failed")
+        detail = f"deploy launch failed: {exc.stderr or exc.stdout}"
+        raise HTTPException(500, detail=detail) from exc
+    return {"status": "queued"}
 
 
 @app.get("/api/targets", response_model=list[TargetSummary])

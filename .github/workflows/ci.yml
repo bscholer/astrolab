@@ -63,3 +63,35 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  deploy:
+    name: trigger box deploy
+    needs: [python, ui]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Concurrency on main keeps multiple in-flight merges from racing the
+    # box: only the latest push gets through; older ones wait, then the
+    # newest one fires once the previous deploy finishes (or get
+    # cancelled if a newer commit lands first).
+    concurrency:
+      group: deploy-main
+      cancel-in-progress: false
+    steps:
+      - name: POST /api/_deploy
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.ASTROLAB_DEPLOY_CF_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.ASTROLAB_DEPLOY_CF_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CF_ACCESS_CLIENT_ID:-}" || -z "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+            echo "::error::ASTROLAB_DEPLOY_CF_CLIENT_ID / ASTROLAB_DEPLOY_CF_CLIENT_SECRET not set"
+            exit 1
+          fi
+          # The webhook returns 202 the moment astrolab-deploy.service is
+          # queued; the actual pull/build/restart runs out-of-band. We
+          # don't wait for it here because the API is going to restart
+          # itself partway through.
+          curl --fail-with-body -sS -X POST \
+            -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+            https://astrolab.benscholer.com/api/_deploy
