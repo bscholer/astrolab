@@ -28,7 +28,10 @@
     type CostClass,
     type JobEvent,
     type JobSummary,
+    type NodeKindCatalog,
+    type NodeSpec,
     type Project,
+    type Template,
     type TemplateSchema
   } from '$lib/api';
   import {
@@ -637,6 +640,98 @@
     }
   });
 
+  // Catalog of registered node kinds (for the add-node palette + edge
+  // validation). Loaded once when the project page mounts; the catalog
+  // is template-agnostic so we don't refetch on project changes.
+  let kindCatalog = $state<NodeKindCatalog[]>([]);
+  $effect(() => {
+    api.listNodeKinds()
+      .then((cs) => (kindCatalog = cs))
+      .catch((e) => toast.error(`Couldn't load node catalog: ${(e as Error).message}`));
+  });
+
+  // Add-node palette: open/close + selected kind in the dropdown.
+  let paletteOpen = $state(false);
+  let paletteKind = $state<string>('');
+  let graphRef = $state<{ addNodeFromCatalog: (kind: string) => void } | null>(null);
+  function openPalette() {
+    paletteOpen = true;
+    if (!paletteKind && kindCatalog.length) paletteKind = kindCatalog[0].kind;
+  }
+  function confirmAddNode() {
+    if (!paletteKind || !graphRef) return;
+    graphRef.addNodeFromCatalog(paletteKind);
+    paletteOpen = false;
+  }
+
+  /** Apply a topology change: bump the template version (cache+history
+   *  signal that the chain changed) and round-trip through the server's
+   *  /api/projects/{id}/template endpoint, which validates port types
+   *  and acyclicity before accepting. */
+  let templatePatching = $state(false);
+  async function onTemplateChange(
+    nodes: NodeSpec[],
+    outputs: Record<string, string>
+  ) {
+    if (!project) return;
+    if (templatePatching) return;
+    const next: Template = {
+      ...project.template,
+      version: project.template.version + 1,
+      nodes,
+      outputs
+    };
+    templatePatching = true;
+    try {
+      const updated = await api.patchProjectTemplate(project.id, next);
+      onProjectUpdated(updated);
+      schema = await api.getTemplateSchema(updated.template_id);
+      // The schema endpoint returns the canonical template, but we
+      // edited a copy. Ensure the new schema reflects our changes by
+      // re-deriving from the project we just got back.
+      // (The /schema endpoint serves the on-disk template, NOT the
+      // project's mutated copy — so it'd revert visible nodes. Build
+      // a synthetic schema from the project's template instead.)
+      schema = synthesizeSchemaFromProject(updated);
+    } catch (e) {
+      toast.error(`Couldn't update pipeline: ${(e as Error).message}`);
+    } finally {
+      templatePatching = false;
+    }
+  }
+
+  /** When the user mutates the template, the canonical /schema endpoint
+   *  still returns the unmodified on-disk YAML. We need a schema that
+   *  matches the project's actual nodes. Pull JSON Schemas + defaults
+   *  from the kindCatalog (per-kind, not per-template) and fold in the
+   *  project's per-node template_params + ui_depends_on. */
+  function synthesizeSchemaFromProject(p: Project): TemplateSchema {
+    const out: TemplateSchema = {
+      template_id: p.template.id,
+      template_version: p.template.version,
+      nodes: [],
+      outputs: p.template.outputs
+    };
+    const catByKind: Record<string, NodeKindCatalog> = {};
+    for (const c of kindCatalog) catByKind[c.kind] = c;
+    for (const n of p.template.nodes) {
+      const cat = catByKind[n.kind];
+      if (!cat) continue;
+      out.nodes.push({
+        node_id: n.id,
+        kind: n.kind,
+        variant: n.variant,
+        cost: cat.cost,
+        schema: cat.schema as TemplateSchema['nodes'][number]['schema'],
+        defaults: cat.defaults,
+        template_params: n.params,
+        inputs: n.inputs,
+        ui_depends_on: n.ui_depends_on
+      });
+    }
+    return out;
+  }
+
   // Keep the history strip scrolled to the right edge (newest entry).
   // Triggers on every history.length change so a fresh PATCH that
   // appends a new version auto-scrolls into view, and on initial load
@@ -813,7 +908,36 @@
         </div>
       {#if viewMode === 'graph'}
         <div class="graph-layout">
+          <!-- Floating action bar over the canvas: add-node palette
+               opener + a hint about delete keys. Sits absolute so it
+               never reflows the canvas. -->
+          <div class="graph-actions">
+            <button type="button" class="ghost-btn" onclick={openPalette} disabled={templatePatching}>
+              + Add node
+            </button>
+            <span class="muted small">Drag to wire · Del to remove</span>
+            {#if templatePatching}
+              <span class="muted small">Updating…</span>
+            {/if}
+          </div>
+          {#if paletteOpen}
+            <div class="palette" role="dialog" aria-label="Add node">
+              <label>
+                <span class="muted small">Kind</span>
+                <select bind:value={paletteKind}>
+                  {#each kindCatalog as c (`${c.kind}/${c.variant ?? ''}`)}
+                    <option value={c.kind}>
+                      {c.kind}{c.variant ? ` · ${c.variant}` : ''}
+                    </option>
+                  {/each}
+                </select>
+              </label>
+              <button type="button" class="ghost-btn" onclick={confirmAddNode}>Add</button>
+              <button type="button" class="ghost-btn" onclick={() => (paletteOpen = false)}>Cancel</button>
+            </div>
+          {/if}
           <PipelineGraph
+            bind:this={graphRef}
             {project}
             {schema}
             {schemaByNodeId}
@@ -826,8 +950,10 @@
             {previewLoaded}
             outputNodeId={outputNodeId ?? ''}
             selectedNodeId={graphSelectedNid}
+            {kindCatalog}
             onSelectNode={(nid) => (graphSelectedNid = nid)}
             onToggleNodeEnabled={toggleNodeEnabled}
+            onTemplateChange={onTemplateChange}
             onPreviewLoad={onPreviewLoad}
             onPreviewError={onPreviewError}
             {effectiveEnabled}
@@ -1382,6 +1508,50 @@
     position: relative;
   }
   .graph-layout > :global(.graph-host) { width: 100%; }
+
+  /* Floating toolbar above the canvas. Sits in the top-left corner
+     so it doesn't fight the side-panel overlay on the right. */
+  .graph-actions {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    z-index: 5;
+  }
+  .palette {
+    position: absolute;
+    top: 3rem;
+    left: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.7rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    z-index: 6;
+  }
+  .palette label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .palette select {
+    background: var(--bg-elev-2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.2rem 0.4rem;
+    font: inherit;
+    font-size: 0.8rem;
+  }
   .graph-panel {
     position: absolute;
     top: 0;

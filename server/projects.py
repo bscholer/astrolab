@@ -407,6 +407,103 @@ class ProjectManager:
         )
         return project
 
+    def replace_template(
+        self, project_id: str, template: Template
+    ) -> Project:
+        """Swap the project's template for `template` and submit a new
+        job under it. Carries the existing override snapshot forward
+        per-node so user edits to params survive a topology tweak;
+        overrides for nodes that no longer exist in the new template
+        are dropped. The runner re-hashes from the new template; the
+        cache stays warm for any subgraph whose (kind, version,
+        inputs, params) is unchanged."""
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+
+        prev_overrides = project.current_overrides()
+        new_node_ids = {n.id for n in template.nodes}
+        carried_overrides: dict[str, dict[str, Any]] = {
+            nid: dict(p) for nid, p in prev_overrides.items() if nid in new_node_ids
+        }
+
+        # Cancel the in-flight job so the new template's run isn't
+        # racing the old chain's worker on the same project.
+        prev_job_id = project.current_entry().job_id
+        self._jobs.cancel(prev_job_id)
+
+        project.template = template
+        project.base_job = project.base_job.model_copy(
+            update={"template_id": template.id, "template_version": template.version}
+        )
+
+        job_id = self._submit_with_overrides(project, carried_overrides)
+        next_seq = max((h.seq for h in project.history), default=-1) + 1
+        entry = HistoryEntry(
+            seq=next_seq,
+            job_id=job_id,
+            overrides=carried_overrides,
+            label=f"Edited pipeline (v{template.version})",
+            created_at=_now(),
+        )
+        project.history.append(entry)
+        project.current_seq = next_seq
+        project.updated_at = _now()
+
+        self._persist_project_full(project)
+        self._persist_history_entry(project_id, entry)
+        log.info(
+            "project template replaced: %s template=%s v=%d job=%s",
+            project_id, template.id, template.version, job_id,
+        )
+        return project
+
+    def _persist_project_full(self, project: Project) -> None:
+        """Write the updated template_json + base_job_json + metadata
+        in one shot. The default _persist_project(kind='update') only
+        writes name/current_seq/draft_mode/cover_seq; a template swap
+        needs the new shape too."""
+        try:
+            conn = self._conn()
+        except Exception:
+            return
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE projects
+                    SET name=?,
+                        template_id=?,
+                        template_version=?,
+                        template_json=?,
+                        base_job_json=?,
+                        current_seq=?,
+                        draft_mode=?,
+                        cover_seq=?,
+                        updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        project.name,
+                        project.template.id,
+                        project.template.version,
+                        json.dumps(project.template.model_dump(mode="json")),
+                        json.dumps(project.base_job.model_dump(mode="json")),
+                        project.current_seq,
+                        int(project.draft_mode),
+                        project.cover_seq,
+                        project.updated_at,
+                        project.id,
+                    ),
+                )
+        except sqlite3.Error:
+            log.exception(
+                "DB write failed for full project update %s", project.id
+            )
+        finally:
+            conn.close()
+
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.

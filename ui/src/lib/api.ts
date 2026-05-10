@@ -411,6 +411,24 @@ export interface TemplateSchema {
   outputs: Record<string, string>;
 }
 
+/**
+ * Catalog of every registered node kind, served from /api/nodes.
+ * The graph editor uses this to populate its add-node palette and
+ * to validate connections (port types must match between
+ * source.output and target.input).
+ */
+export interface NodeKindCatalog {
+  kind: string;
+  variant: string | null;
+  version: number;
+  cost: CostClass;
+  inputs: Record<string, string>; // port -> port type string
+  outputs: Record<string, string>;
+  optional_inputs: string[];
+  schema: TemplateNodeSchema['schema'];
+  defaults: Record<string, unknown>;
+}
+
 // ----- storage -----------------------------------------------------------
 
 export interface ProjectStorage {
@@ -490,6 +508,10 @@ export const api = {
     postJSON<Project>('/api/projects/from_sessions', req),
   patchProject: (id: string, req: PatchProjectRequest) =>
     patchJSON<Project>(`/api/projects/${id}`, req),
+  patchProjectTemplate: (id: string, template: Template) =>
+    patchJSON<Project>(`/api/projects/${id}/template`, { template }),
+  listNodeKinds: () =>
+    getJSON<{ nodes: NodeKindCatalog[] }>('/api/nodes').then((r) => r.nodes),
   revertProject: (id: string, seq: number) =>
     postJSON<Project>(`/api/projects/${id}/revert/${seq}`, {}),
   setProjectCover: (id: string, seq: number | null) =>
