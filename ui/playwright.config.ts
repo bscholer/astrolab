@@ -16,15 +16,10 @@ export default defineConfig({
       name: 'chromium-desktop',
       use: { ...devices['Desktop Chrome'] },
     },
-    {
-      name: 'chromium-mobile',
-      use: {
-        ...devices['Desktop Chrome'],
-        viewport: { width: 375, height: 812 },
-        isMobile: false,
-      },
-    },
   ],
+  // Mobile-viewport tests call page.setViewportSize({ width: 375, height: 812 })
+  // directly, so a separate project that re-runs the suite at that size would
+  // double CI time without adding coverage.
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',

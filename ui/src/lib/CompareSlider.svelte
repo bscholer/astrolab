@@ -23,6 +23,13 @@
     initialPos?: number;
     /** Override the default 16:9 viewport aspect. */
     aspect?: string;
+    /**
+     * Bindable handle on the focusable viewport div. Lets a parent
+     * call `.focus()` without scraping the DOM with a class selector
+     * (CropEditor.svelte also uses class="viewport"; a future page
+     * mounting both would otherwise collide).
+     */
+    el?: HTMLDivElement | null;
   };
 
   let {
@@ -32,21 +39,21 @@
     bLabel = 'B',
     initialPos = 50,
     aspect = '16 / 9',
+    el = $bindable(null),
   }: Props = $props();
 
   // initialPos is a one-shot seed; the warning's heuristic is wrong here.
   // svelte-ignore state_referenced_locally
   let pos = $state(initialPos);
   let dragging = $state(false);
-  let viewport: HTMLDivElement | null = $state(null);
 
   function clamp(n: number, lo: number, hi: number): number {
     return Math.max(lo, Math.min(hi, n));
   }
 
   function setPosFromClientX(clientX: number) {
-    if (!viewport) return;
-    const rect = viewport.getBoundingClientRect();
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
     pos = clamp(((clientX - rect.left) / rect.width) * 100, 0, 100);
   }
 
@@ -81,7 +88,7 @@
 
 <div
   class="viewport"
-  bind:this={viewport}
+  bind:this={el}
   role="slider"
   tabindex="0"
   aria-label="Compare slider"

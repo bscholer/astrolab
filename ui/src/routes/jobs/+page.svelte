@@ -134,4 +134,16 @@
   .target-link:hover {
     color: var(--accent);
   }
+
+  /* Drop Duration + Submitted on phones; Target / Capture / Status are
+     the load-bearing columns and the timestamps live on the job detail
+     page anyway. */
+  @media (max-width: 500px) {
+    table.jobs th:nth-child(4),
+    table.jobs td:nth-child(4),
+    table.jobs th:nth-child(5),
+    table.jobs td:nth-child(5) {
+      display: none;
+    }
+  }
 </style>

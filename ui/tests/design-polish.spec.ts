@@ -286,8 +286,9 @@ test.describe('compare page', () => {
     const galleryResp = await request.get(`${BASE}/api/gallery`);
     const gallery = await galleryResp.json();
     if (gallery.length < 2) {
-      // No renders to compare - skip without failure.
-      return;
+      // A bare `return` would silently mark the test as passing, hiding
+      // that the auto-focus path was never exercised.
+      test.skip(true, 'Empty gallery on this machine - auto-focus path requires two published renders');
     }
 
     const a = gallery[0];
