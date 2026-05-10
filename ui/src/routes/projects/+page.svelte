@@ -15,6 +15,7 @@
     failPctClass,
     formatBytes,
     formatFailPct,
+    formatIntegrationTime,
     shortAgo,
     templateDisplayName
   } from '$lib/format';
@@ -189,6 +190,18 @@
                 <span class="dot" aria-hidden="true">·</span>
                 <span class="num">
                   {#if r.capture.exptime != null}{r.capture.exptime}s{/if}{#if r.capture.exptime != null && r.capture.gain != null} · {/if}{#if r.capture.gain != null}gain {r.capture.gain}{/if}
+                </span>
+              {/if}
+              {#if r.capture.integration_seconds && r.capture.integration_seconds > 0}
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="num" title="Useful integration time across source sessions">
+                  {formatIntegrationTime(r.capture.integration_seconds)} integ
+                </span>
+              {/if}
+              {#if r.capture.bytes_on_disk > 0}
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="num" title="Source-frame bytes on disk">
+                  {formatBytes(r.capture.bytes_on_disk)}
                 </span>
               {/if}
               {#if r.capture.filter}

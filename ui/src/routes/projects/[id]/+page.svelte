@@ -37,7 +37,7 @@
     nodeDisplayName
   } from '$lib/graph';
   import { toast } from '$lib/toast.svelte';
-  import { formatDuration, shortAgo } from '$lib/format';
+  import { formatBytes, formatDuration, formatIntegrationTime, shortAgo } from '$lib/format';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
   import CompareSlider from '$lib/CompareSlider.svelte';
@@ -703,6 +703,18 @@
           <span aria-hidden="true">·</span>
           <span>{activeJob.capture.frame_count} frame{activeJob.capture.frame_count === 1 ? '' : 's'}</span>
         {/if}
+      {/if}
+      {#if project.capture?.integration_seconds && project.capture.integration_seconds > 0}
+        <span aria-hidden="true">·</span>
+        <span title="Useful integration time across source sessions">
+          {formatIntegrationTime(project.capture.integration_seconds)} integ
+        </span>
+      {/if}
+      {#if project.capture && project.capture.bytes_on_disk > 0}
+        <span aria-hidden="true">·</span>
+        <span title="Source-frame bytes on disk">
+          {formatBytes(project.capture.bytes_on_disk)}
+        </span>
       {/if}
       <span aria-hidden="true">·</span>
       <span title={project.created_at}>created {shortAgo(project.created_at)}</span>

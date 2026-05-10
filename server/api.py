@@ -184,6 +184,14 @@ class TargetSummary(BaseModel):
     frame_count: int
     failed_count: int
     last_session_at: str | None = None
+    # Useful integration time across all the target's sessions:
+    # sum((frame_count - failed_count) * exptime). Null when no session
+    # has both a frame count and an exposure time on file.
+    integration_seconds: float | None = None
+    # Total bytes the target's frames occupy on disk. Computed from the
+    # frames table's `size` column, joined via session_key so we don't
+    # double-count when frames are shared across sessions.
+    bytes_on_disk: int = 0
 
 
 class CalibrationStatus(BaseModel):
@@ -215,6 +223,11 @@ class SessionSummary(BaseModel):
     ended_at: str | None = None
     frame_count: int
     failed_count: int
+    # Useful integration time = (frame_count - failed_count) * exptime.
+    # Null when exptime isn't known.
+    integration_seconds: float | None = None
+    # SUM(frames.size) for frames whose session_key matches.
+    bytes_on_disk: int = 0
     calibration: list[CalibrationStatus]
 
 
@@ -305,6 +318,22 @@ def _calibration_for_session(
 def _row_to_session_summary(
     conn: sqlite3.Connection, row: sqlite3.Row, target_name: str | None
 ) -> SessionSummary:
+    # Bytes are the on-disk size of all frames sharing this session_key.
+    # Cheap one-row scalar; the session list pages don't fan out wide
+    # enough for this to be a problem (typical user has dozens of
+    # sessions, not thousands).
+    size_row = conn.execute(
+        "SELECT IFNULL(SUM(size), 0) AS bytes FROM frames WHERE session_key = ?",
+        (row["session_key"],),
+    ).fetchone()
+    bytes_on_disk = int(size_row["bytes"] if size_row else 0)
+    frame_count = row["frame_count"] or 0
+    failed_count = row["failed_count"] or 0
+    exptime = row["exptime"]
+    integration: float | None = None
+    if exptime is not None:
+        usable = max(0, frame_count - failed_count)
+        integration = float(exptime) * usable if usable > 0 else None
     return SessionSummary(
         id=row["id"],
         session_key=row["session_key"],
@@ -312,13 +341,15 @@ def _row_to_session_summary(
         instrument=row["instrument"],
         camera=row["camera"],
         filter=row["filter"],
-        exptime=row["exptime"],
+        exptime=exptime,
         gain=row["gain"],
         binning=row["binning"],
         started_at=row["started_at"],
         ended_at=row["ended_at"],
-        frame_count=row["frame_count"] or 0,
-        failed_count=row["failed_count"] or 0,
+        frame_count=frame_count,
+        failed_count=failed_count,
+        integration_seconds=integration,
+        bytes_on_disk=bytes_on_disk,
         calibration=_calibration_for_session(conn, row["id"]),
     )
 
@@ -335,13 +366,29 @@ def health() -> dict[str, str]:
 
 @app.get("/api/targets", response_model=list[TargetSummary])
 def list_targets(conn: DBDep) -> list[TargetSummary]:
+    # Integration time is summed at the session level so a session
+    # without exptime contributes 0 instead of NULL-poisoning the
+    # whole row. Bytes are computed in a separate scalar query so the
+    # frame join doesn't blow up the per-target session count.
     rows = conn.execute(
         """
         SELECT t.id, t.name,
                COUNT(DISTINCT s.id)        AS session_count,
                IFNULL(SUM(s.frame_count), 0) AS frame_count,
                IFNULL(SUM(s.failed_count), 0) AS failed_count,
-               MAX(s.started_at)             AS last_session_at
+               MAX(s.started_at)             AS last_session_at,
+               IFNULL(SUM(
+                 CASE WHEN s.exptime IS NOT NULL
+                      THEN MAX(0, IFNULL(s.frame_count,0) - IFNULL(s.failed_count,0))
+                           * s.exptime
+                      ELSE 0 END
+               ), 0) AS integration_seconds,
+               (
+                 SELECT IFNULL(SUM(f.size), 0)
+                 FROM frames f
+                 JOIN sessions s2 ON s2.session_key = f.session_key
+                 WHERE s2.target_id = t.id
+               ) AS bytes_on_disk
         FROM targets t
         LEFT JOIN sessions s ON s.target_id = t.id
         GROUP BY t.id, t.name
@@ -351,6 +398,9 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
     summaries: list[TargetSummary] = []
     for r in rows:
         common, sky = _resolve_target_meta(r["name"])
+        # 0 from the query means "nothing to integrate" — surface as None
+        # so the UI can show '—' instead of '0s'.
+        integ = float(r["integration_seconds"]) or None
         summaries.append(
             TargetSummary(
                 id=r["id"],
@@ -361,6 +411,8 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                 frame_count=r["frame_count"],
                 failed_count=r["failed_count"],
                 last_session_at=r["last_session_at"],
+                integration_seconds=integ,
+                bytes_on_disk=int(r["bytes_on_disk"] or 0),
             )
         )
     return summaries
@@ -827,6 +879,12 @@ class ProjectCapture(BaseModel):
     ended_at: str | None = None
     target_name: str | None = None
     target_common_name: str | None = None
+    # Useful integration time across the project's sessions:
+    # sum((frame_count - failed_count) * exptime) per session. Null when
+    # no source session has both a frame count and an exposure.
+    integration_seconds: float | None = None
+    # Total bytes of all frames belonging to source sessions.
+    bytes_on_disk: int = 0
 
 
 def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> ProjectCapture:
@@ -844,7 +902,8 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT s.exptime, s.gain, s.filter, s.frame_count, s.failed_count,
+        SELECT s.session_key, s.exptime, s.gain, s.filter,
+               s.frame_count, s.failed_count,
                s.started_at, s.ended_at, t.name AS target_name
         FROM sessions s
         LEFT JOIN targets t ON t.id = s.target_id
@@ -858,6 +917,29 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
     head = rows[0]
     target_name = head["target_name"]
     common_name, _ = _resolve_target_meta(target_name) if target_name else (None, None)
+
+    integration_total = 0.0
+    integration_seen = False
+    for r in rows:
+        if r["exptime"] is None:
+            continue
+        usable = max(0, (r["frame_count"] or 0) - (r["failed_count"] or 0))
+        if usable <= 0:
+            continue
+        integration_total += float(r["exptime"]) * usable
+        integration_seen = True
+
+    keys = [r["session_key"] for r in rows if r["session_key"]]
+    bytes_on_disk = 0
+    if keys:
+        ph = ",".join("?" for _ in keys)
+        size_row = conn.execute(
+            f"SELECT IFNULL(SUM(size), 0) AS bytes FROM frames "
+            f"WHERE session_key IN ({ph})",
+            keys,
+        ).fetchone()
+        bytes_on_disk = int(size_row["bytes"] if size_row else 0)
+
     return ProjectCapture(
         session_count=len(rows),
         frame_count=sum((r["frame_count"] or 0) for r in rows),
@@ -869,6 +951,8 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
         ended_at=max((r["ended_at"] for r in rows if r["ended_at"]), default=None),
         target_name=target_name,
         target_common_name=common_name,
+        integration_seconds=integration_total if integration_seen else None,
+        bytes_on_disk=bytes_on_disk,
     )
 
 

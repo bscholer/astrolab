@@ -29,6 +29,11 @@ export interface SessionSummary {
   ended_at: string | null;
   frame_count: number;
   failed_count: number;
+  // Useful integration time (frame_count - failed_count) * exptime.
+  // Null when exptime is unknown.
+  integration_seconds: number | null;
+  // Total bytes on disk for frames belonging to this session.
+  bytes_on_disk: number;
   calibration: CalibrationStatus[];
 }
 
@@ -49,6 +54,10 @@ export interface TargetSummary {
   frame_count: number;
   failed_count: number;
   last_session_at: string | null;
+  // Total useful integration across all the target's sessions.
+  integration_seconds: number | null;
+  // Total bytes on disk for all of the target's frames.
+  bytes_on_disk: number;
 }
 
 export interface TargetDetail {
@@ -286,6 +295,10 @@ export interface ProjectCapture {
   ended_at: string | null;
   target_name: string | null;
   target_common_name: string | null;
+  // Total useful integration across the project's source sessions.
+  integration_seconds: number | null;
+  // Total bytes on disk for all source-session frames.
+  bytes_on_disk: number;
 }
 
 export interface Project {
