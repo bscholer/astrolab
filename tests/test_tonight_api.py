@@ -314,9 +314,12 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
         "max_magnitude",
         "dusk_utc",
         "dawn_utc",
+        "alt_curve_step_min",
         "entries",
     }
     assert expected_top <= set(body.keys())
+    assert isinstance(body["alt_curve_step_min"], int)
+    assert body["alt_curve_step_min"] > 0
     if body["entries"]:
         sample = body["entries"][0]
         expected_entry = {
@@ -333,5 +336,14 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
             "hours_above_min_alt",
             "session_count",
             "last_session_at",
+            "alt_curve_deg",
         }
         assert expected_entry == set(sample.keys())
+        # When the night window is well-defined, the sparkline must be a
+        # non-empty list of plausible altitudes and never report sub-
+        # horizon by accident: -90 is fine, +90 is fine, NaN/Inf are not.
+        if body["dusk_utc"] is not None and body["dawn_utc"] is not None:
+            curve = sample["alt_curve_deg"]
+            assert isinstance(curve, list) and len(curve) >= 2
+            for v in curve:
+                assert -90.0 <= v <= 90.0

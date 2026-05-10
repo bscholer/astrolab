@@ -200,11 +200,17 @@ def test_night_transits_and_hours_matches_per_target() -> None:
     ra = np.array([M31_RA, 56.6, 83.6, 270.0])
     dec = np.array([M31_DEC, 31.5, -5.4, 30.0])
 
-    transits, hours = sky.night_transits_and_hours(
+    transits, hours, alt_curves = sky.night_transits_and_hours(
         ra, dec, loc, dusk, dawn, 20.0
     )
     assert len(transits) == 4
     assert len(hours) == 4
+    assert alt_curves.shape[0] == 4
+    # The sparkline grid should span the night at the documented cadence.
+    expected_samples = (
+        int(((dawn - dusk).total_seconds() / 60) / sky._INTERNAL_STEP_MIN) + 1
+    ) // sky._SPARKLINE_STRIDE + 1
+    assert abs(alt_curves.shape[1] - expected_samples) <= 1
     for i in range(4):
         single_transit = sky.transit_in_window(
             float(ra[i]), float(dec[i]), loc, dusk, dawn
