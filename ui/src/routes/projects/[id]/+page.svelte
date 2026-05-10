@@ -42,6 +42,7 @@
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
   import CompareSlider from '$lib/CompareSlider.svelte';
+  import PipelineGraph from '$lib/PipelineGraph.svelte';
 
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
@@ -607,6 +608,35 @@
     }
   });
 
+  // ---- Pipeline view mode (cards | graph) ---------------------------
+  // localStorage so toggling persists across navigations / reloads.
+  // 'cards' is the historical view; 'graph' renders the DAG with
+  // xyflow. When in graph mode, clicking a node selects it and the
+  // param form appears in a right-side panel (the inline expand pattern
+  // doesn't translate to fixed-bounds graph nodes).
+  const VIEW_MODE_KEY = 'astrolab.pipeline_view_mode';
+  type PipelineViewMode = 'cards' | 'graph';
+  function loadInitialViewMode(): PipelineViewMode {
+    if (typeof localStorage === 'undefined') return 'cards';
+    const v = localStorage.getItem(VIEW_MODE_KEY);
+    return v === 'graph' ? 'graph' : 'cards';
+  }
+  let viewMode = $state<PipelineViewMode>(loadInitialViewMode());
+  function setViewMode(next: PipelineViewMode) {
+    viewMode = next;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(VIEW_MODE_KEY, next);
+    }
+  }
+  // Selected node in graph mode - the side panel reads from this.
+  // Defaults to the output node so the panel isn't empty on entry.
+  let graphSelectedNid = $state<string | null>(null);
+  $effect(() => {
+    if (viewMode === 'graph' && !graphSelectedNid && outputNodeId) {
+      graphSelectedNid = outputNodeId;
+    }
+  });
+
   // Keep the history strip scrolled to the right edge (newest entry).
   // Triggers on every history.length change so a fresh PATCH that
   // appends a new version auto-scrolls into view, and on initial load
@@ -756,7 +786,79 @@
     {#if schema && project}
       {@const isCover = project.cover_seq === project.current_seq}
       <section class="nodes">
-        <h2 class="section-h">Pipeline</h2>
+        <div class="section-h-row">
+          <h2 class="section-h">Pipeline</h2>
+          <!-- View mode toggle. Card view is the historical row-of-
+               cards layout; graph view mounts the same data on a DAG
+               canvas (xyflow). Selection persists in localStorage so
+               picking the graph view sticks across reloads. -->
+          <div class="view-toggle" role="tablist" aria-label="Pipeline view mode">
+            <button
+              type="button"
+              role="tab"
+              class:active={viewMode === 'cards'}
+              aria-selected={viewMode === 'cards'}
+              onclick={() => setViewMode('cards')}
+              title="Card view"
+            >Cards</button>
+            <button
+              type="button"
+              role="tab"
+              class:active={viewMode === 'graph'}
+              aria-selected={viewMode === 'graph'}
+              onclick={() => setViewMode('graph')}
+              title="Graph view"
+            >Graph</button>
+          </div>
+        </div>
+      {#if viewMode === 'graph'}
+        <div class="graph-layout">
+          <PipelineGraph
+            {project}
+            {schema}
+            {schemaByNodeId}
+            {nodeStatus}
+            {nodeProgress}
+            {nodeHash}
+            {nodePort}
+            {nodeKind}
+            {nodeDurationMs}
+            {previewLoaded}
+            outputNodeId={outputNodeId ?? ''}
+            selectedNodeId={graphSelectedNid}
+            onSelectNode={(nid) => (graphSelectedNid = nid)}
+            onToggleNodeEnabled={toggleNodeEnabled}
+            onPreviewLoad={onPreviewLoad}
+            onPreviewError={onPreviewError}
+            {effectiveEnabled}
+          />
+          {#if graphSelectedNid && schemaByNodeId[graphSelectedNid]}
+            {@const sel = schemaByNodeId[graphSelectedNid]}
+            {@const selOverrides = (project.current_overrides[graphSelectedNid] as Record<string, unknown>) ?? {}}
+            {@const selDefaults = { ...sel.defaults, ...sel.template_params } as Record<string, unknown>}
+            <aside class="graph-panel" aria-label="Selected step parameters">
+              <header class="graph-panel-head">
+                <h3>{nodeDisplayName(sel.kind, sel.node_id)}</h3>
+                <button
+                  type="button"
+                  class="ghost-btn"
+                  onclick={() => (graphSelectedNid = null)}
+                  aria-label="Close panel"
+                >✕</button>
+              </header>
+              <NodeParamsForm
+                nodeId={graphSelectedNid}
+                schemaProps={sel.schema.properties ?? {}}
+                defaults={selDefaults}
+                overrides={selOverrides}
+                cost={blastRadiusCost(project.template, graphSelectedNid, costByNode)}
+                hideFields={isTogglable(sel.schema.properties ?? {}) ? ['enabled'] : []}
+                onchange={(next) => onNodeOverrideChange(graphSelectedNid!, next)}
+              />
+            </aside>
+          {/if}
+        </div>
+      {:else}
         <ol class="node-list">
           {#each schema.nodes as nschema (nschema.node_id)}
             {@const nid = nschema.node_id}
@@ -977,6 +1079,7 @@
             {/if}
           {/each}
         </ol>
+      {/if}
       </section>
     {/if}
 
@@ -1212,6 +1315,90 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--fg-mute, #888);
+  }
+
+  /* Header row that pairs the section title with the view-mode tabs. */
+  .section-h-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 1.25rem 0 0.5rem;
+  }
+  .section-h-row .section-h {
+    margin: 0;
+  }
+  .view-toggle {
+    display: inline-flex;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .view-toggle button {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--fg-mute);
+    padding: 0.2rem 0.7rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: 999px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: background-color 160ms ease, color 160ms ease;
+  }
+  .view-toggle button:hover:not(.active) { color: var(--fg); }
+  .view-toggle button.active {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  /* Graph layout: graph canvas on the left, optional param side panel on
+     the right when a node is selected. Side panel collapses below the
+     graph on narrow viewports so phones still get a usable layout. */
+  .graph-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 0.75rem;
+    align-items: start;
+  }
+  .graph-layout > :global(.graph-host) { width: 100%; }
+  .graph-panel {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .graph-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .graph-panel-head h3 {
+    margin: 0;
+    flex: 1;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .graph-panel :global(form) {
+    padding: 0.6rem 0.75rem;
+  }
+  @media (max-width: 900px) {
+    .graph-layout {
+      grid-template-columns: 1fr;
+    }
+    .graph-panel { max-height: 50vh; }
   }
 
   /* ---------- Pipeline accordion ----------
