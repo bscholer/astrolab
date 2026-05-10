@@ -601,7 +601,17 @@
                 role="button"
                 tabindex="0"
                 aria-expanded={isExpanded}
-                onclick={() => toggleNode(nid)}
+                onclick={(e) => {
+                  // The nested toggle button calls e.stopPropagation(), but
+                  // Svelte 5's event delegation runs handlers off a single
+                  // root listener and the order vs. our outer onclick has
+                  // burned us in deployed builds — clicks on the toggle were
+                  // also expanding the card. Belt-and-braces: ignore any
+                  // click whose target lives inside .node-toggle so the
+                  // toggle is the only thing that fires.
+                  if ((e.target as HTMLElement)?.closest('.node-toggle')) return;
+                  toggleNode(nid);
+                }}
                 onkeydown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
