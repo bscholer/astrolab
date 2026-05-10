@@ -52,10 +52,11 @@ def test_health(client: TestClient) -> None:
     assert r.json() == {"status": "ok"}
 
 
-def test_deploy_webhook_rejects_without_cf_access_header(client: TestClient) -> None:
+def test_deploy_webhook_rejects_without_cf_access_jwt(client: TestClient) -> None:
     """Defense-in-depth: if a request reaches the box without the
-    CF-Access-Client-Id header (e.g. someone hit the LAN IP directly), we
-    refuse before even trying to launch the deploy unit."""
+    Cf-Access-Jwt-Assertion header (CF Access adds it after consuming the
+    Client-Id/Secret), we refuse. Catches direct LAN hits that bypass the
+    tunnel."""
     r = client.post("/api/_deploy")
     assert r.status_code == 403
     assert "CF Access" in r.json()["detail"]
@@ -70,7 +71,7 @@ def test_deploy_webhook_noops_when_systemctl_missing(
     monkeypatch.setattr("server.api.shutil.which", lambda _name: None)
     r = client.post(
         "/api/_deploy",
-        headers={"Cf-Access-Client-Id": "test.access"},
+        headers={"Cf-Access-Jwt-Assertion": "fake.jwt.token"},
     )
     assert r.status_code == 202
     body = r.json()
