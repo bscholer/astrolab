@@ -40,6 +40,7 @@
   import { formatDuration, shortAgo } from '$lib/format';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
+  import CompareSlider from '$lib/CompareSlider.svelte';
 
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
@@ -124,6 +125,117 @@
     } finally {
       const { [seq]: _, ...rest } = publishBusy;
       publishBusy = rest;
+    }
+  }
+
+  // ---- Compare slider (issue #4) ------------------------------------
+  // Two-slot armed picks. compareA is set on the first compare-button
+  // click; the second click on a different seq fills compareB and
+  // opens the modal. Picks persist across modal close so reopening
+  // doesn't lose the user's selection; navigating away does (the page
+  // component unmounts, taking state with it).
+  let compareA = $state<number | null>(null);
+  let compareB = $state<number | null>(null);
+  let compareOpen = $state(false);
+  // Lazy preview lookup: history entries other than the current seq
+  // don't have their job's outputs in nodeHash[], so we fetch them
+  // on-demand when the user picks for compare. Memoize by job_id so
+  // re-arming the same seq is free.
+  let comparePreviews = $state<Record<string, { hash: string; port: string } | null>>({});
+  let compareLoading = $state(false);
+
+  async function ensurePreviewForSeq(seq: number): Promise<{ hash: string; port: string } | null> {
+    if (!project) return null;
+    const entry = project.history.find((h) => h.seq === seq);
+    if (!entry) return null;
+    const cached = comparePreviews[entry.job_id];
+    if (cached !== undefined) return cached;
+    try {
+      const job = await api.getJob(entry.job_id);
+      if (!job.outputs) {
+        comparePreviews = { ...comparePreviews, [entry.job_id]: null };
+        return null;
+      }
+      // Match the gallery's resolution: prefer 'image', fall back to
+      // first key. Keeps the wipe consistent with what gallery cards
+      // surface, so 'compare from history' shows the same artifact.
+      const port = 'image' in job.outputs ? 'image' : Object.keys(job.outputs)[0];
+      const ref = job.outputs[port];
+      const out = ref ? { hash: ref.node_hash, port } : null;
+      comparePreviews = { ...comparePreviews, [entry.job_id]: out };
+      return out;
+    } catch {
+      comparePreviews = { ...comparePreviews, [entry.job_id]: null };
+      return null;
+    }
+  }
+
+  /** Click handler for the per-row compare button.
+   *
+   * State machine:
+   *   - neither armed → arm A
+   *   - A armed, click same seq → unarm A
+   *   - A armed, click different seq → arm B and open the modal
+   *   - both armed, click A's seq → unarm A (modal stays open if B remains)
+   *   - both armed, click B's seq → unarm B (modal closes)
+   *   - both armed, click a third seq → replace B with the new pick
+   */
+  async function toggleCompareSlot(seq: number) {
+    if (compareLoading) return;
+    if (compareA === null) {
+      compareLoading = true;
+      try {
+        await ensurePreviewForSeq(seq);
+        compareA = seq;
+      } finally {
+        compareLoading = false;
+      }
+      return;
+    }
+    if (compareA === seq) {
+      compareA = null;
+      compareOpen = false;
+      return;
+    }
+    if (compareB === seq) {
+      compareB = null;
+      compareOpen = false;
+      return;
+    }
+    // We have an A; this click sets/replaces B and opens the modal.
+    compareLoading = true;
+    try {
+      await ensurePreviewForSeq(seq);
+      compareB = seq;
+      compareOpen = true;
+    } finally {
+      compareLoading = false;
+    }
+  }
+
+  function closeCompare() {
+    compareOpen = false;
+  }
+
+  function clearCompare() {
+    compareA = null;
+    compareB = null;
+    compareOpen = false;
+  }
+
+  function compareSrcFor(seq: number | null): string | null {
+    if (seq === null || !project) return null;
+    const entry = project.history.find((h) => h.seq === seq);
+    if (!entry) return null;
+    const cached = comparePreviews[entry.job_id];
+    if (!cached) return null;
+    return api.previewUrl(cached.hash, cached.port);
+  }
+
+  function onModalKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeCompare();
     }
   }
 
@@ -849,10 +961,31 @@
     {/if}
 
     <section class="history">
-      <h2 class="section-h">History <span class="muted small">({project.history.length})</span></h2>
+      <div class="history-head">
+        <h2 class="section-h">History <span class="muted small">({project.history.length})</span></h2>
+        {#if compareA !== null || compareB !== null}
+          <span class="compare-status muted small">
+            Compare:
+            {#if compareA !== null}<span class="slot a">A=v{compareA + 1}</span>{/if}
+            {#if compareB !== null}<span class="slot b">B=v{compareB + 1}</span>{/if}
+            {#if compareA !== null && compareB !== null}
+              <button type="button" class="ghost-btn" onclick={() => (compareOpen = true)}>
+                Open
+              </button>
+            {/if}
+            <button type="button" class="ghost-btn" onclick={clearCompare}>Clear</button>
+          </span>
+        {/if}
+      </div>
       <ol class="history-strip" bind:this={historyEl}>
         {#each project.history as h (h.seq)}
-          <li class="hist-entry" class:active={h.seq === project.current_seq}>
+          {@const slot = compareA === h.seq ? 'A' : compareB === h.seq ? 'B' : null}
+          <li
+            class="hist-entry"
+            class:active={h.seq === project.current_seq}
+            class:slot-a={slot === 'A'}
+            class:slot-b={slot === 'B'}
+          >
             <button type="button" onclick={() => revertTo(h.seq)} title={h.label ?? ''}>
               <span class="hist-seq muted">v{h.seq + 1}</span>
               <span class="hist-label">{shortHistoryLabel(h.label)}</span>
@@ -893,12 +1026,94 @@
                 </svg>
               {/if}
             </button>
+            <button
+              type="button"
+              class="compare-toggle"
+              class:armed={slot !== null}
+              disabled={compareLoading}
+              aria-pressed={slot !== null}
+              aria-label={slot
+                ? `Clear compare slot ${slot} (v${h.seq + 1})`
+                : compareA === null
+                  ? `Pick v${h.seq + 1} as compare A`
+                  : `Pick v${h.seq + 1} as compare B`}
+              title={slot
+                ? `Compare slot ${slot} - click to clear`
+                : compareA === null
+                  ? 'Pick as compare A'
+                  : 'Pick as compare B'}
+              onclick={() => toggleCompareSlot(h.seq)}
+            >
+              {#if slot}
+                <span class="compare-slot-letter">{slot}</span>
+              {:else}
+                <!-- Two-pane wipe glyph: square split by a vertical
+                     divider, hinting at the slider this opens. -->
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <rect x="1.5" y="2.5" width="13" height="11" rx="2"
+                    fill="none" stroke="currentColor" stroke-width="1.4"/>
+                  <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="1.4"/>
+                </svg>
+              {/if}
+            </button>
           </li>
         {/each}
       </ol>
     </section>
   {/if}
 </div>
+
+{#if compareOpen && project && compareA !== null && compareB !== null}
+  {@const aSrc = compareSrcFor(compareA)}
+  {@const bSrc = compareSrcFor(compareB)}
+  {@const aEntry = project.history.find((h) => h.seq === compareA)}
+  {@const bEntry = project.history.find((h) => h.seq === compareB)}
+  <!-- Modal lives outside .project-root so the backdrop can cover the
+       whole viewport without z-index gymnastics. The dialog itself
+       owns Escape + outside-click handling; the slider focuses on
+       arrow-key wipe. -->
+  <div
+    class="compare-backdrop"
+    role="presentation"
+    onclick={closeCompare}
+    onkeydown={onModalKeydown}
+  >
+    <div
+      class="compare-dialog"
+      role="dialog"
+      tabindex="-1"
+      aria-modal="true"
+      aria-label="Compare history versions"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={onModalKeydown}
+    >
+      <header class="compare-dialog-head">
+        <span class="muted small">Compare</span>
+        <span class="compare-titles">
+          <span class="slot a">A · v{compareA + 1}</span>
+          <span class="muted">vs</span>
+          <span class="slot b">B · v{compareB + 1}</span>
+        </span>
+        <button type="button" class="ghost-btn" onclick={closeCompare} aria-label="Close compare">
+          ✕
+        </button>
+      </header>
+      {#if aSrc && bSrc}
+        <CompareSlider
+          {aSrc}
+          {bSrc}
+          aLabel={aEntry?.label ?? `v${compareA + 1}`}
+          bLabel={bEntry?.label ?? `v${compareB + 1}`}
+        />
+      {:else}
+        <p class="muted">
+          Couldn't load one of the previews. The job may have failed or its
+          cache may have been evicted.
+        </p>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .project-root {
@@ -1369,6 +1584,52 @@
 
   /* ---------- History strip ---------- */
 
+  .history-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .compare-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .compare-status .slot {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.75rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    border: 1px solid var(--border, #333);
+  }
+  .compare-status .slot.a {
+    color: var(--accent, #7aa2ff);
+    border-color: var(--accent, #7aa2ff);
+  }
+  .compare-status .slot.b {
+    color: var(--bad, #ef4444);
+    border-color: var(--bad, #ef4444);
+  }
+  .ghost-btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border, #333);
+    color: var(--fg, #ddd);
+    padding: 0.1rem 0.55rem;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .ghost-btn:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: var(--accent, #7aa2ff);
+    color: var(--accent, #7aa2ff);
+  }
+
   .history-strip {
     list-style: none;
     padding: 0;
@@ -1381,6 +1642,9 @@
   .hist-entry {
     position: relative;
   }
+  /* Scoped to the first button so sibling icon buttons (publish star,
+     compare-toggle) keep their own dimensions instead of inheriting
+     the column layout. */
   .hist-entry > button:first-child {
     appearance: none;
     background: rgba(255, 255, 255, 0.02);
@@ -1403,6 +1667,16 @@
   .hist-entry.active > button:first-child {
     border-color: var(--accent, #7aa2ff);
     background: rgba(122, 162, 255, 0.12);
+  }
+  /* Armed slots tint the entire entry so the strip reads as 'these
+     two are paired' even when the modal is closed. */
+  .hist-entry.slot-a > button:first-child {
+    border-color: var(--accent, #7aa2ff);
+    box-shadow: inset 3px 0 0 var(--accent, #7aa2ff);
+  }
+  .hist-entry.slot-b > button:first-child {
+    border-color: var(--bad, #ef4444);
+    box-shadow: inset 3px 0 0 var(--bad, #ef4444);
   }
   /* Star toggle pinned to the top-right of the entry. Off state stays
      muted so it doesn't compete for attention; on state lights up in
@@ -1434,6 +1708,7 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
+
   .hist-seq {
     font-variant-numeric: tabular-nums;
     font-size: 0.7rem;
@@ -1449,4 +1724,89 @@
   .hist-time {
     font-size: 0.7rem;
   }
+
+  /* Compare-toggle. Lives bottom-right of the entry (top-right is
+     reserved for the publish star from #3) so the two icon buttons
+     coexist without overlap. */
+  .compare-toggle {
+    position: absolute;
+    bottom: 0.3rem;
+    right: 0.3rem;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--fg-mute, #777);
+    padding: 0.2rem;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.4rem;
+    min-height: 1.4rem;
+  }
+  .compare-toggle:hover:not(:disabled) {
+    color: var(--accent, #7aa2ff);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .compare-toggle.armed {
+    color: var(--accent, #7aa2ff);
+    background: var(--accent-soft, rgba(122, 162, 255, 0.14));
+  }
+  .compare-toggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .compare-slot-letter {
+    font-family: var(--font-mono, monospace);
+    font-weight: 700;
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+
+  /* ---------- Compare modal ---------- */
+
+  .compare-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+  }
+  .compare-dialog {
+    background: var(--bg-elev-1, #14182b);
+    border: 1px solid var(--border, #333);
+    border-radius: var(--radius-card, 10px);
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+    width: min(96vw, 1100px);
+    max-height: 92vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .compare-dialog-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--border, #333);
+  }
+  .compare-titles {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.95rem;
+  }
+  .compare-titles .slot {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.85rem;
+  }
+  .compare-titles .slot.a { color: var(--accent, #7aa2ff); }
+  .compare-titles .slot.b { color: var(--bad, #ef4444); }
 </style>
