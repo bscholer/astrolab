@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="astrolab">
+  <!-- soft vignette: top fades to inky navy so the title sits on a quiet
+       upper band; the lower half hints at a sky panel without the visual
+       complexity of an actual photo (kept simple; we'll swap in a stack
+       once we have something we're proud of) -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0b1020"/>
+      <stop offset="100%" stop-color="#040714"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5eead4" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#5eead4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="220" cy="320" r="320" fill="url(#halo)"/>
+
+  <!-- mark, scaled up: same geometry as favicon.svg so brand stays
+       coherent across surfaces -->
+  <g transform="translate(160, 180)">
+    <rect width="160" height="160" rx="30" fill="#0b1020" stroke="#1f2a4a" stroke-width="1.5"/>
+    <g transform="translate(-15, -10)" stroke="#5eead4" stroke-width="5" stroke-linecap="round" fill="none">
+      <line x1="95" y1="50" x2="60" y2="125"/>
+      <line x1="95" y1="50" x2="135" y2="120"/>
+    </g>
+    <g transform="translate(-15, -10)" fill="#5eead4">
+      <circle cx="95" cy="50" r="8"/>
+      <circle cx="60" cy="125" r="8"/>
+      <circle cx="135" cy="120" r="8"/>
+    </g>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <g font-family="Inter, system-ui, -apple-system, sans-serif" fill="#e6edf3">
+    <text x="380" y="290" font-size="92" font-weight="700" letter-spacing="-2">astrolab</text>
+    <text x="380" y="350" font-size="28" font-weight="500" fill="#94a3b8">
+      iterate-and-compare astrophotography stacking
+    </text>
+    <text x="380" y="430" font-size="22" font-weight="500" fill="#5eead4" letter-spacing="0.5">
+      content-cached pipelines · GraXpert · StarNet · Siril
+    </text>
+  </g>
+</svg>
