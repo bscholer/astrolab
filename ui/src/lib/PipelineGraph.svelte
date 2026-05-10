@@ -108,12 +108,12 @@
   // (including ones with saved positions) so its output is internally
   // consistent, then merge saved positions on top so manual arrangements
   // win.
-  const NODE_W = 220;
-  const NODE_H = 124;
+  const NODE_W = 196;
+  const NODE_H = 78;
 
   function computeAutoLayout(): Record<string, { x: number; y: number }> {
     const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: 'LR', nodesep: 28, ranksep: 70, marginx: 24, marginy: 24 });
+    g.setGraph({ rankdir: 'LR', nodesep: 18, ranksep: 50, marginx: 16, marginy: 16 });
     g.setDefaultEdgeLabel(() => ({}));
     for (const n of project.template.nodes) {
       g.setNode(n.id, { width: NODE_W, height: NODE_H });
@@ -183,10 +183,7 @@
         const enabled = togglable ? effectiveEnabled(fullDefaults, overrides) : true;
         const status = nodeStatus[nid] ?? 'pending';
         const prog = nodeProgress[nid];
-        const hash = nodeHash[nid];
-        const port = nodePort[nid] ?? 'image';
         const kind = nodeKind[nid] ?? nschema.kind ?? nid;
-        const previewSrc = hash ? api.previewUrl(hash, port) : null;
         const inputPorts = Object.keys(nschema.inputs ?? {});
         // Output ports: pull from the node's params_schema if it exposed a
         // shape, but more reliably from the template's referenced sources.
@@ -216,14 +213,10 @@
             progressFraction: prog?.fraction ?? null,
             progressMessage: prog?.message ?? null,
             durationMs: nodeDurationMs[nid] ?? null,
-            previewSrc,
-            previewLoaded: previewLoaded[nid] ?? false,
             inputPorts,
             outputPorts: Array.from(outPortSet),
             onToggle: () =>
-              onToggleNodeEnabled(nid, props, fullDefaults, overrides),
-            onPreviewLoad: () => onPreviewLoad(nid),
-            onPreviewError: () => onPreviewError(nid)
+              onToggleNodeEnabled(nid, props, fullDefaults, overrides)
           },
           // Disable native dragging on the toggle button only - xyflow
           // does this for us via the .nodrag class but our toggle is
@@ -292,8 +285,9 @@
     nodesConnectable={false}
     elementsSelectable={true}
     fitView
-    minZoom={0.25}
-    maxZoom={2}
+    fitViewOptions={{ padding: 0.18, maxZoom: 1, minZoom: 0.55 }}
+    minZoom={0.4}
+    maxZoom={1.6}
     onnodedragstop={onNodeDragStop}
     onnodeclick={onNodeClick}
     onpaneclick={onPaneClick}
@@ -307,10 +301,11 @@
 <style>
   .graph-host {
     width: 100%;
-    /* Tall enough to feel like a canvas without dominating the page.
-       xyflow's fitView will size the graph inside this. */
-    height: 70vh;
-    min-height: 480px;
+    /* Sized to read as a panel rather than a full-page canvas: tall
+       enough that a few rows of nodes have breathing room, short
+       enough that the page stays scrollable. fitView + minZoom keep
+       the nodes legible regardless of how wide the chain is. */
+    height: 480px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--bg-elev);

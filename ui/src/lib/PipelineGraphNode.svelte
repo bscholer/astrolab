@@ -1,13 +1,14 @@
 <!--
-  Custom xyflow node renderer for the pipeline graph view.
+  Compact xyflow node for the pipeline graph.
 
-  Visually mirrors the card-mode head (preview thumb, name, status
-  badge, on/off toggle) at a fixed compact size so the graph layout
-  doesn't reflow on status changes. Click anywhere outside the toggle
-  selects the node; the graph view's parent renders the param form for
-  the selected node in a side panel rather than inline (the inline
-  expand from card mode doesn't translate to a fixed-bounds graph
-  node).
+  Earlier iteration shipped with a full preview thumb on each node, but
+  in a long linear template (16 nodes) that produced a 4400px-wide
+  graph that fitView crushed into illegibility. The graph view's job is
+  topology + live status; the preview belongs in the side panel where
+  it can be big enough to actually look at. So this card is small:
+  a status indicator, the node name, an on/off toggle, and a footer
+  pill for cached/running/etc state. Click to select; the parent
+  surfaces the param form (and a real preview) in the side panel.
 -->
 <script lang="ts">
   import { Handle, Position, type NodeProps } from '@xyflow/svelte';
@@ -24,13 +25,9 @@
     progressFraction: number | null;
     progressMessage: string | null;
     durationMs: number | null;
-    previewSrc: string | null;
-    previewLoaded: boolean;
     inputPorts: string[];
     outputPorts: string[];
     onToggle: () => void;
-    onPreviewLoad: () => void;
-    onPreviewError: () => void;
   };
 
   type Props = NodeProps & { data: GraphNodeData };
@@ -47,7 +44,6 @@
 
   function durationString(ms: number | null): string {
     if (ms === null || ms === undefined) return '';
-    if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
     if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
     if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
     const m = Math.floor(ms / 60_000);
@@ -62,10 +58,6 @@
   class:output={data.isOutput}
   class:selected={data.isSelected}
 >
-  <!-- Input handles on the left, output handles on the right. xyflow
-       routes edges between matching ids. We only need source handles
-       for the OUTPUT ports here; input handles render as visual
-       targets at the left edge. -->
   {#each data.inputPorts as port, i (port)}
     <Handle
       type="target"
@@ -83,73 +75,58 @@
     />
   {/each}
 
-  <div class="gnode-thumb">
-    {#if (data.status === 'completed' || data.status === 'cached') && data.previewSrc}
-      {#if !data.previewLoaded}
-        <div class="gnode-skeleton" aria-hidden="true"></div>
-      {/if}
-      <img
-        class="gnode-img"
-        class:loaded={data.previewLoaded}
-        src={data.previewSrc}
-        alt=""
-        draggable="false"
-        onload={data.onPreviewLoad}
-        onerror={data.onPreviewError}
-      />
-    {:else if data.status === 'running' && data.progressFraction !== null}
-      <span class="gnode-pct">{Math.round(data.progressFraction * 100)}%</span>
-    {:else}
-      <span class="gnode-status muted">{data.status}</span>
-    {/if}
+  <span class="gnode-dot status-dot-{data.togglable && !data.enabled ? 'off' : data.status}" aria-hidden="true"></span>
+  <span class="gnode-name">{nodeDisplayName(data.kind, data.nid)}</span>
+  {#if data.isOutput}
+    <span class="gnode-final" title="final output">★</span>
+  {/if}
+  <span class="gnode-spacer"></span>
+  {#if data.togglable}
+    <button
+      type="button"
+      class="gnode-toggle"
+      class:on={data.enabled}
+      role="switch"
+      aria-checked={data.enabled}
+      aria-label={data.enabled ? 'Disable step' : 'Enable step'}
+      title={data.enabled ? 'On - click to skip' : 'Off - click to run'}
+      onclick={(e) => {
+        e.stopPropagation();
+        data.onToggle();
+      }}
+    >
+      <span class="gnode-toggle-knob"></span>
+    </button>
+  {/if}
+
+  <!-- Footer status pill — outside the main flex row so it spans the
+       full width of the compact card and reads cleanly even at small
+       sizes. Doubles as the progress bar when running. -->
+  <div class="gnode-footer">
     {#if data.status === 'running' && data.progressFraction !== null}
       <div class="gnode-progress" style:width="{data.progressFraction * 100}%"></div>
     {/if}
-  </div>
-
-  <div class="gnode-overlay">
-    <span class="gnode-name">{nodeDisplayName(data.kind, data.nid)}</span>
-    <span class="status status-mini status-{data.togglable && !data.enabled ? 'off' : data.status}">
-      {statusLabel()}{#if (data.status === 'completed' || data.status === 'failed') && data.durationMs && data.enabled}<span class="dur"> · {durationString(data.durationMs)}</span>{/if}
+    <span class="gnode-status-pill">
+      {statusLabel()}{#if (data.status === 'completed' || data.status === 'failed') && data.durationMs && data.enabled} · {durationString(data.durationMs)}{/if}
     </span>
-    {#if data.isOutput}
-      <span class="output-tag">final</span>
-    {/if}
-    <span class="gnode-spacer"></span>
-    {#if data.togglable}
-      <!-- Toggle has pointer-events: auto so it captures its own clicks
-           even though the overlay is pointer-events: none for click-pass-
-           through (matches the card-mode pattern). -->
-      <button
-        type="button"
-        class="gnode-toggle"
-        class:on={data.enabled}
-        role="switch"
-        aria-checked={data.enabled}
-        aria-label={data.enabled ? 'Disable step' : 'Enable step'}
-        title={data.enabled ? 'On - click to skip' : 'Off - click to run'}
-        onclick={(e) => {
-          e.stopPropagation();
-          data.onToggle();
-        }}
-      >
-        <span class="gnode-toggle-knob"></span>
-      </button>
-    {/if}
   </div>
 </div>
 
 <style>
   .gnode {
     position: relative;
-    width: 220px;
-    height: 124px;
+    width: 196px;
+    min-height: 56px;
     background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
+    border-radius: 8px;
+    padding: 0.45rem 0.55rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
     cursor: pointer;
-    transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
   }
   .gnode:hover { border-color: var(--border-strong); }
   .gnode.selected {
@@ -159,120 +136,54 @@
   .gnode.output {
     border-color: var(--accent-soft);
   }
-  .gnode.output.selected,
-  .gnode.output {
-    box-shadow: 0 0 0 1px var(--accent-soft);
+  .gnode.output.selected {
+    box-shadow: 0 0 0 1px var(--accent), 0 6px 24px rgba(0, 0, 0, 0.4);
   }
-
-  .gnode-thumb {
-    position: relative;
-    width: 100%;
-    height: 100%;
+  .gnode.disabled {
+    opacity: 0.55;
     background: var(--bg-elev-2);
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
-    transition: opacity 220ms ease, filter 220ms ease;
-  }
-  .gnode-img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-    opacity: 0;
-    transition: opacity 220ms ease;
-  }
-  .gnode-img.loaded { opacity: 1; }
-  .gnode-skeleton {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(90deg,
-      rgba(255, 255, 255, 0.02) 0%,
-      rgba(255, 255, 255, 0.06) 50%,
-      rgba(255, 255, 255, 0.02) 100%);
-    background-size: 200% 100%;
-    animation: shimmer 1.2s infinite linear;
-  }
-  @keyframes shimmer {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-  }
-  .gnode-pct {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    color: var(--accent);
-    font-size: 1.05rem;
-  }
-  .gnode-status {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  .gnode-progress {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 2px;
-    background: var(--accent);
-    transition: width 200ms ease;
-    z-index: 2;
   }
 
-  .gnode-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    padding: 0.4rem 0.55rem 0.7rem;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.85) 30%, rgba(0, 0, 0, 0));
-    color: #fff;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    pointer-events: none;
-    z-index: 1;
+  .gnode-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--fg-mute);
   }
+  .status-dot-pending { background: var(--fg-mute); }
+  .status-dot-running { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  .status-dot-cached { background: var(--accent-soft); border: 1px solid var(--accent); }
+  .status-dot-completed { background: var(--accent); }
+  .status-dot-failed { background: var(--bad); }
+  .status-dot-off { background: rgba(255, 255, 255, 0.15); }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+  }
+
   .gnode-name {
     font-weight: 600;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
+    color: var(--fg);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    flex: 1 1 auto;
     min-width: 0;
-    flex-shrink: 1;
   }
-  .gnode-spacer { flex: 1 1 0; min-width: 0.2rem; }
-
-  /* Status pill - reuses the .status-* color tokens from the card view
-     so the two modes feel consistent. */
-  :global(.gnode-overlay .status-mini) {
-    font-size: 0.6rem;
-    padding: 0.05rem 0.35rem;
-    border-radius: 999px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  .gnode-final {
+    color: var(--accent);
+    font-size: 0.85rem;
+    line-height: 1;
     flex-shrink: 0;
   }
-  :global(.gnode-overlay .output-tag) {
-    font-size: 0.55rem;
-    padding: 0.05rem 0.35rem;
-    border-radius: 999px;
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 700;
-    text-transform: uppercase;
-    flex-shrink: 0;
-  }
-  :global(.gnode-overlay .dur) { opacity: 0.85; }
+  .gnode-spacer { display: none; }
 
   .gnode-toggle {
     appearance: none;
     background: rgba(255, 255, 255, 0.10);
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid var(--hairline);
     width: 26px;
     height: 14px;
     border-radius: 999px;
@@ -281,7 +192,6 @@
     position: relative;
     flex-shrink: 0;
     transition: background-color 160ms ease, border-color 160ms ease;
-    pointer-events: auto;
   }
   .gnode-toggle.on {
     background: var(--accent);
@@ -302,20 +212,44 @@
     background: white;
   }
 
-  .gnode.disabled .gnode-thumb {
-    opacity: 0.35;
-    filter: grayscale(0.6);
+  .gnode-footer {
+    flex: 0 0 100%;
+    position: relative;
+    height: 16px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    overflow: hidden;
   }
+  .gnode-progress {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--accent);
+    opacity: 0.35;
+    transition: width 200ms ease;
+  }
+  .gnode-status-pill {
+    position: relative;
+    z-index: 1;
+    display: block;
+    text-align: center;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-mute);
+    line-height: 16px;
+  }
+  .gnode.status-completed .gnode-status-pill,
+  .gnode.status-cached .gnode-status-pill { color: var(--accent); }
+  .gnode.status-running .gnode-status-pill { color: var(--accent); }
+  .gnode.status-failed .gnode-status-pill { color: var(--bad); }
 
-  /* xyflow handles: visible little dots so the user can see the flow
-     direction. We don't expose port-level connection in this PR but
-     the visual cue makes the topology readable. */
+  /* xyflow handle styling matching app theme */
   :global(.gnode .svelte-flow__handle) {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     background: var(--bg);
     border: 2px solid var(--border-strong);
-    transition: border-color 160ms ease, background 160ms ease;
   }
   :global(.gnode:hover .svelte-flow__handle) {
     border-color: var(--accent);

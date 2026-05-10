@@ -836,9 +836,13 @@
             {@const sel = schemaByNodeId[graphSelectedNid]}
             {@const selOverrides = (project.current_overrides[graphSelectedNid] as Record<string, unknown>) ?? {}}
             {@const selDefaults = { ...sel.defaults, ...sel.template_params } as Record<string, unknown>}
+            {@const selStatus = nodeStatus[graphSelectedNid] ?? 'pending'}
+            {@const selHash = nodeHash[graphSelectedNid]}
+            {@const selPort = nodePort[graphSelectedNid] ?? 'image'}
             <aside class="graph-panel" aria-label="Selected step parameters">
               <header class="graph-panel-head">
                 <h3>{nodeDisplayName(sel.kind, sel.node_id)}</h3>
+                <span class="status status-mini status-{selStatus}">{selStatus}</span>
                 <button
                   type="button"
                   class="ghost-btn"
@@ -846,6 +850,18 @@
                   aria-label="Close panel"
                 >✕</button>
               </header>
+              <!-- Live preview: this is where the node's actual output
+                   lives in graph mode. Compact card design moved the
+                   preview off the node itself; here it gets the room
+                   it needs to actually be useful. -->
+              {#if (selStatus === 'completed' || selStatus === 'cached') && selHash}
+                <div class="graph-panel-preview">
+                  <img
+                    src={api.previewUrl(selHash, selPort)}
+                    alt="{nodeDisplayName(sel.kind, sel.node_id)} preview"
+                  />
+                </div>
+              {/if}
               <NodeParamsForm
                 nodeId={graphSelectedNid}
                 schemaProps={sel.schema.properties ?? {}}
@@ -1393,6 +1409,22 @@
   }
   .graph-panel :global(form) {
     padding: 0.6rem 0.75rem;
+  }
+  .graph-panel-preview {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: var(--bg-elev-2);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .graph-panel-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
   }
   @media (max-width: 900px) {
     .graph-layout {
