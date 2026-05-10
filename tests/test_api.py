@@ -89,6 +89,28 @@ def test_target_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_target_storage_and_integration(client: TestClient) -> None:
+    """The library exposes per-target bytes_on_disk + integration_seconds.
+    Two seeded LIGHT frames, one failed, exposure 30s; useful integration
+    is 1 frame * 30s = 30s, and bytes is the on-disk size of both
+    (failed frames still take up space)."""
+    body = client.get("/api/targets").json()
+    assert len(body) == 1
+    t = body[0]
+    # 2 frames at exptime 30s, failed_count=1 -> useful = 30s.
+    assert t["integration_seconds"] == 30.0
+    # Synthetic FITS files are non-empty (a few KB each).
+    assert t["bytes_on_disk"] > 0
+
+
+def test_session_storage_and_integration(client: TestClient) -> None:
+    target_id = client.get("/api/targets").json()[0]["id"]
+    sessions = client.get(f"/api/targets/{target_id}").json()["sessions"]
+    s = sessions[0]
+    assert s["integration_seconds"] == 30.0
+    assert s["bytes_on_disk"] > 0
+
+
 def test_session_detail(client: TestClient) -> None:
     r = client.get("/api/targets")
     target_id = r.json()[0]["id"]

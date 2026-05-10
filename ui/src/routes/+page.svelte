@@ -12,7 +12,7 @@
     type TargetSummary
   } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
-  import { shortAgo, formatFailPct, failPctClass } from '$lib/format';
+  import { shortAgo, formatFailPct, failPctClass, formatBytes, formatIntegrationTime } from '$lib/format';
 
   let targets = $state<TargetSummary[] | null>(null);
   let openTargetId = $state<number | null>(null);
@@ -336,6 +336,21 @@
                 {formatFailPct(t.failed_count, t.frame_count)}
               </span>
             {/if}
+            {#if t.integration_seconds && t.integration_seconds > 0}
+              <span aria-hidden="true">·</span>
+              <span
+                class="num"
+                title="Useful integration: (frame_count - failed_count) × exptime"
+              >
+                {formatIntegrationTime(t.integration_seconds)} integ
+              </span>
+            {/if}
+            {#if t.bytes_on_disk > 0}
+              <span aria-hidden="true">·</span>
+              <span class="num" title="Total on-disk size of this target's frames">
+                {formatBytes(t.bytes_on_disk)}
+              </span>
+            {/if}
             {#if t.last_session_at}
               <span aria-hidden="true">·</span>
               <span class="num">last {shortDate(t.last_session_at)}</span>
@@ -439,6 +454,21 @@
                             title="{s.failed_count} of {s.frame_count} failed"
                           >
                             {formatFailPct(s.failed_count, s.frame_count)}
+                          </span>
+                        {/if}
+                        {#if s.integration_seconds && s.integration_seconds > 0}
+                          <span aria-hidden="true" class="muted">·</span>
+                          <span
+                            class="num muted"
+                            title="Useful integration: ({s.frame_count} - {s.failed_count}) × {s.exptime ?? '?'}s"
+                          >
+                            {formatIntegrationTime(s.integration_seconds)} integ
+                          </span>
+                        {/if}
+                        {#if s.bytes_on_disk > 0}
+                          <span aria-hidden="true" class="muted">·</span>
+                          <span class="num muted" title="On-disk size of this session's frames">
+                            {formatBytes(s.bytes_on_disk)}
                           </span>
                         {/if}
                         <span class="cal-row">

@@ -87,6 +87,22 @@ export function formatExposure(j: Pick<JobSummary, 'capture'>): string {
 }
 
 /**
+ * Render integration time. Astrophotographers think in hours and
+ * minutes for anything stack-worthy, so we lead with hours when we have
+ * them. Falls back to minutes for short sessions, seconds for tiny test
+ * captures, and an em-dash placeholder when we have nothing.
+ */
+export function formatIntegrationTime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—';
+  if (seconds < 1) return '—';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/**
  * Render bytes as a human-readable string. Uses binary units (KiB, MiB,
  * etc.) since these are storage numbers; we trade off the GB-vs-GiB
  * confusion for consistency with what `du -h` and `df -h` show on the
