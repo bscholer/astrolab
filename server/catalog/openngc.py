@@ -157,19 +157,44 @@ def _alias_keys_for(entry_name: str, m: str, ngc: str, ic: str, identifiers: str
         _emit("NGC", ngc)
     if ic and not entry_name.startswith("IC"):
         _emit("IC", ic)
-    # Foreign identifiers (Sh2-155, LBN 529, …). We only index the ones
-    # that look like 'PREFIX number' so we don't pollute the index with
-    # SDSS J… names that nobody types by hand.
+    # Foreign identifiers (Sh2-155, LBN 529, C 020 = Caldwell 20, …). We only
+    # index the ones that look like 'PREFIX number' so we don't pollute the
+    # index with SDSS J… names that nobody types by hand. OpenNGC zero-pads
+    # the digit run inside Identifiers ('C 020', 'LBN 0373'); strip those
+    # leading zeros so the human form ('C 20') resolves too.
+    _ALIAS_PREFIXES = (
+        "SH ", "SH2-", "LBN ", "LDN ", "C ", "B ", "MEL ", "VDB ", "RCW ", "ABELL ",
+    )
     for raw in (identifiers or "").split(","):
         token = raw.strip()
         if not token:
             continue
-        _ALIAS_PREFIXES = (
-            "SH ", "SH2-", "LBN ", "LDN ", "C ", "B ", "MEL ", "VDB ", "RCW ", "ABELL ",
-        )
-        if any(token.upper().startswith(p) for p in _ALIAS_PREFIXES):
-            keys.add(token)
-            keys.add(token.replace(" ", ""))
+        if not any(token.upper().startswith(p) for p in _ALIAS_PREFIXES):
+            continue
+        keys.add(token)
+        keys.add(token.replace(" ", ""))
+        # Split on the first run of digits so 'C 020' -> ('C ', '020', ''),
+        # 'SH2-155' -> ('SH2-', '155', ''). The trailing slice catches
+        # rare suffixes like 'B 33A' (stays untouched if there is no digit run).
+        head_end = 0
+        while head_end < len(token) and not token[head_end].isdigit():
+            head_end += 1
+        digit_end = head_end
+        while digit_end < len(token) and token[digit_end].isdigit():
+            digit_end += 1
+        if digit_end == head_end:
+            continue
+        head = token[:head_end].rstrip()
+        digits = token[head_end:digit_end].lstrip("0") or "0"
+        tail = token[digit_end:]
+        if not head:
+            continue
+        # Always emit the spaced form ('C 20'); only emit the joined form
+        # ('C20') when the original prefix didn't end in a punctuation char,
+        # so 'SH2-155' doesn't lose its hyphen.
+        keys.add(f"{head} {digits}{tail}")
+        if head[-1].isalpha():
+            keys.add(f"{head}{digits}{tail}")
     return list(keys)
 
 
