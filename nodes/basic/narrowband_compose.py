@@ -31,8 +31,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import image_ref, quote
 from nodes.base import Node
-from nodes.basic.calibrate import _quote
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -168,14 +168,7 @@ class NarrowbandComposeNode(Node[NarrowbandComposeParams]):
             shutil.rmtree(work_dir)
 
         ctx.progress(1.0, f"narrowband_compose: wrote {out_image.name}")
-        return {
-            "image": Ref(
-                node_hash="",
-                port="image",
-                path=out_image,
-                type=PortType.IMAGE_FITS,
-            )
-        }
+        return {"image": image_ref(out_image)}
 
 
 def _build_compose_commands(
@@ -205,7 +198,7 @@ def _build_compose_commands(
     synthetic_formula = f"(${ha_aligned}$ * 0.7) + (${normalized_oiii}$ * 0.3)"
 
     cmds: list[str] = [
-        f"cd {_quote(work_dir.resolve())}",
+        f"cd {quote(work_dir.resolve())}",
         # Load the registered OIII stack and normalize it to Ha's intensity
         # statistics. Save the result so rgbcomp can reference it by name.
         f"load {oiii_aligned}",
@@ -228,7 +221,7 @@ def _build_compose_commands(
     g_file = sources[channels_map["G"]]  # type: ignore[index]
     b_file = sources[channels_map["B"]]  # type: ignore[index]
     cmds.append(
-        f"rgbcomp {r_file} {g_file} {b_file} -out={_quote(out_image.resolve())}"
+        f"rgbcomp {r_file} {g_file} {b_file} -out={quote(out_image.resolve())}"
     )
     return cmds
 

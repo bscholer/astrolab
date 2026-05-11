@@ -17,8 +17,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import image_ref, quote, stage_sequence
 from nodes.base import Node
-from nodes.basic.calibrate import _quote, _stage_sequence
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -131,7 +131,7 @@ class SeqStackNode(Node[SeqStackParams]):
         work_dir = out_dir_path / "_stack"
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        staged = _stage_sequence(seq_in, work_dir, params.input_basename, params.fitseq)
+        staged = stage_sequence(seq_in, work_dir, params.input_basename, params.fitseq)
         if not staged:
             raise RuntimeError(
                 f"seq_stack: no input frames matching basename "
@@ -161,11 +161,11 @@ class SeqStackNode(Node[SeqStackParams]):
             cmd_parts.append("-filter-included")
         if params.weight_from_quality:
             cmd_parts.append("-weight=wfwhm")
-        cmd_parts.append(f"-out={_quote(out_image.resolve())}")
+        cmd_parts.append(f"-out={quote(out_image.resolve())}")
 
-        ctx.progress(0.2, f"seq_stack: stacking {len(staged)} frames ({params.method})")
+        ctx.progress(0.2, f"seq_stack: stacking ({params.method})")
         commands = [
-            f"cd {_quote(work_dir.resolve())}",
+            f"cd {quote(work_dir.resolve())}",
             " ".join(cmd_parts),
         ]
         runtime = SirilRuntime()
@@ -190,19 +190,11 @@ class SeqStackNode(Node[SeqStackParams]):
             )
 
         # Toss the staging dir; the cache entry only needs image.fit.
-        for link in staged:
-            if link.is_symlink() or link.exists():
-                link.unlink()
+        from nodes._seq_runner import drop_staged
+        drop_staged(staged)
         # Siril may have left an FWHM .reg or similar behind; rmdir then is fine to skip.
         with contextlib.suppress(OSError):
             work_dir.rmdir()
 
         ctx.progress(1.0, f"seq_stack: wrote {out_image.name}")
-        return {
-            "image": Ref(
-                node_hash="",
-                port="image",
-                path=out_image,
-                type=PortType.IMAGE_FITS,
-            )
-        }
+        return {"image": image_ref(out_image)}

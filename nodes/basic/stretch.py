@@ -22,8 +22,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import image_ref, quote
 from nodes.base import Node
-from nodes.basic.calibrate import _quote
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -177,10 +177,10 @@ class StretchNode(Node[StretchParams]):
         ctx.progress(0.1, f"stretch: applying {params.method}")
         stretch_cmd = _build_stretch_cmd(params)
         commands = [
-            f"cd {_quote(out_dir_path.resolve())}",
-            f"load {_quote(src.resolve())}",
+            f"cd {quote(out_dir_path.resolve())}",
+            f"load {quote(src.resolve())}",
             stretch_cmd,
-            f"save {_quote(save_stem)}",
+            f"save {quote(save_stem)}",
         ]
         runtime = SirilRuntime()
         result = runtime.run(
@@ -204,14 +204,7 @@ class StretchNode(Node[StretchParams]):
             )
 
         ctx.progress(1.0, f"stretch: wrote {out_image.name}")
-        return {
-            "image": Ref(
-                node_hash="",
-                port="image",
-                path=out_image,
-                type=PortType.IMAGE_FITS,
-            )
-        }
+        return {"image": image_ref(out_image)}
 
 
 def _build_stretch_cmd(p: StretchParams) -> str:

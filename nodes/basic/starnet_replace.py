@@ -25,8 +25,8 @@ import numpy as np
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import image_ref, quote
 from nodes.base import Node
-from nodes.basic.calibrate import _quote
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -116,11 +116,11 @@ class StarnetReplaceNode(Node[StarnetReplaceParams]):
 
         ctx.progress(0.3, "starnet_replace: running siril findstar+synthstar")
         commands = [
-            f"cd {_quote(out_dir_path.resolve())}",
-            f"load {_quote(recon_path.resolve())}",
+            f"cd {quote(out_dir_path.resolve())}",
+            f"load {quote(recon_path.resolve())}",
             "findstar",
             "synthstar",
-            f"save {_quote(synth_stem)}",
+            f"save {quote(synth_stem)}",
         ]
         runtime = SirilRuntime()
         result = runtime.run(
@@ -183,11 +183,4 @@ def _passthrough(src: Path, dst: Path) -> None:
 
 
 def _result(out_image: Path) -> dict[str, Ref]:
-    return {
-        "image": Ref(
-            node_hash="",
-            port="image",
-            path=out_image,
-            type=PortType.IMAGE_FITS,
-        )
-    }
+    return {"image": image_ref(out_image)}

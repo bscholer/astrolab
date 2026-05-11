@@ -16,12 +16,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import quote, run_siril_on_sequence, seq_ref
 from nodes.base import Node
-from nodes.basic.calibrate import _quote, _stage_sequence
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
-from server.siril import SirilRuntime, make_progress_handler
+from server.siril import SirilRuntime
 
 
 class SeqBgExtractParams(BaseModel):
@@ -76,75 +76,25 @@ class SeqBgExtractNode(Node[SeqBgExtractParams]):
     ) -> dict[str, Ref]:
         out_dir_path = Path(out_dir)  # type: ignore[arg-type]
         seq_in = inputs["sequence"].path
-
-        if not seq_in.exists():
-            raise RuntimeError(f"seq_bg_extract: input dir does not exist: {seq_in}")
-
         seq_out = out_dir_path / "sequence"
-        seq_out.mkdir(parents=True, exist_ok=True)
+        out_basename = f"bkg_{params.input_basename}"
 
-        staged = _stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
-        if not staged:
-            raise RuntimeError(
-                f"seq_bg_extract: no input frames matching basename "
-                f"'{params.input_basename}' under {seq_in}"
-            )
-
-        ctx.progress(0.2, f"seq_bg_extract: subtracting background ({len(staged)} frames)")
+        ctx.progress(0.2, "seq_bg_extract: subtracting background")
         commands = [
-            f"cd {_quote(seq_out.resolve())}",
+            f"cd {quote(seq_out.resolve())}",
             f"seqsubsky {params.input_basename} {params.degree} -samples={params.samples}",
         ]
-        runtime = SirilRuntime()
-        result = runtime.run(
-            commands,
-            working_dir=seq_out,
-            on_log=make_progress_handler(ctx),
-            cancel=ctx.cancel,
+        wrote = run_siril_on_sequence(
+            node_name="seq_bg_extract",
+            seq_in=seq_in,
+            seq_out=seq_out,
+            commands=commands,
+            basename=params.input_basename,
+            out_basename=out_basename,
+            fitseq=params.fitseq,
+            ctx=ctx,
+            runtime=SirilRuntime(),
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"seq_bg_extract: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-                f"--- stderr ---\n{result.stderr}"
-            )
-
-        out_basename = f"bkg_{params.input_basename}"
-        if params.fitseq:
-            expected = seq_out / f"{out_basename}.fit"
-            if not expected.exists():
-                raise RuntimeError(
-                    f"seq_bg_extract: siril returned 0 but FITSEQ container "
-                    f"{expected} is missing.\n--- stdout (tail) ---\n"
-                    f"{result.stdout[-2000:]}"
-                )
-            wrote = expected.name
-        else:
-            frames = sorted(
-                p
-                for p in seq_out.iterdir()
-                if p.name.startswith(f"{out_basename}_")
-                and p.suffix in (".fit", ".fits")
-            )
-            if not frames:
-                raise RuntimeError(
-                    f"seq_bg_extract: siril returned 0 but no {out_basename}_*.fit* "
-                    f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
-                    f"{result.stdout[-2000:]}"
-                )
-            wrote = f"{len(frames)} frames"
-
-        for link in staged:
-            if link.is_symlink() or link.exists():
-                link.unlink()
 
         ctx.progress(1.0, f"seq_bg_extract: wrote {wrote}")
-        return {
-            "sequence": Ref(
-                node_hash="",
-                port="sequence",
-                path=seq_out,
-                type=PortType.SEQUENCE_FITS,
-            )
-        }
+        return {"sequence": seq_ref(seq_out)}
