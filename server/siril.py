@@ -29,6 +29,42 @@ log = logging.getLogger("astrolab.siril")
 
 
 # ---------------------------------------------------------------------------
+# Version cache
+# ---------------------------------------------------------------------------
+
+_cached_siril_version: str | None = None
+_siril_version_resolved: bool = False
+
+
+def get_siril_version() -> str:
+    """Return the detected Siril version as a dotted string, or '' on failure.
+
+    Resolved once at first call and cached for the process lifetime. On macOS
+    dev hosts (or any box without Siril) this returns '' rather than crashing
+    -- Siril nodes don't actually execute there, but the hash machinery still
+    needs a stable string.
+    """
+    global _cached_siril_version, _siril_version_resolved
+    if _siril_version_resolved:
+        return _cached_siril_version or ""
+    _siril_version_resolved = True
+    try:
+        binary = find_siril()
+        if binary.version is not None:
+            _cached_siril_version = ".".join(str(x) for x in binary.version)
+        else:
+            # Source had no parseable version (eg $SIRIL_BIN override without filename).
+            # Fall back to probing the binary directly, best-effort.
+            _cached_siril_version = ""
+    except SirilNotFound:
+        _cached_siril_version = ""
+    except Exception:
+        log.debug("siril version probe failed; version string will be empty", exc_info=True)
+        _cached_siril_version = ""
+    return _cached_siril_version or ""
+
+
+# ---------------------------------------------------------------------------
 # Progress parsing
 # ---------------------------------------------------------------------------
 

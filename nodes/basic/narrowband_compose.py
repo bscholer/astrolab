@@ -94,6 +94,7 @@ class NarrowbandComposeNode(Node[NarrowbandComposeParams]):
     id = "narrowband_compose"
     version = 1
     cost = "cheap"
+    uses_siril = True
 
     inputs = {
         "ha": PortType.IMAGE_FITS,

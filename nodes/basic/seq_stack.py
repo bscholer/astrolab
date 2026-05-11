@@ -108,6 +108,7 @@ class SeqStackNode(Node[SeqStackParams]):
     id = "seq_stack"
     version = 1
     cost = "expensive"
+    uses_siril = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"image": PortType.IMAGE_FITS}

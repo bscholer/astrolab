@@ -81,6 +81,7 @@ class SeqResampleNode(Node[SeqResampleParams]):
     id = "seq_resample"
     version = 1
     cost = "medium"
+    uses_siril = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}

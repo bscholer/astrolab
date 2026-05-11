@@ -88,6 +88,7 @@ class CalibrateNode(Node[CalibrateParams]):
     id = "calibrate"
     version = 1
     cost = "medium"
+    uses_siril = True
 
     inputs = {
         "sequence": PortType.SEQUENCE_FITS,

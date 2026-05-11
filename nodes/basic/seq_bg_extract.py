@@ -61,6 +61,7 @@ class SeqBgExtractNode(Node[SeqBgExtractParams]):
     id = "seq_bg_extract"
     version = 1
     cost = "medium"
+    uses_siril = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}

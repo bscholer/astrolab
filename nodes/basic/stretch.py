@@ -149,6 +149,7 @@ class StretchNode(Node[StretchParams]):
     id = "stretch"
     version = 1
     cost = "cheap"
+    uses_siril = True
 
     inputs = {"image": PortType.IMAGE_FITS}
     outputs = {"image": PortType.IMAGE_FITS}
