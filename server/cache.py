@@ -1,9 +1,14 @@
 """Content-addressed cache.
 
-The cache stores node outputs at `<root>/<node_hash>/<port>.<ext>`. Presence
-of a `_done` marker file inside the directory means the entry is committed;
-absence means it's incomplete (e.g. a crashed run) and should be ignored.
-This avoids ever serving a half-written artifact as a cache hit.
+The cache stores node outputs under `<root>/<node_hash>/`. The directory
+layout for an output port is whatever the node wrote (commonly
+`<port>.<ext>` or a `<port>/` subdirectory, but nodes are free to use any
+filename). Presence of a `_done` marker file inside the directory means
+the entry is committed; absence means it's incomplete (e.g. a crashed
+run) and should be ignored. A `_outputs.json` manifest sits next to
+`_done` and records the port -> relative-path mapping the node returned,
+so the runtime can re-hydrate Refs on a cache hit without guessing at
+filenames.
 
 Phase 0 is filesystem-only. The README mentions a SQLite reverse index
 `(node_id, params_hash) -> node_hash` for fast lookup; we defer that until
@@ -14,14 +19,17 @@ is plenty.
 from __future__ import annotations
 
 import contextlib
+import json
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
 from .models import Ref
 from .paths import cache_root
+from .ports import PortType
 
 DONE_MARKER: str = "_done"
+OUTPUTS_MANIFEST: str = "_outputs.json"
 
 
 class ContentCache:
@@ -60,18 +68,68 @@ class ContentCache:
         """Mark an entry as complete and return the committed Refs.
 
         Caller is responsible for having written each output file under the
-        entry directory before calling commit.
+        entry directory before calling commit. Writes a `_outputs.json`
+        manifest alongside `_done` so the lookup path can rehydrate the
+        Refs without guessing at filenames: multi-output nodes can use
+        whatever naming scheme they like (eg narrowband_extract writes
+        `r_results_ha.fit` for port `ha`).
         """
         d = self.entry_dir(node_hash)
         if not d.exists():
             raise RuntimeError(f"cache: cannot commit non-reserved entry {node_hash}")
+        manifest: dict[str, dict[str, str]] = {}
         for port, ref in outputs.items():
             if not ref.path.exists():
                 raise RuntimeError(
                     f"cache: output '{port}' missing at {ref.path} for {node_hash}"
                 )
+            try:
+                rel = ref.path.resolve().relative_to(d.resolve())
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"cache: output '{port}' path {ref.path} escapes entry dir {d}"
+                ) from exc
+            manifest[port] = {"path": rel.as_posix(), "type": str(ref.type)}
+        # Write manifest before _done so a crash mid-commit leaves an
+        # incomplete entry (no _done marker), not a committed one with a
+        # missing manifest.
+        (d / OUTPUTS_MANIFEST).write_text(json.dumps(manifest, indent=2))
         (d / DONE_MARKER).touch()
         return dict(outputs)
+
+    def load_outputs(self, node_hash: str) -> dict[str, Ref] | None:
+        """Return the committed Refs for an entry from its manifest.
+
+        Returns None when the entry is missing, uncommitted, or predates
+        the manifest format (legacy entries that only have `_done`). The
+        runtime falls back to convention-based lookup in that case so
+        users don't have to nuke their cache after upgrading.
+        """
+        d = self.entry_dir(node_hash)
+        manifest_path = d / OUTPUTS_MANIFEST
+        if not self.is_committed(node_hash) or not manifest_path.exists():
+            return None
+        try:
+            raw = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        out: dict[str, Ref] = {}
+        for port, entry in raw.items():
+            rel = entry.get("path")
+            type_str = entry.get("type")
+            if not isinstance(rel, str) or not isinstance(type_str, str):
+                return None
+            try:
+                port_type = PortType(type_str)
+            except ValueError:
+                return None
+            out[port] = Ref(
+                node_hash=node_hash,
+                port=port,
+                path=d / rel,
+                type=port_type,
+            )
+        return out
 
     def evict(self, node_hash: str) -> int:
         """Remove a committed cache entry. Returns bytes freed (best-effort

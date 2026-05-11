@@ -11,11 +11,14 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from pydantic import BaseModel
 
 import nodes.basic  # noqa: F401  registers the downscale node
+from nodes.base import Node
 from server.cache import ContentCache
-from server.models import Job, NodeSpec, Ref, Template
+from server.models import Job, NodeSpec, Ref, RunContext, Template
 from server.ports import PortType
+from server.registry import register
 from server.runtime import run_job
 
 
@@ -174,3 +177,127 @@ def test_runner_uses_explicit_cache_when_provided(tmp_path: Path) -> None:
 
     outputs = run_job(_build_template(), _job_with_input(src), cache=cache)
     assert custom_cache_root in outputs["image"].path.parents
+
+
+# ---- multi-output cache regression --------------------------------------------
+#
+# narrowband_extract returns two ports (ha, oiii) and writes them as
+# `r_results_ha.fit` and `r_results_oiii.fit`. Before the per-entry manifest
+# landed, the cache lookup reconstructed paths via a `<port>.*` glob and
+# couldn't find these files, so the second run of the pipeline blew up with
+# `cached entry <hash> missing output 'ha'`. The test pair below pins both
+# the multi-port write/read round-trip and the legacy fallback so we don't
+# regress.
+
+
+class _SplitParams(BaseModel):
+    pass
+
+
+@register("__test_split_writer__")
+class _SplitWriterNode(Node[_SplitParams]):
+    """Test node that mimics narrowband_extract's filename choice.
+
+    Declares two output ports (`alpha`, `beta`) but writes them as
+    `prefix_alpha.dat` / `prefix_beta.dat`, NOT `alpha.dat` / `beta.dat`.
+    The cache lookup must read the manifest to find the files; if it
+    falls back to globbing `<port>.*` it will fail to locate them.
+    """
+
+    id = "__test_split_writer__"
+    version = 1
+    cost = "cheap"
+    inputs = {"image": PortType.IMAGE_PNG}
+    outputs = {
+        "alpha": PortType.IMAGE_FITS,
+        "beta": PortType.IMAGE_FITS,
+    }
+    params_schema = _SplitParams
+
+    def run(
+        self,
+        inputs: dict[str, Ref],
+        params: _SplitParams,
+        ctx: RunContext,
+        out_dir: object,
+    ) -> dict[str, Ref]:
+        out_dir_path = Path(out_dir)  # type: ignore[arg-type]
+        alpha = out_dir_path / "prefix_alpha.dat"
+        beta = out_dir_path / "prefix_beta.dat"
+        alpha.write_bytes(b"alpha")
+        beta.write_bytes(b"beta")
+        return {
+            "alpha": Ref(node_hash="", port="alpha", path=alpha, type=PortType.IMAGE_FITS),
+            "beta": Ref(node_hash="", port="beta", path=beta, type=PortType.IMAGE_FITS),
+        }
+
+
+def _split_template() -> Template:
+    return Template(
+        id="split_only",
+        version=1,
+        nodes=[NodeSpec(id="split", kind="__test_split_writer__")],
+        outputs={"alpha": "split.alpha", "beta": "split.beta"},
+    )
+
+
+def _split_job(src: Path) -> Job:
+    return Job(
+        template_id="split_only",
+        template_version=1,
+        inputs={
+            "split.image": Ref(
+                node_hash="external", port="image", path=src, type=PortType.IMAGE_PNG
+            )
+        },
+    )
+
+
+def test_cache_hit_for_multi_output_node_with_non_port_filenames(
+    tmp_path: Path, astrolab_home: Path
+) -> None:
+    """Regression: narrowband_extract-style nodes (multi-output, filenames
+    don't match port names) must cache-hit cleanly on rerun. Before the
+    manifest, the second call raised 'cached entry <h> missing output ha'."""
+    src = tmp_path / "in.png"
+    _make_test_png(src)
+
+    template = _split_template()
+    job = _split_job(src)
+
+    first = run_job(template, job)
+    second = run_job(template, job)
+
+    assert first["alpha"].path == second["alpha"].path
+    assert first["beta"].path == second["beta"].path
+    assert second["alpha"].path.read_bytes() == b"alpha"
+    assert second["beta"].path.read_bytes() == b"beta"
+    # Confirm the cache really did serve a hit; if it re-ran, the entry dir
+    # would have been wiped and rewritten with new inode/mtime.
+    assert (
+        first["alpha"].path.stat().st_mtime_ns
+        == second["alpha"].path.stat().st_mtime_ns
+    )
+
+
+def test_cache_hit_falls_back_when_manifest_missing(
+    tmp_path: Path, astrolab_home: Path
+) -> None:
+    """Legacy entries committed before the manifest only have `_done`. The
+    runtime must still hand back the convention-based file (eg downscale's
+    `image.png`) so users don't have to nuke their cache after upgrading."""
+    src = tmp_path / "in.png"
+    _make_test_png(src)
+    template = _build_template()
+    job = _job_with_input(src)
+
+    # Populate the cache, then strip the manifest to fake a legacy entry.
+    first = run_job(template, job)
+    entry_dir = first["image"].path.parent
+    manifest = entry_dir / "_outputs.json"
+    assert manifest.exists()
+    manifest.unlink()
+
+    second = run_job(template, job)
+    assert second["image"].path == first["image"].path
+    assert second["image"].path.exists()

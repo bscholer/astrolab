@@ -43,6 +43,23 @@ def _noop_events(_event: dict) -> None:
     pass
 
 
+def _locate_port_artifact(cached_dir: Path, port: str) -> Path | None:
+    """Convention-based fallback for legacy cache entries with no manifest.
+
+    Outputs land at one of two shapes inside the entry dir:
+      - dir:  <entry>/<port>/...    (sequence outputs like convert_lights)
+      - file: <entry>/<port>.<ext>  (single artifact like downscale)
+    Prefer the directory form so a node that writes both leaves the dir
+    as the canonical handle. Returns None when neither matches; the caller
+    treats that as a corrupt/incomplete cache entry.
+    """
+    dir_match = cached_dir / port
+    if dir_match.is_dir():
+        return dir_match
+    matches = sorted(p for p in cached_dir.glob(f"{port}.*") if p.name != "_done")
+    return matches[0] if matches else None
+
+
 class RunError(RuntimeError):
     """Raised when a job fails. Wraps the failing node id and the cause."""
 
@@ -208,30 +225,42 @@ def run_job(
             log.info("cache hit: %s -> %s", nid, h[:12])
             on_progress(0.0, f"{nid}: cached")
             on_event({"type": "node_cached", "node_id": nid, "hash": h})
+            # Preferred path: rehydrate Refs from the per-entry manifest so
+            # nodes that don't follow the <port>.<ext> filename convention
+            # (eg narrowband_extract writes `r_results_ha.fit` for port
+            # `ha`) still cache-hit correctly. Falls back to the old
+            # convention-based probe for legacy entries committed before
+            # the manifest existed.
+            manifest = cache_obj.load_outputs(h)
+            missing: list[str] = []
             for out_port, port_type in node_cls.outputs.items():
-                # Outputs land at one of two shapes inside the entry dir:
-                #   - file: <out_dir>/<port>.<ext>  (downscale, single PNG)
-                #   - dir:  <out_dir>/<port>/...    (convert_lights, sequence)
-                # Probe for both. Prefer the directory form when present so a
-                # node that writes both leaves the dir as the canonical handle.
-                dir_match = cached_dir / out_port
-                if dir_match.is_dir():
+                if manifest is not None and out_port in manifest:
+                    entry = manifest[out_port]
+                    if not entry.path.exists():
+                        missing.append(out_port)
+                        continue
                     refs[f"{nid}.{out_port}"] = Ref(
                         node_hash=h,
                         port=out_port,
-                        path=dir_match,
+                        path=entry.path,
                         type=port_type,
                     )
                     continue
-                matches = sorted(cached_dir.glob(f"{out_port}.*"))
-                matches = [m for m in matches if m.name != "_done"]
-                if not matches:
-                    raise RunError(nid, f"cached entry {h} missing output '{out_port}'")
+                located = _locate_port_artifact(cached_dir, out_port)
+                if located is None:
+                    missing.append(out_port)
+                    continue
                 refs[f"{nid}.{out_port}"] = Ref(
                     node_hash=h,
                     port=out_port,
-                    path=matches[0],
+                    path=located,
                     type=port_type,
+                )
+            if missing:
+                raise RunError(
+                    nid,
+                    f"cached entry {h} missing output(s) "
+                    f"{sorted(missing)!r}",
                 )
             continue
 
