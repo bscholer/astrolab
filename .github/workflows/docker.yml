@@ -21,7 +21,7 @@ jobs:
           - variant: cpu
             base: debian:bookworm-slim
           - variant: cuda
-            base: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+            base: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04
 
     steps:
       - uses: actions/checkout@v4
