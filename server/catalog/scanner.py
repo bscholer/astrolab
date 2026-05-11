@@ -542,6 +542,12 @@ def scan(
 
     scan_started_at = time.time()
     stats = ScanStats()
+    # Incremental session refresh: run every N frames so the library
+    # populates while the scan is still in progress. N=50 keeps the
+    # refresh cheap (one GROUP BY per 50 FITS reads) without making the
+    # UI feel sluggish on a large tree.
+    _INCREMENTAL_REFRESH_EVERY = 50
+    _frames_since_refresh = 0
     with open_db(db_path) as conn:
         for discovered in chosen.discover(root):
             stats.discovered += 1
@@ -549,8 +555,16 @@ def scan(
             with conn:
                 if isinstance(discovered, DiscoveredFrame):
                     _ingest_frame(conn, discovered, scope_id, scan_started_at, stats)
+                    _frames_since_refresh += 1
                 elif isinstance(discovered, DiscoveredMaster):
                     _ingest_master(conn, discovered, scope_id, scan_started_at, stats)
+            # Periodically refresh sessions/targets so the library shows
+            # results incrementally. Skipped for masters-only iterations.
+            if _frames_since_refresh >= _INCREMENTAL_REFRESH_EVERY:
+                with conn:
+                    _refresh_sessions(conn, scope_id)
+                    _resolve_targets(conn)
+                _frames_since_refresh = 0
         with conn:
             _remove_orphans(conn, scope_id, root, scan_started_at, stats)
             _refresh_sessions(conn, scope_id)

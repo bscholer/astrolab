@@ -8,6 +8,7 @@
     type CalibrationMode,
     type CalibrationStatus,
     type ReassignCandidatesResponse,
+    type ScanStatusResponse,
     type SessionSummary,
     type Template,
     type TargetDetail,
@@ -24,8 +25,13 @@
   // free: no spinner, no API roundtrip when the user clicks.
   let targetDetails = $state<Map<number, TargetDetail>>(new Map());
   let scanning = $state(false);
+  let scanStatus = $state<ScanStatusResponse | null>(null);
   let lastScanAt = $state<string | null>(null);
   let nowTick = $state(Date.now());
+
+  // Polling handles: status poll (1.5s) and library reload (4s during scan).
+  let _statusPollHandle: ReturnType<typeof setInterval> | null = null;
+  let _libraryPollHandle: ReturnType<typeof setInterval> | null = null;
 
   // Capture root lives in the server-side settings KV; the Library just
   // calls /api/scan against whatever's saved there. last-scan timestamp
@@ -268,26 +274,67 @@
     }
   }
 
+  function _stopPolling() {
+    if (_statusPollHandle !== null) {
+      clearInterval(_statusPollHandle);
+      _statusPollHandle = null;
+    }
+    if (_libraryPollHandle !== null) {
+      clearInterval(_libraryPollHandle);
+      _libraryPollHandle = null;
+    }
+  }
+
+  async function _pollStatus() {
+    try {
+      const s = await api.scanStatus();
+      scanStatus = s;
+      if (!s.running) {
+        // Scan finished (or was never running).
+        _stopPolling();
+        scanning = false;
+        await load();
+        if (s.error) {
+          toast.error(`Scan failed: ${s.error}`);
+        } else if (s.last_stats) {
+          const stamp = new Date().toISOString();
+          localStorage.setItem(LAST_SCAN_KEY, stamp);
+          lastScanAt = stamp;
+          const st = s.last_stats;
+          toast.success(
+            `Scanned: +${st.inserted} frames, +${st.masters_inserted} masters, -${st.removed} orphans`
+          );
+        }
+      }
+    } catch {
+      // Network hiccup — keep polling.
+    }
+  }
+
+  function _startPolling() {
+    scanning = true;
+    _stopPolling(); // Clear any pre-existing handles.
+    _statusPollHandle = setInterval(_pollStatus, 1500);
+    // Reload library every 4s so new sessions appear incrementally.
+    _libraryPollHandle = setInterval(load, 4000);
+  }
+
   async function rescan() {
     if (!captureRoot || !captureRoot.trim()) {
       toast.error('No capture root set: open Settings and add one.');
       return;
     }
-    scanning = true;
     try {
-      const r = await api.scan(captureRoot.trim(), 'dwarf3');
-      const stamp = new Date().toISOString();
-      localStorage.setItem(LAST_SCAN_KEY, stamp);
-      lastScanAt = stamp;
-      toast.success(
-        `Scanned: +${r.inserted} frames, +${r.masters_inserted} masters, -${r.removed} orphans`
-      );
-      await load();
-    } catch (e) {
-      toast.error(`Scan failed: ${(e as Error).message}`);
-    } finally {
-      scanning = false;
+      await api.scan(captureRoot.trim(), 'dwarf3');
+    } catch (e: unknown) {
+      // 409 means already running — enter polling mode anyway.
+      const status = (e as { status?: number }).status;
+      if (status !== 409) {
+        toast.error(`Scan failed: ${(e as Error).message}`);
+        return;
+      }
     }
+    _startPolling();
   }
 
   $effect(() => {
@@ -309,10 +356,21 @@
         sortMode = saved as SortMode;
       }
     }
+    // If the bootstrap scan is already running when the page loads,
+    // enter polling mode without firing a new scan.
+    api.scanStatus()
+      .then((s) => {
+        scanStatus = s;
+        if (s.running) _startPolling();
+      })
+      .catch(() => {});
     // Tick the clock so the muted "scanned 3m ago" line stays fresh
     // without the user reloading.
     const handle = setInterval(() => (nowTick = Date.now()), 30_000);
-    return () => clearInterval(handle);
+    return () => {
+      clearInterval(handle);
+      _stopPolling();
+    };
   });
 
   // Read of nowTick keeps this derived reactive to the 30s ticker.
@@ -343,6 +401,13 @@
     } finally {
       running = false;
     }
+  }
+
+  /** Keep only the last 2 path segments for display (e.g. foo/bar.fits). */
+  function shortPath(p: string | null): string {
+    if (!p) return '';
+    const parts = p.replace(/\\/g, '/').split('/').filter(Boolean);
+    return parts.slice(-2).join('/');
   }
 
   function shortDate(iso: string | null): string {
@@ -462,6 +527,18 @@
     <span class="muted small last-scan">never scanned</span>
   {/if}
 </div>
+
+{#if scanning && scanStatus}
+  <div class="scan-banner" role="status" aria-live="polite">
+    <span class="scan-spinner" aria-hidden="true"></span>
+    <span class="scan-text">
+      Scanning&hellip; {scanStatus.discovered.toLocaleString()} files
+      {#if scanStatus.current_path}
+        &middot; <span class="scan-path" title={scanStatus.current_path}>{shortPath(scanStatus.current_path)}</span>
+      {/if}
+    </span>
+  </div>
+{/if}
 
 <details class="legend">
   <summary>
@@ -864,6 +941,40 @@
   }
   .refresh-btn.spinning svg { animation: refresh-spin 900ms linear infinite; }
   .last-scan { font-variant-numeric: tabular-nums; }
+
+  .scan-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.45rem 0.8rem;
+    margin: 0 0 0.85rem;
+    background: color-mix(in oklab, var(--accent) 8%, var(--bg-elev));
+    border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--border));
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    color: var(--fg);
+  }
+  .scan-spinner {
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+    border: 2px solid color-mix(in oklab, var(--accent) 30%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: refresh-spin 700ms linear infinite;
+    flex-shrink: 0;
+  }
+  .scan-text {
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .scan-path {
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
 
   .sort-row {
     display: flex;
