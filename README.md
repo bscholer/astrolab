@@ -106,8 +106,8 @@ For a single-port setup mirroring production (`http://localhost:8000`), `cd ui &
 - **macOS** works for everything except the Siril-using paths. The test suite mocks the Siril subprocess, so the dev loop is full-featured; just do final validation on the Linux box.
 - The auto-detection logic checks `~/Applications`, `~/Downloads`, `~/tools/{graxpert,starnet}/`, and `$PATH`, in that order.
 
-<!-- Screenshot: Gallery page with several published renders, grid layout. Tonight planner closed. -->
-<img src="docs/screenshots/gallery.png" alt="Gallery page showing published renders" width="720" />
+<!-- Screenshot: Tonight planner with targets queued and rise/set bars visible. -->
+<img src="docs/screenshots/tonight.png" alt="Tonight planner with targets queued" width="720" />
 
 ## Status
 
