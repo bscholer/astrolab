@@ -334,18 +334,18 @@
     }
   }
 
-  function pickPreviewPort(kind: string): string {
-    // Sequence-typed outputs are previewed via the first frame; image-typed
-    // get rendered directly. Keep this in sync with each node's declared
-    // outputs in the Python registry.
-    if (
-      kind === 'convert_lights' ||
-      kind === 'calibrate' ||
-      kind === 'seq_resample' ||
-      kind === 'seq_offset' ||
-      kind === 'seq_register' ||
-      kind === 'seq_bg_extract'
-    ) return 'sequence';
+  function pickPreviewPort(nodeId: string): string {
+    // The template schema carries each node's declared output ports
+    // (server-derived from the Python registry). Prefer `image` when present
+    // so canonical viewable nodes still surface their primary frame; fall
+    // back to the first declared output otherwise. Defaults to `image` for
+    // legacy payloads that predate the `outputs` field on TemplateNodeSchema.
+    const node = schema?.nodes.find((n) => n.node_id === nodeId);
+    if (node?.outputs) {
+      if ('image' in node.outputs) return 'image';
+      const first = Object.keys(node.outputs)[0];
+      if (first) return first;
+    }
     return 'image';
   }
 
@@ -430,7 +430,7 @@
       const initPort: Record<string, string> = {};
       for (const n of fresh.template.nodes) {
         initKind[n.id] = n.kind;
-        initPort[n.id] = pickPreviewPort(n.kind);
+        initPort[n.id] = pickPreviewPort(n.id);
       }
       nodeKind = initKind;
       nodePort = initPort;

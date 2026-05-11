@@ -124,9 +124,35 @@ class JobRecord:
         }
         if include_template:
             # Pydantic model_dump gives the canonical Template JSON shape that
-            # the UI can graph without further translation.
-            d["template"] = self.template.model_dump(mode="json")
+            # the UI can graph without further translation. We tack each
+            # node's declared output ports onto the spec dict so the UI can
+            # route preview requests to the right port name without keeping
+            # a parallel registry of conventions (the jobs page used to guess
+            # `image` for everything, which 404s for narrowband_extract,
+            # starnet_extract, and the seq_* nodes that emit `sequence`).
+            tpl = self.template.model_dump(mode="json")
+            for node_dict, spec in zip(tpl.get("nodes", []), self.template.nodes, strict=False):
+                node_dict["outputs"] = _node_outputs(spec.kind, spec.variant)
+            d["template"] = tpl
         return d
+
+
+def _node_outputs(kind: str, variant: str | None) -> dict[str, str]:
+    """Return the registered Node's `outputs` map as {port: type_string}.
+
+    Empty dict when the registry doesn't recognise the (kind, variant) pair.
+    Keeps the API total when a persisted job references an obsolete node.
+    """
+    # Import locally so this module stays free of the nodes-import cycle at
+    # module load time (registry contents accrete via decorator side-effects
+    # when nodes.basic is imported by the API layer).
+    from .registry import lookup as registry_lookup
+
+    try:
+        cls = registry_lookup(kind, variant)
+    except KeyError:
+        return {}
+    return {port: str(port_type) for port, port_type in cls.outputs.items()}
 
 
 def _now() -> str:
