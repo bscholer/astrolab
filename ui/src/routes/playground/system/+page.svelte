@@ -505,7 +505,7 @@
           {#each snap.jobs.active as j (j.id)}
             <li class="active-job">
               <div class="aj-top">
-                <a class="aj-target" href="/jobs/{j.id}">{j.target}</a>
+                <a class="aj-target" href="/jobs/{j.id}" title={j.id}>{j.target}</a>
                 <span class="muted small mono">{fmtElapsed(j.started_at)}</span>
               </div>
               <div class="aj-meta muted small mono">{j.template}</div>
