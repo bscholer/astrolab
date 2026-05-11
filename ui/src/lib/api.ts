@@ -77,6 +77,13 @@ export interface TargetSummary {
   integration_seconds: number | null;
   // Total bytes on disk for all of the target's frames.
   bytes_on_disk: number;
+  // Canonical id the Library buckets this target under. Coalesces
+  // override -> position-resolve -> name-resolve so two targets pointing
+  // at the same catalog row merge into a single group visually. Null
+  // when nothing resolves.
+  canonical_group: string | null;
+  // OpenNGC's friendly name for `canonical_group`, when one exists.
+  canonical_group_name: string | null;
 }
 
 export interface TargetDetail {

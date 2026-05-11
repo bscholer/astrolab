@@ -189,6 +189,123 @@ def test_target_list_surfaces_resolved_as_for_position_source(
     assert row["resolved_as"]["separation_arcmin"] == 22.9
 
 
+def test_target_list_canonical_group_for_override(client: TestClient) -> None:
+    """A pinned override sets `canonical_group` to that catalog id, and
+    `canonical_group_name` to its OpenNGC common name when known."""
+    _insert_target("GARBAGE_PINNED", resolved_canonical_override="NGC 7000")
+    r = client.get("/api/targets")
+    body = r.json()
+    row = next((t for t in body if t["name"] == "GARBAGE_PINNED"), None)
+    assert row is not None
+    assert row["canonical_group"] == "NGC 7000"
+    # NGC 7000 has a friendly name in OpenNGC ("North America Nebula").
+    assert row["canonical_group_name"] is not None
+
+
+def test_target_list_canonical_group_for_position(client: TestClient) -> None:
+    """A position-resolved target groups under its `resolved_canonical`."""
+    _insert_target(
+        "GARBAGE_POS",
+        resolved_canonical="NGC 7000",
+        resolved_separation_arcmin=22.9,
+        resolved_source="position",
+    )
+    r = client.get("/api/targets")
+    body = r.json()
+    row = next((t for t in body if t["name"] == "GARBAGE_POS"), None)
+    assert row is not None
+    assert row["canonical_group"] == "NGC 7000"
+
+
+def test_target_list_canonical_group_for_name_source(client: TestClient) -> None:
+    """A name-resolved target groups under its `resolved_canonical` even
+    though `resolved_as` itself is suppressed for the name case."""
+    _insert_target(
+        "M 31",
+        resolved_canonical="NGC 224",
+        resolved_separation_arcmin=0.0,
+        resolved_source="name",
+    )
+    r = client.get("/api/targets")
+    body = r.json()
+    row = next((t for t in body if t["name"] == "M 31"), None)
+    assert row is not None
+    # The caption is suppressed for the name case, but the bucket still
+    # has to land on the canonical so two "M 31"-style rows merge cleanly.
+    assert row["resolved_as"] is None
+    assert row["canonical_group"] == "NGC 224"
+
+
+def test_target_list_canonical_group_falls_back_to_name(
+    client: TestClient,
+) -> None:
+    """A target with no persisted canonical but whose stored name resolves
+    in OpenNGC still gets a `canonical_group` (re-enriched on the fly).
+    Without this, freshly-inserted name-resolvable targets would land in
+    the unresolved bucket until the scanner re-ran."""
+    _insert_target("M 31")
+    r = client.get("/api/targets")
+    body = r.json()
+    row = next((t for t in body if t["name"] == "M 31"), None)
+    assert row is not None
+    assert row["canonical_group"] == "NGC 224"
+
+
+def test_target_list_canonical_group_none_for_unresolved(
+    client: TestClient,
+) -> None:
+    """A target with no resolution at all gets a null `canonical_group`;
+    the UI buckets these under the Unresolved section."""
+    _insert_target("MY_UNKNOWN_TARGET")
+    r = client.get("/api/targets")
+    body = r.json()
+    row = next((t for t in body if t["name"] == "MY_UNKNOWN_TARGET"), None)
+    assert row is not None
+    assert row["canonical_group"] is None
+    assert row["canonical_group_name"] is None
+
+
+def test_target_list_two_targets_share_group(client: TestClient) -> None:
+    """The whole point of the slice: pinning one target's override to a
+    canonical that another target already resolved to lands them in the
+    same `canonical_group`. The display layer then merges the two rows."""
+    _insert_target(
+        "C 20",
+        resolved_canonical="NGC 7000",
+        resolved_separation_arcmin=12.0,
+        resolved_source="position",
+    )
+    _insert_target("GARBAGE_NEAR", resolved_canonical_override="NGC 7000")
+    r = client.get("/api/targets")
+    body = r.json()
+    c20 = next((t for t in body if t["name"] == "C 20"), None)
+    other = next((t for t in body if t["name"] == "GARBAGE_NEAR"), None)
+    assert c20 is not None and other is not None
+    assert c20["canonical_group"] == "NGC 7000"
+    assert other["canonical_group"] == "NGC 7000"
+    # And the common-name label is identical so the UI's group header is
+    # stable regardless of which row "won" the lookup.
+    assert c20["canonical_group_name"] == other["canonical_group_name"]
+
+
+def test_target_list_override_differs_from_auto(client: TestClient) -> None:
+    """When a target carries BOTH an auto-resolve and an override, the
+    override wins for `canonical_group` (the user's pin is the source of
+    truth)."""
+    _insert_target(
+        "DUAL",
+        resolved_canonical="NGC 7000",
+        resolved_separation_arcmin=2.0,
+        resolved_source="position",
+        resolved_canonical_override="NGC 224",
+    )
+    r = client.get("/api/targets")
+    body = r.json()
+    row = next((t for t in body if t["name"] == "DUAL"), None)
+    assert row is not None
+    assert row["canonical_group"] == "NGC 224"
+
+
 def test_get_nearby_empty_when_no_centroid(client: TestClient) -> None:
     """A target with no frames (and therefore no centroid) returns an
     empty list rather than a 400; the UI can still render the dropdown

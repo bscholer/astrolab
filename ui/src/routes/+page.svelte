@@ -17,6 +17,14 @@
 
   let targets = $state<TargetSummary[] | null>(null);
   let openTargetId = $state<number | null>(null);
+  // Which group headers are expanded. Keyed by canonical id so the set
+  // survives a re-fetch (group identity is stable across loads, group
+  // *contents* may shift as users pin overrides).
+  let expandedGroups = $state<Set<string>>(new Set());
+  // Which target row currently has its override editor open. At most
+  // one open at a time keeps the page legible; clicking the pencil on
+  // another row hands the editor over.
+  let editingOverrideTargetId = $state<number | null>(null);
   // Detail-per-target, populated in parallel after the targets list lands.
   // Keeping every target's sessions in hand makes expand/collapse feel
   // free — no spinner, no API roundtrip when the user clicks.
@@ -54,6 +62,126 @@
   function sepLabel(resolved: ResolvedAs | null): string {
     if (!resolved || resolved.separation_arcmin == null) return '';
     return `matched ${resolved.separation_arcmin.toFixed(1)}'`;
+  }
+
+  // Display-layer bucket: zero or more targets that resolve to the same
+  // canonical id. The orchestrator intentionally chose a display-only
+  // merge here, with underlying DB rows staying distinct, so anything
+  // that walks targets (Projects, scan diffs) sees the same rows it
+  // always did.
+  interface TargetBucket {
+    // null = unresolved bucket. Non-null buckets carry the catalog id.
+    key: string | null;
+    name: string | null;
+    members: TargetSummary[];
+    total_frames: number;
+    total_sessions: number;
+    total_integration: number;
+    total_bytes: number;
+    last_session_at: string | null;
+  }
+
+  function bucketTargets(list: TargetSummary[]): {
+    groups: TargetBucket[];
+    singles: TargetBucket[];
+    unresolved: TargetBucket | null;
+  } {
+    const byKey = new Map<string, TargetBucket>();
+    const unresolvedMembers: TargetSummary[] = [];
+    for (const t of list) {
+      if (t.canonical_group == null) {
+        unresolvedMembers.push(t);
+        continue;
+      }
+      let b = byKey.get(t.canonical_group);
+      if (!b) {
+        b = {
+          key: t.canonical_group,
+          name: t.canonical_group_name,
+          members: [],
+          total_frames: 0,
+          total_sessions: 0,
+          total_integration: 0,
+          total_bytes: 0,
+          last_session_at: null
+        };
+        byKey.set(t.canonical_group, b);
+      }
+      b.members.push(t);
+      b.total_frames += t.frame_count;
+      b.total_sessions += t.session_count;
+      b.total_integration += t.integration_seconds ?? 0;
+      b.total_bytes += t.bytes_on_disk;
+      // Latest session-end timestamp across all members; lexicographic
+      // ordering works because the values are ISO 8601 from sqlite.
+      if (
+        t.last_session_at &&
+        (b.last_session_at == null || t.last_session_at > b.last_session_at)
+      ) {
+        b.last_session_at = t.last_session_at;
+      }
+    }
+    const all = Array.from(byKey.values());
+    // Groups (2+ members) first, sorted by total frames descending. Singles
+    // (1 member) next, sorted by frame_count descending. The orchestrator
+    // wants the high-volume merged groups at the top where the value is.
+    const groups = all
+      .filter((b) => b.members.length >= 2)
+      .sort((a, b) => b.total_frames - a.total_frames);
+    const singles = all
+      .filter((b) => b.members.length === 1)
+      .sort((a, b) => b.total_frames - a.total_frames);
+    let unresolved: TargetBucket | null = null;
+    if (unresolvedMembers.length > 0) {
+      unresolvedMembers.sort((a, b) => b.frame_count - a.frame_count);
+      unresolved = {
+        key: null,
+        name: null,
+        members: unresolvedMembers,
+        total_frames: unresolvedMembers.reduce((a, t) => a + t.frame_count, 0),
+        total_sessions: unresolvedMembers.reduce(
+          (a, t) => a + t.session_count,
+          0
+        ),
+        total_integration: unresolvedMembers.reduce(
+          (a, t) => a + (t.integration_seconds ?? 0),
+          0
+        ),
+        total_bytes: unresolvedMembers.reduce(
+          (a, t) => a + t.bytes_on_disk,
+          0
+        ),
+        last_session_at: null
+      };
+    }
+    return { groups, singles, unresolved };
+  }
+
+  const buckets = $derived(
+    targets ? bucketTargets(targets) : { groups: [], singles: [], unresolved: null }
+  );
+
+  function toggleGroup(key: string) {
+    const next = new Set(expandedGroups);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    expandedGroups = next;
+  }
+
+  function openOverrideEditor(t: TargetSummary) {
+    // Toggle off when re-clicking the same target's pencil; opening a
+    // different target replaces the open editor.
+    if (editingOverrideTargetId === t.id) {
+      editingOverrideTargetId = null;
+      return;
+    }
+    editingOverrideTargetId = t.id;
+    const detail = targetDetails.get(t.id);
+    if (detail) ensureNearby(detail);
+  }
+
+  function closeOverrideEditor() {
+    editingOverrideTargetId = null;
   }
 
   /** Returns the option key currently selected for `target`.
@@ -130,6 +258,9 @@
       const choices = new Map(overrideChoiceById);
       choices.delete(target.id);
       overrideChoiceById = choices;
+      // Save commits the user's intent; the pencil editor closes back
+      // up so the freshly-grouped row is visible without a second click.
+      editingOverrideTargetId = null;
       toast.success(value ? 'Override saved' : 'Override cleared');
     } catch (e) {
       toast.error(`Couldn't save override: ${(e as Error).message}`);
@@ -411,138 +542,176 @@
   </div>
 </details>
 
-{#if targets === null}
-  <p class="muted">Loading targets…</p>
-{:else if targets.length === 0}
-  <p class="muted">
-    No targets yet. Open <a href="/settings" class="link">Settings</a> to set
-    a capture root, then come back and hit refresh.
-  </p>
-{:else}
-  <ul class="target-list">
-    {#each targets as t, i (t.id)}
-      <li class="target" class:open={openTargetId === t.id} style="--stagger: {i}">
-        <button class="target-row" onclick={() => openTarget_(t.id)}>
-          <div class="target-name">
-            {#if t.common_name}
-              <span class="target-common">{t.common_name}</span>
-              <span class="target-cat muted">{t.name}</span>
-            {:else}
-              {t.name}
-            {/if}
-          </div>
-          {#if t.resolved_as}
-            <div class="target-resolved muted" title="Resolved by sky position">
-              <span class="resolved-arrow" aria-hidden="true">-&gt;</span>
-              <span class="resolved-canonical">{t.resolved_as.canonical}</span>
-              {#if t.resolved_as.common_name}
-                <span class="resolved-common">({t.resolved_as.common_name})</span>
-              {/if}
-              {#if t.resolved_as.source === 'override'}
-                <span class="resolved-suffix">(pinned)</span>
-              {:else if t.resolved_as.separation_arcmin != null}
-                <span class="resolved-suffix">{sepLabel(t.resolved_as)}</span>
-              {/if}
-            </div>
+{#snippet targetRow(t: TargetSummary, i: number, inGroup: boolean)}
+  <li class="target" class:open={openTargetId === t.id} class:in-group={inGroup} style="--stagger: {i}">
+    <div class="target-row-wrap">
+      <div
+        class="target-row"
+        role="button"
+        tabindex="0"
+        aria-expanded={openTargetId === t.id}
+        onclick={() => openTarget_(t.id)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openTarget_(t.id);
+          }
+        }}
+      >
+        <div class="target-name">
+          {#if t.common_name}
+            <span class="target-common">{t.common_name}</span>
+            <span class="target-cat muted">{t.name}</span>
+          {:else}
+            {t.name}
           {/if}
-          <div class="target-meta muted">
-            <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
-            <span aria-hidden="true">·</span>
-            <span class="num">{t.frame_count.toLocaleString()} frames</span>
-            {#if t.frame_count > 0}
-              <span aria-hidden="true">·</span>
-              <span class="fail-pct {failPctClass(t.failed_count, t.frame_count)}">
-                {formatFailPct(t.failed_count, t.frame_count)}
-              </span>
+        </div>
+        {#if t.resolved_as && !inGroup}
+          <div class="target-resolved muted" title="Resolved by sky position">
+            <span class="resolved-arrow" aria-hidden="true">-&gt;</span>
+            <span class="resolved-canonical">{t.resolved_as.canonical}</span>
+            {#if t.resolved_as.common_name}
+              <span class="resolved-common">({t.resolved_as.common_name})</span>
             {/if}
-            {#if t.integration_seconds && t.integration_seconds > 0}
-              <span aria-hidden="true">·</span>
-              <span
-                class="num"
-                title="Useful integration: (frame_count - failed_count) × exptime"
-              >
-                {formatIntegrationTime(t.integration_seconds)} integ
-              </span>
-            {/if}
-            {#if t.bytes_on_disk > 0}
-              <span aria-hidden="true">·</span>
-              <span class="num" title="Total on-disk size of this target's frames">
-                {formatBytes(t.bytes_on_disk)}
-              </span>
-            {/if}
-            {#if t.last_session_at}
-              <span aria-hidden="true">·</span>
-              <span class="num">last {shortDate(t.last_session_at)}</span>
+            {#if t.resolved_as.source === 'override'}
+              <span class="resolved-suffix">(pinned)</span>
+            {:else if t.resolved_as.separation_arcmin != null}
+              <span class="resolved-suffix">{sepLabel(t.resolved_as)}</span>
             {/if}
           </div>
-        </button>
+        {/if}
+        <div class="target-meta muted">
+          <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
+          <span aria-hidden="true">·</span>
+          <span class="num">{t.frame_count.toLocaleString()} frames</span>
+          {#if t.frame_count > 0}
+            <span aria-hidden="true">·</span>
+            <span class="fail-pct {failPctClass(t.failed_count, t.frame_count)}">
+              {formatFailPct(t.failed_count, t.frame_count)}
+            </span>
+          {/if}
+          {#if t.integration_seconds && t.integration_seconds > 0}
+            <span aria-hidden="true">·</span>
+            <span
+              class="num"
+              title="Useful integration: (frame_count - failed_count) × exptime"
+            >
+              {formatIntegrationTime(t.integration_seconds)} integ
+            </span>
+          {/if}
+          {#if t.bytes_on_disk > 0}
+            <span aria-hidden="true">·</span>
+            <span class="num" title="Total on-disk size of this target's frames">
+              {formatBytes(t.bytes_on_disk)}
+            </span>
+          {/if}
+          {#if t.last_session_at}
+            <span aria-hidden="true">·</span>
+            <span class="num">last {shortDate(t.last_session_at)}</span>
+          {/if}
+        </div>
+      </div>
+      <button
+        type="button"
+        class="pencil-btn"
+        aria-label="Edit target override"
+        aria-expanded={editingOverrideTargetId === t.id}
+        title="Edit target override"
+        onclick={(e) => {
+          e.stopPropagation();
+          openOverrideEditor(t);
+        }}
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z" />
+          <path d="M10 3l3 3" />
+        </svg>
+      </button>
+    </div>
 
-        {#if openTargetId === t.id}
-          {@const detail = targetDetails.get(t.id)}
-          <div class="target-detail" transition:slide={{ duration: 220, easing: cubicOut }}>
-            {#if detail === undefined}
-              <p class="muted">Loading…</p>
-            {:else if detail.sessions.length === 0}
-              <p class="muted">No sessions yet for this target.</p>
-            {:else}
-              {@const choice = overrideChoice(detail)}
-              {@const nearbyList = nearbyById.get(detail.id) ?? []}
-              {@const overrideInNearby =
-                detail.resolved_as?.source === 'override' &&
-                nearbyList.some((c) => c.canonical === detail.resolved_as?.canonical)}
-              <form
-                class="resolve-editor"
-                onsubmit={(e) => {
-                  e.preventDefault();
-                  saveOverride(detail);
-                }}
-              >
-                <label class="resolve-label" for="resolve-{detail.id}">Resolve as</label>
-                <select
-                  id="resolve-{detail.id}"
-                  class="resolve-select"
-                  value={choice}
-                  onchange={(e) =>
-                    setOverrideChoice(detail.id, (e.currentTarget as HTMLSelectElement).value)}
-                >
-                  <option value="AUTO">(auto-resolved)</option>
-                  {#if detail.resolved_as?.source === 'override' && !overrideInNearby}
-                    <option value={detail.resolved_as.canonical}>
-                      {detail.resolved_as.canonical}{detail.resolved_as.common_name
-                        ? ` - ${detail.resolved_as.common_name}`
-                        : ''} (pinned)
-                    </option>
-                  {/if}
-                  {#if loadingNearbyId === detail.id && nearbyList.length === 0}
-                    <option disabled>loading nearby…</option>
-                  {/if}
-                  {#each nearbyList as cand (cand.canonical)}
-                    <option value={cand.canonical}>
-                      {cand.canonical}{cand.common_name ? ` - ${cand.common_name}` : ''} - {(cand.separation_arcmin != null ? (cand.separation_arcmin / 60).toFixed(2) : '?')} deg
-                    </option>
-                  {/each}
-                  <option value="OTHER">Other…</option>
-                </select>
-                {#if choice === 'OTHER'}
-                  <input
-                    type="text"
-                    class="resolve-input"
-                    placeholder="NGC 7000, M 31, C 20…"
-                    value={otherDraft(detail.id)}
-                    oninput={(e) =>
-                      setOtherDraft(detail.id, (e.currentTarget as HTMLInputElement).value)}
-                  />
-                {/if}
-                <button
-                  type="submit"
-                  class="resolve-save"
-                  disabled={savingOverrideId === detail.id}
-                >
-                  {savingOverrideId === detail.id ? 'Saving…' : 'Save'}
-                </button>
-              </form>
-              {@const anchor = getAnchor(detail)}
-              {@const multiMode = selectedSessionIds.size > 0}
+    {#if editingOverrideTargetId === t.id}
+      {@const detail = targetDetails.get(t.id)}
+      <div class="override-editor-wrap" transition:slide={{ duration: 180, easing: cubicOut }}>
+        {#if detail === undefined}
+          <p class="muted">Loading…</p>
+        {:else}
+          {@const choice = overrideChoice(detail)}
+          {@const nearbyList = nearbyById.get(detail.id) ?? []}
+          {@const overrideInNearby =
+            detail.resolved_as?.source === 'override' &&
+            nearbyList.some((c) => c.canonical === detail.resolved_as?.canonical)}
+          <form
+            class="resolve-editor"
+            onsubmit={(e) => {
+              e.preventDefault();
+              saveOverride(detail);
+            }}
+          >
+            <label class="resolve-label" for="resolve-{detail.id}">Resolve as</label>
+            <select
+              id="resolve-{detail.id}"
+              class="resolve-select"
+              value={choice}
+              onchange={(e) =>
+                setOverrideChoice(detail.id, (e.currentTarget as HTMLSelectElement).value)}
+            >
+              <option value="AUTO">(auto-resolved)</option>
+              {#if detail.resolved_as?.source === 'override' && !overrideInNearby}
+                <option value={detail.resolved_as.canonical}>
+                  {detail.resolved_as.canonical}{detail.resolved_as.common_name
+                    ? ` - ${detail.resolved_as.common_name}`
+                    : ''} (pinned)
+                </option>
+              {/if}
+              {#if loadingNearbyId === detail.id && nearbyList.length === 0}
+                <option disabled>loading nearby…</option>
+              {/if}
+              {#each nearbyList as cand (cand.canonical)}
+                <option value={cand.canonical}>
+                  {cand.canonical}{cand.common_name ? ` - ${cand.common_name}` : ''} - {(cand.separation_arcmin != null ? (cand.separation_arcmin / 60).toFixed(2) : '?')} deg
+                </option>
+              {/each}
+              <option value="OTHER">Other…</option>
+            </select>
+            {#if choice === 'OTHER'}
+              <input
+                type="text"
+                class="resolve-input"
+                placeholder="NGC 7000, M 31, C 20…"
+                value={otherDraft(detail.id)}
+                oninput={(e) =>
+                  setOtherDraft(detail.id, (e.currentTarget as HTMLInputElement).value)}
+              />
+            {/if}
+            <button
+              type="submit"
+              class="resolve-save"
+              disabled={savingOverrideId === detail.id}
+            >
+              {savingOverrideId === detail.id ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              class="resolve-cancel"
+              onclick={closeOverrideEditor}
+            >
+              Cancel
+            </button>
+          </form>
+        {/if}
+      </div>
+    {/if}
+
+    {#if openTargetId === t.id}
+      {@const detail = targetDetails.get(t.id)}
+      <div class="target-detail" transition:slide={{ duration: 220, easing: cubicOut }}>
+        {#if detail === undefined}
+          <p class="muted">Loading…</p>
+        {:else if detail.sessions.length === 0}
+          <p class="muted">No sessions yet for this target.</p>
+        {:else}
+          {@const anchor = getAnchor(detail)}
+          {@const multiMode = selectedSessionIds.size > 0}
               {#if multiMode}
                 <div class="multi-bar" role="region" aria-label="Selected sessions">
                   <div class="multi-bar-head">
@@ -707,11 +876,85 @@
                   </li>
                 {/each}
               </ul>
-            {/if}
-          </div>
         {/if}
-      </li>
+      </div>
+    {/if}
+  </li>
+{/snippet}
+
+{#snippet groupHeader(b: TargetBucket)}
+  {@const key = b.key as string}
+  <li class="group-header" class:expanded={expandedGroups.has(key)}>
+    <button
+      type="button"
+      class="group-header-btn"
+      aria-expanded={expandedGroups.has(key)}
+      onclick={() => toggleGroup(key)}
+    >
+      <span class="group-chevron" aria-hidden="true">
+        {expandedGroups.has(key) ? '▴' : '▾'}
+      </span>
+      <span class="group-name">
+        <span class="group-canonical">{key}</span>
+        {#if b.name}
+          <span class="group-common"> - {b.name}</span>
+        {/if}
+      </span>
+      <span class="group-meta muted">
+        <span class="num">{b.members.length} captures</span>
+        <span aria-hidden="true">·</span>
+        <span>{b.total_sessions} session{b.total_sessions === 1 ? '' : 's'}</span>
+        <span aria-hidden="true">·</span>
+        <span class="num">{b.total_frames.toLocaleString()} frames</span>
+        {#if b.total_integration > 0}
+          <span aria-hidden="true">·</span>
+          <span class="num" title="Total useful integration across the bucket">
+            {formatIntegrationTime(b.total_integration)} integ
+          </span>
+        {/if}
+        {#if b.total_bytes > 0}
+          <span aria-hidden="true">·</span>
+          <span class="num">{formatBytes(b.total_bytes)}</span>
+        {/if}
+      </span>
+    </button>
+  </li>
+{/snippet}
+
+{#if targets === null}
+  <p class="muted">Loading targets…</p>
+{:else if targets.length === 0}
+  <p class="muted">
+    No targets yet. Open <a href="/settings" class="link">Settings</a> to set
+    a capture root, then come back and hit refresh.
+  </p>
+{:else}
+  <ul class="target-list">
+    {#each buckets.groups as b, gi (b.key)}
+      {@render groupHeader(b)}
+      {#if expandedGroups.has(b.key as string)}
+        {#each b.members as t (t.id)}
+          {@render targetRow(t, gi, true)}
+        {/each}
+      {/if}
     {/each}
+    {#each buckets.singles as b, si (b.key)}
+      {@render targetRow(b.members[0], buckets.groups.length + si, false)}
+    {/each}
+    {#if buckets.unresolved}
+      <li class="unresolved-header" aria-label="Unresolved targets">
+        <span class="unresolved-divider" aria-hidden="true"></span>
+        <span class="unresolved-label muted">Unresolved</span>
+        <span class="unresolved-divider" aria-hidden="true"></span>
+      </li>
+      {#each buckets.unresolved.members as t, ui (t.id)}
+        {@render targetRow(
+          t,
+          buckets.groups.length + buckets.singles.length + ui,
+          false
+        )}
+      {/each}
+    {/if}
   </ul>
 {/if}
 
@@ -790,8 +1033,24 @@
     border-color: var(--border-strong);
   }
 
+  /* Constituent rows inside an expanded group: subtle inset + a left rule
+     to signal nesting without doubling the cell padding. The card itself
+     keeps its full chrome so the pencil hitbox stays on the right edge. */
+  .target.in-group {
+    border-left: 2px solid var(--accent-soft);
+    margin-left: 1.1rem;
+  }
+
+  /* Wrap holds the row + the pencil button. Row flexes to fill, pencil
+     pins to the right and keeps its own hitbox. */
+  .target-row-wrap {
+    display: flex;
+    align-items: stretch;
+  }
+
   .target-row {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     background: transparent;
     border: none;
     padding: 0.95rem 1.15rem;
@@ -805,6 +1064,158 @@
 
   .target-row:hover {
     background: rgba(94, 234, 212, 0.04);
+  }
+  .target-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Tiny pencil affordance on the right edge of every target row. Muted
+     baseline so it doesn't compete with the row contents; lights up on
+     hover/focus. Vertically centered against the row. */
+  .pencil-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--fg-mute);
+    padding: 0 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: color 140ms ease, background-color 140ms ease;
+    flex: 0 0 auto;
+  }
+  .pencil-btn:hover,
+  .pencil-btn:focus-visible {
+    color: var(--fg);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .pencil-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -4px;
+  }
+  .pencil-btn[aria-expanded='true'] {
+    color: var(--accent);
+  }
+
+  /* Override-editor reveal slot: lives directly beneath the row, NOT
+     inside the .target-detail panel, so the user pins overrides without
+     having to expand the sessions list first. */
+  .override-editor-wrap {
+    padding: 0 1rem 0.8rem;
+    border-top: 1px solid var(--hairline);
+  }
+  .override-editor-wrap .resolve-editor {
+    margin-top: 0.7rem;
+    margin-bottom: 0;
+  }
+
+  /* Cancel button mirrors Save geometry but reads as muted: the user is
+     bailing out, not committing. */
+  .resolve-cancel {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg-mute);
+    padding: 0.25rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .resolve-cancel:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+
+  /* ---------- Group header (canonical bucket with 2+ targets) ---------- */
+  .group-header {
+    list-style: none;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .group-header-btn {
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 0.7rem 1.15rem;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    color: inherit;
+    font: inherit;
+  }
+  .group-header-btn:hover {
+    background: rgba(94, 234, 212, 0.04);
+  }
+  .group-header-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .group-chevron {
+    color: var(--fg-mute);
+    font-size: 0.85rem;
+    min-width: 0.9rem;
+    transition: color 140ms ease;
+  }
+  .group-header.expanded .group-chevron {
+    color: var(--accent);
+  }
+  .group-name {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 1.1rem;
+    letter-spacing: -0.005em;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .group-canonical {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-size: 0.95rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .group-common {
+    color: var(--fg);
+    opacity: 0.85;
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+  }
+  .group-meta {
+    margin-left: auto;
+    font-size: 0.82rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: baseline;
+  }
+
+  /* Unresolved section: a low-key divider line; muted label sits in the
+     middle so the boundary reads structurally without screaming. */
+  .unresolved-header {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin: 0.4rem 0 0.1rem;
+    padding: 0 0.3rem;
+  }
+  .unresolved-divider {
+    flex: 1;
+    height: 1px;
+    background: var(--hairline);
+  }
+  .unresolved-label {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
   }
 
   /* Target/project names get the serif treatment per design.md. */
