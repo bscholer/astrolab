@@ -1,5 +1,5 @@
 id: calibrate_register_stack
-version: 11
+version: 12
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
@@ -8,10 +8,12 @@ description: |
             registration nodata) -> graxpert_bg (AI background, optional;
             linear) -> graxpert_denoise (AI denoise, optional; linear)
             -> crop (interactive composition crop, off by default) ->
-            stretch (autostretch by default) -> starnet_extract (split,
-            optional; needs stretched input) -> starnet_replace (synthstar,
-            optional) -> starnet_recombine (always on; identity when
-            extract is off) -> save 16-bit PNG.
+            auto_bp_shift (linear black-point shift; on by default,
+            1% clip) -> stretch (autostretch by default) ->
+            starnet_extract (split, optional; needs stretched input)
+            -> starnet_replace (synthstar, optional) ->
+            starnet_recombine (always on; identity when extract is off)
+            -> save 16-bit PNG.
 
   Ordering rule: linear-domain ops come before stretch (BG extract and
   GraXpert denoise prefer the noise distribution of pre-stretch data),
@@ -158,15 +160,32 @@ nodes:
     inputs:
       image: graxpert_denoise.image
 
+  - id: auto_bp_shift
+    kind: auto_bp_shift
+    # Linear black-point shift sized to a target clip fraction. The
+    # canonical first move of a manual GHS workflow, automated: push BP
+    # up until ~1% of pixels fall below it, then linearly rescale. The
+    # downstream stretch (autostretch / mtf / asinh) sees a histogram
+    # with the background already crushed toward zero, so its tone
+    # curve doesn't have to do as much work.
+    params:
+      enabled: true
+      clip_fraction: 0.01
+    inputs:
+      image: crop.image
+
   - id: stretch
     kind: stretch
     # Linear-domain processing ends here. Everything below operates on
     # stretched data (StarNet was trained on stretched 16-bit images).
+    # target_bg dropped from the Siril default (0.25) to 0.05 because
+    # auto_bp_shift already pushed the background toward zero; leaving
+    # target_bg at 0.25 would lift the BG back up and undo the shift.
     params:
       method: autostretch
-      # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
+      target_bg: 0.05
     inputs:
-      image: crop.image
+      image: auto_bp_shift.image
 
   - id: starnet_extract
     kind: starnet_extract
