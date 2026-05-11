@@ -24,6 +24,7 @@ It is built around the Dwarf 3 capture layout for now, but nothing in the pipeli
 - Drives **StarNet++ v2** for star removal, replacement, and recombination.
 - Caches every node's output by `(inputs + params + node version)` so editing a downstream knob never re-runs an upstream node.
 - Tracks a per-project edit history (revert, branch, compare, publish).
+- Surfaces a **Tonight** planner with altitude/visibility for the targets you've already captured, so you know what's worth re-imaging.
 - Gallery view surfaces the renders you opt in to publish; everything else stays in your private history.
 
 <!-- Screenshot: Project page open on a finished stack, history strip at the bottom with at least two revisions visible. This is the iterate-and-compare core. -->
@@ -31,6 +32,9 @@ It is built around the Dwarf 3 capture layout for now, but nothing in the pipeli
 
 <!-- Screenshot: Compare view with two revisions side by side or using the before/after slider. -->
 <img src="docs/screenshots/compare.png" alt="Compare view with two revisions" width="720" />
+
+<!-- Screenshot: Tonight planner with targets queued and rise/set bars visible. -->
+<img src="docs/screenshots/tonight.png" alt="Tonight planner with targets queued" width="720" />
 
 ## Quick start
 
@@ -102,12 +106,11 @@ For a single-port setup mirroring production (`http://localhost:8000`), `cd ui &
 
 ## Hardware + OS support
 
-- **Linux + NVIDIA GPU** is the only supported runtime today. GraXpert and StarNet++ are CUDA-bound; Siril runs anywhere but the canned templates assume the AI nodes are available.
-- **macOS** works for everything except the Siril-using paths. The test suite mocks the Siril subprocess, so the dev loop is full-featured; just do final validation on the Linux box.
-- The auto-detection logic checks `~/Applications`, `~/Downloads`, `~/tools/{graxpert,starnet}/`, and `$PATH`, in that order.
+The Docker image is the supported runtime. It's amd64-only and runs anywhere Docker does (Linux, macOS via Docker Desktop, Windows via WSL2).
 
-<!-- Screenshot: Tonight planner with targets queued and rise/set bars visible. -->
-<img src="docs/screenshots/tonight.png" alt="Tonight planner with targets queued" width="720" />
+- **CPU only** (the `:latest` and `:cpu` tags) works on any amd64 box. GraXpert and StarNet++ fall back to CPU; stacking is fine, AI nodes are noticeably slower.
+- **NVIDIA GPU** (the `:cuda` tag, plus `--gpus all` and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)) is recommended if you want GraXpert and StarNet++ to fly. Tested on Ampere and Ada.
+- **From source** (Linux only, see Quick Start above) works for dev. macOS source installs run everything except the Siril paths; the test suite mocks the Siril subprocess so the dev loop stays full-featured, but final validation belongs on a Linux box.
 
 ## Status
 
