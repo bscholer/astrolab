@@ -28,6 +28,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import drop_staged, quote, run_siril_on_sequence, seq_ref, stage_sequence
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -109,27 +110,15 @@ class CalibrateNode(Node[CalibrateParams]):
     ) -> dict[str, Ref]:
         out_dir_path = Path(out_dir)  # type: ignore[arg-type]
         seq_in = inputs["sequence"].path
-
-        if not seq_in.exists():
-            raise RuntimeError(f"calibrate: input sequence dir does not exist: {seq_in}")
-
         seq_out = out_dir_path / "sequence"
-        seq_out.mkdir(parents=True, exist_ok=True)
-
-        staged = _stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
-        if not staged:
-            raise RuntimeError(
-                f"calibrate: no input frames matching basename "
-                f"'{params.input_basename}' under {seq_in}"
-            )
 
         opts: list[str] = []
         if "dark" in inputs:
-            opts.append(f"-dark={_quote(inputs['dark'].path.resolve())}")
+            opts.append(f"-dark={quote(inputs['dark'].path.resolve())}")
         if "flat" in inputs:
-            opts.append(f"-flat={_quote(inputs['flat'].path.resolve())}")
+            opts.append(f"-flat={quote(inputs['flat'].path.resolve())}")
         if "bias" in inputs:
-            opts.append(f"-bias={_quote(inputs['bias'].path.resolve())}")
+            opts.append(f"-bias={quote(inputs['bias'].path.resolve())}")
         if params.cfa:
             opts.append("-cfa")
         if params.cosmetic and "dark" in inputs:
@@ -143,37 +132,40 @@ class CalibrateNode(Node[CalibrateParams]):
         if params.fitseq:
             opts.append("-fitseq")
 
-        ctx.progress(0.2, f"calibrate: running siril on {len(staged)} frames")
-        commands = [
-            f"cd {_quote(seq_out.resolve())}",
-            f"calibrate {params.input_basename} {' '.join(opts)}",
-        ]
-        runtime = SirilRuntime()
-        result = runtime.run(
-            commands,
-            working_dir=seq_out,
-            on_log=make_progress_handler(ctx),
-            cancel=ctx.cancel,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"calibrate: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-                f"--- stderr ---\n{result.stderr}"
-            )
-
         out_basename = f"pp_{params.input_basename}"
-        if params.fitseq:
-            expected = seq_out / f"{out_basename}.fit"
-            if not expected.exists():
+        ctx.progress(0.2, "calibrate: running siril on sequence")
+
+        if not params.fitseq:
+            # Per-frame path: stage manually so we can record the input count,
+            # then validate calibrate produced one output per input (calibrate
+            # never drops frames -- if counts diverge, something went wrong).
+            seq_out.mkdir(parents=True, exist_ok=True)
+            if not seq_in.exists():
+                raise RuntimeError(f"calibrate: input dir does not exist: {seq_in}")
+            staged = stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
+            if not staged:
                 raise RuntimeError(
-                    f"calibrate: siril returned 0 but FITSEQ container "
-                    f"{expected} is missing.\n--- stdout (tail) ---\n"
-                    f"{result.stdout[-2000:]}"
+                    f"calibrate: no input frames matching basename "
+                    f"'{params.input_basename}' under {seq_in}"
                 )
-            wrote = expected.name
-        else:
+            n_input = len([p for p in staged if p.suffix in (".fit", ".fits")])
+            commands = [
+                f"cd {quote(seq_out.resolve())}",
+                f"calibrate {params.input_basename} {' '.join(opts)}",
+            ]
+            result = SirilRuntime().run(
+                commands,
+                working_dir=seq_out,
+                on_log=make_progress_handler(ctx),
+                cancel=ctx.cancel,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"calibrate: siril exited {result.returncode}\n"
+                    f"--- ssf ---\n{result.ssf}\n"
+                    f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                    f"--- stderr ---\n{result.stderr}"
+                )
             frames = sorted(
                 p
                 for p in seq_out.iterdir()
@@ -186,78 +178,29 @@ class CalibrateNode(Node[CalibrateParams]):
                     f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
                     f"{result.stdout[-2000:]}"
                 )
-            if len(frames) != len(staged):
+            if len(frames) != n_input:
                 raise RuntimeError(
-                    f"calibrate: expected {len(staged)} calibrated frames, "
+                    f"calibrate: expected {n_input} calibrated frames, "
                     f"got {len(frames)}"
                 )
+            drop_staged(staged)
             wrote = f"{len(frames)} frames"
-
-        # Strip input symlinks so the cache entry only holds this node's outputs.
-        for link in staged:
-            if link.is_symlink() or link.exists():
-                link.unlink()
+        else:
+            commands = [
+                f"cd {quote(seq_out.resolve())}",
+                f"calibrate {params.input_basename} {' '.join(opts)}",
+            ]
+            wrote = run_siril_on_sequence(
+                node_name="calibrate",
+                seq_in=seq_in,
+                seq_out=seq_out,
+                commands=commands,
+                basename=params.input_basename,
+                out_basename=out_basename,
+                fitseq=params.fitseq,
+                ctx=ctx,
+                runtime=SirilRuntime(),
+            )
 
         ctx.progress(1.0, f"calibrate: wrote {wrote}")
-        return {
-            "sequence": Ref(
-                node_hash="",
-                port="sequence",
-                path=seq_out,
-                type=PortType.SEQUENCE_FITS,
-            )
-        }
-
-
-def _stage_sequence(
-    seq_in: Path, seq_out: Path, basename: str, fitseq: bool
-) -> list[Path]:
-    """Symlink the input sequence into seq_out so Siril finds it in cwd.
-
-    Returns the list of staged links so the caller can clean them up post-run.
-    """
-    staged: list[Path] = []
-    if fitseq:
-        src = seq_in / f"{basename}.fit"
-        if not src.exists():
-            return []
-        link = seq_out / src.name
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        link.symlink_to(src.resolve())
-        staged.append(link)
-        return staged
-
-    for f in sorted(seq_in.iterdir()):
-        if not (f.is_file() or f.is_symlink()):
-            continue
-        if not f.name.startswith(f"{basename}_"):
-            continue
-        # Stage matching .fit/.fits frames AND the Siril `.seq` index file so
-        # downstream commands (stack, calibrate w/ existing alignment) can read
-        # the sequence metadata. .seq references frames by relative name, which
-        # works because the .fit symlinks land in the same staging dir.
-        if f.suffix not in (".fit", ".fits", ".seq"):
-            continue
-        link = seq_out / f.name
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        link.symlink_to(f.resolve())
-        staged.append(link)
-
-    # Siril 1.4 writes <basename>_.seq but `stack` reads <basename>.seq (no
-    # trailing underscore). Add a no-underscore alias so both naming
-    # conventions resolve. Only relevant for non-fitseq mode.
-    underscored = seq_out / f"{basename}_.seq"
-    no_underscore = seq_out / f"{basename}.seq"
-    if underscored.exists() and not no_underscore.exists():
-        no_underscore.symlink_to(underscored.resolve())
-        staged.append(no_underscore)
-    return staged
-
-
-def _quote(path: Path) -> str:
-    s = str(path)
-    if any(c in s for c in (" ", "\t", '"')):
-        return '"' + s.replace('"', r"\"") + '"'
-    return s
+        return {"sequence": seq_ref(seq_out)}

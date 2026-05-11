@@ -10,7 +10,7 @@ register / stack stages run, which gives ~4x speedup at scale=0.5 and
 bg-extract degree) translate accurately between draft and full-res; only
 per-pixel sharpness suffers.
 
-Default scale is 1.0 (passthrough — Siril effectively just re-emits the
+Default scale is 1.0 (passthrough -- Siril effectively just re-emits the
 sequence under the new prefix). Users pull the slider down for fast
 iteration loops, then crank it back to 1.0 when they're ready for the
 final render. Both lineages stay independently cached so flipping back
@@ -30,12 +30,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import quote, run_siril_on_sequence, seq_ref
 from nodes.base import Node
-from nodes.basic.calibrate import _quote, _stage_sequence
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
-from server.siril import SirilRuntime, make_progress_handler
+from server.siril import SirilRuntime
 
 
 class SeqResampleParams(BaseModel):
@@ -54,7 +54,7 @@ class SeqResampleParams(BaseModel):
     )
     mode: Literal["full", "draft"] = Field(
         default="full",
-        description="'full' resamples at native resolution (passthrough — "
+        description="'full' resamples at native resolution (passthrough -- "
         "downstream sees frames unchanged). 'draft' downscales each frame to "
         "half resolution before the heavy register/stack stages run, giving "
         "~4x speedup. Use 'draft' for fast iteration on stretch / pedestal / "
@@ -101,8 +101,6 @@ class SeqResampleNode(Node[SeqResampleParams]):
             raise RuntimeError(f"seq_resample: input dir does not exist: {seq_in}")
 
         seq_out = out_dir_path / "sequence"
-        seq_out.mkdir(parents=True, exist_ok=True)
-
         out_basename = f"rs_{params.input_basename}"
 
         if params.mode == "full":
@@ -111,25 +109,18 @@ class SeqResampleNode(Node[SeqResampleParams]):
             # passthrough ourselves: hardlink each frame from upstream into
             # our cache dir under the rs_ prefix and hand-write a .seq file
             # so downstream Siril operations recognize the sequence.
+            seq_out.mkdir(parents=True, exist_ok=True)
             wrote = _passthrough_link(
                 seq_in, seq_out, params.input_basename, out_basename, params.fitseq, ctx
             )
         else:
-            staged = _stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
-            if not staged:
-                raise RuntimeError(
-                    f"seq_resample: no input frames matching basename "
-                    f"'{params.input_basename}' under {seq_in}"
-                )
-
             scale = 0.5
             ctx.progress(
                 0.2,
-                f"seq_resample: mode={params.mode} (scale={scale:g}) on "
-                f"{len(staged)} frames",
+                f"seq_resample: mode={params.mode} (scale={scale:g})",
             )
             commands = [
-                f"cd {_quote(seq_out.resolve())}",
+                f"cd {quote(seq_out.resolve())}",
                 (
                     f"seqresample {params.input_basename} "
                     f"-scale={scale:g} "
@@ -137,60 +128,20 @@ class SeqResampleNode(Node[SeqResampleParams]):
                     f"-prefix=rs_"
                 ),
             ]
-            runtime = SirilRuntime()
-            result = runtime.run(
-                commands,
-                working_dir=seq_out,
-                on_log=make_progress_handler(ctx),
-                cancel=ctx.cancel,
+            wrote = run_siril_on_sequence(
+                node_name="seq_resample",
+                seq_in=seq_in,
+                seq_out=seq_out,
+                commands=commands,
+                basename=params.input_basename,
+                out_basename=out_basename,
+                fitseq=params.fitseq,
+                ctx=ctx,
+                runtime=SirilRuntime(),
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"seq_resample: siril exited {result.returncode}\n"
-                    f"--- ssf ---\n{result.ssf}\n"
-                    f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-                    f"--- stderr ---\n{result.stderr}"
-                )
-
-            # Validate Siril's output landed where expected.
-            if params.fitseq:
-                expected = seq_out / f"{out_basename}.fit"
-                if not expected.exists():
-                    raise RuntimeError(
-                        f"seq_resample: siril returned 0 but FITSEQ container "
-                        f"{expected} is missing.\n--- stdout (tail) ---\n"
-                        f"{result.stdout[-2000:]}"
-                    )
-                wrote = expected.name
-            else:
-                frames = sorted(
-                    p
-                    for p in seq_out.iterdir()
-                    if p.name.startswith(f"{out_basename}_")
-                    and p.suffix in (".fit", ".fits")
-                )
-                if not frames:
-                    raise RuntimeError(
-                        f"seq_resample: siril returned 0 but no {out_basename}_*.fit* "
-                        f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
-                        f"{result.stdout[-2000:]}"
-                    )
-                wrote = f"{len(frames)} frames"
-
-            # Drop the staging symlinks so the cache entry only holds resampled output.
-            for link in staged:
-                if link.is_symlink() or link.exists():
-                    link.unlink()
 
         ctx.progress(1.0, f"seq_resample: wrote {wrote}")
-        return {
-            "sequence": Ref(
-                node_hash="",
-                port="sequence",
-                path=seq_out,
-                type=PortType.SEQUENCE_FITS,
-            )
-        }
+        return {"sequence": seq_ref(seq_out)}
 
 
 def _passthrough_link(
@@ -245,7 +196,7 @@ def _passthrough_link(
             )
 
     # Hand-write a Siril .seq file. Format mirrors what `convert` produces
-    # (no per-frame size info, no registration data — downstream Siril
+    # (no per-frame size info, no registration data -- downstream Siril
     # commands rebuild that lazily on demand). Both `<base>_.seq` and
     # `<base>.seq` resolve to the same data; we write the underscore form
     # since that's Siril 1.4's canonical name.
