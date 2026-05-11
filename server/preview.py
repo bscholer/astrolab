@@ -65,7 +65,17 @@ def render_preview(
     if entry is None:
         raise PreviewError(f"no committed cache entry for {node_hash}")
 
-    target = _locate_artifact(entry, port)
+    # Prefer the per-entry manifest so previews work for multi-output nodes
+    # whose filenames don't follow the <port>.<ext> convention (eg
+    # narrowband_extract writes `r_results_ha.fit` for port `ha`).
+    manifest = cache.load_outputs(node_hash)
+    target: Path | None
+    if manifest is not None and port in manifest:
+        target = manifest[port].path
+        if not target.exists():
+            target = None
+    else:
+        target = _locate_artifact(entry, port)
     if target is None:
         raise PreviewError(f"port '{port}' not found in {entry}")
 
