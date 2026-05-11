@@ -283,88 +283,176 @@ Canonical-JSON params: keys sorted, floats rounded to a fixed precision per para
 
 ### Catalog schema (SQLite, sketch)
 
+Authoritative definition: `server/catalog/db.py` migrations. Current schema version: 11.
+
 ```sql
+-- indexes: object, image_type, session_key, (inode, mtime)
 CREATE TABLE frames (
     id              INTEGER PRIMARY KEY,
-    file_hash       TEXT NOT NULL UNIQUE,    -- xxhash of contents
-    path            TEXT NOT NULL,           -- absolute NAS path
+    file_hash       TEXT,                    -- xxhash of contents
+    path            TEXT NOT NULL UNIQUE,
     inode           INTEGER,
     mtime           REAL,
     size            INTEGER,
     image_type      TEXT,                    -- LIGHT / DARK / FLAT / BIAS
+    quality         TEXT,
     object          TEXT,
     instrument      TEXT,
+    camera          TEXT,
     filter          TEXT,
     exptime         REAL,
     gain            INTEGER,
     binning         INTEGER,
     ccd_temp        REAL,
     date_obs        TEXT,                    -- ISO 8601
+    ra              REAL,
+    dec             REAL,
+    scope_id        TEXT,
+    session_key     TEXT,
     fits_headers    BLOB,                    -- JSON of full header
     scanned_at      REAL
 );
 
 CREATE TABLE sessions (
     id              INTEGER PRIMARY KEY,
+    scope_id        TEXT,
+    session_key     TEXT NOT NULL UNIQUE,
     target_id       INTEGER REFERENCES targets(id),
     instrument      TEXT,
+    camera          TEXT,
     filter          TEXT,
+    exptime         REAL,
+    gain            INTEGER,
+    binning         INTEGER,
     started_at      TEXT,
     ended_at        TEXT,
     frame_count     INTEGER,
+    failed_count    INTEGER,
     notes           TEXT,
     description     TEXT       -- freeform; NULL = no note
 );
 
 CREATE TABLE session_frames (
-    session_id      INTEGER REFERENCES sessions(id),
-    frame_id        INTEGER REFERENCES frames(id),
+    session_id      INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    frame_id        INTEGER REFERENCES frames(id) ON DELETE CASCADE,
     PRIMARY KEY (session_id, frame_id)
 );
 
+-- resolved_* columns are scanner-managed; source tags which path produced the match
 CREATE TABLE targets (
     id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,           -- normalized (e.g. "M31")
+    name            TEXT NOT NULL UNIQUE,    -- normalized (e.g. "M31")
     aliases         TEXT,                    -- JSON array
     ra              REAL,
-    dec             REAL
+    dec             REAL,
+    resolved_canonical          TEXT,
+    resolved_separation_arcmin  REAL,
+    resolved_at                 TEXT,
+    resolved_source             TEXT
 );
 
+-- indexes: kind; (kind, instrument, camera, gain, exptime, binning, ccd_temp)
 CREATE TABLE masters (
     id              INTEGER PRIMARY KEY,
-    kind            TEXT,                    -- master_dark / master_flat / master_bias
+    kind            TEXT NOT NULL,           -- 'dark' | 'flat' | 'bias'
+    scope_id        TEXT,
+    source          TEXT,                    -- 'factory' | 'user' | 'astrolab'
     instrument      TEXT,
-    gain            INTEGER,
+    camera          TEXT,
+    filter          TEXT,
     exptime         REAL,
-    ccd_temp        REAL,
+    gain            INTEGER,
     binning         INTEGER,
+    ccd_temp        REAL,
+    stack_count     INTEGER,
+    file_hash       TEXT,
+    path            TEXT NOT NULL UNIQUE,
+    inode           INTEGER,
+    mtime           REAL,
+    size            INTEGER,
     date_built      TEXT,
-    cache_ref       TEXT,                    -- points into content-addressed cache
-    source_frame_ids TEXT                    -- JSON array
+    cache_ref       TEXT,                    -- content-cache pointer or external path
+    source_frame_ids TEXT,                   -- JSON array of frames.id; null for factory
+    scanned_at      REAL
 );
 
 CREATE TABLE calibration_matches (
-    session_id      INTEGER,
-    kind            TEXT,                    -- dark / flat / bias
-    master_id       INTEGER,                 -- nullable; null = no match
-    match_quality   TEXT,                    -- exact / approx / none
-    overridden      INTEGER DEFAULT 0,
+    session_id      INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,           -- 'dark' | 'flat' | 'bias'
+    master_id       INTEGER REFERENCES masters(id) ON DELETE SET NULL,
+    match_quality   TEXT NOT NULL,           -- 'exact' | 'approx' | 'none'
+    details         TEXT,                    -- JSON: deltas, candidate count, etc.
+    overridden      INTEGER NOT NULL DEFAULT 0,
+    updated_at      REAL,
     PRIMARY KEY (session_id, kind)
 );
 
-CREATE TABLE renders (
+-- indexes: status; submitted_at DESC
+CREATE TABLE jobs (
+    id                TEXT PRIMARY KEY,
+    status            TEXT NOT NULL,
+    template_id       TEXT NOT NULL,
+    template_version  INTEGER NOT NULL,
+    template_json     TEXT NOT NULL,
+    job_json          TEXT NOT NULL,
+    outputs_json      TEXT,
+    error             TEXT,
+    submitted_at      TEXT NOT NULL,
+    started_at        TEXT,
+    finished_at       TEXT,
+    node_hashes_json  TEXT
+);
+
+-- index: (job_id, seq)
+CREATE TABLE job_events (
     id              INTEGER PRIMARY KEY,
-    target_id       INTEGER,
-    template_id     TEXT,
-    template_version INTEGER,
-    job_json        TEXT,                    -- full Job spec
-    output_cache_hash TEXT,
-    thumbnail_path  TEXT,
-    name            TEXT,
-    notes           TEXT,
-    tags            TEXT,                    -- JSON array
-    created_at      TEXT,
-    pinned          INTEGER DEFAULT 1
+    job_id          TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    type            TEXT NOT NULL,
+    timestamp       TEXT NOT NULL,
+    node_id         TEXT,
+    fraction        REAL,
+    message         TEXT,
+    error           TEXT,
+    extra_json      TEXT
+);
+
+-- index: updated_at DESC
+-- formerly "renderings" (renamed in migration 6)
+CREATE TABLE projects (
+    id                    TEXT PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    template_id           TEXT NOT NULL,
+    template_version      INTEGER NOT NULL,
+    template_json         TEXT NOT NULL,
+    base_job_json         TEXT NOT NULL,
+    current_seq           INTEGER NOT NULL,
+    draft_mode            INTEGER NOT NULL DEFAULT 0,
+    source_session_ids    TEXT NOT NULL,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    cover_seq             INTEGER,           -- null = auto-pick latest with outputs
+    description           TEXT
+);
+
+-- index: (project_id, seq)
+-- formerly "rendering_history" (renamed in migration 6)
+CREATE TABLE project_history (
+    id              INTEGER PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    job_id          TEXT NOT NULL,
+    overrides_json  TEXT NOT NULL,
+    label           TEXT,
+    created_at      TEXT NOT NULL,
+    published       INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (project_id, seq)
+);
+
+CREATE TABLE settings (
+    key             TEXT PRIMARY KEY,
+    value_json      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
 );
 ```
 
