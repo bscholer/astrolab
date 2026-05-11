@@ -16,12 +16,21 @@ It is built around the Dwarf 3 capture layout for now, but nothing in the pipeli
 
 ## What it does
 
+<!-- Screenshot: Library page with at least two targets in the list, one expanded to show multiple sessions. Dark mode, sessions sorted by name. -->
+<img src="docs/screenshots/library.png" alt="Library page showing targets and sessions" width="720" />
+
 - Wraps **Siril 1.4** for calibration, registration, stacking, and pixel ops.
 - Drives **GraXpert** for background extraction and ML denoise.
 - Drives **StarNet++ v2** for star removal, replacement, and recombination.
 - Caches every node's output by `(inputs + params + node version)` so editing a downstream knob never re-runs an upstream node.
 - Tracks a per-project edit history (revert, branch, compare, publish).
 - Gallery view surfaces the renders you opt in to publish; everything else stays in your private history.
+
+<!-- Screenshot: Project page open on a finished stack, history strip at the bottom with at least two revisions visible. This is the iterate-and-compare core. -->
+<img src="docs/screenshots/project.png" alt="Project page with history strip showing multiple revisions" width="720" />
+
+<!-- Screenshot: Compare view with two revisions side by side or using the before/after slider. -->
+<img src="docs/screenshots/compare.png" alt="Compare view with two revisions" width="720" />
 
 ## Quick start
 
@@ -96,6 +105,9 @@ For a single-port setup mirroring production (`http://localhost:8000`), `cd ui &
 - **Linux + NVIDIA GPU** is the only supported runtime today. GraXpert and StarNet++ are CUDA-bound; Siril runs anywhere but the canned templates assume the AI nodes are available.
 - **macOS** works for everything except the Siril-using paths. The test suite mocks the Siril subprocess, so the dev loop is full-featured; just do final validation on the Linux box.
 - The auto-detection logic checks `~/Applications`, `~/Downloads`, `~/tools/{graxpert,starnet}/`, and `$PATH`, in that order.
+
+<!-- Screenshot: Gallery page with several published renders, grid layout. Tonight planner closed. -->
+<img src="docs/screenshots/gallery.png" alt="Gallery page showing published renders" width="720" />
 
 ## Status
 
