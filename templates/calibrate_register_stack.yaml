@@ -1,5 +1,5 @@
 id: calibrate_register_stack
-version: 10
+version: 11
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
@@ -7,18 +7,20 @@ description: |
             register -> rejection stack with rgb_equal -> auto_crop (trim
             registration nodata) -> graxpert_bg (AI background, optional;
             linear) -> graxpert_denoise (AI denoise, optional; linear)
-            -> stretch (autostretch by default) -> starnet_extract (split,
+            -> crop (interactive composition crop, off by default) ->
+            stretch (autostretch by default) -> starnet_extract (split,
             optional; needs stretched input) -> starnet_replace (synthstar,
             optional) -> starnet_recombine (always on; identity when
-            extract is off) -> crop (interactive composition crop, off
-            by default) -> save 16-bit PNG.
+            extract is off) -> save 16-bit PNG.
 
   Ordering rule: linear-domain ops come before stretch (BG extract and
   GraXpert denoise prefer the noise distribution of pre-stretch data),
-  StarNet++ comes after (its model was trained on stretched 16-bit
-  data and produces mushy starless results on linear input), and the
-  final composition crop sits at the very end so it can be re-tweaked
-  without rerunning anything expensive upstream.
+  the composition crop sits just before stretch so the autostretch
+  histogram only sees the pixels the user wants to keep (noisy borders
+  / vignetting / dead edges that get cropped out can't skew the tone
+  curve), and StarNet++ runs last because its model was trained on
+  stretched 16-bit data and produces mushy starless results on linear
+  input.
 
   Pull resample.scale down (e.g. 0.5) for fast iteration on
   pedestal/stretch/rejection params; bump back to 1.0 for the final
@@ -143,6 +145,19 @@ nodes:
     inputs:
       image: graxpert_bg.image
 
+  - id: crop
+    kind: crop
+    # Interactive composition crop. Off by default; flips on once the user
+    # drags a rectangle in the project page UI. Coords are normalized [0,1]
+    # so the box stays valid across resample modes. Sits just before
+    # stretch so autostretch's histogram only sees the kept region;
+    # noisy borders / vignetting / dead edges the user crops out can't
+    # skew the tone curve.
+    params:
+      enabled: false
+    inputs:
+      image: graxpert_denoise.image
+
   - id: stretch
     kind: stretch
     # Linear-domain processing ends here. Everything below operates on
@@ -151,7 +166,7 @@ nodes:
       method: autostretch
       # autostretch with Siril defaults: linked, shadows_clip=-2.8, target_bg=0.25.
     inputs:
-      image: graxpert_denoise.image
+      image: crop.image
 
   - id: starnet_extract
     kind: starnet_extract
@@ -191,20 +206,10 @@ nodes:
     # disappears when extract is off.
     ui_depends_on: starnet_replace
 
-  - id: crop
-    kind: crop
-    # Interactive composition crop. Off by default — flips on once the user
-    # drags a rectangle in the project page UI. Coords are normalized [0,1]
-    # so the box stays valid across resample modes.
-    params:
-      enabled: false
-    inputs:
-      image: starnet_recombine.image
-
   - id: save
     kind: save_image
     inputs:
-      image: crop.image
+      image: starnet_recombine.image
 
 outputs:
   image: save.image
