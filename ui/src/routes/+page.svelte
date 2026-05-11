@@ -14,6 +14,7 @@
   } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import { shortAgo, formatFailPct, failPctClass, formatBytes, formatIntegrationTime } from '$lib/format';
+  import SessionRow from '$lib/SessionRow.svelte';
 
   let targets = $state<TargetSummary[] | null>(null);
   let openTargetId = $state<number | null>(null);
@@ -348,10 +349,6 @@
     return iso.slice(0, 10);
   }
 
-  function calBadgeClass(c: CalibrationStatus): string {
-    return `cal cal-${c.quality}`;
-  }
-
   function calLabel(kind: string): string {
     return kind[0].toUpperCase();
   }
@@ -651,107 +648,38 @@
                   {@const checked = selectedSessionIds.has(s.id)}
                   {@const reason = incompatibleReason(s, anchor)}
                   {@const blocked = !!reason && !checked}
-                  <li class="session" class:dim={blocked}>
-                    <label class="session-pick" title={reason ?? ''}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={blocked}
-                        onchange={() => toggleSelected(s)}
-                      />
-                    </label>
-                    <div class="session-content">
-                      <div class="session-head">
-                        <span class="session-when">{shortDate(s.started_at)}</span>
-                        <span class="session-tags muted">
-                          {s.exptime ?? '?'}s · gain {s.gain ?? '?'} · {s.filter ?? '-'}
-                        </span>
-                        {#if reason && !checked}
-                          <span class="incompat-chip" title={reason}>
-                            {reason}
-                          </span>
-                        {/if}
-                        <!-- Per-session reassign pencil. Sits at the end of the
-                             head row so the popup unfurls below without
-                             pushing the session body around. -->
-                        <button
-                          type="button"
-                          class="reassign-btn"
-                          aria-label="Reassign session to another target"
-                          aria-expanded={reassignSessionId === s.id}
-                          title="Reassign to another target"
-                          onclick={(e) => {
-                            e.stopPropagation();
-                            openReassign(s);
-                          }}
-                        >
-                          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z" />
-                            <path d="M10 3l3 3" />
-                          </svg>
-                        </button>
-                      </div>
-                      <div class="session-body">
-                        <span class="num">
-                          {s.frame_count.toLocaleString()} frame{s.frame_count === 1 ? '' : 's'}
-                        </span>
-                        {#if s.frame_count > 0}
-                          <span aria-hidden="true" class="muted">·</span>
-                          <span
-                            class="fail-pct {failPctClass(s.failed_count, s.frame_count)}"
-                            title="{s.failed_count} of {s.frame_count} failed"
-                          >
-                            {formatFailPct(s.failed_count, s.frame_count)}
-                          </span>
-                        {/if}
-                        {#if s.integration_seconds && s.integration_seconds > 0}
-                          <span aria-hidden="true" class="muted">·</span>
-                          <span
-                            class="num muted"
-                            title="Useful integration: ({s.frame_count} - {s.failed_count}) × {s.exptime ?? '?'}s"
-                          >
-                            {formatIntegrationTime(s.integration_seconds)} integ
-                          </span>
-                        {/if}
-                        {#if s.bytes_on_disk > 0}
-                          <span aria-hidden="true" class="muted">·</span>
-                          <span class="num muted" title="On-disk size of this session's frames">
-                            {formatBytes(s.bytes_on_disk)}
-                          </span>
-                        {/if}
-                        <span class="cal-row">
-                          {#each s.calibration as c (c.kind)}
-                            <button
-                              type="button"
-                              class={calBadgeClass(c)}
-                              title={calTitle(c)}
-                              aria-label={calTitle(c)}
-                              data-tip={calTitle(c)}
-                            >
-                              {calLabel(c.kind)}
-                            </button>
-                          {/each}
-                        </span>
-                        {#if !multiMode}
-                          <button
-                            type="button"
-                            class="notes-btn"
-                            onclick={() => toggleNotes(s)}
-                            aria-expanded={notesOpenId === s.id}
-                            title={s.description ?? 'Add notes'}
-                          >
-                            {s.description ? 'Notes ●' : 'Notes'}
-                          </button>
-                          <button
-                            type="button"
-                            class="run-btn"
-                            onclick={() => toggleRun(s.id)}
-                            aria-expanded={runOpenSessionId === s.id}
-                          >
-                            {runOpenSessionId === s.id ? 'Cancel' : 'Run…'}
-                          </button>
-                        {/if}
-                      </div>
+                  <SessionRow
+                    session={s}
+                    shortDate={shortDate(s.started_at)}
+                    notesOpen={notesOpenId === s.id}
+                    notesDraft={notesDraftById.get(s.id) ?? ''}
+                    notesSaving={notesSavingId === s.id}
+                    onToggleNotes={() => toggleNotes(s)}
+                    onNotesInput={(v) => setNotesDraft(s.id, v)}
+                    onNotesBlur={() => saveNotesOnBlur(s)}
+                    selectable={{
+                      checked,
+                      disabled: blocked,
+                      reason,
+                      onToggle: () => toggleSelected(s),
+                    }}
+                    runAffordance={{
+                      open: runOpenSessionId === s.id,
+                      onToggle: () => toggleRun(s.id),
+                      hidden: multiMode,
+                    }}
+                    reassign={{
+                      open: reassignSessionId === s.id,
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        openReassign(s);
+                      },
+                    }}
+                    notesHidden={multiMode}
+                    {calLabel}
+                    {calTitle}
+                  >
+                    {#snippet extrasAfterBody()}
                       {#if reassignSessionId === s.id}
                         <div
                           class="reassign-popup"
@@ -848,36 +776,8 @@
                           {/if}
                         </div>
                       {/if}
-                      {#if s.description && notesOpenId !== s.id}
-                        <!-- When the textarea is closed, surface the saved
-                             note as a small italic snippet so it's
-                             discoverable without forcing the textarea
-                             open. Suppressed entirely when empty. -->
-                        <p class="session-note muted small" title={s.description}>
-                          {s.description}
-                        </p>
-                      {/if}
-                      {#if !multiMode && notesOpenId === s.id}
-                        <div class="notes-panel" transition:slide={{ duration: 140, easing: cubicOut }}>
-                          <label class="notes-label" for={`session-notes-${s.id}`}>
-                            Session notes
-                            {#if notesSavingId === s.id}
-                              <span class="muted small">· saving…</span>
-                            {/if}
-                          </label>
-                          <textarea
-                            id={`session-notes-${s.id}`}
-                            class="session-notes-area"
-                            rows="2"
-                            placeholder="Add notes (full moon, dew heater on, etc.). Unfocus to save."
-                            value={notesDraftById.get(s.id) ?? ''}
-                            oninput={(e) =>
-                              setNotesDraft(s.id, (e.currentTarget as HTMLTextAreaElement).value)
-                            }
-                            onblur={() => saveNotesOnBlur(s)}
-                          ></textarea>
-                        </div>
-                      {/if}
+                    {/snippet}
+                    {#snippet extrasAfterNotes()}
                       {#if !multiMode && runOpenSessionId === s.id}
                         <div class="run-panel">
                           <label class="run-row">
@@ -911,8 +811,8 @@
                           </div>
                         </div>
                       {/if}
-                    </div>
-                  </li>
+                    {/snippet}
+                  </SessionRow>
                 {/each}
               </ul>
             {/if}
@@ -1112,128 +1012,10 @@
     gap: 0.4rem;
   }
 
-  .session {
-    padding: 0.55rem 0.7rem;
-    border-radius: var(--radius);
-    background: var(--bg-elev-2);
-    border: 1px solid var(--hairline);
-    display: flex;
-    align-items: flex-start;
-    gap: 0.55rem;
-    transition: opacity 160ms ease;
-  }
-  .session.dim {
-    opacity: 0.45;
-  }
-  .session-pick {
-    /* Stretch a tappable hitbox so the whole left column toggles selection,
-       not just the 13px native checkbox. */
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.35rem;
-    margin: -0.35rem 0 -0.35rem -0.2rem;
-    cursor: pointer;
-  }
-  /* Custom checkbox: hide the native input, render a styled box that
-     follows the rest of the design language (rounded corners, accent on
-     hover, accent fill + check glyph when checked). The native input is
-     still present in the DOM so screen readers and keyboard nav (space
-     to toggle, focus-visible ring) work normally. */
-  .session-pick input[type='checkbox'] {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
-    margin: 0;
-    border: 1.5px solid var(--border-strong);
-    border-radius: 4px;
-    background: var(--bg);
-    cursor: inherit;
-    display: inline-grid;
-    place-content: center;
-    transition: background-color 140ms ease, border-color 140ms ease;
-  }
-  .session-pick input[type='checkbox']::before {
-    content: '';
-    width: 10px;
-    height: 10px;
-    transform: scale(0);
-    background-color: var(--accent-ink);
-    /* Inline SVG check: recolored to currentColor by clip-path/mask. */
-    clip-path: polygon(14% 44%, 0 60%, 40% 100%, 100% 20%, 80% 6%, 38% 70%);
-    transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-  .session-pick input[type='checkbox']:checked {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .session-pick input[type='checkbox']:checked::before {
-    transform: scale(1);
-  }
-  .session-pick input[type='checkbox']:hover:not(:disabled) {
-    border-color: var(--accent);
-  }
-  .session-pick input[type='checkbox']:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .session-pick input[disabled] {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-  .session-content {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    min-width: 0;
-  }
-  .incompat-chip {
-    font-size: 0.72rem;
-    color: var(--warn);
-    border: 1px solid var(--warn);
-    background: color-mix(in oklab, var(--warn) 10%, transparent);
-    padding: 0.05rem 0.45rem;
-    border-radius: 999px;
-    margin-left: auto;
-  }
-
-  /* Per-session reassign pencil button. Muted by default, accent on
-     hover/open. Sits at the end of the head row so it doesn't compete
-     with the date or tags. */
-  .reassign-btn {
-    appearance: none;
-    background: transparent;
-    border: none;
-    color: var(--fg-mute);
-    padding: 0.15rem 0.35rem;
-    margin-left: auto;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    transition: color 140ms ease, background-color 140ms ease;
-  }
-  .reassign-btn:hover,
-  .reassign-btn:focus-visible {
-    color: var(--fg);
-    background: rgba(255, 255, 255, 0.03);
-  }
-  .reassign-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-  .reassign-btn[aria-expanded='true'] {
-    color: var(--accent);
-  }
-  /* If a row also shows an incompat-chip, the pencil follows it; both
-     can claim margin-left:auto. Pull the pencil back to a fixed gap so
-     the chip stays anchored right and the pencil tucks next to it. */
-  .incompat-chip + .reassign-btn {
-    margin-left: 0.4rem;
-  }
+  /* .session, .session-pick, .session-content, .incompat-chip and the
+     reassign pencil moved into SessionRow.svelte. The reassign-popup
+     below still lives in the parent (rendered via the extrasAfterBody
+     snippet) so its styles stay here. */
 
   /* Reassign popup: slides down under the session head, lives inside the
      session card so it inherits the card chrome. Two sections (existing
@@ -1446,37 +1228,11 @@
     margin-left: auto;
   }
 
-  .session-head {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-  }
-
-  .session-when {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-  }
-
-  .session-tags {
-    font-size: 0.8rem;
-  }
-
-  .session-body {
-    font-size: 0.85rem;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-
-  .cal-row {
-    display: inline-flex;
-    gap: 0.3rem;
-    margin-left: auto;
-  }
-
+  /* .session-head, .session-when, .session-tags, .session-body, .cal-row,
+     and the .cal* family moved into SessionRow.svelte along with the rest
+     of the per-row visuals. The legend below still renders its own swatches
+     in the parent markup, so it keeps a local copy of the .cal styles
+     (scoped here so the swatches inherit them). */
   .cal {
     appearance: none;
     -webkit-appearance: none;
@@ -1485,7 +1241,6 @@
     margin: 0;
     font: inherit;
     line-height: 1;
-
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -1498,57 +1253,16 @@
     border: 1px solid var(--border);
     cursor: help;
   }
-
-  .cal:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  /* Custom tooltip via data-tip; works on hover (desktop) and focus (mobile tap). */
-  .cal[data-tip]::after {
-    content: attr(data-tip);
-    position: absolute;
-    bottom: calc(100% + 6px);
-    right: 0;
-    /* Allow wrapping for multi-line reasons (e.g. "no dark within +/-3C..."). */
-    white-space: pre-line;
-    max-width: min(280px, 75vw);
-    width: max-content;
-    text-align: left;
-    background: var(--bg-elev);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    padding: 0.35rem 0.55rem;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    line-height: 1.35;
-    font-weight: 500;
-    pointer-events: none;
-    opacity: 0;
-    transform: translateY(2px);
-    transition: opacity 120ms ease, transform 120ms ease;
-    z-index: 5;
-  }
-
-  .cal[data-tip]:hover::after,
-  .cal[data-tip]:focus-visible::after,
-  .cal[data-tip]:focus::after {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
   .cal-exact {
     background: color-mix(in oklab, var(--good) 14%, transparent);
     border-color: var(--good);
     color: var(--good);
   }
-
   .cal-approx {
     background: color-mix(in oklab, var(--warn) 14%, transparent);
     border-color: var(--warn);
     color: var(--warn);
   }
-
   .cal-none {
     background: color-mix(in oklab, var(--bad) 12%, transparent);
     border-color: var(--bad);
@@ -1618,89 +1332,10 @@
     display: none !important;
   }
 
-  .run-btn {
-    appearance: none;
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--accent);
-    padding: 0.2rem 0.7rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    cursor: pointer;
-    margin-left: 0.5rem;
-  }
-
-  /* Notes affordance lives next to the Run pill. Borderless pill so it
-     reads as a secondary link, not a primary action. The user
-     mentioned the Library was getting cluttered, so this stays quiet
-     until they actually want it. A small filled dot signals "this
-     session has a saved note". */
-  .notes-btn {
-    appearance: none;
-    background: transparent;
-    border: none;
-    color: var(--fg-mute);
-    padding: 0.2rem 0.5rem;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    cursor: pointer;
-    margin-left: 0.25rem;
-  }
-  .notes-btn:hover {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--fg);
-  }
-  .notes-btn[aria-expanded='true'] {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--fg);
-  }
-  .session-note {
-    margin: 0.2rem 0 0;
-    /* The closed-state note line: truncate long notes to one row so a
-       paragraph doesn't blow the session-row height; the textarea
-       reveals the full text on open. */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-style: italic;
-    max-width: 100%;
-  }
-  .notes-panel {
-    margin-top: 0.4rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-  }
-  .notes-label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--fg-mute);
-  }
-  .session-notes-area {
-    width: 100%;
-    background: var(--bg);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.3rem 0.5rem;
-    font-size: 0.85rem;
-    line-height: 1.35;
-    resize: vertical;
-    font-family: inherit;
-  }
-  .session-notes-area:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .run-btn:hover {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-  }
-  .run-btn[aria-expanded='true'] {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-  }
+  /* .run-btn, .notes-btn, .session-note, .notes-panel, .notes-label
+     and .session-notes-area moved into SessionRow.svelte. The run
+     panel below is still rendered here (via extrasAfterNotes), so its
+     styles stay. */
   .run-panel {
     margin-top: 0.4rem;
     padding: 0.5rem 0.6rem;

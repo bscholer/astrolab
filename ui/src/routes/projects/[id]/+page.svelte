@@ -25,10 +25,12 @@
   import { page } from '$app/stores';
   import {
     api,
+    type CalibrationStatus,
     type CostClass,
     type JobEvent,
     type JobSummary,
     type Project,
+    type SessionSummary,
     type TemplateSchema
   } from '$lib/api';
   import {
@@ -42,6 +44,7 @@
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
   import CompareSlider from '$lib/CompareSlider.svelte';
+  import SessionRow from '$lib/SessionRow.svelte';
 
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
@@ -448,6 +451,13 @@
     if (!id) return;
     project = null;
     schema = null;
+    // Drop the previous project's source-session list so the collapsible
+    // doesn't briefly render stale rows under the new project's header.
+    sourceSessions = null;
+    sourceSessionsForProjectId = null;
+    sourceSessionsError = null;
+    sessionNotesOpenId = null;
+    sessionNotesDraftById = new Map();
     resetPipelineState();
     detachFromJob();
     loadProject(id);
@@ -699,6 +709,140 @@
     return api.previewUrl(h, port);
   }
 
+  // ---- Source sessions (read-only, collapsible) --------------------
+  // The "Sessions used" `<details>` at the top of the page fans out
+  // GET /api/sessions/{id} for each id in project.source_session_ids
+  // when the user expands the panel. We cache results so reopening is
+  // free. Same shape as TargetDetail.sessions on the Library so we can
+  // reuse SessionRow visuals.
+  let sourceSessions = $state<SessionSummary[] | null>(null);
+  let sourceSessionsLoading = $state(false);
+  let sourceSessionsError = $state<string | null>(null);
+  let sourceSessionsOpen = $state(false);
+  // Track which project we've loaded sessions for so navigating to a
+  // different project clears the cache (rather than rendering the
+  // previous project's session list under the new project's header).
+  let sourceSessionsForProjectId = $state<string | null>(null);
+
+  async function loadSourceSessions() {
+    if (!project) return;
+    const projectId = project.id;
+    sourceSessionsLoading = true;
+    sourceSessionsError = null;
+    try {
+      const ids = project.source_session_ids
+        .map((s) => Number(s))
+        .filter((n) => Number.isFinite(n));
+      // Settled-not-rejected: a single 404 (session deleted out from
+      // under the project) shouldn't break the whole list.
+      const results = await Promise.allSettled(ids.map((id) => api.getSession(id)));
+      // Guard against the user navigating away mid-fetch: drop the
+      // result if the active project changed.
+      if (!project || project.id !== projectId) return;
+      const sessions: SessionSummary[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled') sessions.push(r.value);
+      }
+      sourceSessions = sessions;
+      sourceSessionsForProjectId = projectId;
+    } catch (e) {
+      sourceSessionsError = (e as Error).message;
+    } finally {
+      sourceSessionsLoading = false;
+    }
+  }
+
+  function onSourceSessionsToggle(e: Event) {
+    const open = (e.currentTarget as HTMLDetailsElement).open;
+    sourceSessionsOpen = open;
+    // Lazy-load on first open. Subsequent opens hit the cached array
+    // (sessions don't change without a rescan, and a rescan is a
+    // library-level action).
+    if (
+      open
+      && project
+      && (sourceSessions === null || sourceSessionsForProjectId !== project.id)
+    ) {
+      loadSourceSessions();
+    }
+  }
+
+  // ---- Per-session notes state (mirrors the Library page) -----------
+  // The textarea inside SessionRow autosaves on blur; we own the open
+  // id, the per-id drafts, and the "currently saving" id so the row's
+  // small "· saving…" affordance lights up correctly.
+  let sessionNotesOpenId = $state<number | null>(null);
+  let sessionNotesDraftById = $state<Map<number, string>>(new Map());
+  let sessionNotesSavingId = $state<number | null>(null);
+
+  function toggleSessionNotes(s: SessionSummary) {
+    if (sessionNotesOpenId === s.id) {
+      sessionNotesOpenId = null;
+      return;
+    }
+    if (!sessionNotesDraftById.has(s.id)) {
+      const next = new Map(sessionNotesDraftById);
+      next.set(s.id, s.description ?? '');
+      sessionNotesDraftById = next;
+    }
+    sessionNotesOpenId = s.id;
+  }
+
+  function setSessionNotesDraft(sessionId: number, value: string) {
+    const next = new Map(sessionNotesDraftById);
+    next.set(sessionId, value);
+    sessionNotesDraftById = next;
+  }
+
+  async function saveSessionNotesOnBlur(s: SessionSummary) {
+    const draft = sessionNotesDraftById.get(s.id) ?? '';
+    const server = s.description ?? '';
+    if (draft === server) return;
+    sessionNotesSavingId = s.id;
+    try {
+      const resp = await api.patchSession(s.id, { description: draft });
+      const updated = resp.session;
+      if (sourceSessions) {
+        sourceSessions = sourceSessions.map((existing) =>
+          existing.id === s.id ? updated : existing,
+        );
+      }
+      const draftNext = new Map(sessionNotesDraftById);
+      draftNext.set(s.id, updated.description ?? '');
+      sessionNotesDraftById = draftNext;
+    } catch (e) {
+      toast.error(`Couldn't save notes: ${(e as Error).message}`);
+    } finally {
+      sessionNotesSavingId = null;
+    }
+  }
+
+  // ---- Calibration tooltip helpers (mirrors the Library page) -------
+  // Duplicated rather than imported because they're tiny and tightly
+  // coupled to the row visuals; lifting them into $lib feels like
+  // premature abstraction.
+  const KIND_NAME: Record<string, string> = {
+    dark: 'Dark',
+    flat: 'Flat',
+    bias: 'Bias',
+  };
+  const QUALITY_HELP: Record<string, string> = {
+    exact: 'exact match',
+    approx: 'approximate match (within tolerance)',
+    none: 'no match found',
+  };
+  function calLabel(kind: string): string {
+    return kind[0].toUpperCase();
+  }
+  function calTitle(c: CalibrationStatus): string {
+    const base = `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
+    return c.reason && c.quality !== 'exact' ? `${base}\n${c.reason}` : base;
+  }
+  function shortSessionDate(iso: string | null): string {
+    if (!iso) return '';
+    return iso.slice(0, 10);
+  }
+
   // Crop editor emits a full {enabled,x,y,width,height} bundle. Build the
   // partial-overrides map that NodeParamsForm would have built and run it
   // through the same debounced patch path.
@@ -830,6 +974,64 @@
         placeholder="Add notes (capture conditions, gear tweaks, etc.). Unfocus to save."
       ></textarea>
     </div>
+
+    <!-- Sessions used: collapsible read-only view of the source
+         sessions backing this project. Helpful when the user needs to
+         look back at the raw capture metadata without leaving the
+         project page. Run / reassign / multi-select are intentionally
+         omitted (renders happen project-wide; reassigning would yank a
+         session out of this project, which is a surprising side-effect
+         to hide behind a pencil). -->
+    {@const sessionCount = project.source_session_ids.length}
+    <details
+      class="sources"
+      ontoggle={onSourceSessionsToggle}
+    >
+      <summary class="sources-summary">
+        <svg
+          class="sources-chevron"
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+        <span class="sources-title">Sessions used</span>
+        <span class="sources-count muted">({sessionCount})</span>
+      </summary>
+      <div class="sources-body">
+        {#if sourceSessionsLoading && sourceSessions === null}
+          <p class="muted small">Loading sessions…</p>
+        {:else if sourceSessionsError && sourceSessions === null}
+          <p class="muted small">Couldn't load sessions: {sourceSessionsError}</p>
+        {:else if sourceSessions && sourceSessions.length === 0}
+          <p class="muted small">No source sessions resolved. The capture rows may have been removed since this project was created.</p>
+        {:else if sourceSessions}
+          <ul class="sources-list">
+            {#each sourceSessions as s (s.id)}
+              <SessionRow
+                session={s}
+                shortDate={shortSessionDate(s.started_at)}
+                notesOpen={sessionNotesOpenId === s.id}
+                notesDraft={sessionNotesDraftById.get(s.id) ?? ''}
+                notesSaving={sessionNotesSavingId === s.id}
+                onToggleNotes={() => toggleSessionNotes(s)}
+                onNotesInput={(v) => setSessionNotesDraft(s.id, v)}
+                onNotesBlur={() => saveSessionNotesOnBlur(s)}
+                {calLabel}
+                {calTitle}
+              />
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    </details>
 
     <!-- Single accordion: each node is one row, click to expand its
          params + larger preview. Replaces the old parallel pipeline
@@ -1362,6 +1564,61 @@
   .notes-area:focus {
     outline: none;
     border-color: var(--accent, #5eead4);
+  }
+
+  /* ---------- Sources collapsible ----------
+     Read-only view of the project's source sessions. Stays collapsed
+     by default so the pipeline below remains the page's center of
+     gravity; rotates a chevron on open like the rest of the app's
+     <details> usage. */
+  .sources {
+    margin: 0 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 8px);
+    background: var(--bg-elev);
+    overflow: hidden;
+  }
+  .sources-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    user-select: none;
+  }
+  .sources-summary::-webkit-details-marker {
+    display: none;
+  }
+  .sources-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+  }
+  .sources-count {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem;
+  }
+  .sources-chevron {
+    color: var(--fg-mute);
+    transition: transform 160ms ease;
+    flex-shrink: 0;
+  }
+  .sources[open] .sources-chevron {
+    transform: rotate(180deg);
+  }
+  .sources[open] .sources-summary {
+    border-bottom: 1px solid var(--border);
+  }
+  .sources-body {
+    padding: 0.6rem 0.85rem 0.85rem;
+  }
+  .sources-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
   }
 
   /* ---------- Pipeline accordion ----------
