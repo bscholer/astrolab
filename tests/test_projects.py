@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+import nodes.basic  # noqa: F401  registers `downscale` for params-schema lookup
 from server.models import Job, Template
 from server.projects import ProjectManager
 
@@ -232,3 +233,198 @@ def test_collapse_preserves_published_flag(pm) -> None:
 
     manager.patch(project.id, overrides={"ds": {"target_size_px": 16}})
     assert project.history[-1].published is True
+
+
+# ---- template upgrade --------------------------------------------------------
+
+
+def _template_v2_with_extra_node() -> Template:
+    """v2: keeps `ds` bit-identical, adds `ds2` downstream. Mirrors the
+    auto_bp_shift insertion shape we plan to ship."""
+    return Template.model_validate(
+        {
+            "id": "tpl",
+            "version": 2,
+            "description": "smoke v2",
+            "nodes": [
+                {"id": "ds", "kind": "downscale",
+                 "params": {"target_size_px": 64}},
+                {"id": "ds2", "kind": "downscale",
+                 "params": {"target_size_px": 32},
+                 "inputs": {"image": "ds.image"}},
+            ],
+            "outputs": {"thumb": "ds2.image"},
+        }
+    )
+
+
+def test_upgrade_template_appends_history_and_bumps_version(pm) -> None:
+    """Upgrade swaps the project's frozen template, submits a new job,
+    and appends a `template_upgrade` history entry."""
+    manager, jobs = pm
+    project = manager.create(
+        name="upgrade-smoke",
+        template=_make_template(),  # v1
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    jobs.mark_completed(project.history[0].job_id)
+
+    updated, new_job_id, dropped = manager.upgrade_template(
+        project.id, new_template=_template_v2_with_extra_node()
+    )
+    assert updated.template.version == 2
+    assert updated.base_job.template_version == 2
+    assert dropped == []
+    assert len(updated.history) == 2
+    final = updated.history[-1]
+    assert final.kind == "template_upgrade"
+    assert final.snapshot == {
+        "from_version": 1,
+        "to_version": 2,
+        "dropped_overrides": [],
+    }
+    assert final.job_id == new_job_id
+    assert "v1" in final.label and "v2" in final.label
+
+
+def test_upgrade_template_carries_overrides_forward_when_node_persists(pm) -> None:
+    """An override on a node that still exists in the new template must
+    survive the upgrade (the user's slider tweaks aren't lost)."""
+    manager, jobs = pm
+    project = manager.create(
+        name="upgrade-overrides",
+        template=_make_template(),
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    jobs.mark_completed(project.history[0].job_id)
+    # User tweaks ds.target_size_px down to 8.
+    project = manager.patch(project.id, overrides={"ds": {"target_size_px": 8}})
+    jobs.mark_completed(project.history[-1].job_id)
+
+    updated, _job_id, dropped = manager.upgrade_template(
+        project.id, new_template=_template_v2_with_extra_node()
+    )
+    assert dropped == []
+    assert updated.current_overrides() == {"ds": {"target_size_px": 8}}
+    submitted_job = jobs.submit_calls[-1]["job"]
+    assert submitted_job.param_overrides == {"ds": {"target_size_px": 8}}
+    assert submitted_job.template_version == 2
+
+
+def test_upgrade_template_drops_overrides_for_removed_nodes(pm) -> None:
+    """Overrides on nodes that no longer exist in the new template are
+    surfaced as `dropped` rather than silently broken."""
+    manager, jobs = pm
+    # Build a template that has `ds` AND `extra`, set override on `extra`,
+    # then upgrade to a template that drops `extra`.
+    tpl_v1 = Template.model_validate(
+        {
+            "id": "tpl",
+            "version": 1,
+            "nodes": [
+                {"id": "ds", "kind": "downscale",
+                 "params": {"target_size_px": 64}},
+                {"id": "extra", "kind": "downscale",
+                 "params": {"target_size_px": 32},
+                 "inputs": {"image": "ds.image"}},
+            ],
+            "outputs": {"thumb": "extra.image"},
+        }
+    )
+    tpl_v2 = Template.model_validate(
+        {
+            "id": "tpl",
+            "version": 2,
+            "nodes": [
+                {"id": "ds", "kind": "downscale",
+                 "params": {"target_size_px": 64}},
+            ],
+            "outputs": {"thumb": "ds.image"},
+        }
+    )
+    project = manager.create(
+        name="upgrade-drop",
+        template=tpl_v1,
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    jobs.mark_completed(project.history[0].job_id)
+    project = manager.patch(
+        project.id, overrides={"extra": {"target_size_px": 4}}
+    )
+    jobs.mark_completed(project.history[-1].job_id)
+
+    updated, _job_id, dropped = manager.upgrade_template(
+        project.id, new_template=tpl_v2
+    )
+    assert updated.current_overrides() == {}
+    assert len(dropped) == 1
+    assert "extra" in dropped[0]
+
+
+def test_upgrade_template_rejects_same_or_older_version(pm) -> None:
+    manager, jobs = pm
+    project = manager.create(
+        name="upgrade-reject",
+        template=_make_template(),  # v1
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    jobs.mark_completed(project.history[0].job_id)
+
+    same = _make_template()  # v1
+    with pytest.raises(ValueError, match="must move forward"):
+        manager.upgrade_template(project.id, new_template=same)
+
+
+def test_upgrade_template_rejects_id_mismatch(pm) -> None:
+    manager, _ = pm
+    project = manager.create(
+        name="upgrade-id-mismatch",
+        template=_make_template(),
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    other = Template.model_validate(
+        {
+            "id": "different",
+            "version": 2,
+            "nodes": [
+                {"id": "ds", "kind": "downscale",
+                 "params": {"target_size_px": 64}},
+            ],
+            "outputs": {"thumb": "ds.image"},
+        }
+    )
+    with pytest.raises(ValueError, match="template id mismatch"):
+        manager.upgrade_template(project.id, new_template=other)
+
+
+def test_upgrade_template_persists_across_rehydrate(pm) -> None:
+    """The new template_json + template_version must persist; reload from
+    DB and confirm the project comes back on v2."""
+    manager, jobs = pm
+    project = manager.create(
+        name="upgrade-persist",
+        template=_make_template(),
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    jobs.mark_completed(project.history[0].job_id)
+    manager.upgrade_template(
+        project.id, new_template=_template_v2_with_extra_node()
+    )
+    pid = project.id
+
+    manager.reset_for_tests(db_path=manager._db_path)
+    manager.rehydrate()
+    reloaded = manager.get(pid)
+    assert reloaded is not None
+    assert reloaded.template.version == 2
+    assert reloaded.base_job.template_version == 2
+    assert reloaded.history[-1].kind == "template_upgrade"
+    assert reloaded.history[-1].snapshot is not None
+    assert reloaded.history[-1].snapshot["from_version"] == 1
+    assert reloaded.history[-1].snapshot["to_version"] == 2

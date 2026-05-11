@@ -526,3 +526,112 @@ def test_display_is_null_for_unresolvable_target(
     payload["source_session_ids"] = ["502"]
     body = client_with_catalog.post("/api/projects", json=payload).json()
     assert body["display"] is None
+
+
+# ---- template upgrade --------------------------------------------------------
+
+
+def test_upgrade_template_succeeds_and_carries_overrides(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST upgrade_template moves the project to the latest version, runs
+    a fresh job, and persists `dropped_overrides` + `new_job_id` on the
+    response. Per-node cache keys exclude template_version, so the new
+    job's `ds` node (unchanged) will cache-hit; only `ds2` runs fresh."""
+    src = _make_png(tmp_path / "in.png")
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
+
+    # Tweak ds before the upgrade so we can prove the override survives.
+    body = client.patch(
+        f"/api/projects/{rid}", json={"overrides": {"ds": {"target_size_px": 32}}}
+    ).json()
+    _wait_for_job(client, body["history"][-1]["job_id"])
+
+    # Inject a v2 template on the load_template path.
+    from server.models import Template
+    v2 = Template.model_validate(
+        {
+            "id": "test_downscale",
+            "version": 2,
+            "description": "smoke v2",
+            "nodes": [
+                {"id": "ds", "kind": "downscale",
+                 "params": {"target_size_px": 64}},
+                {"id": "ds2", "kind": "downscale",
+                 "params": {"target_size_px": 16},
+                 "inputs": {"image": "ds.image"}},
+            ],
+            "outputs": {"thumb": "ds2.image"},
+        }
+    )
+    monkeypatch.setattr("server.api.load_template", lambda _id: v2)
+
+    r = client.post(f"/api/projects/{rid}/upgrade_template")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["template_version"] == 2
+    assert body["dropped_overrides"] == []
+    assert body["current_overrides"] == {"ds": {"target_size_px": 32}}
+    assert body["history"][-1]["kind"] == "template_upgrade"
+    assert body["history"][-1]["snapshot"]["from_version"] == 1
+    assert body["history"][-1]["snapshot"]["to_version"] == 2
+    _wait_for_job(client, body["new_job_id"])
+
+
+def test_upgrade_template_409_when_already_latest(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the on-disk template version is <= the project's, the endpoint
+    returns 409 rather than silently no-opping or thrashing the cache."""
+    src = _make_png(tmp_path / "in.png")
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{rid}").json()["current_job_id"])
+
+    from server.models import Template
+    same_v1 = Template.model_validate(
+        {
+            "id": "test_downscale",
+            "version": 1,
+            "nodes": [
+                {"id": "ds", "kind": "downscale", "params": {"target_size_px": 64}},
+            ],
+            "outputs": {"thumb": "ds.image"},
+        }
+    )
+    monkeypatch.setattr("server.api.load_template", lambda _id: same_v1)
+
+    r = client.post(f"/api/projects/{rid}/upgrade_template")
+    assert r.status_code == 409
+
+
+def test_upgrade_template_404_when_project_unknown(client) -> None:
+    r = client.post("/api/projects/not-real/upgrade_template")
+    assert r.status_code == 404
+
+
+def test_project_response_surfaces_latest_template_version(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The UI needs to know whether the upgrade button should be
+    enabled. The project response includes `latest_template_version`
+    sourced from `load_template`."""
+    src = _make_png(tmp_path / "in.png")
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+
+    from server.models import Template
+    v3 = Template.model_validate(
+        {
+            "id": "test_downscale",
+            "version": 3,
+            "nodes": [
+                {"id": "ds", "kind": "downscale", "params": {"target_size_px": 64}},
+            ],
+            "outputs": {"thumb": "ds.image"},
+        }
+    )
+    monkeypatch.setattr("server.api.load_template", lambda _id: v3)
+
+    body = client.get(f"/api/projects/{rid}").json()
+    assert body["template_version"] == 1
+    assert body["latest_template_version"] == 3

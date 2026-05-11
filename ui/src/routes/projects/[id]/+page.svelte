@@ -51,6 +51,7 @@
   const id = $derived($page.params.id ?? '');
 
   let reprocessing = $state(false);
+  let upgrading = $state(false);
   let coverBusy = $state(false);
   let publishBusy = $state<Record<number, boolean>>({});
 
@@ -568,6 +569,31 @@
     }
   }
 
+  async function upgradeTemplate() {
+    if (!project) return;
+    const from = project.template_version;
+    const to = project.latest_template_version ?? from;
+    if (to <= from) return;
+    upgrading = true;
+    try {
+      const next = await api.upgradeProjectTemplate(project.id);
+      const dropped = next.dropped_overrides ?? [];
+      if (dropped.length > 0) {
+        toast.info(
+          `Upgraded to v${to}. Dropped ${dropped.length} stale override${dropped.length === 1 ? '' : 's'}: ${dropped.join('; ')}`,
+          null
+        );
+      } else {
+        toast.info(`Upgraded template v${from} -> v${to}. Cached nodes will be reused.`);
+      }
+      onProjectUpdated(next);
+    } catch (e) {
+      toast.error(`Couldn't upgrade template: ${(e as Error).message}`);
+    } finally {
+      upgrading = false;
+    }
+  }
+
   async function revertTo(seq: number) {
     if (!project) return;
     try {
@@ -702,6 +728,19 @@
         onclick={openManageSessions}
         title="Add or remove sessions on this project"
       >Manage sessions...</button>
+      {#if project && (project.latest_template_version ?? project.template_version) > project.template_version}
+        <button
+          type="button"
+          class="hbtn upgrade"
+          onclick={upgradeTemplate}
+          disabled={upgrading || patchQueue.patching}
+          title="Move this project to the latest template version. Cached upstream nodes are reused, only changed steps re-run."
+        >
+          {upgrading
+            ? 'Upgrading...'
+            : `Upgrade template (v${project.template_version} -> v${project.latest_template_version})`}
+        </button>
+      {/if}
       <button
         type="button"
         class="hbtn warn reprocess"
@@ -1069,6 +1108,13 @@
   }
   .reprocess {
     margin-left: 0.25rem;
+  }
+  .hbtn.upgrade {
+    color: var(--accent-strong, #8be9fd);
+    border-color: var(--accent-strong, #8be9fd);
+  }
+  .hbtn.upgrade:hover:not(:disabled) {
+    background: rgba(139, 233, 253, 0.12);
   }
 
   .capture-line {

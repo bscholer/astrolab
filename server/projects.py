@@ -592,6 +592,95 @@ class ProjectManager:
         )
         return project, new_job_id
 
+    def upgrade_template(
+        self,
+        project_id: str,
+        *,
+        new_template: Template,
+    ) -> tuple[Project, str, list[str]]:
+        """Move the project from its current template version to `new_template`.
+
+        Per-node cache keys do not include `template_version` (see
+        `server/canonical.py:node_hash`), so any node whose identity (id,
+        kind, version, params, input edges) is unchanged across the bump will
+        cache-hit on the next render. Only the inserted, removed, or
+        rewired-input nodes recompute.
+
+        Carries forward the project's current param overrides via
+        `migrate_param_overrides` so user-tuned sliders survive the upgrade
+        when their nodes still exist in the new template. Overrides for
+        removed nodes or removed params are dropped (returned as the third
+        element of the tuple for the caller to surface).
+
+        Returns `(project, new_job_id, dropped_overrides)`.
+
+        Raises ProjectNotFound, or ValueError if `new_template.id` does not
+        match the project's current template_id or the version does not move
+        strictly forward.
+        """
+        from .template_migrations import migrate_param_overrides
+
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+
+        if new_template.id != project.template.id:
+            raise ValueError(
+                f"template id mismatch: project on {project.template.id!r}, "
+                f"upgrade target {new_template.id!r}"
+            )
+        if new_template.version <= project.template.version:
+            raise ValueError(
+                f"upgrade must move forward: project on v{project.template.version}, "
+                f"target v{new_template.version}"
+            )
+
+        prev_entry = project.current_entry()
+        prev_overrides = prev_entry.overrides
+        prev_version = project.template.version
+        new_overrides, dropped = migrate_param_overrides(
+            new_template, prev_version, prev_overrides
+        )
+
+        # Cancel any in-flight render against the old template before we
+        # swap. Same pattern as swap_sessions.
+        self._jobs.cancel(prev_entry.job_id)
+
+        project.template = new_template
+        project.base_job = project.base_job.model_copy(
+            update={"template_version": new_template.version}
+        )
+
+        new_job_id = self._submit_with_overrides(project, new_overrides)
+
+        next_seq = max((h.seq for h in project.history), default=-1) + 1
+        label = f"upgrade template (v{prev_version} -> v{new_template.version})"
+        entry = HistoryEntry(
+            seq=next_seq,
+            job_id=new_job_id,
+            overrides=new_overrides,
+            label=label,
+            created_at=_now(),
+            kind="template_upgrade",
+            snapshot={
+                "from_version": prev_version,
+                "to_version": new_template.version,
+                "dropped_overrides": dropped,
+            },
+        )
+        project.history.append(entry)
+        project.current_seq = next_seq
+        project.updated_at = _now()
+
+        self._persist_project_template(project)
+        self._persist_history_entry(project_id, entry)
+        log.info(
+            "project template upgraded: %s v%d -> v%d job=%s dropped=%d",
+            project_id, prev_version, new_template.version, new_job_id, len(dropped),
+        )
+        return project, new_job_id, dropped
+
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.
@@ -716,6 +805,41 @@ class ProjectManager:
                 )
         except sqlite3.Error:
             log.exception("DB write failed for project %s", project.id)
+        finally:
+            conn.close()
+
+    def _persist_project_template(self, project: Project) -> None:
+        """Rewrite the project row's `template_json` + `template_version`
+        alongside `base_job_json` (which carries the new template_version).
+        Used only by `upgrade_template`; the regular update path treats
+        these columns as immutable to keep accidental rewrites from
+        invalidating frozen-template assumptions.
+        """
+        try:
+            conn = self._conn()
+        except Exception:
+            log.exception("could not open catalog DB for project persistence")
+            return
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE projects
+                    SET template_json=?, template_version=?, base_job_json=?,
+                        current_seq=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        json.dumps(project.template.model_dump(mode="json")),
+                        project.template.version,
+                        json.dumps(project.base_job.model_dump(mode="json")),
+                        project.current_seq,
+                        project.updated_at,
+                        project.id,
+                    ),
+                )
+        except sqlite3.Error:
+            log.exception("DB write failed during template upgrade for %s", project.id)
         finally:
             conn.close()
 
