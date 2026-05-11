@@ -45,11 +45,30 @@ export interface SkyInfo {
   object_type: string | null;
 }
 
+/**
+ * Catalog resolution annotation for a target. Set when the scanner's
+ * position-fallback claimed a catalog row, OR when the user pinned one
+ * via PATCH /api/targets/{id}. `source` distinguishes the two so the
+ * UI can render "matched 22.9'" vs "(pinned)" suffixes.
+ *
+ * Deliberately null on responses when the target resolved via its name
+ * (source='name' internally). The library reads quieter that way: the
+ * stored name already conveys the catalog mapping.
+ */
+export interface ResolvedAs {
+  canonical: string;
+  common_name: string | null;
+  object_type: string | null;
+  separation_arcmin: number | null;
+  source: 'position' | 'override';
+}
+
 export interface TargetSummary {
   id: number;
   name: string;
   common_name: string | null;
   sky: SkyInfo | null;
+  resolved_as: ResolvedAs | null;
   session_count: number;
   frame_count: number;
   failed_count: number;
@@ -65,7 +84,12 @@ export interface TargetDetail {
   name: string;
   common_name: string | null;
   sky: SkyInfo | null;
+  resolved_as: ResolvedAs | null;
   sessions: SessionSummary[];
+}
+
+export interface TargetPatchRequest {
+  resolved_canonical_override: string | null;
 }
 
 export interface ScanResponse {
@@ -521,6 +545,12 @@ async function deleteJSON<T>(path: string): Promise<T> {
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
+  patchTarget: (id: number, req: TargetPatchRequest) =>
+    patchJSON<TargetDetail>(`/api/targets/${id}`, req),
+  getTargetNearby: (id: number, max_sep_deg?: number) => {
+    const qs = max_sep_deg != null ? `?max_sep_deg=${encodeURIComponent(max_sep_deg)}` : '';
+    return getJSON<ResolvedAs[]>(`/api/targets/${id}/nearby${qs}`);
+  },
   scan: (root: string, scope_id = 'dwarf3') =>
     postJSON<ScanResponse>('/api/scan', { root, scope_id }),
   listJobs: () => getJSON<JobSummary[]>('/api/jobs'),

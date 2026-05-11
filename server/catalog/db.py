@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -282,6 +282,24 @@ MIGRATIONS: dict[int, list[str]] = {
         # and-compare crumbs don't drown the curated keepers.
         "ALTER TABLE project_history ADD COLUMN published INTEGER NOT NULL DEFAULT 0",
         "INSERT INTO schema_version (version) VALUES (8)",
+    ],
+    9: [
+        # Position-based target resolution. The scanner falls back to a
+        # great-circle match against OpenNGC when the target's stored
+        # name doesn't enrich on its own. resolved_canonical / *_arcmin
+        # / resolved_at are scanner-managed. resolved_canonical_override
+        # is set/cleared via PATCH /api/targets/{id} and wins over the
+        # auto path in the Tonight join. resolved_source tags which path
+        # produced the current resolution so the UI knows whether to
+        # render a "matched" caption: 'name' resolutions stay quiet (the
+        # stored name already conveys the catalog mapping), 'position'
+        # and 'override' get a caption.
+        "ALTER TABLE targets ADD COLUMN resolved_canonical TEXT",
+        "ALTER TABLE targets ADD COLUMN resolved_separation_arcmin REAL",
+        "ALTER TABLE targets ADD COLUMN resolved_at TEXT",
+        "ALTER TABLE targets ADD COLUMN resolved_canonical_override TEXT",
+        "ALTER TABLE targets ADD COLUMN resolved_source TEXT",
+        "INSERT INTO schema_version (version) VALUES (9)",
     ],
 }
 

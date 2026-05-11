@@ -40,7 +40,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -56,7 +56,14 @@ from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
+from server.catalog.scanner import frames_for_target
 from server.catalog.scanner import scan as run_scan
+from server.catalog.sky_match import (
+    nearby_matches,
+    suggest_tolerance_deg,
+    target_centroid,
+    target_envelope,
+)
 from server.job_builder import (
     CalibrationMissing,
     IncompatibleSessions,
@@ -182,6 +189,26 @@ def _resolve_target_meta(name: str) -> tuple[str | None, SkyInfo | None]:
     return lookup_common_name(name), None
 
 
+class ResolvedAs(BaseModel):
+    """Catalog resolution for a target.
+
+    Only present on responses when the source is 'position' or 'override'.
+    Name-resolved targets ('source' == 'name' internally) deliberately
+    surface as `resolved_as = None` so the UI doesn't render a redundant
+    caption next to a name the user already typed in the obvious form
+    (i.e. "M 31" -> "NGC 224" is implicit and the library should read
+    quietly).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    canonical: str
+    common_name: str | None = None
+    object_type: str | None = None
+    separation_arcmin: float | None = None
+    source: Literal["position", "override"]
+
+
 class TargetSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -189,6 +216,7 @@ class TargetSummary(BaseModel):
     name: str
     common_name: str | None = None
     sky: SkyInfo | None = None
+    resolved_as: ResolvedAs | None = None
     session_count: int
     frame_count: int
     failed_count: int
@@ -247,7 +275,24 @@ class TargetDetail(BaseModel):
     name: str
     common_name: str | None = None
     sky: SkyInfo | None = None
+    resolved_as: ResolvedAs | None = None
     sessions: list[SessionSummary]
+
+
+class TargetPatchRequest(BaseModel):
+    """Body for PATCH /api/targets/{id}.
+
+    Setting `resolved_canonical_override` to a non-null value pins that
+    canonical id as the target's resolution; the value must resolve via
+    OpenNGC or we 400. Passing null clears the override and lets the
+    auto-resolution win (or surface as 'unresolved' when there isn't
+    one). Whitespace-only strings are also a 400 because they're
+    almost certainly a typo, not an intentional clear.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    resolved_canonical_override: str | None = None
 
 
 class MasterRow(BaseModel):
@@ -292,6 +337,51 @@ class ScanResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolved_as_from_row(row: sqlite3.Row) -> ResolvedAs | None:
+    """Build the public ResolvedAs payload from a `targets` row.
+
+    Returns None when the target's resolution came from its name
+    (source='name') OR when there's no resolution at all. Name-resolved
+    targets deliberately surface as None so the library doesn't paint a
+    caption next to a name that already conveys the catalog mapping.
+
+    The override path takes precedence over the auto path: a user pin
+    always wins. The separation_arcmin column reflects the auto-resolve
+    distance and stays attached to the response even when an override
+    is pinned, because the UI might want to surface "you pinned NGC X
+    but the scanner thinks Y at 0.3' would also fit" later. For now
+    the override response just carries None for separation since the
+    user is the source of truth.
+    """
+    override = row["resolved_canonical_override"]
+    if override:
+        entry = openngc_enrich(override)
+        return ResolvedAs(
+            canonical=entry.canonical if entry is not None else override,
+            common_name=entry.common_name if entry is not None else None,
+            object_type=entry.object_type if entry is not None else None,
+            separation_arcmin=None,
+            source="override",
+        )
+    source = row["resolved_source"]
+    if source != "position":
+        # 'name' and unresolved both surface as None: we don't want
+        # the UI showing a caption for the redundant case.
+        return None
+    canonical = row["resolved_canonical"]
+    if not canonical:
+        return None
+    entry = openngc_enrich(canonical)
+    sep = row["resolved_separation_arcmin"]
+    return ResolvedAs(
+        canonical=canonical,
+        common_name=entry.common_name if entry is not None else None,
+        object_type=entry.object_type if entry is not None else None,
+        separation_arcmin=float(sep) if sep is not None else None,
+        source="position",
+    )
 
 
 def _calibration_for_session(
@@ -428,6 +518,9 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
     rows = conn.execute(
         """
         SELECT t.id, t.name,
+               t.resolved_canonical, t.resolved_separation_arcmin,
+               t.resolved_at, t.resolved_canonical_override,
+               t.resolved_source,
                COUNT(DISTINCT s.id)        AS session_count,
                IFNULL(SUM(s.frame_count), 0) AS frame_count,
                IFNULL(SUM(s.failed_count), 0) AS failed_count,
@@ -462,6 +555,7 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                 name=r["name"],
                 common_name=common,
                 sky=sky,
+                resolved_as=_resolved_as_from_row(r),
                 session_count=r["session_count"],
                 frame_count=r["frame_count"],
                 failed_count=r["failed_count"],
@@ -478,7 +572,10 @@ def get_target(
     target_id: int, conn: DBDep
 ) -> TargetDetail:
     target = conn.execute(
-        "SELECT id, name FROM targets WHERE id = ?", (target_id,)
+        "SELECT id, name, resolved_canonical, resolved_separation_arcmin, "
+        "resolved_at, resolved_canonical_override, resolved_source "
+        "FROM targets WHERE id = ?",
+        (target_id,),
     ).fetchone()
     if target is None:
         raise HTTPException(status_code=404, detail=f"target {target_id} not found")
@@ -497,11 +594,108 @@ def get_target(
         name=target["name"],
         common_name=common,
         sky=sky,
+        resolved_as=_resolved_as_from_row(target),
         sessions=[
             _row_to_session_summary(conn, s, target_name=target["name"])
             for s in sessions
         ],
     )
+
+
+@app.patch("/api/targets/{target_id}", response_model=TargetDetail)
+def patch_target(
+    target_id: int, req: TargetPatchRequest, conn: DBDep
+) -> TargetDetail:
+    """Pin or clear the user's canonical override for a target.
+
+    Non-null overrides validate through openngc.enrich; a value that
+    doesn't resolve is a 400 because we'd rather surface the typo
+    immediately than store dead state that quietly breaks the Tonight
+    join. We persist the catalog's *canonical* form ("NGC 224" rather
+    than the input "M 31") so a single canonical bucket is what the
+    Tonight overlay joins on, regardless of which alias the user typed.
+
+    Setting to null clears the override and lets the auto-resolve win
+    (which itself may be null if the scanner couldn't match). Whitespace-
+    only strings are rejected for the same reason as unresolvable ids.
+    """
+    target = conn.execute(
+        "SELECT id FROM targets WHERE id = ?", (target_id,)
+    ).fetchone()
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"target {target_id} not found")
+
+    raw = req.resolved_canonical_override
+    if raw is None:
+        stored: str | None = None
+    else:
+        trimmed = raw.strip()
+        if not trimmed:
+            raise HTTPException(
+                status_code=400,
+                detail="resolved_canonical_override must be non-empty or null",
+            )
+        entry = openngc_enrich(trimmed)
+        if entry is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"resolved_canonical_override {trimmed!r} did not resolve "
+                    "in OpenNGC"
+                ),
+            )
+        stored = entry.canonical
+    with conn:
+        conn.execute(
+            "UPDATE targets SET resolved_canonical_override = ? WHERE id = ?",
+            (stored, target_id),
+        )
+    return get_target(target_id, conn)
+
+
+@app.get("/api/targets/{target_id}/nearby", response_model=list[ResolvedAs])
+def get_target_nearby(
+    target_id: int,
+    conn: DBDep,
+    max_sep_deg: float | None = None,
+) -> list[ResolvedAs]:
+    """Nearby catalog candidates for the target's centroid.
+
+    Used by the UI's override dropdown. Defaults to the auto-derived
+    suggestion tolerance (1.5x envelope, clamped); pass `max_sep_deg`
+    to widen the search ad-hoc. Returns an empty list when the target
+    has no usable centroid (too few frames or no RA/Dec on file).
+    Every entry's `source` is set to 'position'; the UI treats this
+    list as candidate replacements for whatever the auto path picked.
+    """
+    target = conn.execute(
+        "SELECT id FROM targets WHERE id = ?", (target_id,)
+    ).fetchone()
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"target {target_id} not found")
+    frames = frames_for_target(conn, target_id)
+    envelope = target_envelope(frames)
+    if envelope is not None:
+        ra_c, dec_c, env_deg = envelope
+        default_tol = suggest_tolerance_deg(env_deg)
+    else:
+        centroid = target_centroid(frames)
+        if centroid is None:
+            return []
+        ra_c, dec_c = centroid
+        default_tol = suggest_tolerance_deg(None)
+    tol = float(max_sep_deg) if max_sep_deg is not None else default_tol
+    matches = nearby_matches(ra_c, dec_c, tol)
+    return [
+        ResolvedAs(
+            canonical=m.canonical,
+            common_name=m.common_name,
+            object_type=m.object_type,
+            separation_arcmin=m.separation_deg * 60.0,
+            source="position",
+        )
+        for m in matches
+    ]
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionSummary)
@@ -1650,6 +1844,8 @@ def get_tonight(
     for row in conn.execute(
         """
         SELECT t.name AS name,
+               t.resolved_canonical AS resolved_canonical,
+               t.resolved_canonical_override AS resolved_canonical_override,
                COUNT(s.id) AS session_count,
                MAX(s.started_at) AS last_session_at
         FROM targets t
@@ -1659,10 +1855,20 @@ def get_tonight(
     ).fetchall():
         if row["session_count"] is None or row["session_count"] == 0:
             continue
-        catalog_hit = openngc_enrich(row["name"])
+        # Coalesce: user override (wins outright) -> scanner's auto
+        # canonical (may be set by either the name path or the position
+        # path) -> fall back to enrich(name) for callers that scanned
+        # before the resolve pass ever ran. Whatever lands here is the
+        # join key for the captured-overlay merge below.
+        canonical: str | None = row["resolved_canonical_override"]
+        if not canonical:
+            canonical = row["resolved_canonical"]
+        if not canonical:
+            catalog_hit = openngc_enrich(row["name"])
+            canonical = catalog_hit.canonical if catalog_hit is not None else None
         key = (
-            catalog_hit.canonical.strip().lower()
-            if catalog_hit is not None
+            canonical.strip().lower()
+            if canonical
             else (row["name"] or "").strip().lower()
         )
         captured[key] = {

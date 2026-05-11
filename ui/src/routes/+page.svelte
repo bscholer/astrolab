@@ -6,6 +6,7 @@
     api,
     type CalibrationMode,
     type CalibrationStatus,
+    type ResolvedAs,
     type SessionSummary,
     type Template,
     type TargetDetail,
@@ -36,6 +37,106 @@
   let runTemplateId = $state<string>('calibrate_register_stack');
   let runCalibrationMode = $state<CalibrationMode>('auto');
   let running = $state(false);
+
+  // Resolve-as override editor state, keyed by target id.
+  // - nearbyById: cached suggestion list per target (fetched lazily on panel open).
+  // - overrideChoiceById: which option the user selected in the <select>.
+  //   Sentinel values: 'AUTO' (clears the override) and 'OTHER' (swaps to a
+  //   free-text input).
+  // - otherDraftById: the typed value when 'OTHER' is active.
+  // - savingOverrideId / loadingNearbyId: which row is mid-async.
+  let nearbyById = $state<Map<number, ResolvedAs[]>>(new Map());
+  let overrideChoiceById = $state<Map<number, string>>(new Map());
+  let otherDraftById = $state<Map<number, string>>(new Map());
+  let loadingNearbyId = $state<number | null>(null);
+  let savingOverrideId = $state<number | null>(null);
+
+  function sepLabel(resolved: ResolvedAs | null): string {
+    if (!resolved || resolved.separation_arcmin == null) return '';
+    return `matched ${resolved.separation_arcmin.toFixed(1)}'`;
+  }
+
+  /** Returns the option key currently selected for `target`.
+   * Defaults to the persisted override (or 'AUTO' if no override). */
+  function overrideChoice(target: TargetDetail): string {
+    const v = overrideChoiceById.get(target.id);
+    if (v !== undefined) return v;
+    return target.resolved_as?.source === 'override'
+      ? target.resolved_as.canonical
+      : 'AUTO';
+  }
+
+  function setOverrideChoice(id: number, value: string) {
+    const next = new Map(overrideChoiceById);
+    next.set(id, value);
+    overrideChoiceById = next;
+  }
+
+  function otherDraft(id: number): string {
+    return otherDraftById.get(id) ?? '';
+  }
+
+  function setOtherDraft(id: number, value: string) {
+    const next = new Map(otherDraftById);
+    next.set(id, value);
+    otherDraftById = next;
+  }
+
+  async function ensureNearby(target: TargetDetail) {
+    if (nearbyById.has(target.id)) return;
+    loadingNearbyId = target.id;
+    try {
+      const list = await api.getTargetNearby(target.id);
+      const next = new Map(nearbyById);
+      next.set(target.id, list);
+      nearbyById = next;
+    } catch (e) {
+      toast.error(`Couldn't load nearby suggestions: ${(e as Error).message}`);
+    } finally {
+      loadingNearbyId = null;
+    }
+  }
+
+  async function saveOverride(target: TargetDetail) {
+    const choice = overrideChoice(target);
+    let value: string | null;
+    if (choice === 'AUTO') {
+      value = null;
+    } else if (choice === 'OTHER') {
+      const draft = otherDraft(target.id).trim();
+      if (!draft) {
+        toast.error('Type a canonical id (e.g. NGC 7000) or pick (auto-resolved).');
+        return;
+      }
+      value = draft;
+    } else {
+      value = choice;
+    }
+    savingOverrideId = target.id;
+    try {
+      const updated = await api.patchTarget(target.id, {
+        resolved_canonical_override: value
+      });
+      // Mutate caches so the caption refreshes without a full reload.
+      const cloned = new Map(targetDetails);
+      cloned.set(target.id, updated);
+      targetDetails = cloned;
+      const summary = await api.listTargets();
+      targets = summary;
+      // Reset transient drafts; the persisted state is now the truth.
+      const drafts = new Map(otherDraftById);
+      drafts.delete(target.id);
+      otherDraftById = drafts;
+      const choices = new Map(overrideChoiceById);
+      choices.delete(target.id);
+      overrideChoiceById = choices;
+      toast.success(value ? 'Override saved' : 'Override cleared');
+    } catch (e) {
+      toast.error(`Couldn't save override: ${(e as Error).message}`);
+    } finally {
+      savingOverrideId = null;
+    }
+  }
 
   // Multi-select state: a set of session ids the user has checked in the
   // currently-open target. Reset whenever the open target changes — bundling
@@ -113,6 +214,10 @@
       runOpenSessionId = null;
     }
     openTargetId = next;
+    if (next !== null) {
+      const detail = targetDetails.get(next);
+      if (detail) ensureNearby(detail);
+    }
   }
 
   function toggleSelected(s: SessionSummary) {
@@ -326,6 +431,20 @@
               {t.name}
             {/if}
           </div>
+          {#if t.resolved_as}
+            <div class="target-resolved muted" title="Resolved by sky position">
+              <span class="resolved-arrow" aria-hidden="true">-&gt;</span>
+              <span class="resolved-canonical">{t.resolved_as.canonical}</span>
+              {#if t.resolved_as.common_name}
+                <span class="resolved-common">({t.resolved_as.common_name})</span>
+              {/if}
+              {#if t.resolved_as.source === 'override'}
+                <span class="resolved-suffix">(pinned)</span>
+              {:else if t.resolved_as.separation_arcmin != null}
+                <span class="resolved-suffix">{sepLabel(t.resolved_as)}</span>
+              {/if}
+            </div>
+          {/if}
           <div class="target-meta muted">
             <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
             <span aria-hidden="true">·</span>
@@ -366,6 +485,62 @@
             {:else if detail.sessions.length === 0}
               <p class="muted">No sessions yet for this target.</p>
             {:else}
+              {@const choice = overrideChoice(detail)}
+              {@const nearbyList = nearbyById.get(detail.id) ?? []}
+              {@const overrideInNearby =
+                detail.resolved_as?.source === 'override' &&
+                nearbyList.some((c) => c.canonical === detail.resolved_as?.canonical)}
+              <form
+                class="resolve-editor"
+                onsubmit={(e) => {
+                  e.preventDefault();
+                  saveOverride(detail);
+                }}
+              >
+                <label class="resolve-label" for="resolve-{detail.id}">Resolve as</label>
+                <select
+                  id="resolve-{detail.id}"
+                  class="resolve-select"
+                  value={choice}
+                  onchange={(e) =>
+                    setOverrideChoice(detail.id, (e.currentTarget as HTMLSelectElement).value)}
+                >
+                  <option value="AUTO">(auto-resolved)</option>
+                  {#if detail.resolved_as?.source === 'override' && !overrideInNearby}
+                    <option value={detail.resolved_as.canonical}>
+                      {detail.resolved_as.canonical}{detail.resolved_as.common_name
+                        ? ` - ${detail.resolved_as.common_name}`
+                        : ''} (pinned)
+                    </option>
+                  {/if}
+                  {#if loadingNearbyId === detail.id && nearbyList.length === 0}
+                    <option disabled>loading nearby…</option>
+                  {/if}
+                  {#each nearbyList as cand (cand.canonical)}
+                    <option value={cand.canonical}>
+                      {cand.canonical}{cand.common_name ? ` - ${cand.common_name}` : ''} - {(cand.separation_arcmin != null ? (cand.separation_arcmin / 60).toFixed(2) : '?')} deg
+                    </option>
+                  {/each}
+                  <option value="OTHER">Other…</option>
+                </select>
+                {#if choice === 'OTHER'}
+                  <input
+                    type="text"
+                    class="resolve-input"
+                    placeholder="NGC 7000, M 31, C 20…"
+                    value={otherDraft(detail.id)}
+                    oninput={(e) =>
+                      setOtherDraft(detail.id, (e.currentTarget as HTMLInputElement).value)}
+                  />
+                {/if}
+                <button
+                  type="submit"
+                  class="resolve-save"
+                  disabled={savingOverrideId === detail.id}
+                >
+                  {savingOverrideId === detail.id ? 'Saving…' : 'Save'}
+                </button>
+              </form>
               {@const anchor = getAnchor(detail)}
               {@const multiMode = selectedSessionIds.size > 0}
               {#if multiMode}
@@ -664,6 +839,95 @@
     flex-wrap: wrap;
     gap: 0.4rem;
     align-items: baseline;
+  }
+
+  /* Sky-position resolution caption beneath the target name. Stays muted
+     so the user's stored name remains the primary read; the ASCII arrow
+     keeps the "interpreted as" framing legible. */
+  .target-resolved {
+    font-size: 0.78rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.3rem;
+    margin-top: 0.1rem;
+  }
+  .resolved-arrow {
+    color: var(--fg-mute);
+  }
+  .resolved-canonical {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+  }
+  .resolved-common {
+    color: var(--fg);
+    opacity: 0.85;
+  }
+  .resolved-suffix {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+  }
+
+  /* Override editor at the top of the open target panel. */
+  .resolve-editor {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.7rem;
+    margin: 0 0 0.7rem;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+  }
+  .resolve-label {
+    color: var(--fg-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.7rem;
+    min-width: 5.5rem;
+  }
+  .resolve-select {
+    flex: 1 1 16rem;
+    min-width: 0;
+    padding: 0.25rem 0.5rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font: inherit;
+    font-family: var(--font-mono);
+  }
+  .resolve-input {
+    flex: 1 1 12rem;
+    min-width: 0;
+    padding: 0.3rem 0.55rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font: inherit;
+    font-family: var(--font-mono);
+  }
+  .resolve-save {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 0.25rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .resolve-save:hover:not(:disabled) {
+    background: var(--accent-soft);
+  }
+  .resolve-save:disabled {
+    opacity: 0.6;
+    cursor: progress;
   }
 
   /* Failure percentage — semantic color, mono numerals. */
