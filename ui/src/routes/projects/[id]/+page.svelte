@@ -720,20 +720,26 @@
 <div class="project-root">
   <div class="header">
     {#if project}
-      <!-- Header title block: prefer the catalog-resolved display name
-           (e.g. "Triangulum Galaxy") with the canonical id as a muted
-           sub-label. When the project has no resolved display (multi-
-           target bundle or unresolved name), fall back to the user's
-           own project name. The user-set project.name still rides
-           below as a small editable line so users can rename without
-           losing the prominent catalog-derived header. -->
+      <!-- Header title block: catalog common name as the H1 (e.g.
+           "Triangulum Galaxy"), the user's stored target name muted
+           beside it (e.g. "M 33"). The muted half is suppressed when
+           it would just repeat the H1 (user named the target "Wizard
+           Nebula" themselves -> no muted echo). When the project has
+           no resolved display, the H1 falls back to the user's stored
+           target name (from the capture metadata) and no muted half
+           appears at all. -->
       <div class="title-block">
         {#if project.display}
-          <h1 title="Catalog: {project.display.canonical}">{project.display.name}</h1>
-          <span class="title-canonical muted small">{project.display.canonical}</span>
-          <span class="title-projectname muted small" title="User-set project name">
-            {project.name}
-          </span>
+          {@const capName = activeJob?.capture?.target_name?.trim() ?? ''}
+          {@const echo = capName && capName.toLowerCase() !== project.display.name.toLowerCase()}
+          <h1 title="Catalog: {project.display.canonical}">
+            {project.display.name}
+            {#if echo}
+              <span class="title-canonical muted small">{capName}</span>
+            {/if}
+          </h1>
+        {:else if activeJob?.capture?.target_name}
+          <h1>{activeJob.capture.target_name}</h1>
         {:else}
           <h1>{project.name}</h1>
         {/if}
@@ -771,12 +777,8 @@
     <p class="muted">Loading…</p>
   {:else}
     <p class="capture-line muted small">
-      {#if activeJob?.capture}
-        <span>{activeJob.capture.target_name ?? ''}</span>
-        {#if activeJob.capture.frame_count}
-          <span aria-hidden="true">·</span>
-          <span>{activeJob.capture.frame_count} frame{activeJob.capture.frame_count === 1 ? '' : 's'}</span>
-        {/if}
+      {#if activeJob?.capture?.frame_count}
+        <span>{activeJob.capture.frame_count} frame{activeJob.capture.frame_count === 1 ? '' : 's'}</span>
       {/if}
       {#if project.capture?.integration_seconds && project.capture.integration_seconds > 0}
         <span aria-hidden="true">·</span>
