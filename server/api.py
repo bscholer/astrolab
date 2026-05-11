@@ -50,7 +50,7 @@ from typing import Annotated, Any, Literal
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -994,7 +994,7 @@ def list_masters(conn: DBDep) -> list[MasterRow]:
 
 
 @app.post("/api/scan")
-def trigger_scan(req: ScanRequest) -> dict[str, str]:
+def trigger_scan(req: ScanRequest) -> JSONResponse:
     """Start a scan in a background thread. Returns 202 immediately.
 
     Returns 409 if a scan is already in progress.
@@ -1019,7 +1019,6 @@ def trigger_scan(req: ScanRequest) -> dict[str, str]:
             log.exception("scan failed")
 
     threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
-    from fastapi.responses import JSONResponse
     return JSONResponse({"status": "started"}, status_code=202)
 
 
