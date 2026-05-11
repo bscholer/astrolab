@@ -7,7 +7,7 @@
 #
 # Build examples
 #   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu .
-#   docker build --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 -t astrolab:cuda .
+#   docker build --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04 -t astrolab:cuda .
 
 ARG BASE=debian:bookworm-slim
 
@@ -89,7 +89,10 @@ RUN curl -fL --progress-bar -o graxpert.zip "$GRAXPERT_URL" && \
     fi
 
 # Fetch GraXpert license for attribution; Siril's is already in the AppDir.
+# Pinned to the release tag we ship (3.0.2) so the build is reproducible.
 RUN curl -fsSL -o /opt/graxpert-LICENSE \
+        "https://raw.githubusercontent.com/Steffenhir/GraXpert/${GRAXPERT_VERSION}/License.md" \
+    || curl -fsSL -o /opt/graxpert-LICENSE \
         https://raw.githubusercontent.com/Steffenhir/GraXpert/develop/License.md
 
 
