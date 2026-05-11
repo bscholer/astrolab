@@ -616,6 +616,7 @@ export interface SystemDisk {
   total: number;
   read_bps: number;
   write_bps: number;
+  temp_c: number | null;
 }
 
 export interface SystemGpu {
