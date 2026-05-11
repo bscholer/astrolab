@@ -185,7 +185,7 @@ def test_active_jobs_progress_from_events(tmp_path: Path) -> None:
     by_id = {a["id"]: a for a in payload["jobs"]["active"]}
     assert pytest.approx(by_id["r1"]["progress"], abs=1e-9) == 0.5
     assert by_id["q1"]["progress"] == 0.0
-    assert by_id["r1"]["template_name"] == "Test pipeline"
+    assert by_id["r1"]["template_name"] == "t-test"
     assert by_id["r1"]["target_name"] is None
     assert payload["jobs"]["running"] == 1
     assert payload["jobs"]["queued"] == 1
