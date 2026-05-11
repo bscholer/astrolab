@@ -28,6 +28,10 @@ class Ref(BaseModel):
     raw paths outside the cache.
     """
 
+    display_ready: bool = False
+    """True when the FITS data is already in display range [0,1] post-stretch;
+    preview generation should skip autostretch and just clip+scale."""
+
     model_config = ConfigDict(frozen=True)
 
     node_hash: str

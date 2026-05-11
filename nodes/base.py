@@ -40,6 +40,10 @@ class Node[ParamsT: BaseModel](ABC):
 
     preview_approximate: ClassVar[bool] = False
 
+    preview_display_ready: ClassVar[bool] = False
+    # True when this node's FITS output is already display-ready (post-stretch);
+    # skip autostretch in preview.
+
     inputs: ClassVar[dict[str, PortType]]
     outputs: ClassVar[dict[str, PortType]]
     params_schema: ClassVar[type[BaseModel]]

@@ -501,6 +501,9 @@ export interface TemplateNodeSchema {
   // Optional id of an upstream node whose `enabled` param must be true
   // for this node to render in the pipeline view. Walks transitively.
   ui_depends_on?: string | null;
+  // True when this node's FITS output is already display-ready (post-stretch);
+  // the preview does not apply autostretch, so it faithfully represents the output.
+  preview_display_ready?: boolean;
 }
 
 export interface JSONSchemaField {
