@@ -3,7 +3,8 @@ version: 14
 # v13 added an rgb_equal node between auto_bp_shift and stretch; v14 removes
 # it after testing showed the extra equalization pass was not needed in practice.
 description: |
-  OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
+  OSC smart-telescope pipeline mirrored on Naztronomy's Siril script
+  (https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py):
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
             -> pedestal offset -> background extract -> plate-solve
             register -> rejection stack with rgb_equal -> auto_crop (trim
