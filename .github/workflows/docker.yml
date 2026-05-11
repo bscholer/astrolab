@@ -59,8 +59,8 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=cpu
-            type=semver,pattern=v{{version}},enable={{is_tag}}
-            type=semver,pattern=v{{version}}-cpu,enable={{is_tag}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{version}}-cpu
 
       # CUDA variant: :cuda (on main), :vX.Y.Z-cuda (on tag)
       - name: Compute tags (cuda)
@@ -71,7 +71,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=cuda
-            type=semver,pattern=v{{version}}-cuda,enable={{is_tag}}
+            type=semver,pattern=v{{version}}-cuda
 
       - name: Build and push (cpu)
         if: matrix.variant == 'cpu'
