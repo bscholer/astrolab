@@ -105,8 +105,8 @@
   }
 
   function fmtRate(b: number): string {
-    if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(2) + ' GiB/s';
-    if (b >= 1024 ** 2) return (b / 1024 ** 2).toFixed(1) + ' MiB/s';
+    if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(0) + ' GiB/s';
+    if (b >= 1024 ** 2) return (b / 1024 ** 2).toFixed(0) + ' MiB/s';
     if (b >= 1024) return (b / 1024).toFixed(0) + ' KiB/s';
     return b.toFixed(0) + ' B/s';
   }
