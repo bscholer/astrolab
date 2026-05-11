@@ -48,7 +48,7 @@ docker run -d \
   -p 8000:8000 \
   -v ~/Pictures/Siril:/captures:ro \
   -v astrolab-data:/data \
-  bscholer/astrolab:latest
+  ghcr.io/bscholer/astrolab:latest
 ```
 
 Open `http://localhost:8000`, go to **Settings**, set the captures path to `/captures`, hit **Refresh**, and your sessions appear.
@@ -64,12 +64,10 @@ docker run -d \
   -v ~/Pictures/Siril:/captures:ro \
   -v astrolab-data:/data \
   -e ASTROLAB_ENABLE_STARNET=1 \
-  bscholer/astrolab:cuda
+  ghcr.io/bscholer/astrolab:cuda
 ```
 
 `ASTROLAB_ENABLE_STARNET=1` tells the entrypoint to download StarNet++ v2 on first run and store it in the persistent `/data` volume. Omit it if you don't need star removal.
-
-Images are also mirrored to `ghcr.io/bscholer/astrolab` if you prefer the GitHub Container Registry.
 
 **Mount points:**
 
