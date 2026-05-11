@@ -74,6 +74,21 @@ for any target.
 
 ---
 
+## Naztronomy's Smart Telescope Preprocessing Script
+
+**What astrolab uses it for:** The `calibrate_register_stack` template is shaped directly around the pipeline Naztronomy worked out in this script. The stage sequence -- convert, calibrate (CFA-aware, debayer), background extract, plate-solve, register, rejection stack -- is the same pipeline, in the same order, for the same reason: it's what actually produces clean stacks from smart-telescope OSC data. astrolab does not include any of Naz's Python source. What it took is the recipe: the understanding of which Siril commands to call, in which order, with which sequencing rationale. That recipe was independently reimplemented as a set of cacheable graph nodes in astrolab's DAG runner.
+
+**Script:** https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py  
+**Project:** https://github.com/naztronaut/siril-scripts  
+**Author:** Nazmus Nasir (Naztronomy) -- https://www.naztronomy.com  
+**License:** GNU General Public License v3 or later (GPL-3.0-or-later); copyright (c) Nazmus Nasir 2025
+
+When astrolab was taking shape, the hardest design question wasn't the caching or the DAG -- it was "what is the correct headless Siril command sequence for OSC smart-scope data?" Naz's script is the cleanest publicly available answer to that question. It's thoroughly commented, covers the edge cases you only learn by actually shooting with a Dwarf or Seestar, and it was written for the same goal: get good stacks out of data that didn't come from a "real" equatorial mount. Finding it saved a lot of trial-and-error spelunking through Siril's command documentation. astrolab's pipeline wouldn't look the way it does without it.
+
+Thank you, Naz.
+
+---
+
 ## OpenNGC catalog
 
 **What astrolab uses it for:** Target name resolution and sky coordinate lookup.
