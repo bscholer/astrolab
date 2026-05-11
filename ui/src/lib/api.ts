@@ -210,6 +210,11 @@ export interface NodeSpec {
   variant: string | null;
   params: Record<string, unknown>;
   inputs: Record<string, string>;
+  // Map of output port name -> PortType string ('image/fits', 'sequence/fits',
+  // 'image/png', etc.). Server-derived from the Node class; absent when the
+  // template payload was built before this field existed (defensive: the UI
+  // falls back to 'image' if missing).
+  outputs?: Record<string, string>;
   // Optional: hide this node in the pipeline view when the named
   // upstream node has enabled=false. Walks transitively through chained
   // declarations.
@@ -405,6 +410,9 @@ export interface TemplateNodeSchema {
   defaults: Record<string, unknown>;
   template_params: Record<string, unknown>;
   inputs: Record<string, string>;
+  // Same as NodeSpec.outputs: port name -> PortType string. Sourced from the
+  // registered Node class so the UI can pick a preview port without guessing.
+  outputs?: Record<string, string>;
   // Optional id of an upstream node whose `enabled` param must be true
   // for this node to render in the pipeline view. Walks transitively.
   ui_depends_on?: string | null;

@@ -2062,6 +2062,10 @@ def get_template_schema(template_id: str) -> dict:
                 "defaults": defaults,
                 "template_params": spec.params,
                 "inputs": spec.inputs,
+                # Declared output ports + their types, so the UI can ask
+                # for a preview at the right port (eg narrowband_extract has
+                # `ha` / `oiii`, not `image`) without a parallel guess table.
+                "outputs": {p: str(t) for p, t in node_cls.outputs.items()},
                 "ui_depends_on": spec.ui_depends_on,
             }
         )

@@ -121,15 +121,43 @@ def render_preview(
 def _locate_artifact(entry: Path, port: str) -> Path | None:
     """Find the file or dir matching this port inside the cache entry.
 
-    Cache entries store outputs at one of two shapes:
-      - <entry>/<port>.<ext>  (file)
-      - <entry>/<port>/...    (directory)
+    Convention-based fallback used when the entry has no _outputs.json
+    manifest (legacy entries committed before the manifest format). New
+    entries should always resolve via the manifest in `render_preview`,
+    which knows the exact relative path.
+
+    Recognised shapes, in priority order:
+      1. <entry>/<port>/...      directory output (sequences)
+      2. <entry>/<port>.<ext>    file named after the port (most nodes)
+      3. <entry>/<port>_*.<ext>  port-prefixed file (narrowband-ish drift)
+      4. <entry>/*_<port>.<ext>  port-suffixed file (also narrowband_extract:
+                                 `r_results_ha.fit` for port `ha`)
+    Skips entries beginning with `_` so the cache marker, the manifest, and
+    cached preview PNGs (`_preview_<port>.png`) don't get confused for
+    artifacts.
     """
     dir_match = entry / port
     if dir_match.is_dir() and dir_match.name != DONE_MARKER:
         return dir_match
-    matches = sorted(p for p in entry.glob(f"{port}.*") if p.name != DONE_MARKER)
-    return matches[0] if matches else None
+
+    def _ok(p: Path) -> bool:
+        return p.is_file() and not p.name.startswith("_")
+
+    exact = sorted(p for p in entry.glob(f"{port}.*") if _ok(p))
+    if exact:
+        return exact[0]
+    prefix = sorted(p for p in entry.glob(f"{port}_*.*") if _ok(p))
+    if prefix:
+        return prefix[0]
+    # Case-insensitive suffix match: `_ha.fit` for port `ha`, `_Ha.fit`
+    # if some node ever capitalises the channel. Sorted name keeps the
+    # pick deterministic.
+    suffix = sorted(
+        p
+        for p in entry.iterdir()
+        if _ok(p) and p.stem.lower().endswith(f"_{port.lower()}")
+    )
+    return suffix[0] if suffix else None
 
 
 def _render_fits_to_png(src: Path, dst: Path, *, neutral: bool = True) -> None:

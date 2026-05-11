@@ -108,6 +108,23 @@ def test_get_unknown_job_404(client) -> None:
     assert r.status_code == 404
 
 
+def test_job_template_payload_carries_node_outputs(client, tmp_path: Path) -> None:
+    """The detail GET embeds the template so the UI can graph it; each node
+    must carry its declared output ports. Without this the jobs page falls
+    back to guessing `image` and the IMG element 404s for any node whose
+    primary output isn't named that (narrowband_extract, starnet_extract,
+    every seq_* node)."""
+    src = _make_png(tmp_path / "in.png")
+    job_id = client.post("/api/jobs", json=_downscale_payload(src)).json()["job_id"]
+    _wait_for(client, job_id)
+
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert "template" in body, "detail view must embed template"
+    nodes = {n["id"]: n for n in body["template"]["nodes"]}
+    # downscale declares one output port `image` typed image/png.
+    assert nodes["ds"]["outputs"] == {"image": "image/png"}
+
+
 def test_failing_job_marks_status(client, tmp_path: Path) -> None:
     # Point the downscale node at a path that doesn't exist; node should error.
     src = tmp_path / "missing.png"  # never created

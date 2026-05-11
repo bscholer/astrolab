@@ -205,6 +205,30 @@ def test_template_schema_unknown_404(client) -> None:
     assert r.status_code == 404
 
 
+def test_template_schema_exposes_per_node_outputs(client) -> None:
+    """Each node entry must include its declared output ports so the UI can
+    pick a preview port without a parallel guess table. Regressed once: the
+    narrowband_extract step rendered as a forever-loading spinner because
+    the UI guessed `image` and the server's `ha`/`oiii` ports 404'd."""
+    r = client.get("/api/templates/calibrate_register_stack_narrowband/schema")
+    assert r.status_code == 200
+    by_id = {n["node_id"]: n for n in r.json()["nodes"]}
+    # narrowband_extract has two declared output ports; both must appear.
+    assert by_id["narrowband_extract"]["outputs"] == {
+        "ha": "image/fits",
+        "oiii": "image/fits",
+    }
+    # Sequence emitters expose `sequence`, not `image`.
+    assert by_id["resample"]["outputs"] == {"sequence": "sequence/fits"}
+    # starnet_extract has the same two-port shape as narrowband_extract.
+    assert by_id["starnet_extract"]["outputs"] == {
+        "starless": "image/fits",
+        "stars": "image/fits",
+    }
+    # Single-image emitters still use `image`.
+    assert by_id["save"]["outputs"] == {"image": "image/png"}
+
+
 def test_history_published_default_false(client, tmp_path: Path) -> None:
     """Fresh entries land unpublished — gallery is opt-in."""
     src = _make_png(tmp_path / "in.png")

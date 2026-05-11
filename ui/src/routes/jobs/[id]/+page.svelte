@@ -74,17 +74,19 @@
   }
 
   function pickPreviewPort(template: NonNullable<JobSummary['template']>, nodeId: string): string {
-    // The first declared output port is the canonical one for previews.
+    // The server attaches the registered Node class's `outputs` map onto each
+    // template node, so we just take the first port. Used to spin forever on
+    // narrowband_extract (`ha`/`oiii`), starnet_extract (`starless`/`stars`),
+    // and the seq_* nodes that emit `sequence` because we hard-coded `image`.
     const node = template.nodes.find((n) => n.id === nodeId);
     if (!node) return 'image';
-    // Each Node class has its outputs declared in Python; we don't know them
-    // from the template alone. Conventions used by the basic nodes:
-    if (node.kind === 'seq_stack' || node.kind === 'downscale') return 'image';
-    if (
-      node.kind === 'convert_lights' ||
-      node.kind === 'calibrate' ||
-      node.kind === 'seq_register'
-    ) return 'sequence';
+    if (node.outputs) {
+      // Prefer `image` when a node has it (some multi-output nodes still want
+      // the user-facing rendered frame to lead), otherwise first declared port.
+      if ('image' in node.outputs) return 'image';
+      const first = Object.keys(node.outputs)[0];
+      if (first) return first;
+    }
     return 'image';
   }
 
