@@ -358,9 +358,7 @@ def _resolved_as_from_row(row: sqlite3.Row) -> ResolvedAs | None:
     )
 
 
-def _calibration_for_session(
-    conn: sqlite3.Connection, session_id: int
-) -> list[CalibrationStatus]:
+def _calibration_for_session(conn: sqlite3.Connection, session_id: int) -> list[CalibrationStatus]:
     rows = conn.execute(
         "SELECT kind, master_id, match_quality, details FROM calibration_matches "
         "WHERE session_id = ? ORDER BY kind",
@@ -372,6 +370,7 @@ def _calibration_for_session(
         if r["details"]:
             try:
                 import json as _json
+
                 payload = _json.loads(r["details"])
                 if isinstance(payload, dict):
                     reason = payload.get("reason") or None
@@ -478,8 +477,7 @@ def trigger_deploy(request: Request) -> dict[str, str]:
         return {"status": "noop", "reason": "systemctl not available"}
     try:
         subprocess.run(
-            ["sudo", "-n", "systemctl", "start", "--no-block",
-             "astrolab-deploy.service"],
+            ["sudo", "-n", "systemctl", "start", "--no-block", "astrolab-deploy.service"],
             check=True,
             capture_output=True,
             text=True,
@@ -550,9 +548,7 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
 
 
 @app.get("/api/targets/{target_id}", response_model=TargetDetail)
-def get_target(
-    target_id: int, conn: DBDep
-) -> TargetDetail:
+def get_target(target_id: int, conn: DBDep) -> TargetDetail:
     target = conn.execute(
         "SELECT id, name, resolved_canonical, resolved_separation_arcmin, "
         "resolved_at, resolved_source "
@@ -577,17 +573,12 @@ def get_target(
         common_name=common,
         sky=sky,
         resolved_as=_resolved_as_from_row(target),
-        sessions=[
-            _row_to_session_summary(conn, s, target_name=target["name"])
-            for s in sessions
-        ],
+        sessions=[_row_to_session_summary(conn, s, target_name=target["name"]) for s in sessions],
     )
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionSummary)
-def get_session(
-    session_id: int, conn: DBDep
-) -> SessionSummary:
+def get_session(session_id: int, conn: DBDep) -> SessionSummary:
     row = conn.execute(
         """
         SELECT s.*, t.name AS target_name
@@ -637,13 +628,9 @@ class SessionPatchRequest(BaseModel):
         # happens). What's NOT allowed is both set at once: that would
         # make the operation ambiguous.
         has_id = self.target_id is not None
-        has_name = bool(
-            self.new_target_name is not None and self.new_target_name.strip()
-        )
+        has_name = bool(self.new_target_name is not None and self.new_target_name.strip())
         if has_id and has_name:
-            raise ValueError(
-                "set exactly one of target_id or new_target_name, not both"
-            )
+            raise ValueError("set exactly one of target_id or new_target_name, not both")
         return self
 
 
@@ -656,9 +643,7 @@ class SessionPatchResponse(BaseModel):
     deleted_target_ids: list[int]
 
 
-def _maybe_delete_empty_target(
-    conn: sqlite3.Connection, target_id: int
-) -> bool:
+def _maybe_delete_empty_target(conn: sqlite3.Connection, target_id: int) -> bool:
     """Drop the target if no sessions reference it. Returns True when deleted."""
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM sessions WHERE target_id = ?",
@@ -670,12 +655,8 @@ def _maybe_delete_empty_target(
     return False
 
 
-@app.patch(
-    "/api/sessions/{session_id}", response_model=SessionPatchResponse
-)
-def patch_session(
-    session_id: int, req: SessionPatchRequest, conn: DBDep
-) -> SessionPatchResponse:
+@app.patch("/api/sessions/{session_id}", response_model=SessionPatchResponse)
+def patch_session(session_id: int, req: SessionPatchRequest, conn: DBDep) -> SessionPatchResponse:
     """Update session metadata and / or reassign to a different target.
 
     Three independent fields the caller may set:
@@ -694,18 +675,14 @@ def patch_session(
     so collisions merge instead of raising).
     """
     description_supplied = "description" in req.model_fields_set
-    reassign_requested = (
-        req.target_id is not None or bool((req.new_target_name or "").strip())
-    )
+    reassign_requested = req.target_id is not None or bool((req.new_target_name or "").strip())
 
     session_row = conn.execute(
         "SELECT id, target_id FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     if session_row is None:
-        raise HTTPException(
-            status_code=404, detail=f"session {session_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     source_target_id = session_row["target_id"]
 
     deleted: list[int] = []
@@ -750,9 +727,7 @@ def patch_session(
                 new_target_id = int(existing["id"])
                 dest_name = existing["name"]
             else:
-                cur = conn.execute(
-                    "INSERT INTO targets (name) VALUES (?)", (normalized,)
-                )
+                cur = conn.execute("INSERT INTO targets (name) VALUES (?)", (normalized,))
                 new_target_id = int(cur.lastrowid or -1)
                 dest_name = normalized
 
@@ -769,9 +744,7 @@ def patch_session(
             # one up if its frames have position data.
             resolve_target_row(conn, new_target_id, dest_name)
             # Source target may now be empty -> drop it.
-            if source_target_id is not None and _maybe_delete_empty_target(
-                conn, source_target_id
-            ):
+            if source_target_id is not None and _maybe_delete_empty_target(conn, source_target_id):
                 deleted.append(int(source_target_id))
 
     # Refetch a fresh SessionSummary; the join needs the destination
@@ -880,9 +853,7 @@ def _session_centroid(
     "/api/sessions/{session_id}/reassign_candidates",
     response_model=ReassignCandidatesResponse,
 )
-def get_session_reassign_candidates(
-    session_id: int, conn: DBDep
-) -> ReassignCandidatesResponse:
+def get_session_reassign_candidates(session_id: int, conn: DBDep) -> ReassignCandidatesResponse:
     """Suggest reassign targets for a session.
 
     Returns two parallel lists:
@@ -899,9 +870,7 @@ def get_session_reassign_candidates(
         "SELECT id, target_id FROM sessions WHERE id = ?", (session_id,)
     ).fetchone()
     if session_row is None:
-        raise HTTPException(
-            status_code=404, detail=f"session {session_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     current_target_id = session_row["target_id"]
 
     centroid_info = _session_centroid(conn, session_id)
@@ -927,9 +896,7 @@ def get_session_reassign_candidates(
     # and keep the ones whose catalog position lands within tolerance.
     # We don't need to compute per-target centroids here: the resolution
     # pass already mapped each target to a catalog row when possible.
-    target_rows = conn.execute(
-        "SELECT id, name, resolved_canonical FROM targets"
-    ).fetchall()
+    target_rows = conn.execute("SELECT id, name, resolved_canonical FROM targets").fetchall()
     from server.catalog.sky_match import angular_separation_deg
 
     target_out: list[ReassignCandidateTarget] = []
@@ -1068,7 +1035,9 @@ def submit_from_session(req: SubmitFromSessionRequest, conn: DBDep) -> SubmitJob
     job_id = job_manager.submit(template, job)
     log.info(
         "job submitted from session: %s session=%s template=%s",
-        job_id, req.session_id, req.template_id,
+        job_id,
+        req.session_id,
+        req.template_id,
     )
     return SubmitJobResponse(job_id=job_id)
 
@@ -1117,9 +1086,7 @@ def _job_capture_summary(conn: sqlite3.Connection, session_ids: list[str]) -> di
     }
 
 
-def _enriched_job_dict(
-    record, conn: sqlite3.Connection, *, include_template: bool = False
-) -> dict:
+def _enriched_job_dict(record, conn: sqlite3.Connection, *, include_template: bool = False) -> dict:
     d = record.public_dict(include_template=include_template)
     summary = _job_capture_summary(conn, record.job.session_ids)
     if summary:
@@ -1132,9 +1099,7 @@ def list_jobs(conn: DBDep) -> list[dict]:
     # Newest-first; in-memory for now so a quick list is fine.
     return [
         _enriched_job_dict(r, conn)
-        for r in sorted(
-            job_manager.list_jobs(), key=lambda r: r.submitted_at, reverse=True
-        )
+        for r in sorted(job_manager.list_jobs(), key=lambda r: r.submitted_at, reverse=True)
     ]
 
 
@@ -1169,9 +1134,7 @@ async def stream_job_events(ws: WebSocket, job_id: str) -> None:
     last_seq = -1
     try:
         while True:
-            events = await asyncio.to_thread(
-                job_manager.get_events, job_id, after_seq=last_seq
-            )
+            events = await asyncio.to_thread(job_manager.get_events, job_id, after_seq=last_seq)
             for ev in events:
                 await ws.send_json(ev.to_dict())
                 last_seq += 1
@@ -1254,9 +1217,7 @@ class PatchProjectRequest(BaseModel):
 
 
 @app.post("/api/projects/from_session")
-def create_project_from_session(
-    req: CreateProjectFromSessionRequest, conn: DBDep
-) -> dict:
+def create_project_from_session(req: CreateProjectFromSessionRequest, conn: DBDep) -> dict:
     """Create a Project from a catalog session and submit its initial job."""
     try:
         template = load_template(req.template_id)
@@ -1284,7 +1245,7 @@ def create_project_from_session(
             "WHERE s.id = ?",
             (req.session_id,),
         ).fetchone()
-        name = (row["name"] if row and row["name"] else f"session {req.session_id}")
+        name = row["name"] if row and row["name"] else f"session {req.session_id}"
 
     project = project_manager.create(
         name=name,
@@ -1296,9 +1257,7 @@ def create_project_from_session(
 
 
 @app.post("/api/projects/from_sessions")
-def create_project_from_sessions(
-    req: CreateProjectFromSessionsRequest, conn: DBDep
-) -> dict:
+def create_project_from_sessions(req: CreateProjectFromSessionsRequest, conn: DBDep) -> dict:
     """Create a Project that stacks multiple compatible catalog sessions.
 
     Compatibility rule: every session must share target/instrument/camera/
@@ -1308,9 +1267,7 @@ def create_project_from_sessions(
     cache lineage.
     """
     if not req.session_ids:
-        raise HTTPException(
-            status_code=400, detail="session_ids must not be empty"
-        )
+        raise HTTPException(status_code=400, detail="session_ids must not be empty")
     # build_from_sessions normalizes order and de-dupes internally; we just
     # mirror that here so the project record stores the canonical list.
     sids = sorted(set(req.session_ids))
@@ -1344,11 +1301,7 @@ def create_project_from_sessions(
             # Multi-session project name reads naturally with the count: the
             # gallery view de-dupes by target anyway, so a single-target
             # project named "M 33 (3 sessions)" is unambiguous.
-            name = (
-                f"{target_name} ({len(sids)} sessions)"
-                if len(sids) > 1
-                else target_name
-            )
+            name = f"{target_name} ({len(sids)} sessions)" if len(sids) > 1 else target_name
         else:
             name = f"sessions {sids}"
 
@@ -1455,8 +1408,7 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
     if keys:
         ph = ",".join("?" for _ in keys)
         size_row = conn.execute(
-            f"SELECT IFNULL(SUM(size), 0) AS bytes FROM frames "
-            f"WHERE session_key IN ({ph})",
+            f"SELECT IFNULL(SUM(size), 0) AS bytes FROM frames WHERE session_key IN ({ph})",
             keys,
         ).fetchone()
         bytes_on_disk = int(size_row["bytes"] if size_row else 0)
@@ -1498,9 +1450,7 @@ def _canonical_group_for_target_row(
     return hit.canonical if hit is not None else None
 
 
-def _canonical_group_for_project(
-    conn: sqlite3.Connection, session_ids: list[str]
-) -> str | None:
+def _canonical_group_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> str | None:
     """Resolve the single canonical_group for a project's source sessions.
 
     Returns None when the project has no sessions, the sessions resolve to
@@ -1532,9 +1482,7 @@ def _canonical_group_for_project(
         return None
     canonicals: set[str] = set()
     for r in rows:
-        c = _canonical_group_for_target_row(
-            r["target_id"], r["name"], r["resolved_canonical"]
-        )
+        c = _canonical_group_for_target_row(r["target_id"], r["name"], r["resolved_canonical"])
         if c is None:
             return None
         canonicals.add(c)
@@ -1543,9 +1491,7 @@ def _canonical_group_for_project(
     return next(iter(canonicals))
 
 
-def _canonical_group_for_session(
-    conn: sqlite3.Connection, session_id: int
-) -> str | None:
+def _canonical_group_for_session(conn: sqlite3.Connection, session_id: int) -> str | None:
     """Resolve one session's canonical_group via its target row. Returns
     None if the session has no target or the target's canonical can't be
     inferred."""
@@ -1561,14 +1507,10 @@ def _canonical_group_for_session(
     ).fetchone()
     if row is None:
         return None
-    return _canonical_group_for_target_row(
-        row["target_id"], row["name"], row["resolved_canonical"]
-    )
+    return _canonical_group_for_target_row(row["target_id"], row["name"], row["resolved_canonical"])
 
 
-def _display_for_project(
-    conn: sqlite3.Connection, session_ids: list[str]
-) -> ProjectDisplay | None:
+def _display_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> ProjectDisplay | None:
     """Resolve a single (common_name, canonical) pair for the project.
 
     Rule:
@@ -1773,9 +1715,8 @@ def _suggestions_for_project(
     # Stable hash over the sorted id list: a new captured session changes
     # the token, banner reappears even if the user previously dismissed.
     import hashlib as _hashlib
-    token = _hashlib.sha1(
-        ",".join(str(i) for i in out_ids).encode("utf-8")
-    ).hexdigest()[:16]
+
+    token = _hashlib.sha1(",".join(str(i) for i in out_ids).encode("utf-8")).hexdigest()[:16]
     return SuggestedAdditions(
         session_ids=out_ids,
         session_count=len(out_ids),
@@ -1956,9 +1897,7 @@ def patch_project(project_id: str, req: PatchProjectRequest, conn: DBDep) -> dic
         # Description-only patch: skip overrides/job submission entirely.
         # Without this, autosave-on-blur would tear down the in-flight
         # job and queue a redundant new one for a metadata edit.
-        if description_supplied and not (
-            overrides_supplied or draft_supplied or force_supplied
-        ):
+        if description_supplied and not (overrides_supplied or draft_supplied or force_supplied):
             project = project_manager.set_description(project_id, req.description)
         else:
             project = project_manager.patch(
@@ -1970,13 +1909,9 @@ def patch_project(project_id: str, req: PatchProjectRequest, conn: DBDep) -> dic
             )
             if description_supplied:
                 # Combined edit: persist the note alongside the override.
-                project = project_manager.set_description(
-                    project_id, req.description
-                )
+                project = project_manager.set_description(project_id, req.description)
     except ProjectNotFound as exc:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     return _project_to_response(project, conn)
 
 
@@ -1986,18 +1921,14 @@ class SetCoverRequest(BaseModel):
 
 
 @app.put("/api/projects/{project_id}/cover")
-def set_project_cover(
-    project_id: str, req: SetCoverRequest, conn: DBDep
-) -> dict:
+def set_project_cover(project_id: str, req: SetCoverRequest, conn: DBDep) -> dict:
     """Pin the history seq used as this project's cover image. Pass
     seq=null to clear (Projects list + Gallery fall back to the auto
     pick: latest entry with outputs)."""
     try:
         project = project_manager.set_cover(project_id, req.seq)
     except ProjectNotFound as exc:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _project_to_response(project, conn)
@@ -2009,17 +1940,13 @@ class SetPublishedRequest(BaseModel):
 
 
 @app.put("/api/projects/{project_id}/history/{seq}/published")
-def set_history_published(
-    project_id: str, seq: int, req: SetPublishedRequest, conn: DBDep
-) -> dict:
+def set_history_published(project_id: str, seq: int, req: SetPublishedRequest, conn: DBDep) -> dict:
     """Toggle a single history entry's gallery-visible state. The gallery
     feed filters to published-only; this is the user's opt-in surface."""
     try:
         project = project_manager.set_published(project_id, seq, req.published)
     except ProjectNotFound as exc:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _project_to_response(project, conn)
@@ -2046,9 +1973,7 @@ def upgrade_project_template(project_id: str, conn: DBDep) -> dict:
     """
     project = project_manager.get(project_id)
     if project is None:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
     try:
         latest = load_template(project.template.id)
     except TemplateNotFound as exc:
@@ -2070,14 +1995,15 @@ def upgrade_project_template(project_id: str, conn: DBDep) -> dict:
             project_id, new_template=latest
         )
     except ProjectNotFound as exc:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log.info(
         "project template upgraded: %s v%d job=%s dropped=%d",
-        project_id, updated.template.version, new_job_id, len(dropped),
+        project_id,
+        updated.template.version,
+        new_job_id,
+        len(dropped),
     )
     response = _project_to_response(updated, conn)
     response["dropped_overrides"] = dropped
@@ -2092,9 +2018,7 @@ def revert_project(project_id: str, seq: int, conn: DBDep) -> dict:
     try:
         project = project_manager.revert(project_id, seq)
     except ProjectNotFound as exc:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _project_to_response(project, conn)
@@ -2105,48 +2029,42 @@ def delete_project_endpoint(project_id: str) -> dict:
     """Remove a project and any cache entries it owns alone. Shared entries
     are left in place — purging them would invalidate other projects."""
     if project_manager.get(project_id) is None:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
     # Cancel any in-flight job before pulling state out from under it.
     rec = project_manager.get(project_id)
     if rec is not None:
         for entry in rec.history:
             job_manager.cancel(entry.job_id)
-    evicted, freed = delete_project(
-        project_id, job_manager.cache, db_path=job_manager.db_path
-    )
+    evicted, freed = delete_project(project_id, job_manager.cache, db_path=job_manager.db_path)
     project_manager.forget(project_id)
     log.info(
         "project deleted: %s evicted=%d freed=%d",
-        project_id, evicted, freed,
+        project_id,
+        evicted,
+        freed,
     )
     return {"evicted_count": evicted, "bytes_freed": freed}
 
 
 @app.delete("/api/projects/{project_id}/cache")
-def purge_project_cache_endpoint(
-    project_id: str, keep_outputs: bool = False
-) -> dict:
+def purge_project_cache_endpoint(project_id: str, keep_outputs: bool = False) -> dict:
     """Evict the project's owned cache entries without deleting the
     project itself. With keep_outputs=true, terminal-output hashes
     survive (the user keeps the saved final image, loses the
     intermediates)."""
     if project_manager.get(project_id) is None:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
     evicted, freed = purge_project_cache(
-        job_manager.cache, project_id,
-        keep_outputs=keep_outputs, db_path=job_manager.db_path,
+        job_manager.cache,
+        project_id,
+        keep_outputs=keep_outputs,
+        db_path=job_manager.db_path,
     )
     return {"evicted_count": evicted, "bytes_freed": freed}
 
 
 @app.get("/api/projects/{project_id}/cache")
-def project_cache_dry_run(
-    project_id: str, keep_outputs: bool = False
-) -> dict:
+def project_cache_dry_run(project_id: str, keep_outputs: bool = False) -> dict:
     """Preview the eviction the matching DELETE would perform, without
     actually evicting. Used by the Manage Sessions modal's live diff so
     the user sees `~X GB will be evicted` while toggling sessions.
@@ -2155,9 +2073,7 @@ def project_cache_dry_run(
     difference is we tally bytes instead of calling cache.evict().
     """
     if project_manager.get(project_id) is None:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
     from server.storage import (
         _conn as _storage_conn,
     )
@@ -2168,9 +2084,7 @@ def project_cache_dry_run(
 
     with _storage_conn(job_manager.db_path) as conn:
         entries, _ = build_reachability(conn, job_manager.cache)
-        keep_hashes = (
-            _terminal_output_hashes(conn, project_id) if keep_outputs else set()
-        )
+        keep_hashes = _terminal_output_hashes(conn, project_id) if keep_outputs else set()
     evicted = 0
     bytes_to_free = 0
     for h, e in entries.items():
@@ -2195,15 +2109,11 @@ def get_project_suggestions(project_id: str, conn: DBDep) -> dict:
     """
     project = project_manager.get(project_id)
     if project is None:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        )
-    canonical_group = _canonical_group_for_project(
-        conn, project.source_session_ids
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    canonical_group = _canonical_group_for_project(conn, project.source_session_ids)
+    return _suggestions_for_project(conn, canonical_group, project.source_session_ids).model_dump(
+        mode="json"
     )
-    return _suggestions_for_project(
-        conn, canonical_group, project.source_session_ids
-    ).model_dump(mode="json")
 
 
 class PatchProjectSessionsRequest(BaseModel):
@@ -2217,9 +2127,7 @@ class PatchProjectSessionsRequest(BaseModel):
 
 
 @app.patch("/api/projects/{project_id}/sessions")
-def patch_project_sessions(
-    project_id: str, req: PatchProjectSessionsRequest, conn: DBDep
-) -> dict:
+def patch_project_sessions(project_id: str, req: PatchProjectSessionsRequest, conn: DBDep) -> dict:
     """Replace the project's source-session set.
 
     Gates in order: same-target (every session shares the project's
@@ -2235,21 +2143,15 @@ def patch_project_sessions(
     """
     project = project_manager.get(project_id)
     if project is None:
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
     if not req.session_ids:
         # A project with zero sessions is nonsense; bail out clearly
         # rather than building an empty Job that would crash deep in
         # the pipeline.
-        raise HTTPException(
-            status_code=400, detail="session_ids must not be empty"
-        )
+        raise HTTPException(status_code=400, detail="session_ids must not be empty")
 
     new_ids = sorted(set(req.session_ids))
-    project_canonical = _canonical_group_for_project(
-        conn, project.source_session_ids
-    )
+    project_canonical = _canonical_group_for_project(conn, project.source_session_ids)
     # Same-target gate: every proposed session must resolve to the same
     # canonical_group as the project. Mismatches surface with a precise
     # message naming the offending session + its canonical so the UI can
@@ -2262,9 +2164,7 @@ def patch_project_sessions(
                 (sid,),
             ).fetchone()
             if cand_row is None:
-                raise HTTPException(
-                    status_code=404, detail=f"session {sid} not found"
-                )
+                raise HTTPException(status_code=404, detail=f"session {sid} not found")
             cand_canonical = _canonical_group_for_session(conn, sid)
             if cand_canonical != project_canonical:
                 target_name = cand_row["target_name"] or "unknown"
@@ -2362,9 +2262,7 @@ def patch_project_sessions(
             auto_render=req.auto_render,
         )
     except ProjectNotFound as exc:  # pragma: no cover - guarded above
-        raise HTTPException(
-            status_code=404, detail=f"project {project_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
 
     # Evict the project's now-unreachable cache. The swap created a new
     # Job, so the prior history's outputs are still reachable from the
@@ -2374,12 +2272,18 @@ def patch_project_sessions(
     # don't want to nuke an output the user might want to revert back
     # to. (Granularity work in #61 will revisit this.)
     evicted, freed = purge_project_cache(
-        job_manager.cache, project_id,
-        keep_outputs=False, db_path=job_manager.db_path,
+        job_manager.cache,
+        project_id,
+        keep_outputs=False,
+        db_path=job_manager.db_path,
     )
     log.info(
         "project sessions swapped: %s sessions=%s evicted=%d freed=%d job=%s",
-        project_id, new_ids, evicted, freed, new_job_id,
+        project_id,
+        new_ids,
+        evicted,
+        freed,
+        new_job_id,
     )
 
     response = _project_to_response(project, conn)
@@ -2450,12 +2354,12 @@ def storage_cleanup(req: CleanupRequest | None = None) -> dict:
                 db_path=job_manager.db_path,
             )
         )
-    result = run_cleanup(
-        job_manager.cache, max_bytes=max_bytes, db_path=job_manager.db_path
-    )
+    result = run_cleanup(job_manager.cache, max_bytes=max_bytes, db_path=job_manager.db_path)
     log.info(
         "storage cleanup: evicted=%d freed=%d remaining=%d over_budget=%s",
-        result.evicted_count, result.bytes_freed, result.bytes_remaining,
+        result.evicted_count,
+        result.bytes_freed,
+        result.bytes_remaining,
         result.over_budget,
     )
     return {
@@ -2473,17 +2377,11 @@ def get_settings() -> dict:
     # the running process is actually using. They differ when the user
     # changed the override since the last server restart — the UI uses
     # the gap to render a 'restart required' hint.
-    persisted_root = get_setting(
-        SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path
-    )
-    capture_root = get_setting(
-        SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path
-    )
+    persisted_root = get_setting(SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path)
+    capture_root = get_setting(SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path)
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
-    site_elev = get_setting(
-        SETTING_SITE_ELEVATION_M, None, db_path=job_manager.db_path
-    )
+    site_elev = get_setting(SETTING_SITE_ELEVATION_M, None, db_path=job_manager.db_path)
     return {
         SETTING_CACHE_MAX_BYTES: int(
             get_setting(
@@ -2495,15 +2393,9 @@ def get_settings() -> dict:
         SETTING_CACHE_ROOT_OVERRIDE: persisted_root,
         "cache_root_active": str(job_manager.cache.root),
         SETTING_CAPTURE_ROOT: capture_root,
-        SETTING_SITE_LATITUDE: (
-            float(site_lat) if site_lat is not None else None
-        ),
-        SETTING_SITE_LONGITUDE: (
-            float(site_lon) if site_lon is not None else None
-        ),
-        SETTING_SITE_ELEVATION_M: (
-            float(site_elev) if site_elev is not None else None
-        ),
+        SETTING_SITE_LATITUDE: (float(site_lat) if site_lat is not None else None),
+        SETTING_SITE_LONGITUDE: (float(site_lon) if site_lon is not None else None),
+        SETTING_SITE_ELEVATION_M: (float(site_elev) if site_elev is not None else None),
     }
 
 
@@ -2542,21 +2434,18 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
                 status_code=400,
                 detail="cache_max_bytes must be at least 1 GiB",
             )
-        set_setting(
-            SETTING_CACHE_MAX_BYTES, req.cache_max_bytes, db_path=job_manager.db_path
-        )
+        set_setting(SETTING_CACHE_MAX_BYTES, req.cache_max_bytes, db_path=job_manager.db_path)
     if req.cache_root is not None:
         new_root = req.cache_root.strip()
         if new_root == "":
             # Empty string = clear the override (restart -> default location).
-            set_setting(
-                SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path
-            )
+            set_setting(SETTING_CACHE_ROOT_OVERRIDE, None, db_path=job_manager.db_path)
         else:
             # Validate: path must be absolute, must exist (or be createable),
             # must be writeable. Catch the typo cases at PATCH time so the
             # next restart doesn't fail.
             from pathlib import Path as _Path
+
             p = _Path(new_root).expanduser()
             if not p.is_absolute():
                 raise HTTPException(
@@ -2583,11 +2472,10 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
     if req.capture_root is not None:
         new_capture = req.capture_root.strip()
         if new_capture == "":
-            set_setting(
-                SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path
-            )
+            set_setting(SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path)
         else:
             from pathlib import Path as _Path
+
             cp = _Path(new_capture).expanduser()
             if not cp.is_absolute():
                 raise HTTPException(
@@ -2620,7 +2508,8 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
                 detail=f"site_latitude must be in [-90, 90], got {req.site_latitude}",
             )
         set_setting(
-            SETTING_SITE_LATITUDE, float(req.site_latitude),
+            SETTING_SITE_LATITUDE,
+            float(req.site_latitude),
             db_path=job_manager.db_path,
         )
     if req.site_longitude is not None:
@@ -2630,7 +2519,8 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
                 detail=f"site_longitude must be in [-180, 180], got {req.site_longitude}",
             )
         set_setting(
-            SETTING_SITE_LONGITUDE, float(req.site_longitude),
+            SETTING_SITE_LONGITUDE,
+            float(req.site_longitude),
             db_path=job_manager.db_path,
         )
     if req.site_elevation_m is not None:
@@ -2640,12 +2530,12 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "site_elevation_m must be in [-500, 9000] meters, "
-                    f"got {req.site_elevation_m}"
+                    f"site_elevation_m must be in [-500, 9000] meters, got {req.site_elevation_m}"
                 ),
             )
         set_setting(
-            SETTING_SITE_ELEVATION_M, float(req.site_elevation_m),
+            SETTING_SITE_ELEVATION_M,
+            float(req.site_elevation_m),
             db_path=job_manager.db_path,
         )
     return get_settings()
@@ -2736,9 +2626,7 @@ def get_tonight(
     """
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
-    site_elev = get_setting(
-        SETTING_SITE_ELEVATION_M, None, db_path=job_manager.db_path
-    )
+    site_elev = get_setting(SETTING_SITE_ELEVATION_M, None, db_path=job_manager.db_path)
     if site_lat is None or site_lon is None or site_elev is None:
         raise HTTPException(
             status_code=400,
@@ -2759,13 +2647,9 @@ def get_tonight(
                 status_code=400,
                 detail=f"at must be ISO 8601, got {at!r}",
             ) from exc
-        at_utc = (
-            parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-        )
+        at_utc = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
-    loc = sky.observer_location(
-        float(site_lat), float(site_lon), float(site_elev)
-    )
+    loc = sky.observer_location(float(site_lat), float(site_lon), float(site_elev))
     window = sky.twilight_window(loc, at_utc)
     dusk_utc, dawn_utc = window if window is not None else (None, None)
 
@@ -2799,11 +2683,7 @@ def get_tonight(
         if not canonical:
             catalog_hit = openngc_enrich(row["name"])
             canonical = catalog_hit.canonical if catalog_hit is not None else None
-        key = (
-            canonical.strip().lower()
-            if canonical
-            else (row["name"] or "").strip().lower()
-        )
+        key = canonical.strip().lower() if canonical else (row["name"] or "").strip().lower()
         captured[key] = {
             "session_count": row["session_count"] or 0,
             "last_session_at": row["last_session_at"],
@@ -2852,11 +2732,7 @@ def get_tonight(
     transits: list[datetime | None] = [None] * len(visible_indices)
     hours_arr = np.zeros(len(visible_indices))
     alt_curves = np.zeros((len(visible_indices), 0))
-    if (
-        dusk_utc is not None
-        and dawn_utc is not None
-        and len(visible_indices) > 0
-    ):
+    if dusk_utc is not None and dawn_utc is not None and len(visible_indices) > 0:
         transits, hours_arr, alt_curves = sky.night_transits_and_hours(
             visible_ra, visible_dec, loc, dusk_utc, dawn_utc, min_alt
         )
@@ -2871,11 +2747,7 @@ def get_tonight(
         # the UI is rendering this into ~32 vertical pixels and can't see
         # tighter precision. Drop the curve entirely when the night window
         # was degenerate (zero columns) so the UI just hides the column.
-        curve = (
-            [round(float(v), 1) for v in alt_curves[k]]
-            if alt_curves.shape[1] > 0
-            else None
-        )
+        curve = [round(float(v), 1) for v in alt_curves[k]] if alt_curves.shape[1] > 0 else None
         out.append(
             TonightEntry(
                 name=entry.canonical,
@@ -2955,6 +2827,7 @@ def get_template_schema(template_id: str) -> dict:
                 # `ha` / `oiii`, not `image`) without a parallel guess table.
                 "outputs": {p: str(t) for p, t in node_cls.outputs.items()},
                 "ui_depends_on": spec.ui_depends_on,
+                "preview_display_ready": node_cls.preview_display_ready,
             }
         )
     return {
@@ -2971,9 +2844,7 @@ def get_template_schema(template_id: str) -> dict:
 
 
 @app.get("/api/preview/{node_hash}/{port}")
-def get_preview(
-    node_hash: str, port: str, neutral: int = 1
-) -> FileResponse:
+def get_preview(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
     """Render (or return cached) thumbnail PNG for a node's output.
 
     The preview is cached inside the node's cache entry so subsequent loads
@@ -2986,9 +2857,13 @@ def get_preview(
     OSC-friendly per-channel stretch so pre-rgb_equal stages stop looking
     swampy green.
     """
+    manifest = job_manager.cache.load_outputs(node_hash)
+    display_ready = False
+    if manifest is not None and port in manifest:
+        display_ready = manifest[port].display_ready
     try:
         path = render_preview(
-            job_manager.cache, node_hash, port, neutral=bool(neutral)
+            job_manager.cache, node_hash, port, neutral=bool(neutral), display_ready=display_ready
         )
     except PreviewError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

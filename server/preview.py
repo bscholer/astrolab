@@ -44,6 +44,7 @@ def render_preview(
     port: str,
     *,
     neutral: bool = True,
+    display_ready: bool = False,
 ) -> Path:
     """Return the path to a cached PNG preview for `(node_hash, port)`.
 
@@ -80,8 +81,11 @@ def render_preview(
         raise PreviewError(f"port '{port}' not found in {entry}")
 
     # Neutral and raw lineages live side by side so flipping the toggle
-    # doesn't trigger a re-render of the other.
+    # doesn't trigger a re-render of the other. display_ready adds a third
+    # lineage (_dr) so both can coexist in the same cache entry.
     suffix_tag = "" if neutral else "_raw"
+    if display_ready:
+        suffix_tag += "_dr"
     out = entry / f"_preview_{port}{suffix_tag}.png"
     # Only re-render if missing or stale relative to the source artifact.
     if out.exists() and out.stat().st_mtime >= target.stat().st_mtime:
@@ -97,7 +101,10 @@ def render_preview(
         return out
 
     if target.is_file() and suffix in (".fit", ".fits"):
-        _render_fits_to_png(target, out, neutral=neutral)
+        if display_ready:
+            _render_display_ready_fits_to_png(target, out)
+        else:
+            _render_fits_to_png(target, out, neutral=neutral)
         return out
 
     if target.is_dir():
@@ -105,14 +112,17 @@ def render_preview(
         # ignore .seq index. Use the median-named file (sorted) so previews
         # are deterministic across re-runs.
         fits_frames = sorted(
-            p for p in target.iterdir()
-            if p.is_file() and p.suffix.lower() in (".fit", ".fits")
-            and not p.name.startswith("_")
+            p
+            for p in target.iterdir()
+            if p.is_file() and p.suffix.lower() in (".fit", ".fits") and not p.name.startswith("_")
         )
         if not fits_frames:
             raise PreviewError(f"no FITS frames under {target}")
         rep = fits_frames[len(fits_frames) // 2]
-        _render_fits_to_png(rep, out, neutral=neutral)
+        if display_ready:
+            _render_display_ready_fits_to_png(rep, out)
+        else:
+            _render_fits_to_png(rep, out, neutral=neutral)
         return out
 
     raise PreviewError(f"don't know how to preview {target}")
@@ -153,11 +163,54 @@ def _locate_artifact(entry: Path, port: str) -> Path | None:
     # if some node ever capitalises the channel. Sorted name keeps the
     # pick deterministic.
     suffix = sorted(
-        p
-        for p in entry.iterdir()
-        if _ok(p) and p.stem.lower().endswith(f"_{port.lower()}")
+        p for p in entry.iterdir() if _ok(p) and p.stem.lower().endswith(f"_{port.lower()}")
     )
     return suffix[0] if suffix else None
+
+
+def _render_display_ready_fits_to_png(src: Path, dst: Path) -> None:
+    """Render a display-ready FITS (already in [0,1]) to a thumbnail PNG.
+
+    Skips all autostretch logic. The data is already in display range
+    (post-stretch node output), so we just clip to [0,1], scale to uint8,
+    and resize to thumbnail dimensions.
+    """
+    with fits.open(src, memmap=False) as hdul:
+        data = hdul[0].data
+        if data is None:
+            for hdu in hdul[1:]:
+                if hdu.data is not None:
+                    data = hdu.data
+                    break
+    if data is None:
+        raise PreviewError(f"FITS at {src} has no image data")
+
+    arr = np.asarray(data, dtype=np.float32)
+
+    if arr.ndim == 2:
+        # Mono: clip, scale, grayscale image.
+        scaled = np.clip(arr, 0.0, 1.0)
+        u8 = (scaled * 255.0 + 0.5).astype(np.uint8)
+        img = Image.fromarray(u8, mode="L").convert("RGB")
+    elif arr.ndim == 3 and arr.shape[0] in (3, 4):
+        # Planar RGB (CHW): stack first three planes.
+        channels = [np.clip(arr[i], 0.0, 1.0) for i in range(3)]
+        rgb = np.stack(channels, axis=-1)
+        u8 = (rgb * 255.0 + 0.5).astype(np.uint8)
+        img = Image.fromarray(u8, mode="RGB")
+    elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        # Interleaved RGB (HWC): use first three channels.
+        rgb = np.clip(arr[..., :3], 0.0, 1.0)
+        u8 = (rgb * 255.0 + 0.5).astype(np.uint8)
+        img = Image.fromarray(u8, mode="RGB")
+    else:
+        # Unexpected shape; collapse to mono.
+        scaled = np.clip(arr.reshape(arr.shape[0], -1).mean(axis=1), 0.0, 1.0)
+        u8 = (scaled * 255.0 + 0.5).astype(np.uint8)
+        img = Image.fromarray(u8, mode="L").convert("RGB")
+
+    img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
+    img.save(dst, "PNG", optimize=True)
 
 
 def _render_fits_to_png(src: Path, dst: Path, *, neutral: bool = True) -> None:
@@ -324,11 +377,7 @@ def _render_fits_to_png_numpy(src: Path, dst: Path) -> None:
     # Some captures are 3-channel cubes (R, G, B as separate planes).
     if arr.ndim == 2:
         bayerpat = str(header.get("BAYERPAT") or "").strip().upper()
-        rgb = (
-            _debayer_half_res(arr, bayerpat)
-            if bayerpat in _BAYER_OFFSETS
-            else _stretch_mono(arr)
-        )
+        rgb = _debayer_half_res(arr, bayerpat) if bayerpat in _BAYER_OFFSETS else _stretch_mono(arr)
     elif arr.ndim == 3 and arr.shape[0] in (3, 4):
         rgb = np.stack([_stretch_mono(arr[i]) for i in range(3)], axis=-1)
     elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
@@ -374,10 +423,10 @@ def _debayer_half_res(plane: np.ndarray, pattern: str) -> np.ndarray:
         plane = plane[:, :-1]
 
     (r_off, g1_off, g2_off, b_off) = _BAYER_OFFSETS[pattern]
-    r = plane[r_off[0]::2, r_off[1]::2].astype(np.float32)
-    g1 = plane[g1_off[0]::2, g1_off[1]::2].astype(np.float32)
-    g2 = plane[g2_off[0]::2, g2_off[1]::2].astype(np.float32)
-    b = plane[b_off[0]::2, b_off[1]::2].astype(np.float32)
+    r = plane[r_off[0] :: 2, r_off[1] :: 2].astype(np.float32)
+    g1 = plane[g1_off[0] :: 2, g1_off[1] :: 2].astype(np.float32)
+    g2 = plane[g2_off[0] :: 2, g2_off[1] :: 2].astype(np.float32)
+    b = plane[b_off[0] :: 2, b_off[1] :: 2].astype(np.float32)
     g = (g1 + g2) * 0.5
 
     return np.stack(

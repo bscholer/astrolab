@@ -62,6 +62,7 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
     version = 2  # bumped: now does FITS<->TIFF + LD_LIBRARY_PATH
 
     cost = "expensive"
+    preview_display_ready = True
 
     inputs = {"image": PortType.IMAGE_FITS}
     outputs = {
@@ -130,9 +131,7 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
         # StarNet++ prints 'Total iterations = N' once and then per-tile
         # 'Iteration: K' lines; the shared parser knows that pattern. Cap
         # the band at 0.85 so the post-process FITS write is room to land.
-        on_line = make_line_progress_handler(
-            ctx, low=0.2, high=0.85, prefix="starnet++: "
-        )
+        on_line = make_line_progress_handler(ctx, low=0.2, high=0.85, prefix="starnet++: ")
         try:
             result = run_streamed(
                 cmd,
@@ -143,9 +142,7 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
                 timeout=60 * 60,
             )
         except FileNotFoundError as exc:
-            raise RuntimeError(
-                f"starnet_extract: failed to spawn {binary}: {exc}"
-            ) from exc
+            raise RuntimeError(f"starnet_extract: failed to spawn {binary}: {exc}") from exc
         if result.returncode != 0:
             raise RuntimeError(
                 f"starnet_extract: starnet++ exited {result.returncode}\n"
@@ -268,11 +265,13 @@ def _result(starless: Path, stars: Path) -> dict[str, Ref]:
             port="starless",
             path=starless,
             type=PortType.IMAGE_FITS,
+            display_ready=True,
         ),
         "stars": Ref(
             node_hash="",
             port="stars",
             path=stars,
             type=PortType.IMAGE_FITS,
+            display_ready=True,
         ),
     }
