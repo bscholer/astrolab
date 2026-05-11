@@ -1,5 +1,5 @@
 id: calibrate_register_stack
-version: 12
+version: 13
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script:
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
@@ -9,7 +9,8 @@ description: |
             linear) -> graxpert_denoise (AI denoise, optional; linear)
             -> crop (interactive composition crop, off by default) ->
             auto_bp_shift (linear black-point shift; on by default,
-            1% clip) -> stretch (autostretch by default) ->
+            1% clip) -> rgb_equal (channel mean equalization, linear
+            domain) -> stretch (autostretch by default) ->
             starnet_extract (split, optional; needs stretched input)
             -> starnet_replace (synthstar, optional) ->
             starnet_recombine (always on; identity when extract is off)
@@ -174,6 +175,16 @@ nodes:
     inputs:
       image: crop.image
 
+  - id: rgb_equal
+    kind: rgb_equal
+    # Post-stack channel equalization. Corrects any residual green bias that
+    # survives output_norm clipping in seq_stack. Runs last in the linear
+    # domain, right before stretch, so the tone curve sees balanced channels.
+    params:
+      enabled: true
+    inputs:
+      image: auto_bp_shift.image
+
   - id: stretch
     kind: stretch
     # Linear-domain processing ends here. Everything below operates on
@@ -185,7 +196,7 @@ nodes:
       method: autostretch
       target_bg: 0.05
     inputs:
-      image: auto_bp_shift.image
+      image: rgb_equal.image
 
   - id: starnet_extract
     kind: starnet_extract
