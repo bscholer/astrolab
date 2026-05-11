@@ -82,13 +82,16 @@
     );
     if (!ok) return;
     busyId = r.id;
+    const pendingId = toast.info(`Sweeping "${r.name}"…`, null);
     try {
       const result = await api.purgeProjectCache(r.id, true);
+      toast.dismiss(pendingId);
       toast.success(
         `Freed ${formatBytes(result.bytes_freed)} (${result.evicted_count} entries)`
       );
       await loadAll();
     } catch (e) {
+      toast.dismiss(pendingId);
       toast.error(`Couldn't free intermediates: ${(e as Error).message}`);
     } finally {
       busyId = null;
@@ -103,13 +106,16 @@
     );
     if (!ok) return;
     busyId = r.id;
+    const pendingId = toast.info(`Deleting "${r.name}"…`, null);
     try {
       const result = await api.deleteProject(r.id);
+      toast.dismiss(pendingId);
       toast.success(
         `Deleted "${r.name}" — freed ${formatBytes(result.bytes_freed)}`
       );
       await loadAll();
     } catch (e) {
+      toast.dismiss(pendingId);
       toast.error(`Couldn't delete: ${(e as Error).message}`);
     } finally {
       busyId = null;
