@@ -1542,11 +1542,15 @@ def _display_for_project(
         if not common:
             return None
         return ProjectDisplay(name=common, canonical=canonical)
-    common = entry.common_name
+    # OpenNGC ships a `Common names` column but it's sparsely populated;
+    # most NGC/IC rows have nothing useful there. Fall back to the curated
+    # common_names.json (catalogs/data/common_names.json) which fills in
+    # the popular names OpenNGC doesn't carry (Wizard Nebula, Heart
+    # Nebula, etc.). Same precedence as `_resolve_target_meta`.
+    common = entry.common_name or lookup_common_name(entry.canonical)
     if not common:
-        # OpenNGC knows the row but has no friendly name (typical for
-        # most NGC/IC entries). Don't show a redundant "NGC 7380 / NGC
-        # 7380" header; let the UI keep the user's project name.
+        # No friendly name at all -> show no display block so the UI
+        # falls back to the user's stored target name.
         return None
     return ProjectDisplay(name=common, canonical=entry.canonical)
 
