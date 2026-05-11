@@ -56,6 +56,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
+import server.scan_state as scan_state
 import server.sky as sky
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
@@ -129,6 +130,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     job_manager.shutdown(wait=False)
 
 
+def _make_progress_callback() -> Any:
+    """Return a progress callback that forwards updates to scan_state."""
+
+    def _cb(seen: int, _total: int, path: str) -> None:
+        scan_state.update(seen, path)
+
+    return _cb
+
+
 def _bootstrap_capture_root() -> None:
     """First-run convenience for the Docker image: if no capture root has
     been configured and `ASTROLAB_CAPTURE_ROOT_DEFAULT` points at a real,
@@ -152,14 +162,23 @@ def _bootstrap_capture_root() -> None:
     log.info("seeded capture_root from ASTROLAB_CAPTURE_ROOT_DEFAULT: %s", root)
 
     def _scan() -> None:
+        if not scan_state.start():
+            log.info("first-run scan skipped: a scan is already running")
+            return
         try:
             log.info("first-run scan: %s", root)
-            stats = run_scan(root, scope_id="dwarf3")
+            stats = run_scan(
+                root,
+                scope_id="dwarf3",
+                progress=_make_progress_callback(),
+            )
+            scan_state.finish(stats=stats)
             log.info(
                 "first-run scan done: discovered=%d inserted=%d updated=%d",
                 stats.discovered, stats.inserted, stats.updated,
             )
-        except Exception:
+        except Exception as exc:
+            scan_state.finish(error=str(exc))
             log.exception("first-run scan failed; user can retry from Settings")
 
     threading.Thread(target=_scan, name="astrolab-first-scan", daemon=True).start()
@@ -974,25 +993,40 @@ def list_masters(conn: DBDep) -> list[MasterRow]:
     return [MasterRow(**dict(r)) for r in rows]
 
 
-@app.post("/api/scan", response_model=ScanResponse)
-def trigger_scan(req: ScanRequest) -> ScanResponse:
+@app.post("/api/scan")
+def trigger_scan(req: ScanRequest) -> dict[str, str]:
+    """Start a scan in a background thread. Returns 202 immediately.
+
+    Returns 409 if a scan is already in progress.
+    The caller should poll GET /api/scan/status to track progress.
+    """
     root = Path(req.root).expanduser()
     if not root.exists():
         raise HTTPException(status_code=400, detail=f"root does not exist: {root}")
-    log.info("scan triggered: scope=%s root=%s", req.scope_id, root)
-    stats = run_scan(root, scope_id=req.scope_id)
-    return ScanResponse(
-        discovered=stats.discovered,
-        inserted=stats.inserted,
-        updated=stats.updated,
-        removed=stats.removed,
-        skipped_unchanged=stats.skipped_unchanged,
-        failed=stats.failed,
-        masters_inserted=stats.masters_inserted,
-        masters_updated=stats.masters_updated,
-        masters_removed=stats.masters_removed,
-        masters_skipped=stats.masters_skipped,
-    )
+    if not scan_state.start():
+        raise HTTPException(status_code=409, detail="already_running")
+
+    scope_id = req.scope_id
+    log.info("scan triggered: scope=%s root=%s", scope_id, root)
+
+    def _scan() -> None:
+        try:
+            stats = run_scan(root, scope_id=scope_id, progress=_make_progress_callback())
+            scan_state.finish(stats=stats)
+            log.info("scan done: %r", stats)
+        except Exception as exc:
+            scan_state.finish(error=str(exc))
+            log.exception("scan failed")
+
+    threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"status": "started"}, status_code=202)
+
+
+@app.get("/api/scan/status")
+def scan_status() -> dict[str, Any]:
+    """Return the current scan progress state."""
+    return scan_state.snapshot()
 
 
 # ---------------------------------------------------------------------------
