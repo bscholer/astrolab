@@ -18,6 +18,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,15 @@ from .adapter import lookup as adapter_lookup
 from .db import open_db
 from .fits_reader import normalize_target, read_primary_header
 from .matching import match_all_sessions
+from .openngc import enrich as openngc_enrich
+from .sky_match import (
+    FrameSky,
+    auto_tolerance_deg,
+    frame_fov_diagonal_deg,
+    nearest_match,
+    target_centroid,
+    target_envelope,
+)
 
 log = logging.getLogger("astrolab.catalog.scanner")
 
@@ -386,6 +396,140 @@ def _refresh_sessions(conn: sqlite3.Connection, scope_id: str) -> None:
     )
 
 
+def frames_for_target(
+    conn: sqlite3.Connection, target_id: int
+) -> list[FrameSky]:
+    """Lift every frame belonging to a target into a FrameSky record.
+
+    Reads RA/Dec straight from the frames row; reaches into the
+    fits_headers JSON blob for FOCALLEN / XPIXSZ / YPIXSZ / NAXIS1 /
+    NAXIS2 since those columns aren't promoted out of the blob yet
+    (the scanner only promotes the headers exposed in the sessions
+    UI). Frames whose blob fails to parse are dropped silently so a
+    single corrupt row doesn't break the entire target's resolve.
+    """
+    rows = conn.execute(
+        """
+        SELECT f.ra AS ra, f.dec AS dec, f.fits_headers AS hdr
+        FROM frames f
+        JOIN sessions s ON s.session_key = f.session_key
+        WHERE s.target_id = ?
+        """,
+        (target_id,),
+    ).fetchall()
+    out: list[FrameSky] = []
+    for r in rows:
+        ra, dec = r["ra"], r["dec"]
+        focallen = xpix = ypix = n1 = n2 = None
+        blob = r["hdr"]
+        if blob is not None:
+            try:
+                hdr = json.loads(bytes(blob).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+                hdr = {}
+            focallen = hdr.get("FOCALLEN")
+            xpix = hdr.get("XPIXSZ")
+            ypix = hdr.get("YPIXSZ")
+            n1 = hdr.get("NAXIS1")
+            n2 = hdr.get("NAXIS2")
+        out.append(
+            FrameSky(
+                ra_deg=ra,
+                dec_deg=dec,
+                fov_diagonal_deg=frame_fov_diagonal_deg(focallen, xpix, ypix, n1, n2),
+            )
+        )
+    return out
+
+
+def _clear_auto_resolve(conn: sqlite3.Connection, target_id: int) -> None:
+    """Reset the auto-resolve columns for a target.
+
+    Override stays put: it's the user's pin and only the API clears it.
+    """
+    conn.execute(
+        "UPDATE targets SET "
+        "  resolved_canonical = NULL, "
+        "  resolved_separation_arcmin = NULL, "
+        "  resolved_source = NULL, "
+        "  resolved_at = NULL "
+        "WHERE id = ?",
+        (target_id,),
+    )
+
+
+def _resolve_targets(conn: sqlite3.Connection) -> None:
+    """Auto-resolve every target's catalog mapping.
+
+    Name-first: if openngc.enrich(target.name) hits, we record that as
+    `resolved_source='name'` with separation 0. Position-fallback: when
+    name doesn't resolve, we compute the centroid + envelope from the
+    target's frames and run a great-circle nearest-match within a
+    scope-aware tolerance. On a miss, every resolved_* column goes back
+    to null so a target that lost its frames doesn't keep claiming an
+    old answer. resolved_canonical_override (user-pinned) is a separate
+    column and is never touched here.
+    """
+    rows = conn.execute("SELECT id, name FROM targets").fetchall()
+    for trow in rows:
+        target_id = trow["id"]
+        name = trow["name"]
+
+        # Name-first: a target the user stored as a recognized id should
+        # not pay the cost of an envelope computation or a catalog walk.
+        # This is the common case for Dwarf 3 users (the goto saves the
+        # catalog name as OBJECT), and we want it cheap.
+        hit = openngc_enrich(name) if name else None
+        if hit is not None:
+            now = datetime.now(UTC).isoformat()
+            conn.execute(
+                "UPDATE targets SET "
+                "  resolved_canonical = ?, "
+                "  resolved_separation_arcmin = ?, "
+                "  resolved_source = 'name', "
+                "  resolved_at = ? "
+                "WHERE id = ?",
+                (hit.canonical, 0.0, now, target_id),
+            )
+            continue
+
+        # Position fallback: compute envelope, pick the auto tolerance,
+        # walk the catalog. envelope=None means we couldn't compute one
+        # (too few frames, or no FOV headers anywhere); we still try the
+        # match with the fallback tolerance when we have a centroid.
+        frames = frames_for_target(conn, target_id)
+        envelope = target_envelope(frames)
+        if envelope is not None:
+            ra_centroid, dec_centroid, env_deg = envelope
+            tol = auto_tolerance_deg(env_deg)
+        else:
+            # No FOV headers anywhere on this target, but if the
+            # centroid is still computable (frames have RA/Dec, just no
+            # focallen/pixsz), match against the 1.0 deg fallback rather
+            # than giving up entirely.
+            centroid = target_centroid(frames)
+            if centroid is None:
+                _clear_auto_resolve(conn, target_id)
+                continue
+            ra_centroid, dec_centroid = centroid
+            tol = auto_tolerance_deg(None)
+
+        match = nearest_match(ra_centroid, dec_centroid, tol)
+        if match is None:
+            _clear_auto_resolve(conn, target_id)
+            continue
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            "UPDATE targets SET "
+            "  resolved_canonical = ?, "
+            "  resolved_separation_arcmin = ?, "
+            "  resolved_source = 'position', "
+            "  resolved_at = ? "
+            "WHERE id = ?",
+            (match.canonical, match.separation_deg * 60.0, now, target_id),
+        )
+
+
 def scan(
     root: Path,
     *,
@@ -417,5 +561,7 @@ def scan(
             _refresh_sessions(conn, scope_id)
         with conn:
             match_all_sessions(conn)
+        with conn:
+            _resolve_targets(conn)
     log.info("scan complete: %r", stats)
     return stats
