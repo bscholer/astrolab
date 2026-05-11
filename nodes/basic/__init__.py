@@ -1,3 +1,4 @@
+from . import auto_bp_shift as _auto_bp_shift  # noqa: F401  registers on import
 from . import auto_crop as _auto_crop  # noqa: F401  registers on import
 from . import calibrate as _calibrate  # noqa: F401  registers on import
 from . import convert_lights as _convert_lights  # noqa: F401  registers on import

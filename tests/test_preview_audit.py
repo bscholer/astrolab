@@ -39,6 +39,7 @@ from server.registry import lookup as registry_lookup
 # method. When a node grows a new on-disk shape, add it here and the
 # parametrized tests will catch any locator regression.
 NODE_LAYOUT: dict[tuple[str, str | None], dict[str, str]] = {
+    ("auto_bp_shift", None): {"image": "image.fit"},
     ("auto_crop", None): {"image": "image.fit"},
     ("calibrate", None): {"sequence": "sequence/"},
     ("convert_lights", None): {"sequence": "sequence/"},

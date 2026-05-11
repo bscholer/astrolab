@@ -19,14 +19,15 @@ def test_load_template_by_id() -> None:
     # bump invalidates downstream cache entries (intentional), so a stray
     # increment is something we want to catch in review, not let slip
     # silently.
-    assert t.version == 11
+    assert t.version == 12
     kinds = [n.kind for n in t.nodes]
     # Chain: convert -> calibrate -> resample -> pedestal -> bg_extract ->
     # register -> stack -> auto_crop -> graxpert_bg (linear) ->
     # graxpert_denoise (linear) -> crop (composition crop, linear) ->
-    # stretch -> starnet_extract (stretched) -> starnet_replace ->
-    # starnet_recombine -> save. Crop precedes stretch so autostretch's
-    # histogram only sees the kept pixels.
+    # auto_bp_shift (linear pre-stretch BP shift) -> stretch ->
+    # starnet_extract (stretched) -> starnet_replace -> starnet_recombine
+    # -> save. auto_bp_shift precedes stretch so the non-linear curve
+    # sees a histogram with the background already crushed toward zero.
     assert kinds == [
         "convert_lights",
         "calibrate",
@@ -39,6 +40,7 @@ def test_load_template_by_id() -> None:
         "graxpert",
         "graxpert",
         "crop",
+        "auto_bp_shift",
         "stretch",
         "starnet_extract",
         "starnet_replace",
@@ -106,17 +108,25 @@ def test_template_edges_resolve() -> None:
 
 def test_crop_runs_before_stretch() -> None:
     """The reordering rule: crop's image is fed by graxpert_denoise, and
-    stretch's image is fed by crop. Pin both so a future edit that
-    accidentally re-introduces stretch-before-crop fails loudly."""
-    for template_id in (
-        "calibrate_register_stack",
-        "calibrate_register_stack_narrowband",
-    ):
-        t = load_template(template_id)
-        by_id = {n.id: n for n in t.nodes}
-        assert by_id["crop"].inputs["image"] == "graxpert_denoise.image"
-        assert by_id["stretch"].inputs["image"] == "crop.image"
-        assert by_id["starnet_extract"].inputs["image"] == "stretch.image"
+    stretch's image is fed by crop (via auto_bp_shift in v12+ of the
+    OSC template, directly in the narrowband template). Pin both so a
+    future edit that accidentally re-introduces stretch-before-crop
+    fails loudly."""
+    # OSC template added an auto_bp_shift stage between crop and stretch
+    # in v12; the narrowband template hasn't been bumped yet so it still
+    # wires stretch directly off crop.
+    osc = load_template("calibrate_register_stack")
+    by_id = {n.id: n for n in osc.nodes}
+    assert by_id["crop"].inputs["image"] == "graxpert_denoise.image"
+    assert by_id["auto_bp_shift"].inputs["image"] == "crop.image"
+    assert by_id["stretch"].inputs["image"] == "auto_bp_shift.image"
+    assert by_id["starnet_extract"].inputs["image"] == "stretch.image"
+
+    nb = load_template("calibrate_register_stack_narrowband")
+    by_id = {n.id: n for n in nb.nodes}
+    assert by_id["crop"].inputs["image"] == "graxpert_denoise.image"
+    assert by_id["stretch"].inputs["image"] == "crop.image"
+    assert by_id["starnet_extract"].inputs["image"] == "stretch.image"
 
 
 def test_load_unknown_template_raises() -> None:
