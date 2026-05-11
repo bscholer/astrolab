@@ -324,6 +324,7 @@
     flex-direction: column;
     gap: 0.25rem;
     min-width: 0;
+    container-type: inline-size;
   }
   .session-head {
     display: flex;
@@ -584,5 +585,29 @@
   .session-notes-area:focus {
     outline: none;
     border-color: var(--accent);
+  }
+
+  /* At 540px+ container width there's enough room to show the notes
+     panel beside the row metadata rather than below it. The grid
+     approach works with dynamic snippet children (reassign popup, run
+     panel): unplaced items auto-flow into column 1, the notes panel
+     is pinned to column 2 and spans all rows so it floats beside the
+     metadata. min-content for the second track means the column
+     collapses to 0 when the panel is absent (notes closed), avoiding
+     a dead whitespace gap. */
+  @container (min-width: 540px) {
+    .session-content {
+      display: grid;
+      grid-template-columns: 1fr min-content;
+      column-gap: 0.75rem;
+      align-items: start;
+    }
+    .notes-panel {
+      grid-column: 2;
+      grid-row: 1 / -1;
+      margin-top: 0;
+      align-self: start;
+      width: 220px;
+    }
   }
 </style>
