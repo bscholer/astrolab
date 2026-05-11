@@ -75,6 +75,7 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
     id = "narrowband_extract"
     version = 1
     cost = "expensive"
+    uses_siril = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {

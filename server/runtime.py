@@ -25,6 +25,7 @@ from .cache import ContentCache
 from .canonical import node_hash
 from .models import Job, Profile, Ref, RunContext, Template
 from .registry import lookup as registry_lookup
+from .siril import get_siril_version
 
 ProgressFn = Callable[[float, str], None]
 EventFn = Callable[[dict], None]
@@ -211,11 +212,19 @@ def run_job(
             node_cls.params_schema,
         )
 
+        # Mix in the Siril version for nodes that shell out to Siril so that
+        # upgrading Siril invalidates their cached outputs without a manual
+        # cache wipe. Non-Siril nodes get no extra key so their hashes are
+        # unaffected by Siril installs or upgrades.
+        extra: dict[str, str] | None = None
+        if node_cls.uses_siril:
+            extra = {"siril_version": get_siril_version()}
         h = node_hash(
             node_id=node_cls.id,
             node_version=node_cls.version,
             inputs=resolved_inputs,
             params=params,
+            extra_keys=extra,
         )
 
         on_event({"type": "node_started", "node_id": nid, "kind": spec.kind, "hash": h})

@@ -32,6 +32,7 @@ class SaveImageNode(Node[SaveImageParams]):
     id = "save_image"
     version = 1
     cost = "cheap"
+    uses_siril = True
 
     inputs = {"image": PortType.IMAGE_FITS}
     outputs = {"image": PortType.IMAGE_PNG}

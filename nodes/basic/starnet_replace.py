@@ -54,6 +54,7 @@ class StarnetReplaceNode(Node[StarnetReplaceParams]):
     id = "starnet_replace"
     version = 1
     cost = "medium"
+    uses_siril = True
 
     inputs = {
         "starless": PortType.IMAGE_FITS,

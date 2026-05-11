@@ -33,6 +33,11 @@ class Node[ParamsT: BaseModel](ABC):
 
     cost: ClassVar[CostClass] = "cheap"
 
+    uses_siril: ClassVar[bool] = False
+    """True when this node shells out to Siril. The runtime mixes the Siril
+    version string into the cache key so a Siril upgrade invalidates stale
+    cached outputs automatically."""
+
     preview_approximate: ClassVar[bool] = False
 
     inputs: ClassVar[dict[str, PortType]]

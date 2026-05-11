@@ -163,6 +163,7 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
     id = "seq_register"
     version = 1
     cost = "expensive"
+    uses_siril = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}
