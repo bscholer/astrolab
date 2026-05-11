@@ -6,7 +6,8 @@
 #   2. Optionally fetch StarNet++ v2 if ASTROLAB_ENABLE_STARNET=1 and the
 #      binary is not already present. Failure is non-fatal; the app starts
 #      regardless, and star-removal nodes will surface a clear error if used.
-#   3. exec into uvicorn (or whatever CMD was passed).
+#   3. Start the job worker in the background.
+#   4. exec into uvicorn (or whatever CMD was passed).
 
 set -euo pipefail
 
@@ -59,6 +60,23 @@ if [[ "${ASTROLAB_ENABLE_STARNET:-0}" == "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Hand off to the process
+# 3. Start the job worker
+# ---------------------------------------------------------------------------
+# The worker is a separate process that polls the SQLite job table and runs
+# pipeline jobs (Siril, GraXpert, StarNet++). Without it, jobs submitted via
+# the API stay in 'pending' forever. We run it as a background process here
+# so a single container ships both halves of the system.
+#
+# Trade-off: there's no supervisor, so if the worker crashes the container
+# keeps running with just the API. uvicorn's logs will keep flowing but
+# new jobs will queue indefinitely. For v0.1.x this is fine; if the worker
+# becomes flaky in practice we'll add s6 or tini.
+step "starting job worker"
+python -m server.worker &
+WORKER_PID=$!
+ok "worker pid=$WORKER_PID"
+
+# ---------------------------------------------------------------------------
+# 4. Hand off to the foreground process (uvicorn)
 # ---------------------------------------------------------------------------
 exec "$@"
