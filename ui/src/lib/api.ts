@@ -559,6 +559,77 @@ export interface SettingsResponse {
   site_elevation_m: number | null;
 }
 
+// ----- system -----------------------------------------------------------
+
+export interface SystemHost {
+  hostname: string;
+  os: string;
+  kernel: string;
+  cpu_model: string;
+  cores: number;
+  ram_total: number;
+  disk_total: number;
+  gpu_model: string | null;
+  uptime_s: number;
+}
+
+export interface SystemCpu {
+  percent: number;
+  per_core: number[];
+  load_avg: [number, number, number];
+  temp_c: number | null;
+}
+
+export interface SystemMem {
+  used: number;
+  total: number;
+  swap_used: number;
+}
+
+export interface SystemDisk {
+  mount: string;
+  used: number;
+  total: number;
+  read_bps: number;
+  write_bps: number;
+}
+
+export interface SystemGpu {
+  model: string;
+  util: number;
+  vram_used: number;
+  vram_total: number;
+  temp_c: number;
+}
+
+export interface SystemActiveJob {
+  id: string;
+  target_name: string | null;
+  template_name: string | null;
+  started_at: string | null;
+  progress: number;
+}
+
+export interface SystemJobs {
+  queued: number;
+  running: number;
+  completed_24h: number;
+  failed_24h: number;
+  active: SystemActiveJob[];
+  // Twelve 30-min buckets, oldest first.
+  throughput_6h: number[];
+}
+
+export interface SystemSnapshot {
+  host: SystemHost;
+  cpu: SystemCpu;
+  mem: SystemMem;
+  disk: SystemDisk;
+  gpu: SystemGpu | null;
+  jobs: SystemJobs;
+  sampled_at: number;
+}
+
 // ----- tonight ----------------------------------------------------------
 
 export interface TonightEntry {
@@ -668,6 +739,7 @@ export const api = {
     site_longitude?: number | null;
     site_elevation_m?: number | null;
   }) => patchJSON<SettingsResponse>('/api/settings', req),
+  getSystem: () => getJSON<SystemSnapshot>('/api/system'),
   getTonight: (params?: {
     at?: string;
     min_alt?: number;

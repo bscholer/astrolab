@@ -23,6 +23,7 @@ Endpoints:
 - DELETE /api/projects/{id}              delete project + owned cache
 - DELETE /api/projects/{id}/cache        purge owned cache (keep_outputs?)
 - GET  /api/storage                      cache size + per-project breakdown
+- GET  /api/system                       host telemetry (CPU/mem/disk/GPU + jobs)
 - POST /api/storage/cleanup              run eviction sweep
 - GET  /api/settings                     read system settings
 - PATCH /api/settings                    update settings (cache_max_bytes)
@@ -97,6 +98,7 @@ from server.storage import (
     set_setting,
     system_storage,
 )
+from server.system_metrics import collect_system_metrics
 from server.templates import TemplateNotFound, list_templates, load_template
 
 log = logging.getLogger("astrolab.api")
@@ -1873,6 +1875,12 @@ def get_storage() -> dict:
             for p in snap.per_project
         ],
     }
+
+
+@app.get("/api/system")
+def get_system() -> dict:
+    """Host telemetry for the dashboard: CPU/mem/disk/GPU and job stats."""
+    return collect_system_metrics(job_manager)
 
 
 class CleanupRequest(BaseModel):
