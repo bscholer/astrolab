@@ -116,13 +116,15 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
 
         ctx.progress(0.1, "narrowband_extract: extracting Ha/OIII and aligning")
         runtime = SirilRuntime()
-        # Four Siril sub-commands (extract, per-channel register+stack pair,
-        # shift-align). phases=4 keeps the progress bar moving forward instead
-        # of snapping back for each new sub-command.
+        # Six progress-emitting Siril sub-commands: seqextract_HaOIII,
+        # register Ha, stack r_Ha, register OIII, stack r_OIII, register
+        # results. The interleaved load/save and `link` calls don't emit
+        # progress, so they don't count. phases must match this exactly or
+        # the bar rewinds when a later sub-command opens at 0%.
         result = runtime.run(
             commands,
             working_dir=work_dir,
-            on_log=make_progress_handler(ctx, phases=4),
+            on_log=make_progress_handler(ctx, phases=6),
             cancel=ctx.cancel,
         )
         if result.returncode != 0:
