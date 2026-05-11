@@ -138,17 +138,26 @@ def build_reachability(
     ).fetchall():
         projects[r["id"]] = _row_to_dict(r)
 
-    # Map job_id -> set(node_hashes). Pull every job we have on file; some
+    # Map job_id -> {node_id: hash}. Pull every job we have on file; some
     # may belong to projects we've since deleted (orphan job rows), but
-    # that's fine — we only walk history below, which references current
-    # job_ids.
-    job_hashes: dict[str, list[str]] = {}
+    # that's fine, we only walk history below, which references current
+    # job_ids. Legacy list-shaped payloads are kept verbatim and resolved
+    # below using the project's template node order, matching the old
+    # storage behavior so old records don't silently change meaning.
+    job_hashes_raw: dict[str, dict[str, str] | list[str]] = {}
     for j in conn.execute("SELECT id, node_hashes_json FROM jobs").fetchall():
-        if j["node_hashes_json"]:
-            try:
-                job_hashes[j["id"]] = json.loads(j["node_hashes_json"])
-            except (ValueError, TypeError):
-                continue
+        if not j["node_hashes_json"]:
+            continue
+        try:
+            raw = json.loads(j["node_hashes_json"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(raw, dict):
+            job_hashes_raw[j["id"]] = {
+                str(k): str(v) for k, v in raw.items() if isinstance(v, str)
+            }
+        elif isinstance(raw, list):
+            job_hashes_raw[j["id"]] = [h for h in raw if isinstance(h, str)]
 
     def _node_cost_map(template_json: str) -> dict[str, str]:
         try:
@@ -174,21 +183,39 @@ def build_reachability(
 
     for pid, p in projects.items():
         cost_map = _node_cost_map(p["template_json"])
+        template = Template.model_validate(json.loads(p["template_json"]))
+        # Look up specs by node_id rather than list position so YAML
+        # declaration order can differ from topo execution order without
+        # mis-attributing cost class and last-used timestamps to the
+        # wrong node.
+        spec_by_id = {spec.id: spec for spec in template.nodes}
         history = conn.execute(
             "SELECT seq, job_id, created_at FROM project_history "
             "WHERE project_id = ? ORDER BY seq ASC",
             (pid,),
         ).fetchall()
         for h in history:
-            hashes_for_this_job = job_hashes.get(h["job_id"], [])
-            template = Template.model_validate(json.loads(p["template_json"]))
-            for i, hash_str in enumerate(hashes_for_this_job):
+            raw = job_hashes_raw.get(h["job_id"])
+            if raw is None:
+                continue
+            if isinstance(raw, list):
+                # Legacy list payload: pair by template list index, matching
+                # the pre-fix behavior so old records keep their existing
+                # (possibly imperfect) attribution rather than going dark.
+                pairs: list[tuple[str, str]] = [
+                    (template.nodes[i].id, hash_str)
+                    for i, hash_str in enumerate(raw)
+                    if i < len(template.nodes)
+                ]
+            else:
+                pairs = list(raw.items())
+            for node_id, hash_str in pairs:
                 if hash_str not in entries:
                     continue
                 entry = entries[hash_str]
                 entry.owners.add(pid)
-                if i < len(template.nodes):
-                    spec = template.nodes[i]
+                spec = spec_by_id.get(node_id)
+                if spec is not None:
                     cost = cost_map.get(spec.id, "expensive")
                     if cost_rank.get(cost, 2) < cost_rank.get(entry.cost, 2):
                         entry.cost = cost
