@@ -46,6 +46,12 @@ echo "▸ restarting astrolab-api via systemctl"
 # astrolab-deploy.service cgroup (or from an interactive ssh session),
 # both of which are separate cgroups from astrolab-api, so restarting
 # astrolab-api here doesn't kill our own process.
+#
+# We deliberately do NOT restart astrolab-worker here: the whole point of
+# the API/worker split is that a deploy must not SIGTERM in-flight Siril
+# subprocesses. To pick up new worker code, run one of these manually:
+#   sudo systemctl reload  astrolab-worker   # drain + exit, restart on idle
+#   sudo systemctl restart astrolab-worker   # drain + restart on new code
 if systemctl list-unit-files astrolab-api.service >/dev/null 2>&1 \
      && systemctl is-enabled --quiet astrolab-api 2>/dev/null; then
   sudo systemctl restart astrolab-api
@@ -55,6 +61,15 @@ if systemctl list-unit-files astrolab-api.service >/dev/null 2>&1 \
 else
   echo "  astrolab-api.service not installed; skipping restart"
   exit 1
+fi
+
+# Heads-up if the worker unit is installed but not running. We don't
+# restart it (see comment above), but a deploy that lands schema or
+# protocol changes the worker hasn't picked up yet is worth flagging.
+if systemctl list-unit-files astrolab-worker.service >/dev/null 2>&1 \
+     && ! systemctl is-active --quiet astrolab-worker 2>/dev/null; then
+  echo "  ⚠ astrolab-worker.service exists but is not active; queued jobs won't run"
+  echo "    sudo systemctl start astrolab-worker"
 fi
 
 echo "▸ waiting for :$PORT to come up"

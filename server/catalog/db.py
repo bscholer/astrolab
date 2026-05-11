@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 12
+CURRENT_SCHEMA_VERSION = 13
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -329,6 +329,31 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE project_history ADD COLUMN snapshot_json TEXT",
         "INSERT INTO schema_version (version) VALUES (12)",
     ],
+    13: [
+        # Worker/API process split. The worker now runs as its own
+        # systemd unit so a PR-merge restart of astrolab-api doesn't
+        # SIGTERM in-flight Siril subprocesses; that meant several
+        # in-memory JobRecord fields have to cross a process boundary.
+        #
+        # cancel_requested: the API flips this to 1 on cancel; the
+        #   worker's monitor thread polls and forwards to the
+        #   threading.Event the runtime reads. (Was JobRecord.cancel_event.)
+        # worker_pid: the worker stamps its PID at claim time so a
+        #   subsequent worker boot can tell whether a 'running' row
+        #   belongs to a still-alive process or a corpse that needs
+        #   reclaiming.
+        # heartbeat_at: the worker bumps this every few seconds while a
+        #   job is live. Stale-claim reclaim treats anything older than
+        #   STALE_HEARTBEAT_SECONDS (or a dead PID) as crashed.
+        # force: was an in-memory-only JobRecord field; with submit
+        #   running in the API process and execution in the worker, the
+        #   force flag has to round-trip through the DB.
+        "ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN worker_pid INTEGER",
+        "ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT",
+        "ALTER TABLE jobs ADD COLUMN force INTEGER NOT NULL DEFAULT 0",
+        "INSERT INTO schema_version (version) VALUES (13)",
+    ],
 }
 
 
@@ -347,16 +372,33 @@ def _current_version(conn: sqlite3.Connection) -> int:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Apply outstanding migrations. Idempotent."""
-    have = _current_version(conn)
-    for version in sorted(MIGRATIONS.keys()):
-        if version <= have:
-            continue
-        with conn:
+    """Apply outstanding migrations. Idempotent and concurrency-safe.
+
+    Two processes opening a fresh DB at the same time would otherwise both
+    see version=0, both run migration 1's CREATE TABLE statements, and the
+    loser hits "table targets already exists". BEGIN IMMEDIATE serializes
+    one migration step at a time across processes; the re-read of
+    _current_version inside the txn covers the case where the other
+    process raced ahead of us between SELECT and BEGIN.
+    """
+    while True:
+        have = _current_version(conn)
+        pending = [v for v in sorted(MIGRATIONS.keys()) if v > have]
+        if not pending:
+            return
+        version = pending[0]
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            have_now = _current_version(conn)
+            if version <= have_now:
+                conn.execute("ROLLBACK")
+                continue
             for stmt in MIGRATIONS[version]:
                 conn.execute(stmt)
-            # Each migration is responsible for inserting its own
-            # schema_version row.
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
@@ -375,8 +417,28 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     # tripwire here that throws 500s under load.
     conn = sqlite3.connect(target, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # busy_timeout has to come BEFORE other pragmas: the API and worker
+    # processes both open the catalog on startup and their connect()
+    # calls can race on the schema_version write inside migrate(). 10s
+    # gives the loser plenty of room to wait for the winner to finish.
+    conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    # PRAGMA journal_mode is special: it can fail with SQLITE_BUSY even
+    # when busy_timeout is set, because changing journal mode requires
+    # an exclusive lock the timeout sometimes doesn't wait for. Skip it
+    # if the DB is already in WAL (the common case after first boot),
+    # and retry a handful of times for the genuinely-fresh-DB race.
+    current_mode = conn.execute("PRAGMA journal_mode").fetchone()
+    if current_mode and str(current_mode[0]).lower() != "wal":
+        import time as _time
+        for attempt in range(20):
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+                break
+            except sqlite3.OperationalError:
+                if attempt == 19:
+                    raise
+                _time.sleep(0.05)
     migrate(conn)
     return conn
 

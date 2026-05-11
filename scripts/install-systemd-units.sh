@@ -29,6 +29,7 @@ fi
 step "copying units into /etc/systemd/system/"
 sudo cp "$units_src"/astrolab-api.service /etc/systemd/system/
 sudo cp "$units_src"/astrolab-deploy.service /etc/systemd/system/
+sudo cp "$units_src"/astrolab-worker.service /etc/systemd/system/
 
 step "installing sudoers fragment for auto-deploy"
 # visudo -cf validates the syntax before /etc/sudoers.d/ picks it up. A
@@ -42,6 +43,8 @@ sudo touch /var/log/astrolab-api.log
 sudo chown "$USER:$USER" /var/log/astrolab-api.log
 sudo touch /var/log/astrolab-deploy.log
 sudo chown "$USER:$USER" /var/log/astrolab-deploy.log
+sudo touch /var/log/astrolab-worker.log
+sudo chown "$USER:$USER" /var/log/astrolab-worker.log
 
 # Clean up the legacy vite-dev unit if it's still around. FastAPI now
 # serves the prebuilt UI directly on :8000 — no separate node process.
@@ -54,12 +57,14 @@ fi
 step "daemon-reload + enable + start"
 sudo systemctl daemon-reload
 sudo systemctl enable --now astrolab-api
+sudo systemctl enable --now astrolab-worker
 # astrolab-deploy is oneshot, no enable/start. The webhook triggers it.
 
 sleep 3
 echo
 step "status:"
 systemctl is-active astrolab-api
+systemctl is-active astrolab-worker
 echo
 step "ports:"
 ss -ltnp 2>/dev/null | grep -E ":8000 " || true

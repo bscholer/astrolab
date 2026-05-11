@@ -25,6 +25,7 @@ import nodes.basic  # noqa: F401
 from server.api import app, job_manager, project_manager
 from server.cache import ContentCache
 from server.catalog.db import open_db
+from tests._jobs_helpers import background_worker
 
 
 def _seed_session(
@@ -90,10 +91,11 @@ def client(tmp_path, monkeypatch):
     from server.catalog import db as db_module
 
     monkeypatch.setattr(db_module, "default_db_path", lambda: db_path)
-    monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
+    cache = ContentCache(root=tmp_path / "cache")
+    monkeypatch.setattr(job_manager, "_cache", cache)
     job_manager.reset_for_tests(db_path=db_path)
     project_manager.reset_for_tests(db_path=db_path)
-    with TestClient(app) as c:
+    with background_worker(cache, db_path), TestClient(app) as c:
         yield c, db_path, tmp_path
 
 
