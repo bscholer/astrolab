@@ -168,7 +168,32 @@ def _disk_block(working_path: Path) -> dict[str, Any]:
         "total": total,
         "read_bps": read_bps,
         "write_bps": write_bps,
+        "temp_c": _disk_temp(),
     }
+
+
+def _disk_temp() -> float | None:
+    sensors_fn = getattr(psutil, "sensors_temperatures", None)
+    if sensors_fn is None:
+        return None
+    try:
+        temps = sensors_fn()
+    except Exception:
+        return None
+    if not temps:
+        return None
+    # NVMe drives expose readings under "nvme" / "nvme0"; SATA drives under
+    # "drivetemp". Prefer the "Composite" label (chip-wide) when present,
+    # since per-sensor entries can spike on a single NAND die.
+    for key in ("nvme", "nvme0", "drivetemp"):
+        readings = temps.get(key)
+        if not readings:
+            continue
+        for r in readings:
+            if r.label.lower().startswith("composite"):
+                return float(r.current)
+        return float(readings[0].current)
+    return None
 
 
 def _gpu_model_name() -> str | None:

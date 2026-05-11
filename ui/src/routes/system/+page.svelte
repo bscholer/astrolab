@@ -260,8 +260,7 @@
 
     <article class="card metric" data-tier={tier(diskPct)}>
       <header class="m-head">
-        <span class="m-label">Disk</span>
-        <span class="m-sub muted small mono">{snap.disk.mount}</span>
+        <span class="m-label">Storage</span>
       </header>
       <div class="m-value mono">{diskPct.toFixed(0)}<span class="m-unit">%</span></div>
       <div class="io-row mono small">
@@ -273,7 +272,7 @@
         <path class="spark-line spark-w" d={sparkPath(diskWriteHist, 200, 40, 0, diskMaxBps)} />
       </svg>
       <footer class="m-foot muted small mono">
-        {fmtBytes(snap.disk.used)} / {fmtBytes(snap.disk.total)}
+        {#if snap.disk.temp_c != null}{snap.disk.temp_c.toFixed(0)}°C · {/if}{fmtBytes(snap.disk.used)} / {fmtBytes(snap.disk.total)}
       </footer>
     </article>
 

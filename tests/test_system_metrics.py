@@ -103,6 +103,7 @@ def test_payload_shape_matches_contract(tmp_path: Path) -> None:
     assert isinstance(disk["total"], int)
     assert isinstance(disk["read_bps"], int)
     assert isinstance(disk["write_bps"], int)
+    assert disk["temp_c"] is None or isinstance(disk["temp_c"], float)
 
     assert payload["gpu"] is None
 
