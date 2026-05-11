@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { slide } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
   import {
     api,
@@ -530,7 +531,9 @@
   </div>
   <ul class="target-list">
     {#each sortedTargets ?? [] as t, i (t.id)}
-      <li class="target" class:open={openTargetId === t.id} style="--stagger: {i}">
+      <li class="target" class:open={openTargetId === t.id} style="--stagger: {i}"
+        animate:flip={{ duration: 350, easing: cubicOut }}
+      >
         <div
           class="target-row"
           role="button"
