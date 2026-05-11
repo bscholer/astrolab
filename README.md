@@ -8,6 +8,18 @@
 
 ---
 
+## Built on the shoulders of giants
+
+astrolab would not exist without three excellent open-source (and one freeware) tools doing the real image-processing work:
+
+- **[Siril](https://siril.org)** (GPLv3) by Cyril Richard and the Free Astronomy team -- calibration, registration, stacking, and plate-solving. The engine that turns raw light frames into a stacked image.
+- **[GraXpert](https://www.graxpert.com)** (GPLv3) by Steffen Hirtle -- ML-powered background gradient extraction and denoise. Handles the gradients and light-pollution halos that Siril leaves for post-processing.
+- **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) by Nikita Misiura -- star-nebula separation. Makes recombination and per-layer stretching possible without tedious manual star masks.
+
+Full attribution, license links, and usage notes are in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
+
+---
+
 ## What it is
 
 astrolab is a local-first workbench that wraps Siril, GraXpert, and StarNet++ behind a typed pipeline graph and a content-addressed cache. Each "project" is a live edit of a stack: changing a knob in the UI submits a fresh job, but every upstream node it didn't touch (calibrate, register, stack) is a free cache hit, so re-renders feel cheap. Every revision shows up in a history strip; promote keepers to a public gallery.
@@ -25,7 +37,48 @@ It is built around the Dwarf 3 capture layout for now, but nothing in the pipeli
 
 ## Quick start
 
-A one-command Docker setup is on the V1 backlog (see [#6](https://github.com/bscholer/astrolab/issues/6)). Until then, the dev install is:
+### Docker (recommended)
+
+No local install needed. The image bundles Siril 1.4 and GraXpert 3.0.2.
+
+**CPU-only (most users):**
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ~/Pictures/Siril:/captures:ro \
+  -v astrolab-data:/data \
+  ghcr.io/bscholer/astrolab:latest
+```
+
+Open `http://localhost:8000`, go to **Settings**, set the captures path to `/captures`, hit **Refresh**, and your sessions appear.
+
+**NVIDIA GPU (for GraXpert and StarNet++ AI nodes):**
+
+You need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host first.
+
+```bash
+docker run -d \
+  --gpus all \
+  -p 8000:8000 \
+  -v ~/Pictures/Siril:/captures:ro \
+  -v astrolab-data:/data \
+  -e ASTROLAB_ENABLE_STARNET=1 \
+  ghcr.io/bscholer/astrolab:cuda
+```
+
+`ASTROLAB_ENABLE_STARNET=1` tells the entrypoint to download StarNet++ v2 on first run and store it in the persistent `/data` volume. Omit it if you don't need star removal.
+
+**Mount points:**
+
+| Path | Purpose |
+|------|---------|
+| `/captures` | Your raw capture tree (read-only is fine; astrolab never writes here) |
+| `/data` | Persistent state: cache, projects, settings, optional StarNet++ binary |
+
+---
+
+### From source (dev / no Docker)
 
 ```bash
 git clone https://github.com/bscholer/astrolab.git
@@ -67,3 +120,5 @@ Phase 0. Not stable, not packaged, schemas can change between commits. Useful en
 ## License
 
 MIT, with a CC BY-SA 4.0 carve-out for the vendored OpenNGC catalog under `catalogs/openngc/` (Mattia Verga). See [LICENSE](LICENSE) for both.
+
+The Docker image bundles Siril (GPLv3) and GraXpert (GPLv3) as separate processes; astrolab's MIT license applies only to astrolab's own source code. See [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md) for details.
