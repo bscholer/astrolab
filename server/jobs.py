@@ -95,10 +95,12 @@ class JobRecord:
     """Cooperative cancel token. Set externally to abort a running job; the
     runtime checks between nodes and SirilRuntime watchdogs the subprocess.
     Not persisted: the token is only meaningful for the current process."""
-    node_hashes: list[str] = field(default_factory=list)
-    """Every cache hash this job touched (committed or hit). Persisted on
-    terminal events so the storage layer can map cache entries back to the
-    renderings that own them without re-walking the event log."""
+    node_hashes: dict[str, str] = field(default_factory=dict)
+    """Map of node_id -> cache hash for every node this job touched (committed
+    or hit). Persisted on terminal events so the storage layer can map cache
+    entries back to the renderings that own them. Keyed by node_id (not list
+    position) so out-of-topo-order template authoring still attributes cost
+    class and last-used timestamps to the correct node."""
     events: list[JobEvent] = field(default_factory=list)
     _subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = field(
         default_factory=list
@@ -179,6 +181,34 @@ def _outputs_from_json(blob: str | None) -> dict[str, Ref] | None:
                type=PortType(v["type"]))
         for k, v in raw.items()
     }
+
+
+def _node_hashes_from_json(blob: str | None, template: Template) -> dict[str, str]:
+    """Decode the persisted node_hashes payload.
+
+    Current shape is a dict {node_id: hash}. Older records were stored as a
+    bare list of hashes; storage was already indexing those by
+    template.nodes[i], so we backfill on read by pairing each legacy hash
+    with the same template node we'd have hit before. New writes use the
+    dict shape and stop being sensitive to YAML-vs-topo declaration order.
+    """
+    if not blob:
+        return {}
+    try:
+        raw = json.loads(blob)
+    except (ValueError, TypeError):
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if isinstance(v, str)}
+    if isinstance(raw, list):
+        out: dict[str, str] = {}
+        for i, h in enumerate(raw):
+            if not isinstance(h, str):
+                continue
+            if i < len(template.nodes):
+                out[template.nodes[i].id] = h
+        return out
+    return {}
 
 
 class JobManager:
@@ -346,13 +376,17 @@ class JobManager:
         self._emit(record, JobEvent(type="job_started", timestamp=_now()))
 
         def event_sink(payload: dict[str, Any]) -> None:
-            # Capture node_hashes as they're announced by the runtime; we
-            # persist the rolled-up set on the terminal event so the
-            # storage layer can look up "what did this job touch?" without
-            # walking the event log.
+            # Capture node_hashes keyed by node_id as they're announced by
+            # the runtime; we persist the rolled-up map on the terminal
+            # event so the storage layer can look up "what did this job
+            # touch?" without walking the event log. Pairing the hash with
+            # its node_id (vs the old bare list of hashes) keeps cost-class
+            # and last-used attribution correct when YAML order disagrees
+            # with topological order.
             h = payload.get("hash")
-            if isinstance(h, str) and h not in record.node_hashes:
-                record.node_hashes.append(h)
+            nid = payload.get("node_id")
+            if isinstance(h, str) and isinstance(nid, str):
+                record.node_hashes[nid] = h
             ev = JobEvent(
                 type=payload["type"],  # type: ignore[arg-type]
                 timestamp=_now(),
@@ -483,7 +517,7 @@ class JobManager:
                             record.error,
                             record.started_at,
                             record.finished_at,
-                            json.dumps(record.node_hashes) if record.node_hashes else None,
+                            json.dumps(dict(record.node_hashes)) if record.node_hashes else None,
                             record.id,
                         ),
                     )
@@ -557,16 +591,9 @@ class JobManager:
                 error = error or "server interrupted before this job finished"
                 finished_at = finished_at or _now()
 
-            try:
-                node_hashes = (
-                    json.loads(row["node_hashes_json"])
-                    if row["node_hashes_json"]
-                    else []
-                )
-            except (ValueError, TypeError):
-                node_hashes = []
+            node_hashes = _node_hashes_from_json(row["node_hashes_json"], template)
             # Backfill for jobs that ran before we started persisting hashes:
-            # walk the event log, collect any `hash` keys we find on
+            # walk the event log, collect (node_id, hash) pairs from
             # node_started / node_cached events, and persist them so the
             # storage layer can attribute their cache back to the right
             # rendering. One-time cost on the first rehydrate after the
@@ -574,11 +601,10 @@ class JobManager:
             backfilled = False
             if not node_hashes:
                 hash_rows = conn.execute(
-                    "SELECT extra_json FROM job_events "
+                    "SELECT node_id, extra_json FROM job_events "
                     "WHERE job_id = ? AND type IN ('node_started', 'node_cached')",
                     (row["id"],),
                 ).fetchall()
-                seen: set[str] = set()
                 for hr in hash_rows:
                     if not hr["extra_json"]:
                         continue
@@ -587,9 +613,9 @@ class JobManager:
                     except (ValueError, TypeError):
                         continue
                     h = extra.get("hash")
-                    if isinstance(h, str) and h not in seen:
-                        seen.add(h)
-                        node_hashes.append(h)
+                    nid = hr["node_id"]
+                    if isinstance(h, str) and isinstance(nid, str):
+                        node_hashes[nid] = h
                 if node_hashes:
                     backfilled = True
             record = JobRecord(
