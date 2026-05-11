@@ -93,6 +93,7 @@ class GraxpertNode(Node[GraxpertParams]):
     id = "graxpert"
     version = 1
     cost = "expensive"
+    preview_display_ready = True
 
     inputs = {"image": PortType.IMAGE_FITS}
     outputs = {"image": PortType.IMAGE_FITS}
@@ -240,5 +241,6 @@ def _result(out_image: Path) -> dict[str, Ref]:
             port="image",
             path=out_image,
             type=PortType.IMAGE_FITS,
+            display_ready=True,
         )
     }

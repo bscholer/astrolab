@@ -77,19 +77,21 @@ class ContentCache:
         d = self.entry_dir(node_hash)
         if not d.exists():
             raise RuntimeError(f"cache: cannot commit non-reserved entry {node_hash}")
-        manifest: dict[str, dict[str, str]] = {}
+        manifest: dict[str, dict[str, str | bool]] = {}
         for port, ref in outputs.items():
             if not ref.path.exists():
-                raise RuntimeError(
-                    f"cache: output '{port}' missing at {ref.path} for {node_hash}"
-                )
+                raise RuntimeError(f"cache: output '{port}' missing at {ref.path} for {node_hash}")
             try:
                 rel = ref.path.resolve().relative_to(d.resolve())
             except ValueError as exc:
                 raise RuntimeError(
                     f"cache: output '{port}' path {ref.path} escapes entry dir {d}"
                 ) from exc
-            manifest[port] = {"path": rel.as_posix(), "type": str(ref.type)}
+            manifest[port] = {
+                "path": rel.as_posix(),
+                "type": str(ref.type),
+                "display_ready": ref.display_ready,
+            }
         # Write manifest before _done so a crash mid-commit leaves an
         # incomplete entry (no _done marker), not a committed one with a
         # missing manifest.
@@ -128,6 +130,7 @@ class ContentCache:
                 port=port,
                 path=d / rel,
                 type=port_type,
+                display_ready=bool(entry.get("display_ready", False)),
             )
         return out
 

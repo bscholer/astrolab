@@ -180,8 +180,7 @@ def run_siril_on_sequence(
     staged = stage_sequence(seq_in, seq_out, basename, fitseq)
     if not staged:
         raise RuntimeError(
-            f"{node_name}: no input frames matching basename "
-            f"'{basename}' under {seq_in}"
+            f"{node_name}: no input frames matching basename '{basename}' under {seq_in}"
         )
 
     result = runtime.run(
@@ -212,8 +211,7 @@ def run_siril_on_sequence(
         frames = sorted(
             p
             for p in seq_out.iterdir()
-            if p.name.startswith(f"{out_basename}_")
-            and p.suffix in (".fit", ".fits")
+            if p.name.startswith(f"{out_basename}_") and p.suffix in (".fit", ".fits")
         )
         if not frames:
             raise RuntimeError(
@@ -242,6 +240,12 @@ def seq_ref(path: Path) -> Ref:
     return Ref(node_hash="", port="sequence", path=path, type=PortType.SEQUENCE_FITS)
 
 
-def image_ref(path: Path) -> Ref:
+def image_ref(path: Path, *, display_ready: bool = False) -> Ref:
     """IMAGE_FITS Ref with placeholder node_hash (patched by the runner)."""
-    return Ref(node_hash="", port="image", path=path, type=PortType.IMAGE_FITS)
+    return Ref(
+        node_hash="",
+        port="image",
+        path=path,
+        type=PortType.IMAGE_FITS,
+        display_ready=display_ready,
+    )
