@@ -41,8 +41,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import drop_staged, quote, stage_sequence
 from nodes.base import Node
-from nodes.basic.calibrate import _quote, _stage_sequence
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -102,7 +102,7 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
         work_dir = out_dir_path / "_narrowband"
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        staged = _stage_sequence(
+        staged = stage_sequence(
             seq_in, work_dir, params.input_basename, params.fitseq
         )
         if not staged:
@@ -151,26 +151,14 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
         shutil.move(str(oiii_src), oiii_out)
 
         # Drop input symlinks plus the work_dir full of intermediates.
-        for link in staged:
-            if link.is_symlink() or link.exists():
-                link.unlink()
+        drop_staged(staged)
         with contextlib.suppress(OSError):
             shutil.rmtree(work_dir)
 
         ctx.progress(1.0, "narrowband_extract: wrote r_results_ha + r_results_oiii")
         return {
-            "ha": Ref(
-                node_hash="",
-                port="ha",
-                path=ha_out,
-                type=PortType.IMAGE_FITS,
-            ),
-            "oiii": Ref(
-                node_hash="",
-                port="oiii",
-                path=oiii_out,
-                type=PortType.IMAGE_FITS,
-            ),
+            "ha": Ref(node_hash="", port="ha", path=ha_out, type=PortType.IMAGE_FITS),
+            "oiii": Ref(node_hash="", port="oiii", path=oiii_out, type=PortType.IMAGE_FITS),
         }
 
 
@@ -185,7 +173,7 @@ def _build_extract_commands(input_basename: str, work_dir: Path) -> list[str]:
     ha_stack = "results_ha"
     oiii_stack = "results_oiii"
 
-    cmds: list[str] = [f"cd {_quote(work_dir.resolve())}"]
+    cmds: list[str] = [f"cd {quote(work_dir.resolve())}"]
 
     # Split the CFA sequence into Ha and OIII. -resample=ha upscales Ha so it
     # matches OIII's spatial resolution post-demosaic.

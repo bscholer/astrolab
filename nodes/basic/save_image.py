@@ -15,8 +15,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from nodes._seq_runner import quote
 from nodes.base import Node
-from nodes.basic.calibrate import _quote
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -57,9 +57,9 @@ class SaveImageNode(Node[SaveImageParams]):
 
         ctx.progress(0.2, "save_image: rendering PNG")
         commands = [
-            f"cd {_quote(out_dir_path.resolve())}",
-            f"load {_quote(src.resolve())}",
-            f"savepng {_quote(save_stem)}",
+            f"cd {quote(out_dir_path.resolve())}",
+            f"load {quote(src.resolve())}",
+            f"savepng {quote(save_stem)}",
         ]
         runtime = SirilRuntime()
         result = runtime.run(
