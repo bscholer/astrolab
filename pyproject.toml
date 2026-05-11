@@ -13,6 +13,7 @@ dependencies = [
     "xxhash>=3.4",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

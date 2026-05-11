@@ -23,6 +23,7 @@
       <a href="/projects" class:active={$page.url.pathname.startsWith('/projects')}>Projects</a>
       <a href="/gallery" class:active={$page.url.pathname.startsWith('/gallery')}>Gallery</a>
       <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')}>Settings</a>
+      <a href="/system" class:active={$page.url.pathname.startsWith('/system')}>System</a>
     </nav>
   </header>
 
