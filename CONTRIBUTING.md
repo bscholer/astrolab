@@ -205,6 +205,73 @@ user supersedes the job mid-run), the wrapper terminates the
 subprocess and the runner translates that into a `JobCancelled` ->
 `'interrupted'` job status, separate from `'failed'`.
 
+## Adding a scope
+
+### What a scope adapter is
+
+An adapter is a Python class that walks a capture root and classifies what it finds into `DiscoveredFrame` and `DiscoveredMaster` objects. It never reads pixel data; it only looks at directory names, filenames, and a small set of FITS primary-header values. The contract is defined in `server/catalog/adapter.py` (`IngestAdapter` Protocol, `DiscoveredFrame`, `DiscoveredMaster`). The only implemented adapter is `server/catalog/adapters/dwarf3.py`; read it before writing a new one.
+
+### What we need from you
+
+You don't need to write any code to start. Open a GitHub issue with a sample bundle (see below) and we'll usually write the adapter from that.
+
+The bundle needs to answer five questions:
+
+1. **Folder layout.** What does a fresh capture root look like? Paste the directory tree, or run the collector script below. Include all top-level directories your device creates (lights, darks, flats, bias, pre-built masters, preview folders, etc.).
+
+2. **Filename patterns.** For each frame type (light, dark, flat, bias), give at least one real filename. If the filename encodes metadata (exposure, gain, filter, temperature, target name), label which part of the name carries which value.
+
+3. **Frame-type taxonomy.** Does your device produce calibration frames at all? If it does, does the filename or folder tell you the type, or is it only in the FITS `IMAGETYP` header? Does it produce per-session darks, a factory-calibration bundle shipped with the scope, or both?
+
+4. **Quirks.** Note anything that would trip up a naive directory walker: mosaic panel subfolders, failed-frame naming conventions (e.g. `failed_*.fits`), scope-side stacked output files alongside the raw subs, non-standard `IMAGETYP` values, pre-debayered files, or multi-night sessions that don't align with folder boundaries.
+
+5. **FITS primary headers.** For one light and one dark (or whatever your device's calibration type is), include the header values the collector script emits. We need OBJECT, EXPTIME, GAIN, FILTER, CAMERA, INSTRUME, IMAGETYP, and BAYERPAT at minimum. RA/DEC are redacted by default (see below).
+
+### Gathering the sample safely
+
+The adapter is structural: it only touches the primary FITS header, never the pixel array. The collector script reads the same fixed key list from `server/catalog/fits_reader.py`; that's all it can see. **No pixel data leaves your machine.**
+
+Run it from the repo root:
+
+```bash
+uv sync
+python scripts/collect_scope_sample.py /path/to/your/captures --scope-name SEESTAR_S50
+```
+
+This writes `astrolab-scope-sample-SEESTAR_S50-<date>.txt` in your current directory. Open it in a text editor and review it before posting anywhere.
+
+Default behavior:
+- RA, DEC, and DATE-OBS are masked to `REDACTED`. These are the only values that could reveal your observing site or the timestamps of your sessions.
+- Everything else (OBJECT, EXPTIME, GAIN, FILTER, CAMERA, INSTRUME, IMAGETYP, BAYERPAT, sensor dimensions) is kept. These are the values the adapter actually needs, and they're generally not sensitive.
+
+If you're uneasy about OBJECT (your target names), add `--redact-object`. You can also hand-write the tree and headers as plain text; the script is just a convenience.
+
+If you can't run `uv sync` (no Python 3.12, no uv, wrong OS), hand-paste the directory tree and one sample header block per frame type. We'll work with that.
+
+Flags:
+- `--no-redact` keeps RA/DEC/DATE-OBS. Only use this if you're comfortable sharing your site coordinates.
+- `--redact-object` also masks the OBJECT header.
+- `--fits-per-dir N` controls how many FITS files per directory to sample headers from (default 1).
+- `--scope-name NAME` labels the bundle in the output filename.
+
+### Submitting
+
+Open one GitHub issue per scope model. Attach the `.txt` file (or paste it inline if it's short). Include the firmware version if you know it; folder layouts sometimes change between firmware releases.
+
+Title format: `Scope adapter request: <model name>` (e.g. `Scope adapter request: Seestar S50`).
+
+We'll write the adapter once the bundle lands. Once the adapter is merged, add a test under `tests/test_<scope_id>_adapter.py` modeled on `tests/test_dwarf3_adapter.py`.
+
+### Writing the adapter yourself
+
+If you want to write it:
+
+1. Create `server/catalog/adapters/<scope_id>.py`. Implement a class with `scope_id: str` and `discover(self, root: Path) -> Iterator[DiscoveredItem]`. Call `register(YourAdapter())` at module level.
+2. Import it from `server/catalog/adapters/__init__.py` so the registry sees it at startup.
+3. Add `tests/test_<scope_id>_adapter.py`. Use `tmp_path` fixtures, `_touch()` helpers, and cover at minimum: lights, calibration frames (or the absence of them), and any scope-specific quirks (mosaic, failed frames, ignored sidecar files). See `tests/test_dwarf3_adapter.py` for the pattern.
+
+The adapter must not read FITS data; that's the scanner's job. Set `image_type` and `quality` from path conventions where possible; leave `session_hints` populated with whatever the path encodes (exptime, gain, target, timestamp). The scanner wins wherever both the path and the header carry the same field.
+
 ## Adding a template
 
 Templates live as YAML under `templates/<id>.yaml` and parse into the
