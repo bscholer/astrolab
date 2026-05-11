@@ -1,0 +1,109 @@
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker/**'
+      - '.github/workflows/docker.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'ui/package*.json'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            base: debian:bookworm-slim
+          - variant: cuda
+            base: nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # CPU variant: :latest (on main), :cpu, :vX.Y.Z (on tag), :vX.Y.Z-cpu (on tag)
+      - name: Compute tags (cpu)
+        if: matrix.variant == 'cpu'
+        id: meta-cpu
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=cpu
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{version}}-cpu
+
+      # CUDA variant: :cuda (on main), :vX.Y.Z-cuda (on tag)
+      - name: Compute tags (cuda)
+        if: matrix.variant == 'cuda'
+        id: meta-cuda
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=cuda
+            type=semver,pattern=v{{version}}-cuda
+
+      - name: Build and push (cpu)
+        if: matrix.variant == 'cpu'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: BASE=${{ matrix.base }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-cpu.outputs.tags }}
+          labels: ${{ steps.meta-cpu.outputs.labels }}
+          # GHA cache, per-variant scope so CPU and CUDA never invalidate each other.
+          # mode=max caches intermediate layers too, so apt/uv/Siril fetches survive.
+          cache-from: type=gha,scope=docker-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
+          # provenance/sbom add minutes for marginal value on hobby images
+          provenance: false
+          sbom: false
+
+      - name: Build and push (cuda)
+        if: matrix.variant == 'cuda'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: BASE=${{ matrix.base }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-cuda.outputs.tags }}
+          labels: ${{ steps.meta-cuda.outputs.labels }}
+          cache-from: type=gha,scope=docker-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
+          provenance: false
+          sbom: false
