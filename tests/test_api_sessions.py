@@ -277,13 +277,16 @@ def test_patch_rejects_both_keys(client: TestClient, tmp_path: Path) -> None:
     assert r.status_code in (400, 422)
 
 
-def test_patch_rejects_neither_key(client: TestClient, tmp_path: Path) -> None:
+def test_patch_with_neither_key_is_noop(client: TestClient, tmp_path: Path) -> None:
+    """An empty body is a no-op now that PATCH also carries description.
+    Returns 200 with the unchanged session; no target deleted."""
     captures = tmp_path / "caps"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC)
     run_scan(captures, scope_id="dwarf3")
     session_id, _ = _ids(client)
     r = client.patch(f"/api/sessions/{session_id}", json={})
-    assert r.status_code in (400, 422)
+    assert r.status_code == 200
+    assert r.json()["deleted_target_ids"] == []
 
 
 def test_get_candidates_shape(client: TestClient, tmp_path: Path) -> None:

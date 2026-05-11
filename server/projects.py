@@ -144,6 +144,9 @@ class Project:
     cover_seq: int | None = None
     """User-pinned history seq to render as the project's cover.
     None = auto-pick the latest entry with outputs."""
+    description: str | None = None
+    """Free-text notes the user attaches to the project. None when no
+    note has been saved; the UI suppresses empty labels."""
 
     def current_entry(self) -> HistoryEntry:
         # current_seq is always a valid index into history; we never let it drift.
@@ -169,6 +172,7 @@ class Project:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "cover_seq": self.cover_seq,
+            "description": self.description,
         }
 
 
@@ -407,6 +411,32 @@ class ProjectManager:
         )
         return project
 
+    def set_description(self, project_id: str, description: str | None) -> Project:
+        """Update the project's free-text notes. Does NOT submit a new
+        job (description is metadata, not pipeline-affecting input).
+
+        Empty/whitespace-only strings normalize to None so the "no note"
+        state is unambiguous in DTO + UI.
+        """
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+        normalized: str | None
+        if description is None:
+            normalized = None
+        else:
+            stripped = description.strip()
+            normalized = stripped if stripped else None
+        project.description = normalized
+        project.updated_at = _now()
+        self._persist_project(project, kind="update")
+        log.info(
+            "project description set: %s (len=%s)",
+            project_id, len(normalized) if normalized else 0,
+        )
+        return project
+
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.
@@ -455,8 +485,8 @@ class ProjectManager:
                         INSERT INTO projects
                         (id, name, template_id, template_version, template_json,
                          base_job_json, current_seq, draft_mode, source_session_ids,
-                         created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         created_at, updated_at, description)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             project.id,
@@ -470,13 +500,15 @@ class ProjectManager:
                             json.dumps(project.source_session_ids),
                             project.created_at,
                             project.updated_at,
+                            project.description,
                         ),
                     )
                 else:
                     conn.execute(
                         """
                         UPDATE projects
-                        SET name=?, current_seq=?, draft_mode=?, cover_seq=?, updated_at=?
+                        SET name=?, current_seq=?, draft_mode=?, cover_seq=?,
+                            updated_at=?, description=?
                         WHERE id=?
                         """,
                         (
@@ -485,6 +517,7 @@ class ProjectManager:
                             int(project.draft_mode),
                             project.cover_seq,
                             project.updated_at,
+                            project.description,
                             project.id,
                         ),
                     )
@@ -567,6 +600,13 @@ class ProjectManager:
             cover_seq=(
                 row["cover_seq"]
                 if "cover_seq" in row.keys()  # noqa: SIM118
+                else None
+            ),
+            # description is nullable; pre-migration rows have no
+            # column at all, so we mirror the cover_seq guard pattern.
+            description=(
+                row["description"]
+                if "description" in row.keys()  # noqa: SIM118
                 else None
             ),
         )

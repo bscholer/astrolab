@@ -375,6 +375,65 @@
     // 'approx', always useful for 'none').
     return c.reason && c.quality !== 'exact' ? `${base}\n${c.reason}` : base;
   }
+
+  // ---- Session notes (light-touch affordance) ------------------------
+  // The Library is already dense, so the notes UI here is intentionally
+  // minimal: a "Notes" toggle reveals an inline textarea, autosaves on
+  // blur via PATCH /api/sessions/{id}. We keep open state and draft
+  // values keyed by session id so flipping between sessions works.
+  let notesOpenId = $state<number | null>(null);
+  let notesDraftById = $state<Map<number, string>>(new Map());
+  let notesSavingId = $state<number | null>(null);
+
+  function toggleNotes(s: SessionSummary) {
+    if (notesOpenId === s.id) {
+      notesOpenId = null;
+      return;
+    }
+    // Initialize the draft from the server snapshot on first open so
+    // late-arriving target detail edits don't surprise the user.
+    if (!notesDraftById.has(s.id)) {
+      const next = new Map(notesDraftById);
+      next.set(s.id, s.description ?? '');
+      notesDraftById = next;
+    }
+    notesOpenId = s.id;
+  }
+
+  function setNotesDraft(sessionId: number, value: string) {
+    const next = new Map(notesDraftById);
+    next.set(sessionId, value);
+    notesDraftById = next;
+  }
+
+  async function saveNotesOnBlur(s: SessionSummary) {
+    const draft = notesDraftById.get(s.id) ?? '';
+    const server = s.description ?? '';
+    if (draft === server) return;
+    notesSavingId = s.id;
+    try {
+      const resp = await api.patchSession(s.id, { description: draft });
+      const updated = resp.session;
+      // Re-thread the server's normalized value into the in-memory
+      // target detail map so subsequent reads see the saved state.
+      const detail = targetDetails.get(openTargetId ?? -1);
+      if (detail) {
+        const nextSessions = detail.sessions.map((existing) =>
+          existing.id === s.id ? updated : existing
+        );
+        const cloned = new Map(targetDetails);
+        cloned.set(detail.id, { ...detail, sessions: nextSessions });
+        targetDetails = cloned;
+      }
+      const draftNext = new Map(notesDraftById);
+      draftNext.set(s.id, updated.description ?? '');
+      notesDraftById = draftNext;
+    } catch (e) {
+      toast.error(`Couldn't save notes: ${(e as Error).message}`);
+    } finally {
+      notesSavingId = null;
+    }
+  }
 </script>
 
 <svelte:window on:keydown={handleReassignKey} />
@@ -676,6 +735,15 @@
                         {#if !multiMode}
                           <button
                             type="button"
+                            class="notes-btn"
+                            onclick={() => toggleNotes(s)}
+                            aria-expanded={notesOpenId === s.id}
+                            title={s.description ?? 'Add notes'}
+                          >
+                            {s.description ? 'Notes ●' : 'Notes'}
+                          </button>
+                          <button
+                            type="button"
                             class="run-btn"
                             onclick={() => toggleRun(s.id)}
                             aria-expanded={runOpenSessionId === s.id}
@@ -778,6 +846,36 @@
                               </form>
                             </div>
                           {/if}
+                        </div>
+                      {/if}
+                      {#if s.description && notesOpenId !== s.id}
+                        <!-- When the textarea is closed, surface the saved
+                             note as a small italic snippet so it's
+                             discoverable without forcing the textarea
+                             open. Suppressed entirely when empty. -->
+                        <p class="session-note muted small" title={s.description}>
+                          {s.description}
+                        </p>
+                      {/if}
+                      {#if !multiMode && notesOpenId === s.id}
+                        <div class="notes-panel" transition:slide={{ duration: 140, easing: cubicOut }}>
+                          <label class="notes-label" for={`session-notes-${s.id}`}>
+                            Session notes
+                            {#if notesSavingId === s.id}
+                              <span class="muted small">· saving…</span>
+                            {/if}
+                          </label>
+                          <textarea
+                            id={`session-notes-${s.id}`}
+                            class="session-notes-area"
+                            rows="2"
+                            placeholder="Add notes (full moon, dew heater on, etc.). Saves on blur."
+                            value={notesDraftById.get(s.id) ?? ''}
+                            oninput={(e) =>
+                              setNotesDraft(s.id, (e.currentTarget as HTMLTextAreaElement).value)
+                            }
+                            onblur={() => saveNotesOnBlur(s)}
+                          ></textarea>
                         </div>
                       {/if}
                       {#if !multiMode && runOpenSessionId === s.id}
@@ -1530,6 +1628,70 @@
     font-size: 0.75rem;
     cursor: pointer;
     margin-left: 0.5rem;
+  }
+
+  /* Notes affordance lives next to the Run pill. Borderless pill so it
+     reads as a secondary link, not a primary action. The user
+     mentioned the Library was getting cluttered, so this stays quiet
+     until they actually want it. A small filled dot signals "this
+     session has a saved note". */
+  .notes-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--fg-mute);
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    margin-left: 0.25rem;
+  }
+  .notes-btn:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--fg);
+  }
+  .notes-btn[aria-expanded='true'] {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--fg);
+  }
+  .session-note {
+    margin: 0.2rem 0 0;
+    /* The closed-state note line: truncate long notes to one row so a
+       paragraph doesn't blow the session-row height; the textarea
+       reveals the full text on open. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-style: italic;
+    max-width: 100%;
+  }
+  .notes-panel {
+    margin-top: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .notes-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-mute);
+  }
+  .session-notes-area {
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.85rem;
+    line-height: 1.35;
+    resize: vertical;
+    font-family: inherit;
+  }
+  .session-notes-area:focus {
+    outline: none;
+    border-color: var(--accent);
   }
   .run-btn:hover {
     background: var(--accent-soft);

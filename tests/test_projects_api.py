@@ -364,3 +364,161 @@ def test_patch_signals_prior_running_job(monkeypatch, client, tmp_path: Path) ->
 
     assert prior_job in cancelled, \
         "patch should have asked JobManager to cancel the prior active job"
+
+
+# ---------------------------------------------------------------------------
+# Description (notes) field
+# ---------------------------------------------------------------------------
+
+
+def test_description_defaults_to_null(client, tmp_path: Path) -> None:
+    """Fresh projects start with no note set."""
+    src = _make_png(tmp_path / "in.png")
+    body = client.post("/api/projects", json=_payload(src)).json()
+    assert body["description"] is None
+
+
+def test_patch_description_round_trips(client, tmp_path: Path) -> None:
+    """PATCH stores a note and GET returns it without losing the project's
+    other state. The metadata patch must not append a history entry."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+    pre_history_len = len(client.get(f"/api/projects/{pid}").json()["history"])
+
+    r = client.patch(
+        f"/api/projects/{pid}",
+        json={"description": "first night with the dew heater"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["description"] == "first night with the dew heater"
+    # No new history entry: description is metadata, not pipeline input.
+    assert len(body["history"]) == pre_history_len
+
+    # GET round-trip carries the note.
+    body2 = client.get(f"/api/projects/{pid}").json()
+    assert body2["description"] == "first night with the dew heater"
+
+
+def test_patch_description_empty_string_clears(client, tmp_path: Path) -> None:
+    """Empty/whitespace-only descriptions normalize to null so the UI's
+    'no note' state is unambiguous."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    client.patch(f"/api/projects/{pid}", json={"description": "stuff"})
+    r = client.patch(f"/api/projects/{pid}", json={"description": "   "})
+    assert r.json()["description"] is None
+    r2 = client.patch(f"/api/projects/{pid}", json={"description": "stuff"})
+    assert r2.json()["description"] == "stuff"
+    r3 = client.patch(f"/api/projects/{pid}", json={"description": ""})
+    assert r3.json()["description"] is None
+
+
+def test_patch_omitting_description_leaves_it_alone(client, tmp_path: Path) -> None:
+    """A PATCH that doesn't include description doesn't touch a saved note."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+    client.patch(f"/api/projects/{pid}", json={"description": "keep me"})
+
+    # An override-only patch must not clear the note.
+    r = client.patch(
+        f"/api/projects/{pid}",
+        json={"overrides": {"ds": {"target_size_px": 32}}},
+    )
+    body = r.json()
+    assert body["description"] == "keep me"
+
+
+def test_patch_description_404_on_unknown_project(client) -> None:
+    r = client.patch("/api/projects/not-real", json={"description": "x"})
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Display name DTO
+# ---------------------------------------------------------------------------
+
+
+def test_display_is_null_without_resolved_target(client, tmp_path: Path) -> None:
+    """When the project has no source sessions (raw template+job path),
+    there's no target to resolve, so display surfaces as None."""
+    src = _make_png(tmp_path / "in.png")
+    body = client.post("/api/projects", json=_payload(src)).json()
+    assert body["display"] is None
+
+
+# A separate fixture pins ASTROLAB_HOME so the API's DBDep (which goes through
+# default_db_path()) and the project/job managers all read+write the same DB.
+# The base `client` above shards the DB via reset_for_tests but doesn't touch
+# ASTROLAB_HOME, so /api/projects POST reads from a different sqlite file than
+# the manager writes into. For the display tests we need both ends aligned.
+@pytest.fixture
+def client_with_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from server.catalog.db import default_db_path
+
+    monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path))
+    db_path = default_db_path()
+    monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
+    job_manager.reset_for_tests(db_path=db_path)
+    project_manager.reset_for_tests(db_path=db_path)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_display_surfaces_common_name_for_resolved_single_target(
+    client_with_catalog, tmp_path: Path
+) -> None:
+    """A project whose only source session points at 'M 33' should surface
+    {name: 'Triangulum Galaxy', canonical: 'NGC 598'} on its DTO. The UI
+    promotes this to the page header with the canonical id as a sub-label.
+    """
+    from server.catalog.db import open_db
+
+    with open_db() as conn, conn:
+        conn.execute("INSERT INTO targets (id, name) VALUES (101, 'M 33')")
+        conn.execute(
+            """
+            INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
+            VALUES (501, 'dwarf3', 'kdisplay', 101, 3)
+            """,
+        )
+
+    src = _make_png(tmp_path / "in.png")
+    payload = _payload(src, name="user's M33 OSC RGB processing")
+    payload["source_session_ids"] = ["501"]
+    body = client_with_catalog.post("/api/projects", json=payload).json()
+
+    # The user's own project name still rides on `name`.
+    assert body["name"] == "user's M33 OSC RGB processing"
+    # And the display block carries the catalog-resolved labels.
+    assert body["display"] is not None
+    assert body["display"]["name"] == "Triangulum Galaxy"
+    assert body["display"]["canonical"] == "NGC 598"
+
+
+def test_display_is_null_for_unresolvable_target(
+    client_with_catalog, tmp_path: Path
+) -> None:
+    """A target with a freeform name that doesn't resolve in OpenNGC and
+    has no curated common_name surfaces as display=None; the UI falls
+    back to the user's project name in that case."""
+    from server.catalog.db import open_db
+
+    with open_db() as conn, conn:
+        conn.execute(
+            "INSERT INTO targets (id, name) VALUES (102, 'my-backyard-comet')"
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
+            VALUES (502, 'dwarf3', 'kfreeform', 102, 3)
+            """,
+        )
+
+    src = _make_png(tmp_path / "in.png")
+    payload = _payload(src, name="comet pass")
+    payload["source_session_ids"] = ["502"]
+    body = client_with_catalog.post("/api/projects", json=payload).json()
+    assert body["display"] is None
