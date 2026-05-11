@@ -7,6 +7,7 @@ against a synthetic Dwarf 3 tree, then exercise the endpoints.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -164,15 +165,32 @@ def test_list_masters(client: TestClient) -> None:
 
 
 def test_scan_endpoint(tmp_path: Path, astrolab_home: Path) -> None:
-    """A POST /api/scan against a fresh root populates the catalog."""
+    """POST /api/scan returns 202 and runs the scan in a background thread;
+    poll /api/scan/status until idle, then assert the catalog populated."""
     captures = tmp_path / "captures2"
     _seed_tree(captures)
     client = TestClient(app)
     r = client.post("/api/scan", json={"root": str(captures), "scope_id": "dwarf3"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["discovered"] >= 4
-    assert body["masters_inserted"] >= 1
+    assert r.status_code == 202
+    assert r.json() == {"status": "started"}
+
+    # Poll status until the background scan finishes; bail out at 10s so a
+    # genuinely broken scan doesn't hang the suite.
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        s = client.get("/api/scan/status").json()
+        if not s["running"]:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("scan never finished within 10s")
+
+    snap = client.get("/api/scan/status").json()
+    assert snap["error"] is None, snap
+    stats = snap["last_stats"]
+    assert stats is not None
+    assert stats["discovered"] >= 4
+    assert stats["masters_inserted"] >= 1
 
 
 def test_scan_endpoint_rejects_missing_root(astrolab_home: Path) -> None:
