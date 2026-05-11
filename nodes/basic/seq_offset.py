@@ -23,6 +23,7 @@ from pathlib import Path
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
+from nodes._seq_runner import seq_ref
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -95,14 +96,7 @@ class SeqOffsetNode(Node[SeqOffsetParams]):
         )
 
         ctx.progress(1.0, f"seq_offset: wrote {wrote}")
-        return {
-            "sequence": Ref(
-                node_hash="",
-                port="sequence",
-                path=seq_out,
-                type=PortType.SEQUENCE_FITS,
-            )
-        }
+        return {"sequence": seq_ref(seq_out)}
 
 
 def _apply_offset(
