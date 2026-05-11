@@ -130,3 +130,44 @@ def test_scan_handles_missing_root(tmp_path: Path, astrolab_home: Path) -> None:
     missing = tmp_path / "does-not-exist"
     stats = scan(missing, scope_id="dwarf3")
     assert stats.discovered == 0
+
+
+def test_scan_incremental_refresh_populates_sessions_early(
+    tmp_path: Path, astrolab_home: Path
+) -> None:
+    """Sessions must exist in the DB before the scan finishes.
+
+    The scanner runs an incremental _refresh_sessions every 50 frames.
+    We build 51 light frames so the threshold fires after frame 50 is
+    ingested. The progress callback for frame 51 then sees the sessions
+    row already in the DB, confirming they populated mid-scan.
+    """
+    captures = tmp_path / "captures"
+
+    # Build 51 light frames: batch of 50 triggers the refresh, frame 51's
+    # progress callback verifies the refresh ran before the scan ends.
+    session_dir = captures / "DWARF_RAW_TELE_M 33_EXP_30_GAIN_60_2025-10-21-22-18-55-284"
+    for i in range(51):
+        write_fits(
+            session_dir / f"M 33_30s60_Astro_20251021-{i:06d}_24C.fits",
+            headers={**DEFAULT_LIGHT_HEADER, "OBJECT": "M 33"},
+        )
+
+    sessions_seen_mid_scan: list[int] = []
+
+    def _progress(seen: int, _total: int, path: str) -> None:
+        # Frame 51's callback fires after frames 1-50 are ingested and the
+        # incremental refresh has run (refresh triggers when _frames_since_refresh
+        # hits 50, which happens after the 50th ingest, before this callback).
+        if seen == 51:
+            with open_db() as conn:
+                count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                sessions_seen_mid_scan.append(count)
+
+    scan(captures, scope_id="dwarf3", progress=_progress)
+
+    # The incremental refresh must have fired and written at least one session.
+    assert len(sessions_seen_mid_scan) > 0, "progress callback never reached frame 51"
+    assert sessions_seen_mid_scan[0] >= 1, (
+        f"expected at least 1 session mid-scan, got {sessions_seen_mid_scan[0]}"
+    )

@@ -126,17 +126,36 @@ export interface ReassignCandidatesResponse {
   catalog: ReassignCandidateCatalog[];
 }
 
-export interface ScanResponse {
+export interface ScanStartResponse {
+  status: 'started' | 'already_running';
+}
+
+export interface ScanLastStats {
   discovered: number;
   inserted: number;
   updated: number;
-  removed: number;
   skipped_unchanged: number;
+  removed: number;
   failed: number;
   masters_inserted: number;
   masters_updated: number;
   masters_removed: number;
   masters_skipped: number;
+}
+
+export interface ScanStatusResponse {
+  running: boolean;
+  started_at: number | null;
+  finished_at: number | null;
+  current_path: string | null;
+  discovered: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  removed: number;
+  failed: number;
+  error: string | null;
+  last_stats: ScanLastStats | null;
 }
 
 /**
@@ -728,7 +747,8 @@ export const api = {
       `/api/sessions/${id}/reassign_candidates`
     ),
   scan: (root: string, scope_id = 'dwarf3') =>
-    postJSON<ScanResponse>('/api/scan', { root, scope_id }),
+    postJSON<ScanStartResponse>('/api/scan', { root, scope_id }),
+  scanStatus: () => getJSON<ScanStatusResponse>('/api/scan/status'),
   listJobs: () => getJSON<JobSummary[]>('/api/jobs'),
   getJob: (id: string) => getJSON<JobSummary>(`/api/jobs/${id}`),
   getJobEvents: (id: string) => getJSON<JobEvent[]>(`/api/jobs/${id}/events`),
