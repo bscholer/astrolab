@@ -311,6 +311,14 @@ class ProjectManager:
         status 'interrupted'; the user can resume it by re-submitting its
         overrides.
 
+        Collapse rule: when the current history entry's job is interrupted
+        (or we just cancelled a still-live job that will become interrupted),
+        overwrite that row instead of appending. A debounced slider drag fires
+        many PATCHes in quick succession; without the collapse each one leaves
+        a 'cancelled at node X' tombstone the user has to mash through with
+        Cmd-Z. Only the immediate-previous entry collapses; we never walk
+        backwards through a chain of older non-interrupted entries.
+
         Raises ProjectNotFound if the id is unknown.
         """
         with self._lock:
@@ -318,7 +326,8 @@ class ProjectManager:
         if project is None:
             raise ProjectNotFound(project_id)
 
-        prev_overrides = project.current_overrides()
+        prev_entry = project.current_entry()
+        prev_overrides = prev_entry.overrides
         new_overrides = (
             _deep_merge_overrides(prev_overrides, overrides)
             if overrides is not None
@@ -328,19 +337,63 @@ class ProjectManager:
         if draft_mode is not None:
             project.draft_mode = draft_mode
 
-        prev_job_id = project.current_entry().job_id
-        self._jobs.cancel(prev_job_id)
+        # Decide whether to collapse before signalling cancel: the prior job
+        # may already have transitioned to 'interrupted' (worker beat us to
+        # it from an earlier PATCH in the same drag) OR cancel() will return
+        # True now because the job is still live and we're tombstoning it.
+        # Either way the prior entry is a transient drag-step the user will
+        # never revert to, so we overwrite it instead of appending.
+        prev_job_id = prev_entry.job_id
+        prev_record = self._jobs.get(prev_job_id)
+        prev_status = prev_record.status if prev_record is not None else None
+        cancelled_live = self._jobs.cancel(prev_job_id)
+        collapse = prev_status == "interrupted" or cancelled_live
+
+        # When collapsing, compare against the entry BEFORE the one being
+        # replaced so the auto-label reads "64 -> 8" across a drag, not the
+        # last intermediate step's "16 -> 8".
+        if collapse:
+            baseline_overrides = self._overrides_before(project, prev_entry.seq)
+        else:
+            baseline_overrides = prev_overrides
 
         job_id = self._submit_with_overrides(project, new_overrides, force=force)
 
-        next_seq = max((h.seq for h in project.history), default=-1) + 1
         derived_label = label
         if derived_label is None:
-            if force and new_overrides == prev_overrides:
+            if force and new_overrides == baseline_overrides:
                 derived_label = "Reprocess (cache bypass)"
             else:
-                derived_label = _diff_label(prev_overrides, new_overrides)
+                derived_label = _diff_label(baseline_overrides, new_overrides)
 
+        if collapse:
+            seq = prev_entry.seq
+            entry = HistoryEntry(
+                seq=seq,
+                job_id=job_id,
+                overrides=new_overrides,
+                label=derived_label,
+                created_at=_now(),
+                # Published was almost certainly false on the interrupted
+                # entry (you don't publish a tombstone), but preserve any
+                # explicit flag the user set rather than silently clearing it.
+                published=prev_entry.published,
+            )
+            # Replace in place; current_seq already points at this seq so
+            # undo/redo continues to walk the same numeric range.
+            idx = next(i for i, h in enumerate(project.history) if h.seq == seq)
+            project.history[idx] = entry
+            project.updated_at = _now()
+
+            self._persist_project(project, kind="update")
+            self._persist_history_entry_replace(project_id, entry)
+            log.info(
+                "project patched (collapsed): %s seq=%d job=%s label=%r prev_job=%s",
+                project_id, seq, job_id, derived_label, prev_job_id,
+            )
+            return project
+
+        next_seq = max((h.seq for h in project.history), default=-1) + 1
         entry = HistoryEntry(
             seq=next_seq,
             job_id=job_id,
@@ -359,6 +412,17 @@ class ProjectManager:
             project_id, next_seq, job_id, derived_label,
         )
         return project
+
+    @staticmethod
+    def _overrides_before(project: Project, seq: int) -> dict[str, dict[str, Any]]:
+        """Return the overrides snapshot of the history entry immediately
+        before `seq`, or empty if `seq` is the first entry. Used by the
+        collapse path to compute auto-labels against a stable baseline."""
+        prior = [h for h in project.history if h.seq < seq]
+        if not prior:
+            return {}
+        prior.sort(key=lambda h: h.seq)
+        return prior[-1].overrides
 
     def forget(self, project_id: str) -> bool:
         """Drop a project from the in-memory map. Used by the API after the
@@ -552,6 +616,43 @@ class ProjectManager:
                 )
         except sqlite3.Error:
             log.exception("DB write failed for history on project %s", project_id)
+        finally:
+            conn.close()
+
+    def _persist_history_entry_replace(
+        self, project_id: str, entry: HistoryEntry
+    ) -> None:
+        """Overwrite an existing history row's mutable fields. Used by the
+        collapse path in patch(); leaves seq/project_id untouched so the
+        UNIQUE (project_id, seq) constraint isn't disturbed."""
+        try:
+            conn = self._conn()
+        except Exception:
+            return
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE project_history
+                    SET job_id=?, overrides_json=?, label=?, created_at=?,
+                        published=?
+                    WHERE project_id=? AND seq=?
+                    """,
+                    (
+                        entry.job_id,
+                        json.dumps(entry.overrides),
+                        entry.label,
+                        entry.created_at,
+                        int(entry.published),
+                        project_id,
+                        entry.seq,
+                    ),
+                )
+        except sqlite3.Error:
+            log.exception(
+                "DB write failed replacing history on project %s seq=%d",
+                project_id, entry.seq,
+            )
         finally:
             conn.close()
 
