@@ -301,3 +301,80 @@ def test_cache_hit_falls_back_when_manifest_missing(
     second = run_job(template, job)
     assert second["image"].path == first["image"].path
     assert second["image"].path.exists()
+
+
+# ---- template upgrade cache survival -----------------------------------------
+#
+# Issue #61: bumping a template version while keeping the upstream node
+# identities (id, version, params, edges) bit-identical must leave those
+# upstream cache entries reusable. Adding `auto_bp_shift` downstream of
+# `crop` is a real-world instance — the user's stacked output (hours of
+# compute) must not get invalidated by the template bump alone.
+
+
+def test_template_version_bump_preserves_upstream_cache(
+    tmp_path: Path, astrolab_home: Path
+) -> None:
+    src = tmp_path / "in.png"
+    _make_test_png(src, (2000, 1000))
+
+    v1 = Template(
+        id="upgrade_demo",
+        version=1,
+        nodes=[
+            NodeSpec(id="ds", kind="downscale", params={"target_size_px": 512}),
+        ],
+        outputs={"image": "ds.image"},
+    )
+    # v2 keeps `ds` bit-identical but adds a second downscale downstream and
+    # bumps the template version. This mirrors the auto_bp_shift insertion
+    # we plan to ship: a new node slotted in below an unchanged upstream chain.
+    v2 = Template(
+        id="upgrade_demo",
+        version=2,
+        nodes=[
+            NodeSpec(id="ds", kind="downscale", params={"target_size_px": 512}),
+            NodeSpec(
+                id="ds2",
+                kind="downscale",
+                params={"target_size_px": 256},
+                inputs={"image": "ds.image"},
+            ),
+        ],
+        outputs={"image": "ds2.image"},
+    )
+
+    job_v1 = Job(
+        template_id="upgrade_demo",
+        template_version=1,
+        inputs={
+            "ds.image": Ref(
+                node_hash="ext", port="image", path=src, type=PortType.IMAGE_PNG
+            )
+        },
+    )
+    job_v2 = job_v1.model_copy(update={"template_version": 2})
+
+    # Prime the cache on v1: `ds` runs for real.
+    events_v1: list[dict] = []
+    run_job(v1, job_v1, events=events_v1.append)
+    ds_hash_v1 = next(
+        e["hash"] for e in events_v1 if e["type"] == "node_started" and e["node_id"] == "ds"
+    )
+
+    # Run v2: `ds` must cache-hit (same id/version/params/inputs), `ds2`
+    # must run for real (new node).
+    events_v2: list[dict] = []
+    run_job(v2, job_v2, events=events_v2.append)
+
+    ds_started = next(
+        e for e in events_v2 if e["type"] == "node_started" and e["node_id"] == "ds"
+    )
+    assert ds_started["hash"] == ds_hash_v1, (
+        "template_version must not enter the per-node hash; "
+        "ds re-hashed across the template bump"
+    )
+
+    cached_events = {e["node_id"] for e in events_v2 if e["type"] == "node_cached"}
+    assert "ds" in cached_events, "upstream node should have cache-hit on the bumped template"
+    assert "ds2" not in cached_events, "newly inserted node should not have cache-hit"

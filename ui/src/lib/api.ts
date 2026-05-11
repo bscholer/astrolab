@@ -440,7 +440,16 @@ export interface Project {
   // target. Null when there are no candidates or when the project is
   // multi-target. The UI renders the suggestion banner off this.
   suggested_additions: SuggestedAdditions | null;
+  // Latest version of this project's template available on disk. Equal
+  // to template_version when the project is on the latest; greater when
+  // a template bump is available to upgrade into.
+  latest_template_version?: number;
 }
+
+export type UpgradeTemplateResponse = Project & {
+  new_job_id: string;
+  dropped_overrides: string[];
+};
 
 export interface CreateProjectFromSessionRequest {
   session_id: number;
@@ -737,6 +746,11 @@ export const api = {
     patchJSON<Project>(`/api/projects/${id}`, req),
   revertProject: (id: string, seq: number) =>
     postJSON<Project>(`/api/projects/${id}/revert/${seq}`, {}),
+  upgradeProjectTemplate: (id: string) =>
+    postJSON<UpgradeTemplateResponse>(
+      `/api/projects/${id}/upgrade_template`,
+      {}
+    ),
   setProjectCover: (id: string, seq: number | null) =>
     putJSON<Project>(`/api/projects/${id}/cover`, { seq }),
   setHistoryPublished: (id: string, seq: number, published: boolean) =>

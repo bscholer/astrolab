@@ -1850,6 +1850,13 @@ def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     payload["suggested_additions"] = (
         suggestions.model_dump(mode="json") if suggestions.session_ids else None
     )
+    # Surface latest available template version so the UI can show / enable
+    # the "Upgrade template" button only when there's something to move to.
+    try:
+        latest = load_template(project.template.id)
+        payload["latest_template_version"] = latest.version
+    except TemplateNotFound:
+        payload["latest_template_version"] = project.template.version
     return payload
 
 
@@ -2016,6 +2023,66 @@ def set_history_published(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _project_to_response(project, conn)
+
+
+@app.post("/api/projects/{project_id}/upgrade_template")
+def upgrade_project_template(project_id: str, conn: DBDep) -> dict:
+    """Move the project to the latest version of its current template.
+
+    The on-disk template YAML may have advanced past what's frozen on the
+    project row; this endpoint reloads the YAML, validates the version
+    moves forward, runs `migrate_param_overrides` to carry user overrides
+    forward where possible, and submits a fresh render against the new
+    template.
+
+    Per-node cache keys do not include `template_version`, so nodes whose
+    identity (id, kind, version, params, input edges) is unchanged will
+    cache-hit on the next render. Only inserted, removed, or rewired
+    nodes recompute.
+
+    Returns the updated project plus a `dropped_overrides` field listing
+    any overrides that didn't survive the migration (removed node /
+    removed param).
+    """
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        )
+    try:
+        latest = load_template(project.template.id)
+    except TemplateNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"template {project.template.id!r} not found on disk",
+        ) from exc
+    if latest.version <= project.template.version:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"project is already on the latest template version "
+                f"(v{project.template.version}); on-disk template is "
+                f"v{latest.version}"
+            ),
+        )
+    try:
+        updated, new_job_id, dropped = project_manager.upgrade_template(
+            project_id, new_template=latest
+        )
+    except ProjectNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log.info(
+        "project template upgraded: %s v%d job=%s dropped=%d",
+        project_id, updated.template.version, new_job_id, len(dropped),
+    )
+    response = _project_to_response(updated, conn)
+    response["dropped_overrides"] = dropped
+    response["new_job_id"] = new_job_id
+    return response
 
 
 @app.post("/api/projects/{project_id}/revert/{seq}")
