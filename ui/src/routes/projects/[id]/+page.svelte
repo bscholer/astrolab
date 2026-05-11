@@ -1249,7 +1249,6 @@
     border-radius: var(--radius, 8px);
     background: var(--bg-elev);
     overflow: hidden;
-    container-type: inline-size;
   }
   .sources-summary {
     list-style: none;
@@ -1292,19 +1291,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-  }
-
-  /* At 700px+ container width the sessions-used list gains a second
-     column, halving vertical space. Each SessionRow is its own grid
-     container so the inline notes panel still fires inside each card
-     when the card itself is wide enough (>=540px). At 700px per card
-     in a 2-col layout each card is ~330px, so notes stay stacked --
-     intentional: the card is narrower than the threshold. */
-  @container (min-width: 700px) {
-    .sources-list {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-    }
   }
 
   /* Manage Sessions modal. Same backdrop convention as the Compare
