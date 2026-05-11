@@ -131,6 +131,12 @@ RUN apt-get update -qq && \
         libwcs7 \
         # GTK/display libs Siril's AppRun init probe may touch (headless ok)
         libglib2.0-0 \
+        # X libs GraXpert's bundled tkinter loads even in --cli mode
+        libxrender1 \
+        libxext6 \
+        libxft2 \
+        libfontconfig1 \
+        libsm6 \
         # Network / TLS (for catalog fetches inside Siril)
         libcurl4 \
         ca-certificates \
