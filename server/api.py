@@ -33,6 +33,7 @@ Phase 2 keeps job state in memory; persistence + worker scaling come later.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -1148,36 +1149,38 @@ def get_job(job_id: str, conn: DBDep) -> dict:
 
 @app.get("/api/jobs/{job_id}/events")
 def get_job_events(job_id: str) -> list[dict]:
-    """Return the buffered event history for a job (snapshot, not live)."""
-    record = job_manager.get(job_id)
-    if record is None:
+    """Return the persisted event history for a job (snapshot, not live)."""
+    if job_manager.get(job_id) is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
-    return [ev.to_dict() for ev in record.events]
+    return [ev.to_dict() for ev in job_manager.get_events(job_id)]
+
+
+_EVENT_POLL_SECONDS = 0.25
 
 
 @app.websocket("/api/jobs/{job_id}/events")
 async def stream_job_events(ws: WebSocket, job_id: str) -> None:
-    """Live event stream for a job: replays history, then streams new events.
-
-    Closes when the job reaches a terminal state (completed or failed). The
-    client can reconnect or fall back to GET /api/jobs/{id} for the snapshot.
-    """
+    """Live event stream for a job. With the worker in a separate process,
+    we tail job_events by seq cursor instead of sharing an asyncio.Queue."""
     await ws.accept()
-    queue = job_manager.subscribe(job_id)
-    if queue is None:
+    if job_manager.get(job_id) is None:
         await ws.close(code=4404, reason=f"job {job_id} not found")
         return
+    last_seq = -1
     try:
         while True:
-            event = await queue.get()
-            await ws.send_json(event.to_dict())
-            if event.type in ("job_completed", "job_failed", "job_interrupted"):
-                break
+            events = await asyncio.to_thread(
+                job_manager.get_events, job_id, after_seq=last_seq
+            )
+            for ev in events:
+                await ws.send_json(ev.to_dict())
+                last_seq += 1
+                if ev.type in ("job_completed", "job_failed", "job_interrupted"):
+                    return
+            await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         pass
     finally:
-        job_manager.unsubscribe(job_id, queue)
-        # Best-effort close; ignore if already closed.
         with contextlib.suppress(RuntimeError):
             await ws.close()
 

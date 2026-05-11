@@ -1,0 +1,36 @@
+# astrolab-worker.service
+#
+# Deliberately independent of astrolab-api.service. The deploy hook (which
+# fires on every merge to main) restarts the API; this unit is left alone
+# so a deploy can't SIGTERM an in-flight Siril subprocess.
+#
+# SIGUSR1 (via ExecReload / `systemctl reload`) is the polite shutdown:
+# the worker stops claiming new jobs and exits once the in-flight job
+# settles. SIGTERM (via `systemctl stop` / `restart`) cancels the
+# in-flight job too. TimeoutStopSec is bumped to 24h so a stop on the
+# middle of a long stack waits rather than hard-killing the subprocess.
+[Unit]
+Description=astrolab job worker (claims queued jobs, runs Siril)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/scratch
+
+[Service]
+Type=simple
+User=bscholer
+Group=bscholer
+WorkingDirectory=/home/bscholer/projects/astrolab
+Environment=ASTROLAB_HOME=/scratch/astrolab
+Environment=PATH=/home/bscholer/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/bscholer/projects/astrolab/.venv/bin/python -m server.worker
+Restart=on-failure
+RestartSec=5
+ExecReload=/bin/kill -USR1 $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=86400
+StandardOutput=append:/var/log/astrolab-worker.log
+StandardError=append:/var/log/astrolab-worker.log
+
+[Install]
+WantedBy=multi-user.target

@@ -17,15 +17,18 @@ from PIL import Image
 import nodes.basic  # noqa: F401  registers downscale
 from server.api import app, job_manager
 from server.cache import ContentCache
+from tests._jobs_helpers import background_worker
 
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Per-test cache + DB so persistence writes don't leak across tests or
     # touch the user's real catalog.
-    monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
-    job_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
-    with TestClient(app) as c:
+    cache = ContentCache(root=tmp_path / "cache")
+    db_path = tmp_path / "catalog.sqlite"
+    monkeypatch.setattr(job_manager, "_cache", cache)
+    job_manager.reset_for_tests(db_path=db_path)
+    with background_worker(cache, db_path), TestClient(app) as c:
         yield c
 
 

@@ -1,29 +1,34 @@
-"""In-process job manager for the astrolab control plane.
+"""Job orchestration, split across two processes.
 
-Phase 2 keeps live job state in memory but persists submission metadata and
-the per-job event log to the catalog DB so jobs survive restarts. The
-in-memory map is rehydrated from disk on startup; jobs whose status was
-'queued' or 'running' when the server died are marked 'interrupted' and
-their record is fixed up with a synthetic event so the UI can render them.
+JobManager runs inside the FastAPI process. It only writes to the catalog
+DB - no threads, no executor, no in-memory state. submit() inserts a queued
+row; cancel() flips a column the worker polls; get/list/get_events read
+straight from disk.
 
-A single worker is fine for now: most nodes are subprocess-bound and
-contention happens inside Siril, not in Python. Concurrency tuning lands when
-we have a good measurement of what 'expensive' nodes need.
+JobWorker runs inside the dedicated worker process (`python -m
+server.worker`). It claims queued rows, runs them through the runtime, and
+emits progress events back to the same catalog DB. The API surfaces those
+events to the UI by tailing job_events by seq.
+
+The split exists so a deploy-restart of astrolab-api doesn't SIGTERM
+in-flight Siril subprocesses. Real symptom that forced the split: a 3-
+session render of C 34 (8c7c9db0-...) died at ~72% of seq_resample because
+a PR merge restarted the API mid-job.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import os
 import sqlite3
 import threading
+import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .cache import ContentCache
 from .catalog.db import connect as open_catalog_db
@@ -46,11 +51,6 @@ EventType = Literal[
     "job_failed",
     "job_interrupted",
 ]
-
-# Cap how much history we buffer per job so a runaway noisy node can't OOM the
-# server. New events past the cap are still forwarded live but the replay is
-# truncated.
-MAX_BUFFERED_EVENTS = 2000
 
 
 @dataclass
@@ -90,21 +90,20 @@ class JobRecord:
     outputs: dict[str, Ref] | None = None
     error: str | None = None
     force: bool = False
-    """Whether this submission should bypass the cache (set on Reprocess)."""
-    cancel_event: threading.Event = field(default_factory=threading.Event)
-    """Cooperative cancel token. Set externally to abort a running job; the
-    runtime checks between nodes and SirilRuntime watchdogs the subprocess.
-    Not persisted: the token is only meaningful for the current process."""
+    """Whether this submission should bypass the cache (set on Reprocess).
+    Now persisted on the jobs row so the API can set it from submit() and
+    the worker can read it back when it claims the job."""
     node_hashes: dict[str, str] = field(default_factory=dict)
-    """Map of node_id -> cache hash for every node this job touched (committed
-    or hit). Persisted on terminal events so the storage layer can map cache
-    entries back to the renderings that own them. Keyed by node_id (not list
-    position) so out-of-topo-order template authoring still attributes cost
-    class and last-used timestamps to the correct node."""
+    """Map of node_id -> cache hash for every node this job touched
+    (committed or hit). Persisted on terminal events so the storage layer
+    can map cache entries back to the projects that own them. Keyed by
+    node_id (not list position) so out-of-topo-order template authoring
+    still attributes cost class and last-used timestamps to the right
+    node."""
     events: list[JobEvent] = field(default_factory=list)
-    _subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = field(
-        default_factory=list
-    )
+    """Optional materialized event list. Production `get()` does NOT
+    populate this (use `get_events()` instead); kept on the dataclass for
+    legacy test code that synthesises records with inline events."""
 
     def public_dict(self, *, include_template: bool = False) -> dict[str, Any]:
         """Serializable summary for GET /api/jobs[/{id}]."""
@@ -145,9 +144,6 @@ def _node_outputs(kind: str, variant: str | None) -> dict[str, str]:
     Empty dict when the registry doesn't recognise the (kind, variant) pair.
     Keeps the API total when a persisted job references an obsolete node.
     """
-    # Import locally so this module stays free of the nodes-import cycle at
-    # module load time (registry contents accrete via decorator side-effects
-    # when nodes.basic is imported by the API layer).
     from .registry import lookup as registry_lookup
 
     try:
@@ -211,64 +207,146 @@ def _node_hashes_from_json(blob: str | None, template: Template) -> dict[str, st
     return {}
 
 
+# --------------------------------------------------------------------- helpers
+
+
+def _persist_event(
+    conn: sqlite3.Connection,
+    job_id: str,
+    event: JobEvent,
+    seq: int | None = None,
+) -> int:
+    """Insert a row in `job_events`. Returns the assigned seq.
+
+    When `seq` is None we assign it as MAX(seq)+1 atomically using SQL so
+    two writers can't collide on the (job_id, seq) index. job_queued at
+    submit() time passes seq=0 explicitly so the first event is
+    deterministic.
+    """
+    if seq is None:
+        row = conn.execute(
+            """
+            INSERT INTO job_events
+                (job_id, seq, type, timestamp, node_id, fraction, message, error, extra_json)
+            VALUES (
+                ?,
+                COALESCE((SELECT MAX(seq) FROM job_events WHERE job_id = ?), -1) + 1,
+                ?, ?, ?, ?, ?, ?, ?
+            )
+            RETURNING seq
+            """,
+            (
+                job_id,
+                job_id,
+                event.type,
+                event.timestamp,
+                event.node_id,
+                event.fraction,
+                event.message,
+                event.error,
+                json.dumps(event.extra) if event.extra else None,
+            ),
+        ).fetchone()
+        return int(row[0])
+    conn.execute(
+        """
+        INSERT INTO job_events
+            (job_id, seq, type, timestamp, node_id, fraction, message, error, extra_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id,
+            seq,
+            event.type,
+            event.timestamp,
+            event.node_id,
+            event.fraction,
+            event.message,
+            event.error,
+            json.dumps(event.extra) if event.extra else None,
+        ),
+    )
+    return seq
+
+
+def _row_to_record(row: sqlite3.Row) -> JobRecord:
+    template = Template.model_validate(json.loads(row["template_json"]))
+    job = Job.model_validate(json.loads(row["job_json"]))
+    outputs = _outputs_from_json(row["outputs_json"])
+    node_hashes = _node_hashes_from_json(row["node_hashes_json"], template)
+    # `force` is migration 12; older rows opened by tests pointing at a
+    # pre-migrated DB may not have the column. sqlite3.Row's __contains__
+    # iterates values (not column names), so .keys() is the right probe;
+    # SIM118 here would be wrong.
+    force = bool(row["force"]) if "force" in row.keys() else False  # noqa: SIM118
+    return JobRecord(
+        id=row["id"],
+        status=cast(JobStatus, row["status"]),
+        template=template,
+        job=job,
+        submitted_at=row["submitted_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        outputs=outputs,
+        error=row["error"],
+        force=force,
+        node_hashes=node_hashes,
+    )
+
+
+def _load_events(
+    conn: sqlite3.Connection, job_id: str, *, after_seq: int = -1
+) -> list[JobEvent]:
+    rows = conn.execute(
+        "SELECT * FROM job_events WHERE job_id = ? AND seq > ? ORDER BY seq ASC",
+        (job_id, after_seq),
+    ).fetchall()
+    out: list[JobEvent] = []
+    for er in rows:
+        out.append(
+            JobEvent(
+                type=cast(EventType, er["type"]),
+                timestamp=er["timestamp"],
+                node_id=er["node_id"],
+                fraction=er["fraction"],
+                message=er["message"],
+                error=er["error"],
+                extra=json.loads(er["extra_json"]) if er["extra_json"] else {},
+            )
+        )
+    return out
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+# ----------------------------------------------------------------- JobManager
+
+
 class JobManager:
-    """Owns a thread-pool worker plus per-job event fan-out, with SQLite persistence."""
+    """API-side surface. DB-only - no threads, no in-memory record cache.
+
+    submit() inserts a queued row and a seq=0 job_queued event. cancel()
+    flips the cancel_requested column; the worker's monitor thread polls
+    that column and forwards to the runtime cancel token. get/list/
+    get_events all read from disk.
+    """
 
     def __init__(
         self,
         cache: ContentCache | None = None,
         *,
-        max_workers: int = 1,
         db_path: Path | None = None,
     ) -> None:
         self._cache = cache if cache is not None else ContentCache()
         self._db_path = db_path
-        self._records: dict[str, JobRecord] = {}
-        self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="astrolab-job"
-        )
-        # Per-job sequence counter for ordered event persistence.
-        self._event_seq: dict[str, int] = {}
-        # Rehydrate is opt-in (called from lifespan startup) so tests can wire
-        # up a clean tmp DB before any disk read happens.
-
-    def rehydrate(self) -> None:
-        """Load persisted jobs from the DB. Idempotent and safe to call on
-        a brand-new schema with no jobs."""
-        self._load_persisted()
-
-    def reset_for_tests(self, *, db_path: Path | None = None) -> None:
-        """Wipe in-memory state and (optionally) point at a fresh DB.
-
-        Used by test fixtures that share the module-level JobManager — keeps
-        production state separate from tmp test data.
-
-        Order matters: we cancel + drain the previous executor on the
-        *current* db_path before swapping in a new one. Without that, a
-        leftover background job from the previous test races to write its
-        terminal event into the new test's DB (FK violation, since the
-        job_id only exists in the old DB), or worse, confuses migrate by
-        running concurrent CREATE TABLE statements.
-        """
-        with self._lock:
-            for record in self._records.values():
-                # Cooperative; nodes that read ctx.cancel will exit
-                # promptly, nodes that don't will run to completion. Either
-                # way the executor.shutdown(wait=True) below blocks until
-                # they're done writing.
-                record.cancel_event.set()
-        old = self._executor
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="astrolab-job-test"
-        )
-        old.shutdown(wait=True)
-
-        with self._lock:
-            self._records.clear()
-            self._event_seq.clear()
-        if db_path is not None:
-            self._db_path = db_path
 
     @property
     def cache(self) -> ContentCache:
@@ -276,119 +354,278 @@ class JobManager:
 
     @property
     def db_path(self) -> Path | None:
-        """Where this manager persists. None means 'use platform default'.
-        Exposed so other modules (storage accounting) can read from the
-        same DB without round-tripping through env vars."""
         return self._db_path
+
+    def rehydrate(self) -> None:
+        """No-op on the API side.
+
+        The worker is responsible for reclaiming stale 'running' rows from
+        a previous worker crash; the API no longer holds in-memory state to
+        rebuild. Kept for compatibility with the lifespan startup hook.
+        """
+        return
+
+    def reset_for_tests(self, *, db_path: Path | None = None) -> None:
+        """Repoint at a fresh DB.
+
+        There's no in-process executor to drain anymore; the test fixture
+        owns the worker thread lifecycle via the `background_worker`
+        helper.
+        """
+        if db_path is not None:
+            self._db_path = db_path
+
+    def shutdown(self, wait: bool = True) -> None:
+        """No-op on the API side; preserved for lifespan-hook compatibility."""
+        _ = wait
 
     # -- public API --------------------------------------------------------
 
     def submit(self, template: Template, job: Job, *, force: bool = False) -> str:
         job_id = str(uuid.uuid4())
-        record = JobRecord(
-            id=job_id,
-            status="queued",
-            template=template,
-            job=job,
-            submitted_at=_now(),
-            force=force,
-        )
-        with self._lock:
-            self._records[job_id] = record
-            self._event_seq[job_id] = 0
-        self._persist_record(record, kind="insert")
-        self._emit(record, JobEvent(type="job_queued", timestamp=_now()))
-        self._executor.submit(self._run, record)
+        submitted_at = _now()
+        conn = open_catalog_db(self._db_path)
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO jobs
+                    (id, status, template_id, template_version, template_json,
+                     job_json, outputs_json, error, submitted_at, started_at,
+                     finished_at, force)
+                    VALUES (?, 'queued', ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?)
+                    """,
+                    (
+                        job_id,
+                        template.id,
+                        template.version,
+                        json.dumps(template.model_dump(mode="json")),
+                        json.dumps(job.model_dump(mode="json")),
+                        submitted_at,
+                        1 if force else 0,
+                    ),
+                )
+                _persist_event(
+                    conn,
+                    job_id,
+                    JobEvent(type="job_queued", timestamp=submitted_at),
+                    seq=0,
+                )
+        finally:
+            conn.close()
         return job_id
 
+    def cancel(self, job_id: str) -> bool:
+        """Flip cancel_requested. The worker's monitor thread sees it and
+        sets its threading.Event. Returns True when the row was live
+        (queued or running) and the flag took effect."""
+        conn = open_catalog_db(self._db_path)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "UPDATE jobs SET cancel_requested = 1 "
+                    "WHERE id = ? AND status IN ('queued', 'running')",
+                    (job_id,),
+                )
+                return cur.rowcount > 0
+        finally:
+            conn.close()
+
     def get(self, job_id: str) -> JobRecord | None:
-        with self._lock:
-            return self._records.get(job_id)
+        conn = open_catalog_db(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return _row_to_record(row)
+        finally:
+            conn.close()
+
+    def get_events(self, job_id: str, *, after_seq: int = -1) -> list[JobEvent]:
+        conn = open_catalog_db(self._db_path)
+        try:
+            return _load_events(conn, job_id, after_seq=after_seq)
+        finally:
+            conn.close()
 
     def list_jobs(self) -> list[JobRecord]:
-        with self._lock:
-            return list(self._records.values())
+        conn = open_catalog_db(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM jobs ORDER BY submitted_at ASC"
+            ).fetchall()
+            return [_row_to_record(r) for r in rows]
+        finally:
+            conn.close()
 
-    def cancel(self, job_id: str) -> bool:
-        """Set the cancel token for `job_id`. Returns True if the job was
-        live (queued/running) and signaled, False if no such job or it was
-        already terminal.
 
-        The runtime checks the token between nodes and SirilRuntime
-        watchdogs the subprocess; cancellation is cooperative, so a node
-        that ignores the token (or is already past every checkpoint) will
-        run to completion. JobCancelled is then translated into the
-        'interrupted' status by _run."""
-        record = self.get(job_id)
-        if record is None:
-            return False
-        if record.status not in ("queued", "running"):
-            return False
-        record.cancel_event.set()
-        return True
+# ------------------------------------------------------------------ JobWorker
 
-    def subscribe(self, job_id: str) -> asyncio.Queue | None:
-        """Async-side: get a queue that receives buffered events + new ones live.
 
-        Returns None if the job does not exist. Caller must call unsubscribe
-        when done. The queue is bounded; callers should drain it promptly or
-        risk dropping events on a slow link.
+class JobWorker:
+    """Worker-side: claims queued rows and runs them.
+
+    Lives in its own process (`python -m server.worker`) so an API restart
+    can't SIGTERM in-flight Siril subprocesses.
+    """
+
+    STALE_HEARTBEAT_SECONDS = 120
+    HEARTBEAT_SECONDS = 5
+    CANCEL_POLL_SECONDS = 0.5
+
+    def __init__(
+        self,
+        cache: ContentCache | None = None,
+        *,
+        db_path: Path | None = None,
+        worker_pid: int | None = None,
+    ) -> None:
+        self._cache = cache if cache is not None else ContentCache()
+        self._db_path = db_path
+        self._worker_pid = worker_pid if worker_pid is not None else os.getpid()
+
+    @property
+    def cache(self) -> ContentCache:
+        return self._cache
+
+    @property
+    def db_path(self) -> Path | None:
+        return self._db_path
+
+    def reclaim_stale(self) -> int:
+        """Mark abandoned 'running' rows as interrupted.
+
+        A row is stale if its worker_pid is dead OR its heartbeat is older
+        than STALE_HEARTBEAT_SECONDS. Both halves matter: a crash kills the
+        PID without a chance to flip status, and a hung Python (deadlock,
+        OOM-on-malloc) keeps the PID alive but stops heartbeating.
         """
-        record = self.get(job_id)
+        cutoff = datetime.now(UTC) - timedelta(seconds=self.STALE_HEARTBEAT_SECONDS)
+        reclaimed = 0
+        conn = open_catalog_db(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, worker_pid, heartbeat_at, started_at "
+                "FROM jobs WHERE status = 'running'"
+            ).fetchall()
+            for r in rows:
+                last_seen_raw = r["heartbeat_at"] or r["started_at"]
+                stale_by_time = True
+                if last_seen_raw:
+                    try:
+                        last_seen = datetime.fromisoformat(last_seen_raw)
+                        stale_by_time = last_seen < cutoff
+                    except ValueError:
+                        stale_by_time = True
+                if _pid_alive(r["worker_pid"]) and not stale_by_time:
+                    continue
+                finished = _now()
+                error = "worker crashed before this job finished"
+                with conn:
+                    conn.execute(
+                        "UPDATE jobs SET status = 'interrupted', error = ?, "
+                        "finished_at = ? WHERE id = ? AND status = 'running'",
+                        (error, finished, r["id"]),
+                    )
+                    _persist_event(
+                        conn,
+                        r["id"],
+                        JobEvent(
+                            type="job_interrupted",
+                            timestamp=finished,
+                            error=error,
+                        ),
+                    )
+                reclaimed += 1
+        finally:
+            conn.close()
+        return reclaimed
+
+    def claim_next_queued(self) -> JobRecord | None:
+        """Atomic claim of the oldest queued row. Returns the claimed
+        record (with status='running') or None if the queue is empty."""
+        conn = open_catalog_db(self._db_path)
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT id FROM jobs WHERE status = 'queued' "
+                    "ORDER BY submitted_at ASC LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    return None
+                now = _now()
+                cur = conn.execute(
+                    "UPDATE jobs SET status = 'running', started_at = ?, "
+                    "worker_pid = ?, heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'queued'",
+                    (now, self._worker_pid, now, row["id"]),
+                )
+                if cur.rowcount != 1:
+                    # Another worker (or the same worker on a retry) beat
+                    # us to this row. Bail; the loop will retry next tick.
+                    return None
+                _persist_event(
+                    conn,
+                    row["id"],
+                    JobEvent(type="job_started", timestamp=now),
+                )
+                claimed = conn.execute(
+                    "SELECT * FROM jobs WHERE id = ?", (row["id"],)
+                ).fetchone()
+            return _row_to_record(claimed) if claimed is not None else None
+        finally:
+            conn.close()
+
+    def run_one_pending(self) -> str | None:
+        """Convenience: claim+run one job, return its id (or None when idle)."""
+        record = self.claim_next_queued()
         if record is None:
             return None
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_BUFFERED_EVENTS)
-        # Replay buffered history first so the subscriber has the full picture.
-        with self._lock:
-            for ev in record.events:
-                try:
-                    queue.put_nowait(ev)
-                except asyncio.QueueFull:
-                    log.warning("subscribe replay overflowed for job %s", job_id)
-                    break
-            record._subscribers.append((loop, queue))
-        return queue
+        self._run(record)
+        return record.id
 
-    def unsubscribe(self, job_id: str, queue: asyncio.Queue) -> None:
-        record = self.get(job_id)
-        if record is None:
-            return
-        with self._lock:
-            record._subscribers = [
-                (loop, q) for (loop, q) in record._subscribers if q is not queue
-            ]
-
-    # -- worker side -------------------------------------------------------
+    # -- internals ---------------------------------------------------------
 
     def _run(self, record: JobRecord) -> None:
-        # If the job was cancelled while still queued, short-circuit before
-        # advertising it as running. Saves a node_started event the UI
-        # would only have to walk back.
-        if record.cancel_event.is_set():
-            self._interrupt(record, "cancelled while queued")
+        # If cancel was set while the job sat in the queue, short-circuit
+        # before pretending we ran anything. The runtime never gets called.
+        if self._read_cancel(record.id):
+            self._terminate(record, status="interrupted", error="cancelled while queued")
             return
 
-        with self._lock:
-            record.status = "running"
-            record.started_at = _now()
-        self._persist_record(record, kind="update")
-        self._emit(record, JobEvent(type="job_started", timestamp=_now()))
+        cancel_event = threading.Event()
+        monitor_stop = threading.Event()
+
+        def monitor() -> None:
+            # Two duties: heartbeat the row so reclaim_stale doesn't kick
+            # us, and poll cancel_requested so the API can ask us to stop.
+            # Heartbeat cadence is the coarser of the two.
+            heartbeat_at = 0.0
+            while not monitor_stop.is_set():
+                now = time.monotonic()
+                if now - heartbeat_at >= self.HEARTBEAT_SECONDS:
+                    self._heartbeat(record.id)
+                    heartbeat_at = now
+                if not cancel_event.is_set() and self._read_cancel(record.id):
+                    cancel_event.set()
+                monitor_stop.wait(self.CANCEL_POLL_SECONDS)
+
+        monitor_thread = threading.Thread(
+            target=monitor, name=f"job-monitor-{record.id[:8]}", daemon=True
+        )
+        monitor_thread.start()
 
         def event_sink(payload: dict[str, Any]) -> None:
-            # Capture node_hashes keyed by node_id as they're announced by
-            # the runtime; we persist the rolled-up map on the terminal
-            # event so the storage layer can look up "what did this job
-            # touch?" without walking the event log. Pairing the hash with
-            # its node_id (vs the old bare list of hashes) keeps cost-class
-            # and last-used attribution correct when YAML order disagrees
-            # with topological order.
+            # node_hashes is keyed by node_id (not list-appended) so cost
+            # accounting stays correct regardless of YAML declaration order.
             h = payload.get("hash")
             nid = payload.get("node_id")
             if isinstance(h, str) and isinstance(nid, str):
                 record.node_hashes[nid] = h
             ev = JobEvent(
-                type=payload["type"],  # type: ignore[arg-type]
+                type=cast(EventType, payload["type"]),
                 timestamp=_now(),
                 node_id=payload.get("node_id"),
                 fraction=payload.get("fraction"),
@@ -397,7 +634,7 @@ class JobManager:
                 extra={k: v for k, v in payload.items()
                        if k not in {"type", "node_id", "fraction", "message", "error"}},
             )
-            self._emit(record, ev)
+            self._emit_event(record.id, ev)
 
         try:
             outputs = run_job(
@@ -406,272 +643,103 @@ class JobManager:
                 cache=self._cache,
                 events=event_sink,
                 force=record.force,
-                cancel=record.cancel_event,
+                cancel=cancel_event,
             )
-            with self._lock:
-                record.status = "completed"
-                record.outputs = outputs
-                record.finished_at = _now()
-            self._persist_record(record, kind="update")
-            self._emit(record, JobEvent(type="job_completed", timestamp=_now()))
+            record.outputs = outputs
+            self._terminate(record, status="completed")
         except JobCancelled as exc:
-            # Cancellation is a first-class outcome, not a failure: the
-            # rendering's history entry stays around with status 'interrupted'
-            # and the user can hit Resume to re-submit those overrides (cache
-            # makes already-completed nodes a free skip).
-            self._interrupt(
-                record, f"cancelled at node {exc.node_id!r}" if exc.node_id else "cancelled"
+            msg = (
+                f"cancelled at node {exc.node_id!r}" if exc.node_id else "cancelled"
             )
+            self._terminate(record, status="interrupted", error=msg)
         except RunError as exc:
-            self._fail(record, str(exc))
-        except Exception as exc:  # pragma: no cover  (defensive)
+            self._terminate(record, status="failed", error=str(exc))
+        except Exception as exc:  # pragma: no cover (defensive)
             log.exception("job %s crashed", record.id)
-            self._fail(record, f"{type(exc).__name__}: {exc}")
-
-    def _fail(self, record: JobRecord, message: str) -> None:
-        with self._lock:
-            record.status = "failed"
-            record.error = message
-            record.finished_at = _now()
-        self._persist_record(record, kind="update")
-        self._emit(record, JobEvent(type="job_failed", timestamp=_now(), error=message))
-
-    def _interrupt(self, record: JobRecord, message: str) -> None:
-        with self._lock:
-            record.status = "interrupted"
-            record.error = message
-            record.finished_at = _now()
-        self._persist_record(record, kind="update")
-        self._emit(record, JobEvent(type="job_interrupted", timestamp=_now(), error=message))
-
-    def _emit(self, record: JobRecord, event: JobEvent) -> None:
-        with self._lock:
-            if len(record.events) < MAX_BUFFERED_EVENTS:
-                record.events.append(event)
-            seq = self._event_seq.get(record.id, 0)
-            self._event_seq[record.id] = seq + 1
-            subscribers = list(record._subscribers)
-        self._persist_event(record.id, seq, event)
-        for loop, queue in subscribers:
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, event)
-            except RuntimeError:
-                # Loop is closed; subscriber is gone. Best-effort cleanup.
-                self.unsubscribe(record.id, queue)
-
-    def shutdown(self, wait: bool = True) -> None:
-        self._executor.shutdown(wait=wait)
-
-    # -- persistence -------------------------------------------------------
-
-    def _conn(self) -> sqlite3.Connection:
-        # New connection per call: SQLite is fast for this and avoids
-        # cross-thread sharing issues between the worker and request handlers.
-        return open_catalog_db(self._db_path)
-
-    def _close(self, conn: sqlite3.Connection) -> None:
-        conn.close()
-
-    def _persist_record(self, record: JobRecord, *, kind: str) -> None:
-        """Insert or update a job row. Best-effort: log and continue on DB errors."""
-        try:
-            conn = self._conn()
-        except Exception:
-            log.exception("could not open catalog DB for job persistence")
-            return
-        try:
-            with conn:
-                if kind == "insert":
-                    conn.execute(
-                        """
-                        INSERT INTO jobs
-                        (id, status, template_id, template_version, template_json,
-                         job_json, outputs_json, error, submitted_at, started_at, finished_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            record.id,
-                            record.status,
-                            record.template.id,
-                            record.template.version,
-                            json.dumps(record.template.model_dump(mode="json")),
-                            json.dumps(record.job.model_dump(mode="json")),
-                            _outputs_to_json(record.outputs),
-                            record.error,
-                            record.submitted_at,
-                            record.started_at,
-                            record.finished_at,
-                        ),
-                    )
-                else:  # update
-                    conn.execute(
-                        """
-                        UPDATE jobs
-                        SET status=?, outputs_json=?, error=?, started_at=?, finished_at=?,
-                            node_hashes_json=?
-                        WHERE id=?
-                        """,
-                        (
-                            record.status,
-                            _outputs_to_json(record.outputs),
-                            record.error,
-                            record.started_at,
-                            record.finished_at,
-                            json.dumps(dict(record.node_hashes)) if record.node_hashes else None,
-                            record.id,
-                        ),
-                    )
-        except sqlite3.Error:
-            log.exception("DB write failed for job %s", record.id)
+            self._terminate(
+                record, status="failed", error=f"{type(exc).__name__}: {exc}"
+            )
         finally:
-            self._close(conn)
+            monitor_stop.set()
+            monitor_thread.join(timeout=5)
 
-    def _persist_event(self, job_id: str, seq: int, event: JobEvent) -> None:
-        try:
-            conn = self._conn()
-        except Exception:
-            return
+    def _terminate(
+        self,
+        record: JobRecord,
+        *,
+        status: JobStatus,
+        error: str | None = None,
+    ) -> None:
+        finished = _now()
+        record.status = status
+        record.error = error
+        record.finished_at = finished
+        # Explicit if/elif so pyright can narrow event.type to the Literal
+        # union; a dict lookup keyed on `status` collapses to a plain str.
+        if status == "completed":
+            terminal: JobEvent = JobEvent(type="job_completed", timestamp=finished)
+        elif status == "failed":
+            terminal = JobEvent(type="job_failed", timestamp=finished, error=error)
+        elif status == "interrupted":
+            terminal = JobEvent(
+                type="job_interrupted", timestamp=finished, error=error
+            )
+        else:
+            # No other status reaches _terminate; this branch keeps the
+            # type checker happy.
+            terminal = JobEvent(type="job_failed", timestamp=finished, error=error)
+
+        conn = open_catalog_db(self._db_path)
         try:
             with conn:
                 conn.execute(
                     """
-                    INSERT INTO job_events
-                    (job_id, seq, type, timestamp, node_id, fraction, message, error, extra_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    UPDATE jobs
+                       SET status = ?,
+                           outputs_json = ?,
+                           error = ?,
+                           finished_at = ?,
+                           node_hashes_json = ?
+                     WHERE id = ?
                     """,
                     (
-                        job_id,
-                        seq,
-                        event.type,
-                        event.timestamp,
-                        event.node_id,
-                        event.fraction,
-                        event.message,
-                        event.error,
-                        json.dumps(event.extra) if event.extra else None,
+                        status,
+                        _outputs_to_json(record.outputs),
+                        error,
+                        finished,
+                        json.dumps(record.node_hashes) if record.node_hashes else None,
+                        record.id,
                     ),
                 )
-        except sqlite3.Error:
-            log.exception("DB write failed for event on job %s", job_id)
+                _persist_event(conn, record.id, terminal)
         finally:
-            self._close(conn)
+            conn.close()
 
-    def _load_persisted(self) -> None:
-        """Hydrate _records from disk and mark crashed jobs as interrupted."""
+    def _heartbeat(self, job_id: str) -> None:
+        conn = open_catalog_db(self._db_path)
         try:
-            conn = self._conn()
-        except Exception:
-            log.exception("could not open catalog DB for job rehydration")
-            return
+            with conn:
+                conn.execute(
+                    "UPDATE jobs SET heartbeat_at = ? WHERE id = ?",
+                    (_now(), job_id),
+                )
+        finally:
+            conn.close()
+
+    def _read_cancel(self, job_id: str) -> bool:
+        conn = open_catalog_db(self._db_path)
         try:
-            rows = conn.execute(
-                "SELECT * FROM jobs ORDER BY submitted_at ASC"
-            ).fetchall()
-        except sqlite3.Error:
-            log.exception("DB read failed during rehydration")
-            self._close(conn)
-            return
+            row = conn.execute(
+                "SELECT cancel_requested FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            return bool(row["cancel_requested"]) if row is not None else False
+        finally:
+            conn.close()
 
-        for row in rows:
-            try:
-                template = Template.model_validate(json.loads(row["template_json"]))
-                job = Job.model_validate(json.loads(row["job_json"]))
-                outputs = _outputs_from_json(row["outputs_json"])
-            except Exception:
-                log.exception("could not rehydrate job %s; skipping", row["id"])
-                continue
-
-            status: JobStatus = row["status"]  # type: ignore[assignment]
-            error = row["error"]
-            finished_at = row["finished_at"]
-            if status in ("queued", "running"):
-                # Server crashed mid-run. Mark as interrupted; ev sequence
-                # continues from whatever was last persisted.
-                status = "interrupted"
-                error = error or "server interrupted before this job finished"
-                finished_at = finished_at or _now()
-
-            node_hashes = _node_hashes_from_json(row["node_hashes_json"], template)
-            # Backfill for jobs that ran before we started persisting hashes:
-            # walk the event log, collect (node_id, hash) pairs from
-            # node_started / node_cached events, and persist them so the
-            # storage layer can attribute their cache back to the right
-            # rendering. One-time cost on the first rehydrate after the
-            # upgrade; subsequent rehydrates see the column already filled.
-            backfilled = False
-            if not node_hashes:
-                hash_rows = conn.execute(
-                    "SELECT node_id, extra_json FROM job_events "
-                    "WHERE job_id = ? AND type IN ('node_started', 'node_cached')",
-                    (row["id"],),
-                ).fetchall()
-                for hr in hash_rows:
-                    if not hr["extra_json"]:
-                        continue
-                    try:
-                        extra = json.loads(hr["extra_json"])
-                    except (ValueError, TypeError):
-                        continue
-                    h = extra.get("hash")
-                    nid = hr["node_id"]
-                    if isinstance(h, str) and isinstance(nid, str):
-                        node_hashes[nid] = h
-                if node_hashes:
-                    backfilled = True
-            record = JobRecord(
-                id=row["id"],
-                status=status,
-                template=template,
-                job=job,
-                submitted_at=row["submitted_at"],
-                started_at=row["started_at"],
-                finished_at=finished_at,
-                outputs=outputs,
-                error=error,
-                node_hashes=node_hashes,
-            )
-
-            # Pull the persisted event log so /events HTTP endpoint and
-            # WebSocket replay both see history across restarts.
-            event_rows = conn.execute(
-                "SELECT * FROM job_events WHERE job_id = ? ORDER BY seq ASC",
-                (row["id"],),
-            ).fetchall()
-            for er in event_rows:
-                record.events.append(
-                    JobEvent(
-                        type=er["type"],
-                        timestamp=er["timestamp"],
-                        node_id=er["node_id"],
-                        fraction=er["fraction"],
-                        message=er["message"],
-                        error=er["error"],
-                        extra=json.loads(er["extra_json"]) if er["extra_json"] else {},
-                    )
-                )
-
-            with self._lock:
-                self._records[record.id] = record
-                self._event_seq[record.id] = len(record.events)
-
-            # If we promoted to interrupted, persist the new state and add a
-            # marker event so the UI can show *why* it isn't running.
-            if status == "interrupted" and row["status"] in ("queued", "running"):
-                self._persist_record(record, kind="update")
-                self._emit(
-                    record,
-                    JobEvent(
-                        type="job_interrupted",
-                        timestamp=_now(),
-                        error="server interrupted before this job finished",
-                    ),
-                )
-            elif backfilled:
-                # We reconstructed node_hashes from events; persist them
-                # so the storage layer (which reads the column directly)
-                # can attribute this job's cache going forward.
-                self._persist_record(record, kind="update")
-
-        self._close(conn)
-        if rows:
-            log.info("rehydrated %d job(s) from catalog DB", len(rows))
+    def _emit_event(self, job_id: str, event: JobEvent) -> None:
+        conn = open_catalog_db(self._db_path)
+        try:
+            with conn:
+                _persist_event(conn, job_id, event)
+        finally:
+            conn.close()

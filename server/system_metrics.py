@@ -264,7 +264,7 @@ def _resolve_target_name(target_id: str | None, db_path: Path | None) -> str | N
     return name
 
 
-def _job_progress(record: Any) -> float:
+def _job_progress(record: Any, job_manager: Any | None = None) -> float:
     """Cheap completed-nodes / total-nodes ratio.
 
     The runtime emits `node_completed` once per finished node; counting them
@@ -272,6 +272,11 @@ def _job_progress(record: Any) -> float:
     fraction without scanning the (more verbose) `node_progress` stream. v1
     accepts the coarse-grained value; finer-grained progress can layer in
     later if anyone asks.
+
+    Events are read from `record.events` if populated (legacy/test code
+    that synthesises records inline) and otherwise pulled from the job
+    manager - `get()` no longer eager-loads them now that submit/execute
+    cross a process boundary.
     """
     try:
         total = len(record.template.nodes)
@@ -279,9 +284,15 @@ def _job_progress(record: Any) -> float:
         return 0.0
     if total <= 0:
         return 0.0
+    events = list(getattr(record, "events", []) or [])
+    if not events and job_manager is not None:
+        try:
+            events = job_manager.get_events(record.id)
+        except Exception:
+            events = []
     completed = 0
     seen_nodes: set[str] = set()
-    for ev in record.events:
+    for ev in events:
         if (
             ev.type in ("node_completed", "node_cached")
             and ev.node_id is not None
@@ -331,9 +342,9 @@ def _jobs_block(job_manager: JobManager, now: datetime) -> dict[str, Any]:
                 {
                     "id": r.id,
                     "target_name": _resolve_target_name(r.job.target_id, db_path),
-                    "template_name": r.template.id,
+                    "template_name": r.template.description or r.template.id,
                     "started_at": started_iso,
-                    "progress": _job_progress(r) if r.status == "running" else 0.0,
+                    "progress": _job_progress(r, job_manager) if r.status == "running" else 0.0,
                 }
             )
 

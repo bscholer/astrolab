@@ -17,14 +17,17 @@ from PIL import Image
 import nodes.basic  # noqa: F401  registers downscale
 from server.api import app, job_manager, project_manager
 from server.cache import ContentCache
+from tests._jobs_helpers import background_worker
 
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
-    job_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
-    project_manager.reset_for_tests(db_path=tmp_path / "catalog.sqlite")
-    with TestClient(app) as c:
+    cache = ContentCache(root=tmp_path / "cache")
+    db_path = tmp_path / "catalog.sqlite"
+    monkeypatch.setattr(job_manager, "_cache", cache)
+    job_manager.reset_for_tests(db_path=db_path)
+    project_manager.reset_for_tests(db_path=db_path)
+    with background_worker(cache, db_path), TestClient(app) as c:
         yield c
 
 
@@ -460,10 +463,11 @@ def client_with_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path))
     db_path = default_db_path()
-    monkeypatch.setattr(job_manager, "_cache", ContentCache(root=tmp_path / "cache"))
+    cache = ContentCache(root=tmp_path / "cache")
+    monkeypatch.setattr(job_manager, "_cache", cache)
     job_manager.reset_for_tests(db_path=db_path)
     project_manager.reset_for_tests(db_path=db_path)
-    with TestClient(app) as c:
+    with background_worker(cache, db_path), TestClient(app) as c:
         yield c
 
 
