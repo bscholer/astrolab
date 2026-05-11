@@ -207,8 +207,10 @@ def main() -> None:
     lines.append(BANNER)
     lines.append(f"scope:   {args.scope_name}")
     lines.append(f"date:    {today}")
-    lines.append(f"redact:  RA/DEC/DATE-OBS={'yes' if args.redact else 'no'}  OBJECT={'yes' if args.redact_object else 'no'}")
-    lines.append(f"root:    <capture root>")
+    redact_ra = "yes" if args.redact else "no"
+    redact_obj = "yes" if args.redact_object else "no"
+    lines.append(f"redact:  RA/DEC/DATE-OBS={redact_ra}  OBJECT={redact_obj}")
+    lines.append("root:    <capture root>")
     lines.append("")
     lines.append("Directory tree")
     lines.append("-" * 60)
@@ -240,7 +242,7 @@ def main() -> None:
 
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"wrote {out_path}")
-    print(f"open it in a text editor to review before posting to GitHub.")
+    print("open it in a text editor to review before posting to GitHub.")
 
 
 if __name__ == "__main__":
