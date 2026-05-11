@@ -140,6 +140,8 @@ Four logical subsystems, **one engine**.
 ### Catalog service
 Indexes FITS frames on the NAS by reading headers, normalized through per-scope **ingest adapters**. Owns `frames`, `sessions`, `targets`, `masters`, `calibration_matches` tables. Periodic + on-demand scans.
 
+Target display names come from two sources consulted in order: the OpenNGC `Common Name` column, then a curated fallback table at `server/catalog/data/common_names.json` (keyed by catalog id, e.g. `"NGC 7380": "Wizard Nebula"`). The curated file is the right place to add popular names that OpenNGC leaves blank. `server/catalog/common_names.py` exposes `lookup(name) -> str | None`; prefer it over direct JSON access.
+
 Each smart telescope writes files into its own folder layout with its own naming conventions, and some don't save calibration frames at all. An ingest adapter handles that messiness so the core schema stays uniform. An adapter knows:
 
 - **Path globs** for lights / darks / flats / biases (Dwarf 3 vs Seestar vs Celestron Origin all differ).
@@ -156,7 +158,7 @@ Loads templates, builds a `Job` (template + param overrides + input refs), valid
 A render = `(template_id, full param tree, input refs, output cache hash, thumbnail, notes, tags)`. Stored in SQLite. Compare-side-by-side, fork-from-render, etc.
 
 ### Web UI
-Three views: **Library** (targets/sessions/calibration coverage), **Stack** (configure + queue an expensive job), **Edit** (sliders + preview + saved renders). Mobile-first responsive.
+Views: **Library** (targets/sessions/calibration coverage, sortable by name/integration/recency), **Projects** (project detail with session list and freeform notes), **Tonight** (site-aware planner over OpenNGC, altitude sparklines), **Gallery**, **Compare**, **Settings**. Mobile-first responsive.
 
 ---
 
@@ -310,7 +312,8 @@ CREATE TABLE sessions (
     started_at      TEXT,
     ended_at        TEXT,
     frame_count     INTEGER,
-    notes           TEXT
+    notes           TEXT,
+    description     TEXT       -- freeform; NULL = no note
 );
 
 CREATE TABLE session_frames (
@@ -385,18 +388,33 @@ User overrides are sticky: overriding for one session optionally applies to "all
 ### HTTP API (sketch)
 
 ```
-GET  /api/targets                          → list + counts
-GET  /api/targets/{id}                     → sessions, calibration coverage
-GET  /api/targets/{id}/renders             → saved renders
-POST /api/scan                             → trigger NAS rescan
-GET  /api/templates                        → available templates
-POST /api/jobs                             → submit Job; returns job_id
-GET  /api/jobs/{id}                        → status
-WS   /api/jobs/{id}/stream                 → progress events
-POST /api/preview                          → submit preview-only Job; returns hash
-GET  /render/{cache_hash}.png              → content-addressed image (cacheable forever)
-POST /api/renders                          → save current state as a named render
-GET  /api/renders/{id}                     → render detail
+GET   /api/targets                              → list + counts
+GET   /api/targets/{id}                         → sessions, calibration coverage
+GET   /api/sessions/{id}                        → session detail
+PATCH /api/sessions/{id}                        → reassign target, set description
+POST  /api/scan                                 → trigger NAS rescan
+GET   /api/templates                            → available templates
+POST  /api/jobs                                 → submit Job; returns job_id
+GET   /api/jobs/{id}                            → status
+WS    /api/jobs/{id}/events                     → progress events
+POST  /api/preview                              → submit preview-only Job; returns hash
+GET   /api/preview/{node_hash}/{port}           → content-addressed preview image
+POST  /api/projects                             → create project from job
+POST  /api/projects/from_session                → create project from one session
+POST  /api/projects/from_sessions               → create project from multiple sessions
+GET   /api/projects                             → list projects
+GET   /api/projects/{id}                        → project detail
+PATCH /api/projects/{id}                        → apply param overrides or set description
+PUT   /api/projects/{id}/cover                  → pin a history seq as cover image
+PUT   /api/projects/{id}/history/{seq}/published → toggle gallery visibility
+POST  /api/projects/{id}/revert/{seq}           → revert to a prior history entry
+DELETE /api/projects/{id}                       → delete project
+DELETE /api/projects/{id}/cache                 → evict project cache entries
+GET   /api/gallery                              → published renders
+GET   /api/tonight                              → visible DSOs for configured site
+GET   /api/masters                              → master calibration frames
+GET   /api/settings                             → current settings KV
+PATCH /api/settings                             → update settings
 ```
 
 ### WebSocket event shape
@@ -523,20 +541,7 @@ Each phase ends with something demoably useful, not "infrastructure done."
 - Multi-session integration ("combine these 3 nights").
 - Plate solving against external services (astrometry.net fallback).
 - Auto-tag bad subs by metric (FWHM, eccentricity, background).
-- **"Tonight" view.** A planning surface that mixes (1) what's currently in the
-  sky for the user's lat/long with (2) what they've already captured. The
-  OpenNGC catalog (now loaded into the backend) gives RA/Dec/mag/type for
-  every named target; combine that with a configured site location to compute
-  altitude / hours-til-meridian / transit time. Overlay the user's existing
-  library so each visible target shows "captured 5 nights, last 2025-10-21"
-  inline. Add slick graphs for sky view + cloud cover + seeing. The
-  Home Assistant `astroweather` integration uses
-  https://github.com/mawinkler/pyastroweatherio under the hood — worth
-  cribbing the data sources from there (Met.no for forecast, etc.) even if
-  we don't take the dep. Goal: open the page on the couch, see "what's
-  worth pointing at tonight, here's what I already have, here's the
-  forecast." Not a replacement for Stellarium/SkySafari — a personal
-  tonight-only digest tied to the user's library.
+- Cloud cover + seeing forecast overlay in the Tonight view (Met.no / pyastroweatherio).
 
 ---
 
