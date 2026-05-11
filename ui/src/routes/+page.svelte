@@ -49,6 +49,63 @@
   let reassignNewNameDraft = $state('');
   let reassignSaving = $state(false);
 
+  // Sort selector for the target list. Persisted per-browser so the
+  // user's preferred view sticks across reloads. Defaults to 'name'
+  // (alphabetical) which matches what /api/targets used to return.
+  type SortMode = 'name' | 'integration' | 'recency';
+  const SORT_KEY = 'astrolab.library.sort';
+  const SORT_MODES: ReadonlySet<SortMode> = new Set(['name', 'integration', 'recency']);
+  let sortMode = $state<SortMode>('name');
+
+  function targetSortKey(t: TargetSummary, mode: SortMode): string | number | null {
+    if (mode === 'name') {
+      // Prefer the common name (Andromeda) over the catalog id; lowercase
+      // so the comparator is case-insensitive.
+      const display = t.common_name ?? t.name;
+      return display ? display.toLowerCase() : null;
+    }
+    if (mode === 'integration') {
+      // Zero integration shouldn't sort above "unknown"; both go to the
+      // bottom on descending sort.
+      return t.integration_seconds && t.integration_seconds > 0
+        ? t.integration_seconds
+        : null;
+    }
+    return t.last_session_at;
+  }
+
+  function cmpSortKeys(
+    a: string | number | null,
+    b: string | number | null,
+    descending: boolean,
+  ): number {
+    // Nulls always sink, regardless of direction, so an unknown row
+    // doesn't pretend to be zero or empty string.
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    if (a < b) return descending ? 1 : -1;
+    if (a > b) return descending ? -1 : 1;
+    return 0;
+  }
+
+  const sortedTargets = $derived.by(() => {
+    if (!targets) return null;
+    // Name ascending (A->Z), the quantitative modes descending
+    // (most-integrated / most-recent first).
+    const descending = sortMode !== 'name';
+    return [...targets].sort((a, b) =>
+      cmpSortKeys(targetSortKey(a, sortMode), targetSortKey(b, sortMode), descending),
+    );
+  });
+
+  function setSort(mode: SortMode) {
+    sortMode = mode;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SORT_KEY, mode);
+    }
+  }
+
   async function load() {
     try {
       const list = await api.listTargets();
@@ -245,6 +302,10 @@
       .catch(() => (captureRoot = null));
     if (typeof localStorage !== 'undefined') {
       lastScanAt = localStorage.getItem(LAST_SCAN_KEY);
+      const saved = localStorage.getItem(SORT_KEY);
+      if (saved && SORT_MODES.has(saved as SortMode)) {
+        sortMode = saved as SortMode;
+      }
     }
     // Tick the clock so the muted "scanned 3m ago" line stays fresh
     // without the user reloading.
@@ -382,8 +443,37 @@
     a capture root, then come back and hit refresh.
   </p>
 {:else}
+  <div class="sort-row" role="radiogroup" aria-label="Sort targets">
+    <span class="sort-label">Sort by</span>
+    <div class="sort-chips">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={sortMode === 'name'}
+        class="sort-chip"
+        class:active={sortMode === 'name'}
+        onclick={() => setSort('name')}
+      >Name</button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={sortMode === 'integration'}
+        class="sort-chip"
+        class:active={sortMode === 'integration'}
+        onclick={() => setSort('integration')}
+      >Integration</button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={sortMode === 'recency'}
+        class="sort-chip"
+        class:active={sortMode === 'recency'}
+        onclick={() => setSort('recency')}
+      >Recency</button>
+    </div>
+  </div>
   <ul class="target-list">
-    {#each targets as t, i (t.id)}
+    {#each sortedTargets ?? [] as t, i (t.id)}
       <li class="target" class:open={openTargetId === t.id} style="--stagger: {i}">
         <div
           class="target-row"
@@ -773,6 +863,45 @@
   }
   .refresh-btn.spinning svg { animation: refresh-spin 900ms linear infinite; }
   .last-scan { font-variant-numeric: tabular-nums; }
+
+  .sort-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0 0 0.85rem;
+    flex-wrap: wrap;
+  }
+  .sort-label {
+    color: var(--fg-mute);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .sort-chips {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .sort-chip {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg-mute);
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+  .sort-chip:hover {
+    color: var(--fg);
+    border-color: var(--fg-mute);
+  }
+  .sort-chip.active {
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-color: transparent;
+  }
 
   .target-list {
     list-style: none;
