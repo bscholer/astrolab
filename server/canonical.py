@@ -170,13 +170,15 @@ def node_hash(
         h.update(ref.node_hash.encode("utf-8"))
         h.update(b"/")
         h.update(ref.port.encode("utf-8"))
-        # External Refs (those produced outside the runtime, eg the session
-        # folder selected by the UI) all share node_hash='ext'; their actual
-        # discriminator is the filesystem path. Internal Refs have a real
-        # producer hash already, so the path is implied by it; we still mix
-        # it in defensively to make the hash transparent on inspection.
-        h.update(b"@")
-        h.update(str(ref.path).encode("utf-8"))
+        # External Refs (node_hash='ext') come from outside the runtime (eg
+        # the session folder selected by the UI), so their filesystem path
+        # IS the discriminator and must be mixed in. Internal Refs are fully
+        # identified by their producer hash + port; mixing the path would
+        # couple downstream hashes to the cache root location, silently
+        # invalidating everything when ASTROLAB_HOME moves.
+        if ref.node_hash == "ext":
+            h.update(b"@")
+            h.update(str(ref.path).encode("utf-8"))
         h.update(b";")
 
     h.update(b"\x00params=")

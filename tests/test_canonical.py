@@ -229,3 +229,58 @@ def test_canonical_json_roundtrips_through_json(d: dict) -> None:
 def test_canonical_json_uses_sorted_keys_in_output() -> None:
     encoded = canonical_json({"z": 1, "a": 2, "m": 3})
     assert encoded == b'{"a":2,"m":3,"z":1}'
+
+
+# ---------------------------------------------------------------------------
+# Cache-root independence: internal-ref paths must not bleed into the hash.
+# ---------------------------------------------------------------------------
+
+
+def test_internal_ref_path_does_not_affect_node_hash() -> None:
+    """Internal refs (real producer hash) are identified by hash+port. Mixing
+    their on-disk path would couple downstream hashes to the cache root, so
+    moving ASTROLAB_HOME would silently invalidate the entire chain."""
+
+    class P(BaseModel):
+        x: int = 1
+
+    # Same logical pipeline, two cache roots: producer hash is identical
+    # (the upstream node would have hashed deterministically), but the on-disk
+    # path lives under different roots.
+    upstream_hash = "a" * 64
+    h_root_a = node_hash(
+        node_id="downstream",
+        node_version=1,
+        inputs={"image": FakeRef(upstream_hash, "out", "/cache/rootA/" + upstream_hash + "/image.fit")},
+        params=P(),
+    )
+    h_root_b = node_hash(
+        node_id="downstream",
+        node_version=1,
+        inputs={"image": FakeRef(upstream_hash, "out", "/cache/rootB/" + upstream_hash + "/image.fit")},
+        params=P(),
+    )
+    assert h_root_a == h_root_b
+
+
+def test_external_ref_path_still_affects_node_hash() -> None:
+    """Counterpart to the internal-ref test: external refs must still mix
+    their path, since that path IS the user-facing identity (eg the session
+    folder selected in the UI)."""
+
+    class P(BaseModel):
+        x: int = 1
+
+    h_a = node_hash(
+        node_id="convert_lights",
+        node_version=1,
+        inputs={"lights": FakeRef("ext", "lights", "/data/sessionA")},
+        params=P(),
+    )
+    h_b = node_hash(
+        node_id="convert_lights",
+        node_version=1,
+        inputs={"lights": FakeRef("ext", "lights", "/data/sessionB")},
+        params=P(),
+    )
+    assert h_a != h_b
