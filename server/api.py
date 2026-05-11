@@ -1699,13 +1699,31 @@ def _suggestions_for_project(
         except (ValueError, TypeError):
             continue
 
+    # Reference session: any of the project's existing sessions defines
+    # the COMPAT_FIELDS bundle (instrument, camera, filter, exptime,
+    # gain, binning) that PATCH would later enforce. We suggest only
+    # orphans that match all of them, so the user never sees a "+ Add
+    # 3 sessions" banner that would 400 with "exptime: 15.0, 30.0".
+    compat_reference: sqlite3.Row | None = None
+    if existing:
+        placeholders = ",".join("?" for _ in existing)
+        compat_reference = conn.execute(
+            f"""
+            SELECT instrument, camera, filter, exptime, gain, binning
+            FROM sessions WHERE id IN ({placeholders})
+            LIMIT 1
+            """,  # noqa: S608  (ids are ints)
+            list(existing),
+        ).fetchone()
+
     # Pull every session whose target row resolves to the same canonical
     # bucket. We compute the bucket per-target in Python because the
     # rule (`resolved_canonical` else `openngc_enrich(name)`) doesn't
     # express cleanly in SQL. Cheap enough at typical library sizes.
     rows = conn.execute(
         """
-        SELECT s.id AS session_id, s.exptime, s.frame_count, s.failed_count,
+        SELECT s.id AS session_id, s.instrument, s.camera, s.filter,
+               s.exptime, s.gain, s.binning, s.frame_count, s.failed_count,
                t.id AS target_id, t.name AS target_name,
                t.resolved_canonical AS resolved_canonical
         FROM sessions s
@@ -1725,6 +1743,19 @@ def _suggestions_for_project(
         )
         if c != canonical_group:
             continue
+        # Drop anything that wouldn't survive the PATCH endpoint's
+        # _assert_compatible gate. The COMPAT_FIELDS list lives in
+        # job_builder; we don't import it here to keep this helper
+        # cheap, just enumerate the fields inline (target_id is
+        # already covered by the canonical-group filter above).
+        if compat_reference is not None:
+            mismatch = False
+            for field in ("instrument", "camera", "filter", "exptime", "gain", "binning"):
+                if r[field] != compat_reference[field]:
+                    mismatch = True
+                    break
+            if mismatch:
+                continue
         out_ids.append(sid)
         usable = max(0, (r["frame_count"] or 0) - (r["failed_count"] or 0))
         frames += r["frame_count"] or 0
