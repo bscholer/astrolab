@@ -49,26 +49,33 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # CPU variant: :latest (on main), :cpu, :vX.Y.Z (on tag), :vX.Y.Z-cpu (on tag)
+      # CPU variant: :latest (on main only), :cpu, :vX.Y.Z (on tag), :vX.Y.Z-cpu (on tag)
+      # flavor latest=false disables docker/metadata-action's default behavior of
+      # auto-tagging :latest on any semver match. We manage :latest manually via
+      # the type=raw line below so it only ever follows main HEAD on the CPU image.
       - name: Compute tags (cpu)
         if: matrix.variant == 'cpu'
         id: meta-cpu
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=cpu
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{version}}-cpu
 
-      # CUDA variant: :cuda (on main), :vX.Y.Z-cuda (on tag)
+      # CUDA variant: :cuda, :vX.Y.Z-cuda. NEVER :latest.
+      # flavor latest=false is critical here: without it, semver auto-tagged
+      # :latest on tag pushes and the CUDA image overwrote the CPU :latest.
       - name: Compute tags (cuda)
         if: matrix.variant == 'cuda'
         id: meta-cuda
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
             type=raw,value=cuda
             type=semver,pattern=v{{version}}-cuda
