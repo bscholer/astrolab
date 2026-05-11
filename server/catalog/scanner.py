@@ -443,10 +443,7 @@ def frames_for_target(
 
 
 def _clear_auto_resolve(conn: sqlite3.Connection, target_id: int) -> None:
-    """Reset the auto-resolve columns for a target.
-
-    Override stays put: it's the user's pin and only the API clears it.
-    """
+    """Reset the auto-resolve columns for a target."""
     conn.execute(
         "UPDATE targets SET "
         "  resolved_canonical = NULL, "
@@ -455,6 +452,60 @@ def _clear_auto_resolve(conn: sqlite3.Connection, target_id: int) -> None:
         "  resolved_at = NULL "
         "WHERE id = ?",
         (target_id,),
+    )
+
+
+def resolve_target(conn: sqlite3.Connection, target_id: int, name: str) -> None:
+    """Auto-resolve a single target's catalog mapping.
+
+    Same name-first / position-fallback rule as `_resolve_targets`,
+    extracted so the per-session reassign endpoint can re-run resolution
+    against a freshly-created or freshly-rebound target without walking
+    every row in the table.
+    """
+    hit = openngc_enrich(name) if name else None
+    if hit is not None:
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            "UPDATE targets SET "
+            "  resolved_canonical = ?, "
+            "  resolved_separation_arcmin = ?, "
+            "  resolved_source = 'name', "
+            "  resolved_at = ? "
+            "WHERE id = ?",
+            (hit.canonical, 0.0, now, target_id),
+        )
+        return
+
+    frames = frames_for_target(conn, target_id)
+    envelope = target_envelope(frames)
+    if envelope is not None:
+        ra_centroid, dec_centroid, env_deg = envelope
+        tol = auto_tolerance_deg(env_deg)
+    else:
+        # No FOV headers anywhere on this target, but if the centroid is
+        # still computable (frames have RA/Dec, just no focallen/pixsz),
+        # match against the 1.0 deg fallback rather than giving up.
+        centroid = target_centroid(frames)
+        if centroid is None:
+            _clear_auto_resolve(conn, target_id)
+            return
+        ra_centroid, dec_centroid = centroid
+        tol = auto_tolerance_deg(None)
+
+    match = nearest_match(ra_centroid, dec_centroid, tol)
+    if match is None:
+        _clear_auto_resolve(conn, target_id)
+        return
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "UPDATE targets SET "
+        "  resolved_canonical = ?, "
+        "  resolved_separation_arcmin = ?, "
+        "  resolved_source = 'position', "
+        "  resolved_at = ? "
+        "WHERE id = ?",
+        (match.canonical, match.separation_deg * 60.0, now, target_id),
     )
 
 
@@ -467,67 +518,11 @@ def _resolve_targets(conn: sqlite3.Connection) -> None:
     target's frames and run a great-circle nearest-match within a
     scope-aware tolerance. On a miss, every resolved_* column goes back
     to null so a target that lost its frames doesn't keep claiming an
-    old answer. resolved_canonical_override (user-pinned) is a separate
-    column and is never touched here.
+    old answer.
     """
     rows = conn.execute("SELECT id, name FROM targets").fetchall()
     for trow in rows:
-        target_id = trow["id"]
-        name = trow["name"]
-
-        # Name-first: a target the user stored as a recognized id should
-        # not pay the cost of an envelope computation or a catalog walk.
-        # This is the common case for Dwarf 3 users (the goto saves the
-        # catalog name as OBJECT), and we want it cheap.
-        hit = openngc_enrich(name) if name else None
-        if hit is not None:
-            now = datetime.now(UTC).isoformat()
-            conn.execute(
-                "UPDATE targets SET "
-                "  resolved_canonical = ?, "
-                "  resolved_separation_arcmin = ?, "
-                "  resolved_source = 'name', "
-                "  resolved_at = ? "
-                "WHERE id = ?",
-                (hit.canonical, 0.0, now, target_id),
-            )
-            continue
-
-        # Position fallback: compute envelope, pick the auto tolerance,
-        # walk the catalog. envelope=None means we couldn't compute one
-        # (too few frames, or no FOV headers anywhere); we still try the
-        # match with the fallback tolerance when we have a centroid.
-        frames = frames_for_target(conn, target_id)
-        envelope = target_envelope(frames)
-        if envelope is not None:
-            ra_centroid, dec_centroid, env_deg = envelope
-            tol = auto_tolerance_deg(env_deg)
-        else:
-            # No FOV headers anywhere on this target, but if the
-            # centroid is still computable (frames have RA/Dec, just no
-            # focallen/pixsz), match against the 1.0 deg fallback rather
-            # than giving up entirely.
-            centroid = target_centroid(frames)
-            if centroid is None:
-                _clear_auto_resolve(conn, target_id)
-                continue
-            ra_centroid, dec_centroid = centroid
-            tol = auto_tolerance_deg(None)
-
-        match = nearest_match(ra_centroid, dec_centroid, tol)
-        if match is None:
-            _clear_auto_resolve(conn, target_id)
-            continue
-        now = datetime.now(UTC).isoformat()
-        conn.execute(
-            "UPDATE targets SET "
-            "  resolved_canonical = ?, "
-            "  resolved_separation_arcmin = ?, "
-            "  resolved_source = 'position', "
-            "  resolved_at = ? "
-            "WHERE id = ?",
-            (match.canonical, match.separation_deg * 60.0, now, target_id),
-        )
+        resolve_target(conn, trow["id"], trow["name"])
 
 
 def scan(

@@ -5,6 +5,8 @@ Endpoints:
 - GET  /api/targets                      target list with frame counts
 - GET  /api/targets/{id}                 target detail: sessions + calibration
 - GET  /api/sessions/{id}                session detail: frames summary + cal
+- PATCH /api/sessions/{id}               reassign a session to another target
+- GET  /api/sessions/{id}/reassign_candidates  nearby targets + catalog suggestions
 - POST /api/scan                         trigger a rescan (synchronous)
 - GET  /api/masters                      indexed calibration masters
 - POST /api/jobs                         submit a Template+Job to run
@@ -47,16 +49,17 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.sky as sky
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
+from server.catalog.fits_reader import normalize_target
 from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
-from server.catalog.scanner import frames_for_target
+from server.catalog.scanner import resolve_target as resolve_target_row
 from server.catalog.scanner import scan as run_scan
 from server.catalog.sky_match import (
     nearby_matches,
@@ -192,10 +195,10 @@ def _resolve_target_meta(name: str) -> tuple[str | None, SkyInfo | None]:
 class ResolvedAs(BaseModel):
     """Catalog resolution for a target.
 
-    Only present on responses when the source is 'position' or 'override'.
-    Name-resolved targets ('source' == 'name' internally) deliberately
-    surface as `resolved_as = None` so the UI doesn't render a redundant
-    caption next to a name the user already typed in the obvious form
+    Only present on responses when the source is 'position'. Name-resolved
+    targets ('source' == 'name' internally) deliberately surface as
+    `resolved_as = None` so the UI doesn't render a redundant caption
+    next to a name the user already typed in the obvious form
     (i.e. "M 31" -> "NGC 224" is implicit and the library should read
     quietly).
     """
@@ -206,7 +209,7 @@ class ResolvedAs(BaseModel):
     common_name: str | None = None
     object_type: str | None = None
     separation_arcmin: float | None = None
-    source: Literal["position", "override"]
+    source: Literal["position"]
 
 
 class TargetSummary(BaseModel):
@@ -229,15 +232,6 @@ class TargetSummary(BaseModel):
     # frames table's `size` column, joined via session_key so we don't
     # double-count when frames are shared across sessions.
     bytes_on_disk: int = 0
-    # Canonical id the UI buckets this target under on the Library page.
-    # Coalesces override -> auto-resolve -> name-resolve so two targets
-    # that point at the same catalog row (e.g. user pinned "C 20" -> "NGC
-    # 7000" and another resolved to "NGC 7000" by position) merge into a
-    # single group visually. Null when the target doesn't resolve at all.
-    canonical_group: str | None = None
-    # Friendly name for `canonical_group`, when OpenNGC has one. Used as
-    # the group-header label alongside the canonical id.
-    canonical_group_name: str | None = None
 
 
 class CalibrationStatus(BaseModel):
@@ -288,22 +282,6 @@ class TargetDetail(BaseModel):
     sessions: list[SessionSummary]
 
 
-class TargetPatchRequest(BaseModel):
-    """Body for PATCH /api/targets/{id}.
-
-    Setting `resolved_canonical_override` to a non-null value pins that
-    canonical id as the target's resolution; the value must resolve via
-    OpenNGC or we 400. Passing null clears the override and lets the
-    auto-resolution win (or surface as 'unresolved' when there isn't
-    one). Whitespace-only strings are also a 400 because they're
-    almost certainly a typo, not an intentional clear.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    resolved_canonical_override: str | None = None
-
-
 class MasterRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -348,34 +326,6 @@ class ScanResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _canonical_group_for_row(row: sqlite3.Row | dict[str, Any]) -> str | None:
-    """Resolve the canonical bucket id the Library page groups by.
-
-    Coalesces in the order: user override -> position auto-resolve ->
-    name-derived canonical (re-enriched on the fly since the response
-    model suppresses `resolved_as` for source='name'). Returns None when
-    nothing resolves, which the UI renders as the "Unresolved" bucket.
-
-    Centralized so any future caller (CSV export, Tonight overlay) uses
-    the exact same merge rule the Library does.
-    """
-    override = row["resolved_canonical_override"]
-    if override:
-        return override
-    canonical = row["resolved_canonical"]
-    if canonical:
-        return canonical
-    # No persisted canonical: try resolving the user's stored name. This
-    # is the case the response model suppresses (`resolved_as` is None
-    # for source='name'), but we still need the canonical for grouping.
-    name = row["name"]
-    if name:
-        entry = openngc_enrich(name)
-        if entry is not None:
-            return entry.canonical
-    return None
-
-
 def _resolved_as_from_row(row: sqlite3.Row) -> ResolvedAs | None:
     """Build the public ResolvedAs payload from a `targets` row.
 
@@ -383,25 +333,7 @@ def _resolved_as_from_row(row: sqlite3.Row) -> ResolvedAs | None:
     (source='name') OR when there's no resolution at all. Name-resolved
     targets deliberately surface as None so the library doesn't paint a
     caption next to a name that already conveys the catalog mapping.
-
-    The override path takes precedence over the auto path: a user pin
-    always wins. The separation_arcmin column reflects the auto-resolve
-    distance and stays attached to the response even when an override
-    is pinned, because the UI might want to surface "you pinned NGC X
-    but the scanner thinks Y at 0.3' would also fit" later. For now
-    the override response just carries None for separation since the
-    user is the source of truth.
     """
-    override = row["resolved_canonical_override"]
-    if override:
-        entry = openngc_enrich(override)
-        return ResolvedAs(
-            canonical=entry.canonical if entry is not None else override,
-            common_name=entry.common_name if entry is not None else None,
-            object_type=entry.object_type if entry is not None else None,
-            separation_arcmin=None,
-            source="override",
-        )
     source = row["resolved_source"]
     if source != "position":
         # 'name' and unresolved both surface as None: we don't want
@@ -556,8 +488,7 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
         """
         SELECT t.id, t.name,
                t.resolved_canonical, t.resolved_separation_arcmin,
-               t.resolved_at, t.resolved_canonical_override,
-               t.resolved_source,
+               t.resolved_at, t.resolved_source,
                COUNT(DISTINCT s.id)        AS session_count,
                IFNULL(SUM(s.frame_count), 0) AS frame_count,
                IFNULL(SUM(s.failed_count), 0) AS failed_count,
@@ -584,14 +515,8 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
     for r in rows:
         common, sky = _resolve_target_meta(r["name"])
         # 0 from the query means "nothing to integrate" — surface as None
-        # so the UI can show '—' instead of '0s'.
+        # so the UI can show '-' instead of '0s'.
         integ = float(r["integration_seconds"]) or None
-        group = _canonical_group_for_row(r)
-        group_name: str | None = None
-        if group is not None:
-            entry = openngc_enrich(group)
-            if entry is not None:
-                group_name = entry.common_name
         summaries.append(
             TargetSummary(
                 id=r["id"],
@@ -605,8 +530,6 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                 last_session_at=r["last_session_at"],
                 integration_seconds=integ,
                 bytes_on_disk=int(r["bytes_on_disk"] or 0),
-                canonical_group=group,
-                canonical_group_name=group_name,
             )
         )
     return summaries
@@ -618,7 +541,7 @@ def get_target(
 ) -> TargetDetail:
     target = conn.execute(
         "SELECT id, name, resolved_canonical, resolved_separation_arcmin, "
-        "resolved_at, resolved_canonical_override, resolved_source "
+        "resolved_at, resolved_source "
         "FROM targets WHERE id = ?",
         (target_id,),
     ).fetchone()
@@ -647,102 +570,6 @@ def get_target(
     )
 
 
-@app.patch("/api/targets/{target_id}", response_model=TargetDetail)
-def patch_target(
-    target_id: int, req: TargetPatchRequest, conn: DBDep
-) -> TargetDetail:
-    """Pin or clear the user's canonical override for a target.
-
-    Non-null overrides validate through openngc.enrich; a value that
-    doesn't resolve is a 400 because we'd rather surface the typo
-    immediately than store dead state that quietly breaks the Tonight
-    join. We persist the catalog's *canonical* form ("NGC 224" rather
-    than the input "M 31") so a single canonical bucket is what the
-    Tonight overlay joins on, regardless of which alias the user typed.
-
-    Setting to null clears the override and lets the auto-resolve win
-    (which itself may be null if the scanner couldn't match). Whitespace-
-    only strings are rejected for the same reason as unresolvable ids.
-    """
-    target = conn.execute(
-        "SELECT id FROM targets WHERE id = ?", (target_id,)
-    ).fetchone()
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"target {target_id} not found")
-
-    raw = req.resolved_canonical_override
-    if raw is None:
-        stored: str | None = None
-    else:
-        trimmed = raw.strip()
-        if not trimmed:
-            raise HTTPException(
-                status_code=400,
-                detail="resolved_canonical_override must be non-empty or null",
-            )
-        entry = openngc_enrich(trimmed)
-        if entry is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"resolved_canonical_override {trimmed!r} did not resolve "
-                    "in OpenNGC"
-                ),
-            )
-        stored = entry.canonical
-    with conn:
-        conn.execute(
-            "UPDATE targets SET resolved_canonical_override = ? WHERE id = ?",
-            (stored, target_id),
-        )
-    return get_target(target_id, conn)
-
-
-@app.get("/api/targets/{target_id}/nearby", response_model=list[ResolvedAs])
-def get_target_nearby(
-    target_id: int,
-    conn: DBDep,
-    max_sep_deg: float | None = None,
-) -> list[ResolvedAs]:
-    """Nearby catalog candidates for the target's centroid.
-
-    Used by the UI's override dropdown. Defaults to the auto-derived
-    suggestion tolerance (1.5x envelope, clamped); pass `max_sep_deg`
-    to widen the search ad-hoc. Returns an empty list when the target
-    has no usable centroid (too few frames or no RA/Dec on file).
-    Every entry's `source` is set to 'position'; the UI treats this
-    list as candidate replacements for whatever the auto path picked.
-    """
-    target = conn.execute(
-        "SELECT id FROM targets WHERE id = ?", (target_id,)
-    ).fetchone()
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"target {target_id} not found")
-    frames = frames_for_target(conn, target_id)
-    envelope = target_envelope(frames)
-    if envelope is not None:
-        ra_c, dec_c, env_deg = envelope
-        default_tol = suggest_tolerance_deg(env_deg)
-    else:
-        centroid = target_centroid(frames)
-        if centroid is None:
-            return []
-        ra_c, dec_c = centroid
-        default_tol = suggest_tolerance_deg(None)
-    tol = float(max_sep_deg) if max_sep_deg is not None else default_tol
-    matches = nearby_matches(ra_c, dec_c, tol)
-    return [
-        ResolvedAs(
-            canonical=m.canonical,
-            common_name=m.common_name,
-            object_type=m.object_type,
-            separation_arcmin=m.separation_deg * 60.0,
-            source="position",
-        )
-        for m in matches
-    ]
-
-
 @app.get("/api/sessions/{session_id}", response_model=SessionSummary)
 def get_session(
     session_id: int, conn: DBDep
@@ -758,6 +585,333 @@ def get_session(
     if row is None:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     return _row_to_session_summary(conn, row, target_name=row["target_name"])
+
+
+# ---------------------------------------------------------------------------
+# Session reassign (per-session "change target" action)
+# ---------------------------------------------------------------------------
+
+
+class SessionReassignRequest(BaseModel):
+    """Body for PATCH /api/sessions/{id}.
+
+    Exactly one of `target_id` or `new_target_name` must be provided.
+    - `target_id`: reassign to an existing target row.
+    - `new_target_name`: create (or reuse) a target with that normalized
+      name and reassign to it. The user wanted "reassigning should
+      straight up change it", so when the supplied name collides with an
+      existing target after normalization, we merge into that target
+      instead of duplicating.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: int | None = None
+    new_target_name: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> SessionReassignRequest:
+        # Either-or: discriminate at the body level so the route never
+        # has to decide which signal wins (both is ambiguous, neither is
+        # a no-op).
+        has_id = self.target_id is not None
+        has_name = bool(
+            self.new_target_name is not None and self.new_target_name.strip()
+        )
+        if has_id == has_name:
+            raise ValueError(
+                "exactly one of target_id or new_target_name must be set"
+            )
+        return self
+
+
+class SessionReassignResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session: SessionSummary
+    # Target ids that were deleted as a result of this reassign (because
+    # they're now empty). The UI drops these from its local state on
+    # success so the library list shrinks without a full refetch.
+    deleted_target_ids: list[int]
+
+
+def _maybe_delete_empty_target(
+    conn: sqlite3.Connection, target_id: int
+) -> bool:
+    """Drop the target if no sessions reference it. Returns True when deleted."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM sessions WHERE target_id = ?",
+        (target_id,),
+    ).fetchone()
+    if row is not None and row["n"] == 0:
+        conn.execute("DELETE FROM targets WHERE id = ?", (target_id,))
+        return True
+    return False
+
+
+@app.patch(
+    "/api/sessions/{session_id}", response_model=SessionReassignResponse
+)
+def patch_session(
+    session_id: int, req: SessionReassignRequest, conn: DBDep
+) -> SessionReassignResponse:
+    """Reassign a session to a different target.
+
+    The session's underlying `frames` rows are linked by `session_key`
+    (not target_id directly), so changing `sessions.target_id` is all we
+    need. Any source target left without sessions gets deleted; the
+    response carries the deleted ids so the UI can drop them locally.
+
+    For `new_target_name` the input is normalized first; a normalized
+    name that matches an existing target reuses that row rather than
+    creating a duplicate (the user asked for "straight up change it",
+    so collisions merge instead of raising).
+    """
+    session_row = conn.execute(
+        "SELECT id, target_id FROM sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    if session_row is None:
+        raise HTTPException(
+            status_code=404, detail=f"session {session_id} not found"
+        )
+    source_target_id = session_row["target_id"]
+
+    deleted: list[int] = []
+    with conn:
+        if req.target_id is not None:
+            dest_row = conn.execute(
+                "SELECT id, name FROM targets WHERE id = ?", (req.target_id,)
+            ).fetchone()
+            if dest_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"target {req.target_id} not found",
+                )
+            new_target_id = int(dest_row["id"])
+            dest_name = dest_row["name"]
+        else:
+            # `model_validator` guarantees new_target_name is non-empty.
+            raw_name = req.new_target_name or ""
+            normalized = normalize_target(raw_name)
+            if not normalized:
+                raise HTTPException(
+                    status_code=400,
+                    detail="new_target_name must be non-empty after normalization",
+                )
+            existing = conn.execute(
+                "SELECT id, name FROM targets WHERE name = ?", (normalized,)
+            ).fetchone()
+            if existing is not None:
+                new_target_id = int(existing["id"])
+                dest_name = existing["name"]
+            else:
+                cur = conn.execute(
+                    "INSERT INTO targets (name) VALUES (?)", (normalized,)
+                )
+                new_target_id = int(cur.lastrowid or -1)
+                dest_name = normalized
+
+        # No-op when the user picks the session's current target. Still
+        # return a fresh response so the client gets a current snapshot.
+        if new_target_id != source_target_id:
+            conn.execute(
+                "UPDATE sessions SET target_id = ? WHERE id = ?",
+                (new_target_id, session_id),
+            )
+            # Re-run resolution on the destination target; a newly
+            # created target with no resolved_canonical yet may now pick
+            # one up if its frames have position data.
+            resolve_target_row(conn, new_target_id, dest_name)
+            # Source target may now be empty -> drop it.
+            if source_target_id is not None and _maybe_delete_empty_target(
+                conn, source_target_id
+            ):
+                deleted.append(int(source_target_id))
+
+    # Refetch a fresh SessionSummary; the join needs the destination
+    # target's name so the UI's session card updates without a full
+    # library reload.
+    fresh = conn.execute(
+        """
+        SELECT s.*, t.name AS target_name
+        FROM sessions s LEFT JOIN targets t ON s.target_id = t.id
+        WHERE s.id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if fresh is None:  # pragma: no cover  (we just updated it)
+        raise HTTPException(status_code=500, detail="session vanished mid-reassign")
+    summary = _row_to_session_summary(conn, fresh, target_name=fresh["target_name"])
+    return SessionReassignResponse(session=summary, deleted_target_ids=deleted)
+
+
+class ReassignCandidateTarget(BaseModel):
+    """Existing target near the session's centroid; the UI offers these
+    as one-click "move this session to <existing target>" options."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    common_name: str | None = None
+    separation_arcmin: float
+
+
+class ReassignCandidateCatalog(BaseModel):
+    """OpenNGC entry near the session's centroid; the UI offers these as
+    "create a new target named X and move" options."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    canonical: str
+    common_name: str | None = None
+    object_type: str | None = None
+    separation_arcmin: float
+
+
+class ReassignCandidatesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    targets: list[ReassignCandidateTarget]
+    catalog: list[ReassignCandidateCatalog]
+
+
+def _session_centroid(
+    conn: sqlite3.Connection, session_id: int
+) -> tuple[float, float, float | None] | None:
+    """Compute the session's centroid + envelope from its frames.
+
+    Returns (ra_deg, dec_deg, envelope_deg or None) when at least the
+    centroid is computable, else None. The envelope drives the suggestion
+    tolerance; falling back to None means we use the fallback tol.
+    """
+    from server.catalog.sky_match import frames_to_sky
+
+    rows = conn.execute(
+        """
+        SELECT f.ra AS ra, f.dec AS dec, f.fits_headers AS hdr
+        FROM frames f
+        JOIN sessions s ON s.session_key = f.session_key
+        WHERE s.id = ?
+        """,
+        (session_id,),
+    ).fetchall()
+    # Lift the dict-rows into FrameSky records the way the scanner does.
+    import json as _json
+
+    dicts: list[dict[str, Any]] = []
+    for r in rows:
+        hdr: dict[str, Any] = {}
+        blob = r["hdr"]
+        if blob is not None:
+            try:
+                hdr = _json.loads(bytes(blob).decode("utf-8"))
+            except (UnicodeDecodeError, _json.JSONDecodeError, TypeError):
+                hdr = {}
+        dicts.append(
+            {
+                "ra": r["ra"],
+                "dec": r["dec"],
+                "focallen": hdr.get("FOCALLEN"),
+                "xpixsz": hdr.get("XPIXSZ"),
+                "ypixsz": hdr.get("YPIXSZ"),
+                "naxis1": hdr.get("NAXIS1"),
+                "naxis2": hdr.get("NAXIS2"),
+            }
+        )
+    frames = frames_to_sky(dicts)
+    envelope = target_envelope(frames)
+    if envelope is not None:
+        ra_c, dec_c, env_deg = envelope
+        return ra_c, dec_c, env_deg
+    centroid = target_centroid(frames)
+    if centroid is None:
+        return None
+    return centroid[0], centroid[1], None
+
+
+@app.get(
+    "/api/sessions/{session_id}/reassign_candidates",
+    response_model=ReassignCandidatesResponse,
+)
+def get_session_reassign_candidates(
+    session_id: int, conn: DBDep
+) -> ReassignCandidatesResponse:
+    """Suggest reassign targets for a session.
+
+    Returns two parallel lists:
+    - `targets`: existing target rows within the suggestion tolerance of
+      the session's centroid, sorted by ascending separation, capped at
+      10. Excludes the session's current target.
+    - `catalog`: OpenNGC entries within the same tolerance, capped at 15.
+
+    Both lists are empty when the session has no usable centroid (no
+    RA/Dec on its frames). The UI falls back to a free-text picker in
+    that case.
+    """
+    session_row = conn.execute(
+        "SELECT id, target_id FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if session_row is None:
+        raise HTTPException(
+            status_code=404, detail=f"session {session_id} not found"
+        )
+    current_target_id = session_row["target_id"]
+
+    centroid_info = _session_centroid(conn, session_id)
+    if centroid_info is None:
+        return ReassignCandidatesResponse(targets=[], catalog=[])
+    ra_c, dec_c, env_deg = centroid_info
+    tol = suggest_tolerance_deg(env_deg)
+
+    # Catalog: reuse the suggestion list the old override editor fed off.
+    catalog_matches = nearby_matches(ra_c, dec_c, tol, limit=15)
+    catalog_out = [
+        ReassignCandidateCatalog(
+            canonical=m.canonical,
+            common_name=m.common_name,
+            object_type=m.object_type,
+            separation_arcmin=m.separation_deg * 60.0,
+        )
+        for m in catalog_matches
+    ]
+
+    # Existing targets: walk every target with a resolved canonical
+    # position (via OpenNGC enrichment of resolved_canonical or its name)
+    # and keep the ones whose catalog position lands within tolerance.
+    # We don't need to compute per-target centroids here: the resolution
+    # pass already mapped each target to a catalog row when possible.
+    target_rows = conn.execute(
+        "SELECT id, name, resolved_canonical FROM targets"
+    ).fetchall()
+    from server.catalog.sky_match import angular_separation_deg
+
+    target_out: list[ReassignCandidateTarget] = []
+    for t in target_rows:
+        if current_target_id is not None and t["id"] == current_target_id:
+            continue
+        # Prefer the persisted canonical, fall back to enriching the
+        # stored name (covers targets the scanner couldn't resolve but
+        # whose name still maps in OpenNGC at API-call time).
+        canonical = t["resolved_canonical"]
+        entry = openngc_enrich(canonical) if canonical else openngc_enrich(t["name"])
+        if entry is None or entry.ra_deg is None or entry.dec_deg is None:
+            continue
+        sep = angular_separation_deg(ra_c, dec_c, entry.ra_deg, entry.dec_deg)
+        if sep > tol:
+            continue
+        target_out.append(
+            ReassignCandidateTarget(
+                id=int(t["id"]),
+                name=t["name"],
+                common_name=entry.common_name,
+                separation_arcmin=sep * 60.0,
+            )
+        )
+    target_out.sort(key=lambda c: c.separation_arcmin)
+    target_out = target_out[:10]
+    return ReassignCandidatesResponse(targets=target_out, catalog=catalog_out)
 
 
 @app.get("/api/masters", response_model=list[MasterRow])
@@ -1890,7 +2044,6 @@ def get_tonight(
         """
         SELECT t.name AS name,
                t.resolved_canonical AS resolved_canonical,
-               t.resolved_canonical_override AS resolved_canonical_override,
                COUNT(s.id) AS session_count,
                MAX(s.started_at) AS last_session_at
         FROM targets t
@@ -1900,14 +2053,12 @@ def get_tonight(
     ).fetchall():
         if row["session_count"] is None or row["session_count"] == 0:
             continue
-        # Coalesce: user override (wins outright) -> scanner's auto
-        # canonical (may be set by either the name path or the position
-        # path) -> fall back to enrich(name) for callers that scanned
-        # before the resolve pass ever ran. Whatever lands here is the
-        # join key for the captured-overlay merge below.
-        canonical: str | None = row["resolved_canonical_override"]
-        if not canonical:
-            canonical = row["resolved_canonical"]
+        # Coalesce: scanner's auto canonical (may be set by either the
+        # name path or the position path) -> fall back to enrich(name)
+        # for callers that scanned before the resolve pass ever ran.
+        # Whatever lands here is the join key for the captured-overlay
+        # merge below.
+        canonical: str | None = row["resolved_canonical"]
         if not canonical:
             catalog_hit = openngc_enrich(row["name"])
             canonical = catalog_hit.canonical if catalog_hit is not None else None

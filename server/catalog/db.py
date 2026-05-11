@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -288,18 +288,25 @@ MIGRATIONS: dict[int, list[str]] = {
         # great-circle match against OpenNGC when the target's stored
         # name doesn't enrich on its own. resolved_canonical / *_arcmin
         # / resolved_at are scanner-managed. resolved_canonical_override
-        # is set/cleared via PATCH /api/targets/{id} and wins over the
-        # auto path in the Tonight join. resolved_source tags which path
-        # produced the current resolution so the UI knows whether to
-        # render a "matched" caption: 'name' resolutions stay quiet (the
-        # stored name already conveys the catalog mapping), 'position'
-        # and 'override' get a caption.
+        # was the user pin (later dropped in migration 10).
+        # resolved_source tags which path produced the current resolution
+        # so the UI knows whether to render a "matched" caption.
         "ALTER TABLE targets ADD COLUMN resolved_canonical TEXT",
         "ALTER TABLE targets ADD COLUMN resolved_separation_arcmin REAL",
         "ALTER TABLE targets ADD COLUMN resolved_at TEXT",
         "ALTER TABLE targets ADD COLUMN resolved_canonical_override TEXT",
         "ALTER TABLE targets ADD COLUMN resolved_source TEXT",
         "INSERT INTO schema_version (version) VALUES (9)",
+    ],
+    10: [
+        # Drop the unused override column. The grouping/override UI was
+        # ripped out in favor of a per-session reassign action; subsequent
+        # slices won't bring it back. SQLite 3.35+ supports DROP COLUMN
+        # natively and both the dev box (3.45) and the Linux service box
+        # (3.45) are well past that threshold. This migration is
+        # irreversible: any pinned values are gone after it runs.
+        "ALTER TABLE targets DROP COLUMN resolved_canonical_override",
+        "INSERT INTO schema_version (version) VALUES (10)",
     ],
 }
 

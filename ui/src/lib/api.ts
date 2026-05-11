@@ -47,9 +47,7 @@ export interface SkyInfo {
 
 /**
  * Catalog resolution annotation for a target. Set when the scanner's
- * position-fallback claimed a catalog row, OR when the user pinned one
- * via PATCH /api/targets/{id}. `source` distinguishes the two so the
- * UI can render "matched 22.9'" vs "(pinned)" suffixes.
+ * position-fallback claimed a catalog row.
  *
  * Deliberately null on responses when the target resolved via its name
  * (source='name' internally). The library reads quieter that way: the
@@ -60,7 +58,7 @@ export interface ResolvedAs {
   common_name: string | null;
   object_type: string | null;
   separation_arcmin: number | null;
-  source: 'position' | 'override';
+  source: 'position';
 }
 
 export interface TargetSummary {
@@ -77,13 +75,6 @@ export interface TargetSummary {
   integration_seconds: number | null;
   // Total bytes on disk for all of the target's frames.
   bytes_on_disk: number;
-  // Canonical id the Library buckets this target under. Coalesces
-  // override -> position-resolve -> name-resolve so two targets pointing
-  // at the same catalog row merge into a single group visually. Null
-  // when nothing resolves.
-  canonical_group: string | null;
-  // OpenNGC's friendly name for `canonical_group`, when one exists.
-  canonical_group_name: string | null;
 }
 
 export interface TargetDetail {
@@ -95,8 +86,35 @@ export interface TargetDetail {
   sessions: SessionSummary[];
 }
 
-export interface TargetPatchRequest {
-  resolved_canonical_override: string | null;
+// ----- session reassign --------------------------------------------------
+
+export interface SessionReassignRequest {
+  target_id?: number;
+  new_target_name?: string;
+}
+
+export interface SessionReassignResponse {
+  session: SessionSummary;
+  deleted_target_ids: number[];
+}
+
+export interface ReassignCandidateTarget {
+  id: number;
+  name: string;
+  common_name: string | null;
+  separation_arcmin: number;
+}
+
+export interface ReassignCandidateCatalog {
+  canonical: string;
+  common_name: string | null;
+  object_type: string | null;
+  separation_arcmin: number;
+}
+
+export interface ReassignCandidatesResponse {
+  targets: ReassignCandidateTarget[];
+  catalog: ReassignCandidateCatalog[];
 }
 
 export interface ScanResponse {
@@ -560,12 +578,12 @@ async function deleteJSON<T>(path: string): Promise<T> {
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
-  patchTarget: (id: number, req: TargetPatchRequest) =>
-    patchJSON<TargetDetail>(`/api/targets/${id}`, req),
-  getTargetNearby: (id: number, max_sep_deg?: number) => {
-    const qs = max_sep_deg != null ? `?max_sep_deg=${encodeURIComponent(max_sep_deg)}` : '';
-    return getJSON<ResolvedAs[]>(`/api/targets/${id}/nearby${qs}`);
-  },
+  patchSession: (id: number, req: SessionReassignRequest) =>
+    patchJSON<SessionReassignResponse>(`/api/sessions/${id}`, req),
+  getSessionReassignCandidates: (id: number) =>
+    getJSON<ReassignCandidatesResponse>(
+      `/api/sessions/${id}/reassign_candidates`
+    ),
   scan: (root: string, scope_id = 'dwarf3') =>
     postJSON<ScanResponse>('/api/scan', { root, scope_id }),
   listJobs: () => getJSON<JobSummary[]>('/api/jobs'),
