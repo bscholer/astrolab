@@ -331,7 +331,7 @@ def _jobs_block(job_manager: JobManager, now: datetime) -> dict[str, Any]:
                 {
                     "id": r.id,
                     "target_name": _resolve_target_name(r.job.target_id, db_path),
-                    "template_name": r.template.description or r.template.id,
+                    "template_name": r.template.id,
                     "started_at": started_iso,
                     "progress": _job_progress(r) if r.status == "running" else 0.0,
                 }
