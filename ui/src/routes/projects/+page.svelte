@@ -9,7 +9,8 @@
       entries (used by other projects) stay on disk.
 -->
 <script lang="ts">
-  import { api, type Project, type ProjectCapture, type StorageSnapshot } from '$lib/api';
+  import { onDestroy, onMount } from 'svelte';
+  import { api, type Project, type ProjectCapture, type StorageSnapshot, type SystemActiveJob } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import {
     failPctClass,
@@ -52,6 +53,7 @@
   let projects = $state<Project[] | null>(null);
   let storage = $state<StorageSnapshot | null>(null);
   let busyId = $state<string | null>(null);
+  let activeJobs = $state<SystemActiveJob[]>([]);
 
   async function loadAll() {
     try {
@@ -64,9 +66,30 @@
     }
   }
 
+  async function pollSystem() {
+    try {
+      const snap = await api.getSystem();
+      activeJobs = snap.jobs.active;
+    } catch {
+      // ignore: poll runs every 1.5s, no need to surface transient failures
+    }
+  }
+
+  let pollHandle: ReturnType<typeof setInterval> | null = null;
+
+  onMount(() => {
+    pollSystem();
+    pollHandle = setInterval(pollSystem, 1500);
+  });
+  onDestroy(() => {
+    if (pollHandle) clearInterval(pollHandle);
+  });
+
   $effect(() => {
     loadAll();
   });
+
+  const activeByJobId = $derived(new Map(activeJobs.map((j) => [j.id, j])));
 
   // Map project id -> storage row so each render row can pull its own
   // owned/shared bytes without scanning per render.
@@ -146,6 +169,7 @@
   <ul class="list">
     {#each projects as r, i (r.id)}
       {@const s = storageById.get(r.id)}
+      {@const activeJob = activeByJobId.get(r.current_job_id)}
       <li class="prow" class:busy={busyId === r.id} style="--stagger: {i}">
         {#if r.preview_hash && r.preview_port}
           <a class="prow-thumb" href="/projects/{r.id}" aria-label="Open project">
@@ -223,6 +247,14 @@
           <div class="prow-foot muted small">
             <span class="num" title={r.updated_at}>edited {shortAgo(r.updated_at)}</span>
           </div>
+          {#if activeJob}
+            <div class="prow-progress">
+              <div class="progress" aria-label="progress">
+                <div class="progress-fill" style="--pct: {(activeJob.progress * 100).toFixed(1)}%"></div>
+              </div>
+              <span class="prow-pct muted small mono">{(activeJob.progress * 100).toFixed(0)}%</span>
+            </div>
+          {/if}
         </a>
         <div class="prow-side">
           {#if s}
@@ -574,4 +606,29 @@
   }
   .icon-btn:hover:not(:disabled) svg { transform: rotate(-6deg); }
   .icon-btn.danger:hover:not(:disabled) svg { transform: translateY(-1px); }
+
+  .prow-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.15rem;
+  }
+  .progress {
+    flex: 1;
+    height: 4px;
+    background: rgba(94, 234, 212, 0.08);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    width: var(--pct);
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 60%, var(--bad)));
+    transition: width 600ms ease-out;
+  }
+  .prow-pct {
+    flex-shrink: 0;
+    min-width: 2.6rem;
+    text-align: right;
+  }
 </style>
