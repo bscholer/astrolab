@@ -183,10 +183,14 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Runtime environment
+# ASTROLAB_CAPTURE_ROOT_DEFAULT seeds the capture_root setting on first run
+# if it isn't set yet, and triggers an initial library scan. Matches the
+# captures mount point in the README quick start so onboarding is one command.
 ENV SIRIL_BIN=/opt/siril/AppRun \
     ASTROLAB_GRAXPERT_BIN=/opt/graxpert/graxpert \
     ASTROLAB_STARNET_BIN=/data/tools/starnet/starnet++ \
     ASTROLAB_HOME=/data \
+    ASTROLAB_CAPTURE_ROOT_DEFAULT=/captures \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:${PATH}"
 

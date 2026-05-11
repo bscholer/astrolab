@@ -40,6 +40,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -123,8 +124,45 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         project_manager.rehydrate()
     except Exception:  # pragma: no cover
         log.exception("project rehydrate failed; continuing with empty state")
+    _bootstrap_capture_root()
     yield
     job_manager.shutdown(wait=False)
+
+
+def _bootstrap_capture_root() -> None:
+    """First-run convenience for the Docker image: if no capture root has
+    been configured and `ASTROLAB_CAPTURE_ROOT_DEFAULT` points at a real,
+    readable directory, seed the setting and kick off an initial scan in
+    a background thread.
+
+    Set by the Dockerfile to `/captures` so a user who follows the README
+    quick start (`-v ~/Pictures/Siril:/captures:ro`) gets their library
+    populated without having to click into Settings first."""
+    default = os.environ.get("ASTROLAB_CAPTURE_ROOT_DEFAULT", "").strip()
+    if not default:
+        return
+    existing = get_setting(SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path)
+    if existing:
+        return
+    root = Path(default)
+    if not (root.is_absolute() and root.is_dir() and os.access(root, os.R_OK)):
+        log.info("ASTROLAB_CAPTURE_ROOT_DEFAULT=%s is not a readable directory; skipping", root)
+        return
+    set_setting(SETTING_CAPTURE_ROOT, str(root), db_path=job_manager.db_path)
+    log.info("seeded capture_root from ASTROLAB_CAPTURE_ROOT_DEFAULT: %s", root)
+
+    def _scan() -> None:
+        try:
+            log.info("first-run scan: %s", root)
+            stats = run_scan(root, scope_id="dwarf3")
+            log.info(
+                "first-run scan done: discovered=%d inserted=%d updated=%d",
+                stats.discovered, stats.inserted, stats.updated,
+            )
+        except Exception:
+            log.exception("first-run scan failed; user can retry from Settings")
+
+    threading.Thread(target=_scan, name="astrolab-first-scan", daemon=True).start()
 
 
 app = FastAPI(title="astrolab", version="0.1.0", lifespan=lifespan)
