@@ -813,35 +813,36 @@
       {/if}
     </p>
 
-    <div class="notes-block">
-      <label class="notes-label" for="project-notes">
-        Notes
-        {#if descriptionSaving}
-          <span class="muted small">· saving...</span>
-        {/if}
-      </label>
-      <textarea
-        id="project-notes"
-        class="notes-area"
-        bind:value={descriptionDraft}
-        onblur={saveDescriptionOnBlur}
-        rows="2"
-        placeholder="Add notes (capture conditions, gear tweaks, etc.). Unfocus to save."
-      ></textarea>
-    </div>
-
-    <!-- Sessions used: collapsible read-only view of the source
-         sessions backing this project. Helpful for looking back at
-         raw capture metadata without leaving the project page.
-         Run / reassign / multi-select are intentionally omitted
-         (renders happen project-wide; reassigning would yank a
-         session out of this project, which is a surprising side
-         effect to hide behind a pencil). -->
     {@const sessionCount = project.source_session_ids.length}
-    <details
-      class="sources"
-      ontoggle={onSourceSessionsToggle}
-    >
+    <div class="notes-sources">
+      <div class="notes-block">
+        <label class="notes-label" for="project-notes">
+          Notes
+          {#if descriptionSaving}
+            <span class="muted small">· saving...</span>
+          {/if}
+        </label>
+        <textarea
+          id="project-notes"
+          class="notes-area"
+          bind:value={descriptionDraft}
+          onblur={saveDescriptionOnBlur}
+          rows="2"
+          placeholder="Add notes (capture conditions, gear tweaks, etc.). Unfocus to save."
+        ></textarea>
+      </div>
+
+      <!-- Sessions used: collapsible read-only view of the source
+           sessions backing this project. Helpful for looking back at
+           raw capture metadata without leaving the project page.
+           Run / reassign / multi-select are intentionally omitted
+           (renders happen project-wide; reassigning would yank a
+           session out of this project, which is a surprising side
+           effect to hide behind a pencil). -->
+      <details
+        class="sources"
+        ontoggle={onSourceSessionsToggle}
+      >
       <summary class="sources-summary">
         <svg
           class="sources-chevron"
@@ -887,6 +888,7 @@
         {/if}
       </div>
     </details>
+    </div>
 
     {#if schema && project}
       {@const isCover = project.cover_seq === project.current_seq}
@@ -1136,6 +1138,28 @@
     color: var(--fg-mute, #888);
   }
 
+  /* Notes textarea and the Sessions used details share a wrapper so we
+     can lay them out side-by-side on wide viewports. Neither needs the
+     full canvas width, and Sessions used grows tall when open — keeping
+     it beside Notes pulls the pipeline up by that much. */
+  .notes-sources {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin: 0.25rem 0 0.75rem;
+  }
+  @media (min-width: 960px) {
+    .notes-sources {
+      display: grid;
+      grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+      align-items: start;
+    }
+  }
+  .notes-sources .notes-block,
+  .notes-sources .sources {
+    margin: 0;
+  }
+
   .notes-block {
     display: flex;
     flex-direction: column;
@@ -1249,7 +1273,6 @@
     border-radius: var(--radius, 8px);
     background: var(--bg-elev);
     overflow: hidden;
-    container-type: inline-size;
   }
   .sources-summary {
     list-style: none;
@@ -1292,19 +1315,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-  }
-
-  /* At 700px+ container width the sessions-used list gains a second
-     column, halving vertical space. Each SessionRow is its own grid
-     container so the inline notes panel still fires inside each card
-     when the card itself is wide enough (>=540px). At 700px per card
-     in a 2-col layout each card is ~330px, so notes stay stacked --
-     intentional: the card is narrower than the threshold. */
-  @container (min-width: 700px) {
-    .sources-list {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-    }
   }
 
   /* Manage Sessions modal. Same backdrop convention as the Compare
