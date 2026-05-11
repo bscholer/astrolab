@@ -8,20 +8,6 @@
 
 ---
 
-## Built on the shoulders of giants
-
-astrolab would not exist without three excellent open-source (and one freeware) tools doing the real image-processing work:
-
-- **[Siril](https://siril.org)** (GPLv3) by Cyril Richard and the Free Astronomy team -- calibration, registration, stacking, and plate-solving. The engine that turns raw light frames into a stacked image.
-- **[GraXpert](https://www.graxpert.com)** (GPLv3) by Steffen Hirtle -- ML-powered background gradient extraction and denoise. Handles the gradients and light-pollution halos that Siril leaves for post-processing.
-- **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) by Nikita Misiura -- star-nebula separation. Makes recombination and per-layer stretching possible without tedious manual star masks.
-
-The OSC stacking pipeline in `calibrate_register_stack` follows the recipe Naztronomy worked out in his [Smart Telescope preprocessing script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py) ([repo](https://github.com/naztronaut/siril-scripts)). astrolab doesn't include any of that Python -- it independently reimplemented the equivalent Siril command sequence as cacheable graph nodes -- but the pipeline shape (convert, calibrate, background extract, plate-solve, register, rejection stack) came straight from that script. It's the clearest public reference for what the headless Siril sequence should look like for smart-telescope OSC data.
-
-Full attribution, license links, and usage notes are in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
-
----
-
 ## What it is
 
 astrolab is a local-first workbench that wraps Siril, GraXpert, and StarNet++ behind a typed pipeline graph and a content-addressed cache. Each "project" is a live edit of a stack: changing a knob in the UI submits a fresh job, but every upstream node it didn't touch (calibrate, register, stack) is a free cache hit, so re-renders feel cheap. Every revision shows up in a history strip; promote keepers to a public gallery.
@@ -112,6 +98,18 @@ For a single-port setup mirroring production (`http://localhost:8000`), `cd ui &
 ## Status
 
 Phase 0. Not stable, not packaged, schemas can change between commits. Useful enough to process my own captures every weekend; rough enough that I'd hate to ship it as v1.0.0 today. The [V1 milestone](https://github.com/bscholer/astrolab/milestone/1) tracks the punch list.
+
+## Built on
+
+The actual image processing is done by external tools that astrolab orchestrates:
+
+- **[Siril](https://siril.org)** (GPLv3) - calibration, registration, stacking, plate-solving.
+- **[GraXpert](https://www.graxpert.com)** (GPLv3) - background gradient extraction and ML denoise.
+- **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) - star-nebula separation.
+
+The `calibrate_register_stack` template follows the pipeline shape from [Naztronomy's smart-telescope script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py). No code is copied; astrolab reimplements the same Siril command sequence as graph nodes so each step is cacheable. Stage order is his.
+
+Full notes in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
 
 ## Links
 
