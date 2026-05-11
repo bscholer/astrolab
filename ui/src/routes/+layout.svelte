@@ -30,6 +30,12 @@
   <main class="container">
     {@render children?.()}
   </main>
+
+  <footer class="container footer">
+    Powered by <a href="https://siril.org" target="_blank" rel="noopener">Siril</a>,
+    <a href="https://www.graxpert.com" target="_blank" rel="noopener">GraXpert</a>, and
+    <a href="https://www.starnetastro.com" target="_blank" rel="noopener">StarNet++</a>
+  </footer>
 {/if}
 
 <style>
@@ -84,5 +90,20 @@
     height: 1px;
     background: linear-gradient(90deg, var(--accent), var(--bad));
     opacity: 0.7;
+  }
+
+  .footer {
+    padding-top: 1.5rem;
+    padding-bottom: 1rem;
+    font-size: 0.75rem;
+    color: var(--fg-mute);
+    opacity: 0.6;
+  }
+  .footer a {
+    color: inherit;
+  }
+  .footer a:hover {
+    color: var(--fg);
+    opacity: 1;
   }
 </style>

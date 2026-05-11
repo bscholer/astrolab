@@ -4,6 +4,16 @@ A local-first astrophotography processing workbench. Wraps Siril (and friends) b
 
 This is the working design doc; for an introduction and install path see the [README](../README.md).
 
+### Credit
+
+astrolab is an orchestration layer, not an image processor. The actual number-crunching is done by three tools that each deserve direct credit:
+
+- **[Siril](https://siril.org)** (GPLv3) by Cyril Richard and the Free Astronomy team. Calibration, registration, stacking, plate-solving.
+- **[GraXpert](https://www.graxpert.com)** (GPLv3) by Steffen Hirtle. ML background extraction and denoise.
+- **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) by Nikita Misiura. Star-nebula separation.
+
+Full attribution and license notes are in [LICENSES/THIRD_PARTY.md](../LICENSES/THIRD_PARTY.md).
+
 ---
 
 ## Vision

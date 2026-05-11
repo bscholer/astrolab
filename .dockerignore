@@ -1,0 +1,58 @@
+# Git history is never needed inside the image
+.git
+.gitignore
+
+# Editor / IDE noise
+.vscode/
+.idea/
+.DS_Store
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+
+# Test suite — not needed at runtime
+tests/
+
+# Dev-only scripts
+scripts/
+spikes/
+
+# Docs — not needed at runtime
+docs/
+
+# CI config — not needed at runtime
+.github/
+
+# UI build artifacts that the ui-builder stage will recreate
+ui/node_modules/
+ui/.svelte-kit/
+ui/build/
+
+# The large FITS sample file in repo root
+image.fit
+*.fit
+*.fits
+
+# Runtime data dirs (should never exist in the source tree, but guard anyway)
+cache/
+data/
+*.sqlite
+*.sqlite3
+
+# claude.ai workspace files
+.claude/
+
+# Pre-commit config
+.pre-commit-config.yaml
+
+# Python project build output
+dist/
+build/
