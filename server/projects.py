@@ -117,6 +117,16 @@ class HistoryEntry:
     label: str | None
     created_at: str
     published: bool = False
+    kind: str = "edit"
+    """Discriminates an override edit (`edit`) from a session-set swap
+    (`swap_sessions`). Revert flow keys off this to know whether moving
+    to a prior entry should also rebuild the source_session_ids state."""
+    snapshot: dict[str, Any] | None = None
+    """Free-form payload for entry kinds that carry extra state beyond
+    overrides. Currently session swaps stash the new session_ids list +
+    frame/integration totals here so a future revert can re-bind the
+    project to that session set without re-querying the catalog at
+    revert time."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +136,8 @@ class HistoryEntry:
             "label": self.label,
             "created_at": self.created_at,
             "published": self.published,
+            "kind": self.kind,
+            "snapshot": self.snapshot,
         }
 
 
@@ -501,6 +513,85 @@ class ProjectManager:
         )
         return project
 
+    def swap_sessions(
+        self,
+        project_id: str,
+        *,
+        new_base_job: Job,
+        new_session_ids: list[str],
+        snapshot: dict[str, Any],
+        auto_render: bool = True,
+    ) -> tuple[Project, str | None]:
+        """Replace the project's source session set with a fresh Job.
+
+        The caller is responsible for upstream validation (compat,
+        same-target gate, calibration) and for building `new_base_job`
+        with `param_overrides={}` so the swap inherits the project's
+        current overrides at history-entry creation time.
+
+        Cancels the project's currently-active job before swapping so an
+        in-flight pipeline that's about to be superseded by the new
+        session set doesn't waste cycles. With `auto_render=False` we
+        still cancel + bump history but skip the job submit; the entry
+        carries the prior current_seq's job_id so the UI has something
+        to attach to until the user kicks a render manually.
+
+        Returns (project, new_job_id). new_job_id is None when
+        auto_render=False.
+        """
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+
+        prev_overrides = project.current_overrides()
+        prev_job_id = project.current_entry().job_id
+        self._jobs.cancel(prev_job_id)
+
+        # Swap the underlying base_job + session id list before submitting
+        # so the submitted job carries the new external inputs.
+        project.base_job = new_base_job
+        project.source_session_ids = list(new_session_ids)
+
+        new_job_id: str | None
+        if auto_render:
+            new_job_id = self._submit_with_overrides(project, prev_overrides)
+            entry_job_id = new_job_id
+        else:
+            new_job_id = None
+            # When the user opts out of auto_render the history entry still
+            # needs a job_id to point at, so reuse the prior entry's job so
+            # the UI can stay attached to it until the user kicks a render.
+            entry_job_id = prev_job_id
+
+        next_seq = max((h.seq for h in project.history), default=-1) + 1
+        n = len(new_session_ids)
+        label = f"swap sessions ({n} session{'s' if n != 1 else ''})"
+        entry = HistoryEntry(
+            seq=next_seq,
+            job_id=entry_job_id,
+            overrides=prev_overrides,
+            label=label,
+            created_at=_now(),
+            kind="swap_sessions",
+            snapshot=snapshot,
+        )
+        project.history.append(entry)
+        project.current_seq = next_seq
+        project.updated_at = _now()
+
+        # Reuse the insert path: the project row needs base_job_json +
+        # source_session_ids refreshed, which the existing update SQL
+        # doesn't touch. We rewrite the row fully via an INSERT OR
+        # REPLACE-shaped update below.
+        self._persist_project_full(project)
+        self._persist_history_entry(project_id, entry)
+        log.info(
+            "project sessions swapped: %s seq=%d new_sessions=%s job=%s",
+            project_id, next_seq, new_session_ids, new_job_id,
+        )
+        return project, new_job_id
+
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the
         prior history entry's job_id is what the UI displays.
@@ -590,6 +681,44 @@ class ProjectManager:
         finally:
             conn.close()
 
+    def _persist_project_full(self, project: Project) -> None:
+        """Rewrite the project row's base_job_json + source_session_ids
+        alongside the usual mutable columns. Used by swap_sessions, which
+        changes the external-input wiring that the regular update path
+        intentionally treats as immutable.
+        """
+        try:
+            conn = self._conn()
+        except Exception:
+            log.exception("could not open catalog DB for project persistence")
+            return
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE projects
+                    SET name=?, base_job_json=?, current_seq=?, draft_mode=?,
+                        source_session_ids=?, cover_seq=?, updated_at=?,
+                        description=?
+                    WHERE id=?
+                    """,
+                    (
+                        project.name,
+                        json.dumps(project.base_job.model_dump(mode="json")),
+                        project.current_seq,
+                        int(project.draft_mode),
+                        json.dumps(project.source_session_ids),
+                        project.cover_seq,
+                        project.updated_at,
+                        project.description,
+                        project.id,
+                    ),
+                )
+        except sqlite3.Error:
+            log.exception("DB write failed for project %s", project.id)
+        finally:
+            conn.close()
+
     def _persist_history_entry(self, project_id: str, entry: HistoryEntry) -> None:
         try:
             conn = self._conn()
@@ -601,8 +730,8 @@ class ProjectManager:
                     """
                     INSERT INTO project_history
                     (project_id, seq, job_id, overrides_json, label, created_at,
-                     published)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                     published, kind, snapshot_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_id,
@@ -612,6 +741,8 @@ class ProjectManager:
                         entry.label,
                         entry.created_at,
                         int(entry.published),
+                        entry.kind,
+                        json.dumps(entry.snapshot) if entry.snapshot is not None else None,
                     ),
                 )
         except sqlite3.Error:
@@ -723,6 +854,27 @@ class ProjectManager:
                 if "published" in hr.keys()  # noqa: SIM118
                 else False
             )
+            # `kind` / `snapshot_json` arrived in v12. Pre-v12 rows lack
+            # the columns entirely; default to 'edit' (the only kind
+            # that existed before) and None snapshot.
+            kind = (
+                hr["kind"]
+                if "kind" in hr.keys()  # noqa: SIM118
+                else "edit"
+            ) or "edit"
+            snapshot_raw = (
+                hr["snapshot_json"]
+                if "snapshot_json" in hr.keys()  # noqa: SIM118
+                else None
+            )
+            snapshot: dict[str, Any] | None
+            if snapshot_raw:
+                try:
+                    snapshot = json.loads(snapshot_raw)
+                except (ValueError, TypeError):
+                    snapshot = None
+            else:
+                snapshot = None
             project.history.append(
                 HistoryEntry(
                     seq=hr["seq"],
@@ -731,6 +883,8 @@ class ProjectManager:
                     label=hr["label"],
                     created_at=hr["created_at"],
                     published=published,
+                    kind=kind,
+                    snapshot=snapshot,
                 )
             )
         return project

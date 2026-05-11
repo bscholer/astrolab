@@ -1474,6 +1474,95 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
     )
 
 
+def _canonical_group_for_target_row(
+    target_id: int | None, name: str | None, resolved_canonical: str | None
+) -> str | None:
+    """Resolve a target row to its canonical bucket key, or None when nothing
+    canonical can be inferred. Mirrors the inline logic in
+    `_display_for_project`; factored out so the suggestions / swap-sessions
+    paths can share it without duplicating the precedence rules.
+
+    Precedence: prefer the scanner's auto-resolved canonical, then enrich the
+    stored name through OpenNGC. No user-override column post-rip.
+    """
+    if not target_id:
+        return None
+    if resolved_canonical:
+        return resolved_canonical
+    if not name:
+        return None
+    hit = openngc_enrich(name)
+    return hit.canonical if hit is not None else None
+
+
+def _canonical_group_for_project(
+    conn: sqlite3.Connection, session_ids: list[str]
+) -> str | None:
+    """Resolve the single canonical_group for a project's source sessions.
+
+    Returns None when the project has no sessions, the sessions resolve to
+    more than one canonical bucket, or any target's canonical can't be
+    resolved at all. The same-target gate on `swap_sessions` reuses this so
+    the rule matches what `_display_for_project` shows in the header.
+    """
+    if not session_ids:
+        return None
+    try:
+        ids = [int(s) for s in session_ids]
+    except (ValueError, TypeError):
+        return None
+    if not ids:
+        return None
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT t.id AS target_id, t.name AS name,
+               t.resolved_canonical AS resolved_canonical
+        FROM sessions s
+        LEFT JOIN targets t ON t.id = s.target_id
+        WHERE s.id IN ({placeholders})
+          AND t.id IS NOT NULL
+        """,  # noqa: S608  (placeholders are ints)
+        ids,
+    ).fetchall()
+    if not rows:
+        return None
+    canonicals: set[str] = set()
+    for r in rows:
+        c = _canonical_group_for_target_row(
+            r["target_id"], r["name"], r["resolved_canonical"]
+        )
+        if c is None:
+            return None
+        canonicals.add(c)
+    if len(canonicals) != 1:
+        return None
+    return next(iter(canonicals))
+
+
+def _canonical_group_for_session(
+    conn: sqlite3.Connection, session_id: int
+) -> str | None:
+    """Resolve one session's canonical_group via its target row. Returns
+    None if the session has no target or the target's canonical can't be
+    inferred."""
+    row = conn.execute(
+        """
+        SELECT t.id AS target_id, t.name AS name,
+               t.resolved_canonical AS resolved_canonical
+        FROM sessions s
+        LEFT JOIN targets t ON t.id = s.target_id
+        WHERE s.id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _canonical_group_for_target_row(
+        row["target_id"], row["name"], row["resolved_canonical"]
+    )
+
+
 def _display_for_project(
     conn: sqlite3.Connection, session_ids: list[str]
 ) -> ProjectDisplay | None:
@@ -1557,6 +1646,111 @@ def _display_for_project(
     return ProjectDisplay(name=common, canonical=entry.canonical)
 
 
+class SuggestedAdditions(BaseModel):
+    """Sessions on the project's canonical_group that aren't yet bound
+    to the project. Surfaced inline on the project-detail response so
+    the "+ Add N more sessions?" banner renders on first paint without
+    a second roundtrip.
+
+    Empty lists when the project is multi-target / unresolved / there
+    are no orphan sessions. `suggestions_token` is a stable hash of the
+    sorted session_ids so the UI can scope a dismissal to the current
+    set: capture a new session and the token changes, the banner
+    reappears."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_ids: list[int]
+    session_count: int
+    frame_count: int
+    integration_seconds: float
+    suggestions_token: str
+
+
+def _suggestions_for_project(
+    conn: sqlite3.Connection,
+    canonical_group: str | None,
+    existing_session_ids: list[str],
+) -> SuggestedAdditions:
+    """Find sessions on the same canonical_group that aren't already in
+    the project. Cheap aggregate: for typical libraries we're talking
+    tens of sessions and the join is a small fan-out.
+
+    Returns an empty payload when canonical_group is None (multi-target
+    project) or no orphans match. We mirror the same precedence rules
+    as `_canonical_group_for_project` to keep "session N belongs to
+    canonical X" consistent across both directions of the lookup.
+    """
+    if not canonical_group:
+        return SuggestedAdditions(
+            session_ids=[],
+            session_count=0,
+            frame_count=0,
+            integration_seconds=0.0,
+            suggestions_token="",
+        )
+    existing: set[int] = set()
+    for sid in existing_session_ids:
+        try:
+            existing.add(int(sid))
+        except (ValueError, TypeError):
+            continue
+
+    # Pull every session whose target row resolves to the same canonical
+    # bucket. We compute the bucket per-target in Python because the
+    # rule (`resolved_canonical` else `openngc_enrich(name)`) doesn't
+    # express cleanly in SQL. Cheap enough at typical library sizes.
+    rows = conn.execute(
+        """
+        SELECT s.id AS session_id, s.exptime, s.frame_count, s.failed_count,
+               t.id AS target_id, t.name AS target_name,
+               t.resolved_canonical AS resolved_canonical
+        FROM sessions s
+        LEFT JOIN targets t ON t.id = s.target_id
+        WHERE t.id IS NOT NULL
+        """,
+    ).fetchall()
+    out_ids: list[int] = []
+    frames = 0
+    integration = 0.0
+    for r in rows:
+        sid = int(r["session_id"])
+        if sid in existing:
+            continue
+        c = _canonical_group_for_target_row(
+            r["target_id"], r["target_name"], r["resolved_canonical"]
+        )
+        if c != canonical_group:
+            continue
+        out_ids.append(sid)
+        usable = max(0, (r["frame_count"] or 0) - (r["failed_count"] or 0))
+        frames += r["frame_count"] or 0
+        if r["exptime"] is not None and usable > 0:
+            integration += float(r["exptime"]) * usable
+    out_ids.sort()
+    if not out_ids:
+        return SuggestedAdditions(
+            session_ids=[],
+            session_count=0,
+            frame_count=0,
+            integration_seconds=0.0,
+            suggestions_token="",
+        )
+    # Stable hash over the sorted id list: a new captured session changes
+    # the token, banner reappears even if the user previously dismissed.
+    import hashlib as _hashlib
+    token = _hashlib.sha1(
+        ",".join(str(i) for i in out_ids).encode("utf-8")
+    ).hexdigest()[:16]
+    return SuggestedAdditions(
+        session_ids=out_ids,
+        session_count=len(out_ids),
+        frame_count=frames,
+        integration_seconds=integration,
+        suggestions_token=token,
+    )
+
+
 def _attach_preview(project_dict: dict) -> dict:
     """Resolve a (preview_hash, preview_port) pair for the project so
     the UI can render a thumbnail without a second roundtrip.
@@ -1609,13 +1803,19 @@ def _attach_preview(project_dict: dict) -> dict:
 def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     payload = project.to_public_dict()
     _attach_preview(payload)
-    payload["capture"] = _capture_for_project(
-        conn, payload.get("source_session_ids") or []
-    ).model_dump(mode="json")
-    display = _display_for_project(
-        conn, payload.get("source_session_ids") or []
-    )
+    session_ids = payload.get("source_session_ids") or []
+    payload["capture"] = _capture_for_project(conn, session_ids).model_dump(mode="json")
+    display = _display_for_project(conn, session_ids)
     payload["display"] = display.model_dump(mode="json") if display else None
+    # Suggestions are sourced from the project's canonical_group; null when
+    # the project is multi-target / unresolved or has no orphan sessions.
+    # We surface the empty payload as None on the DTO so the UI's "render
+    # the banner" check is a single null guard.
+    canonical_group = _canonical_group_for_project(conn, session_ids)
+    suggestions = _suggestions_for_project(conn, canonical_group, session_ids)
+    payload["suggested_additions"] = (
+        suggestions.model_dump(mode="json") if suggestions.session_ids else None
+    )
     return payload
 
 
@@ -1840,6 +2040,252 @@ def purge_project_cache_endpoint(
         keep_outputs=keep_outputs, db_path=job_manager.db_path,
     )
     return {"evicted_count": evicted, "bytes_freed": freed}
+
+
+@app.get("/api/projects/{project_id}/cache")
+def project_cache_dry_run(
+    project_id: str, keep_outputs: bool = False
+) -> dict:
+    """Preview the eviction the matching DELETE would perform, without
+    actually evicting. Used by the Manage Sessions modal's live diff so
+    the user sees `~X GB will be evicted` while toggling sessions.
+
+    Reuses the same reachability scan as the real purge path; the only
+    difference is we tally bytes instead of calling cache.evict().
+    """
+    if project_manager.get(project_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        )
+    from server.storage import (
+        _conn as _storage_conn,
+    )
+    from server.storage import (
+        _terminal_output_hashes,
+        build_reachability,
+    )
+
+    with _storage_conn(job_manager.db_path) as conn:
+        entries, _ = build_reachability(conn, job_manager.cache)
+        keep_hashes = (
+            _terminal_output_hashes(conn, project_id) if keep_outputs else set()
+        )
+    evicted = 0
+    bytes_to_free = 0
+    for h, e in entries.items():
+        if e.owners != {project_id}:
+            continue
+        if h in keep_hashes:
+            continue
+        evicted += 1
+        bytes_to_free += e.bytes
+    return {"evicted_count": evicted, "bytes_to_free": bytes_to_free}
+
+
+@app.get("/api/projects/{project_id}/suggestions")
+def get_project_suggestions(project_id: str, conn: DBDep) -> dict:
+    """Return sessions on the project's canonical_group that aren't yet
+    bound to it. Empty when the project is multi-target / unresolved or
+    has no orphan sessions.
+
+    Mirrors the `suggested_additions` block carried on the main project
+    DTO; exposed separately so the UI can re-fetch after a swap without
+    a full project reload.
+    """
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        )
+    canonical_group = _canonical_group_for_project(
+        conn, project.source_session_ids
+    )
+    return _suggestions_for_project(
+        conn, canonical_group, project.source_session_ids
+    ).model_dump(mode="json")
+
+
+class PatchProjectSessionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_ids: list[int]
+    """Full new id list, replace semantics. Empty is rejected with 400."""
+    auto_render: bool = True
+    """Kick off a render right after the swap. Set False to defer; the
+    project's history pointer still advances so the swap is visible
+    immediately, the user just doesn't pay for a pipeline run yet."""
+
+
+@app.patch("/api/projects/{project_id}/sessions")
+def patch_project_sessions(
+    project_id: str, req: PatchProjectSessionsRequest, conn: DBDep
+) -> dict:
+    """Replace the project's source-session set.
+
+    Gates in order: same-target (every session shares the project's
+    canonical_group), calibration-compat (build_from_sessions enforces
+    this), non-empty.
+
+    On success: build a fresh Job pinned to the project's current
+    template_id+template_version (no silent template upgrade, that's
+    issue #61's slice), evict the project's owned cache, append a
+    `swap_sessions` history entry with the new id list + frame count +
+    integration time, optionally kick a render. Response carries the
+    evicted bytes/count so the UI can confirm what happened.
+    """
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        )
+    if not req.session_ids:
+        # A project with zero sessions is nonsense; bail out clearly
+        # rather than building an empty Job that would crash deep in
+        # the pipeline.
+        raise HTTPException(
+            status_code=400, detail="session_ids must not be empty"
+        )
+
+    new_ids = sorted(set(req.session_ids))
+    project_canonical = _canonical_group_for_project(
+        conn, project.source_session_ids
+    )
+    # Same-target gate: every proposed session must resolve to the same
+    # canonical_group as the project. Mismatches surface with a precise
+    # message naming the offending session + its canonical so the UI can
+    # render a useful diagnostic.
+    if project_canonical is not None:
+        for sid in new_ids:
+            cand_row = conn.execute(
+                "SELECT s.id, t.name AS target_name FROM sessions s "
+                "LEFT JOIN targets t ON t.id = s.target_id WHERE s.id = ?",
+                (sid,),
+            ).fetchone()
+            if cand_row is None:
+                raise HTTPException(
+                    status_code=404, detail=f"session {sid} not found"
+                )
+            cand_canonical = _canonical_group_for_session(conn, sid)
+            if cand_canonical != project_canonical:
+                target_name = cand_row["target_name"] or "unknown"
+                cand_label = cand_canonical or "unresolved"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"session {sid} is on target {target_name} "
+                        f"(canonical {cand_label}) but this project is on "
+                        f"canonical {project_canonical}"
+                    ),
+                )
+
+    # Pin template id+version: a swap must NOT silently upgrade the
+    # template even if a newer version is on disk. The granularity-rip
+    # work in #61 will introduce explicit template upgrades.
+    template = project.template
+    calibration = project.base_job.calibration
+
+    try:
+        new_base_job = build_from_sessions(conn, new_ids, template, calibration)
+    except (CalibrationMissing, TooFewFrames, IncompatibleSessions) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SessionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except JobBuildError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Capture the eviction stats BEFORE the swap so we can report what
+    # the cache nuke freed; purge then runs against the current owner
+    # set (the project's prior session bundle still owns the entries
+    # at this point).
+    from server.storage import (
+        _conn as _storage_conn,
+    )
+    from server.storage import (
+        _terminal_output_hashes,
+        build_reachability,
+    )
+
+    with _storage_conn(job_manager.db_path) as scan:
+        entries, _ = build_reachability(scan, job_manager.cache)
+        keep_hashes = _terminal_output_hashes(scan, project_id)
+    pre_evict_count = 0
+    pre_evict_bytes = 0
+    for h, e in entries.items():
+        if e.owners != {project_id}:
+            continue
+        if h in keep_hashes:
+            continue
+        pre_evict_count += 1
+        pre_evict_bytes += e.bytes
+
+    # Aggregate frame count + integration time for the new bundle so
+    # the swap_sessions history snapshot carries everything a future
+    # revert / audit might want without re-querying the catalog.
+    ph = ",".join("?" for _ in new_ids)
+    agg_row = conn.execute(
+        f"""
+        SELECT
+          SUM(frame_count) AS frames,
+          SUM(failed_count) AS failed,
+          MIN(started_at) AS started_at,
+          MAX(ended_at) AS ended_at
+        FROM sessions WHERE id IN ({ph})
+        """,
+        new_ids,
+    ).fetchone()
+    integration_total = 0.0
+    int_rows = conn.execute(
+        f"""
+        SELECT exptime, frame_count, failed_count
+        FROM sessions WHERE id IN ({ph})
+        """,
+        new_ids,
+    ).fetchall()
+    for r in int_rows:
+        usable = max(0, (r["frame_count"] or 0) - (r["failed_count"] or 0))
+        if r["exptime"] is not None and usable > 0:
+            integration_total += float(r["exptime"]) * usable
+
+    snapshot = {
+        "session_ids": new_ids,
+        "frame_count": int(agg_row["frames"] or 0),
+        "failed_count": int(agg_row["failed"] or 0),
+        "integration_seconds": integration_total,
+    }
+
+    try:
+        project, new_job_id = project_manager.swap_sessions(
+            project_id,
+            new_base_job=new_base_job,
+            new_session_ids=[str(s) for s in new_ids],
+            snapshot=snapshot,
+            auto_render=req.auto_render,
+        )
+    except ProjectNotFound as exc:  # pragma: no cover - guarded above
+        raise HTTPException(
+            status_code=404, detail=f"project {project_id} not found"
+        ) from exc
+
+    # Evict the project's now-unreachable cache. The swap created a new
+    # Job, so the prior history's outputs are still reachable from the
+    # earlier `kind='edit'` entries, so purge_project_cache scopes by
+    # current ownership, so only entries that are now owned solely by
+    # the prior session set get freed. That's the right behavior: we
+    # don't want to nuke an output the user might want to revert back
+    # to. (Granularity work in #61 will revisit this.)
+    evicted, freed = purge_project_cache(
+        job_manager.cache, project_id,
+        keep_outputs=False, db_path=job_manager.db_path,
+    )
+    log.info(
+        "project sessions swapped: %s sessions=%s evicted=%d freed=%d job=%s",
+        project_id, new_ids, evicted, freed, new_job_id,
+    )
+
+    response = _project_to_response(project, conn)
+    response["evicted_count"] = evicted
+    response["evicted_bytes"] = freed
+    response["new_job_id"] = new_job_id
+    return response
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -317,6 +317,17 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE projects ADD COLUMN description TEXT",
         "ALTER TABLE sessions ADD COLUMN description TEXT",
         "INSERT INTO schema_version (version) VALUES (11)",
+    ],
+    12: [
+        # Tag history entries with a discriminator so future code paths
+        # (revert, gallery filter, audit) can tell an override-edit apart
+        # from a session-swap. `kind` defaults to 'edit' for back-compat;
+        # session-swap entries land as 'swap_sessions' and carry the new
+        # session id list + frame/integration totals in `snapshot_json`
+        # so a later revert can navigate back through the swap.
+        "ALTER TABLE project_history ADD COLUMN kind TEXT NOT NULL DEFAULT 'edit'",
+        "ALTER TABLE project_history ADD COLUMN snapshot_json TEXT",
+        "INSERT INTO schema_version (version) VALUES (12)",
     ],
 }
 
