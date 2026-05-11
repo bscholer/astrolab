@@ -148,6 +148,9 @@
           onload={onPreviewLoad}
           onerror={onPreviewError}
         />
+        {#if !nschema.preview_display_ready && nschema.outputs?.[port] === 'image/fits'}
+          <span class="preview-stretch-badge" title="Preview is auto-stretched for visibility — actual output may look different">&#8776;</span>
+        {/if}
       {:else if status === 'running' && progress}
         <span class="head-pct">{Math.round((progress.fraction ?? 0) * 100)}%</span>
       {:else}
@@ -390,6 +393,20 @@
     height: 2px;
     background: var(--accent);
     transition: width 200ms ease;
+    z-index: 2;
+  }
+  .preview-stretch-badge {
+    position: absolute;
+    bottom: 3px;
+    right: 3px;
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 9px;
+    line-height: 1;
+    padding: 2px 3px;
+    border-radius: 3px;
+    user-select: none;
+    pointer-events: auto;
     z-index: 2;
   }
   .head-overlay {

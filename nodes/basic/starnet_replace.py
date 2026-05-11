@@ -55,6 +55,7 @@ class StarnetReplaceNode(Node[StarnetReplaceParams]):
     version = 1
     cost = "medium"
     uses_siril = True
+    preview_display_ready = True
 
     inputs = {
         "starless": PortType.IMAGE_FITS,
@@ -74,13 +75,9 @@ class StarnetReplaceNode(Node[StarnetReplaceParams]):
         starless_src = inputs["starless"].path
         stars_src = inputs["stars"].path
         if not starless_src.exists():
-            raise RuntimeError(
-                f"starnet_replace: starless input does not exist: {starless_src}"
-            )
+            raise RuntimeError(f"starnet_replace: starless input does not exist: {starless_src}")
         if not stars_src.exists():
-            raise RuntimeError(
-                f"starnet_replace: stars input does not exist: {stars_src}"
-            )
+            raise RuntimeError(f"starnet_replace: stars input does not exist: {stars_src}")
 
         out_image = out_dir_path / "image.fit"
 
@@ -183,4 +180,4 @@ def _passthrough(src: Path, dst: Path) -> None:
 
 
 def _result(out_image: Path) -> dict[str, Ref]:
-    return {"image": image_ref(out_image)}
+    return {"image": image_ref(out_image, display_ready=True)}

@@ -150,6 +150,7 @@ class StretchNode(Node[StretchParams]):
     version = 1
     cost = "cheap"
     uses_siril = True
+    preview_display_ready = True
 
     inputs = {"image": PortType.IMAGE_FITS}
     outputs = {"image": PortType.IMAGE_FITS}
@@ -204,7 +205,7 @@ class StretchNode(Node[StretchParams]):
             )
 
         ctx.progress(1.0, f"stretch: wrote {out_image.name}")
-        return {"image": image_ref(out_image)}
+        return {"image": image_ref(out_image, display_ready=True)}
 
 
 def _build_stretch_cmd(p: StretchParams) -> str:

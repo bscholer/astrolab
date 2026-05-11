@@ -57,6 +57,7 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
     id = "starnet_recombine"
     version = 1
     cost = "cheap"
+    preview_display_ready = True
 
     inputs = {
         "starless": PortType.IMAGE_FITS,
@@ -76,13 +77,9 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
         starless_src = inputs["starless"].path
         stars_src = inputs["stars"].path
         if not starless_src.exists():
-            raise RuntimeError(
-                f"starnet_recombine: starless input does not exist: {starless_src}"
-            )
+            raise RuntimeError(f"starnet_recombine: starless input does not exist: {starless_src}")
         if not stars_src.exists():
-            raise RuntimeError(
-                f"starnet_recombine: stars input does not exist: {stars_src}"
-            )
+            raise RuntimeError(f"starnet_recombine: stars input does not exist: {stars_src}")
 
         out_image = out_dir_path / "image.fit"
 
@@ -91,9 +88,7 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
 
         if not params.enabled:
             ctx.progress(0.9, "starnet_recombine: disabled — passing starless")
-            fits.PrimaryHDU(data=starless_data, header=header).writeto(
-                out_image, overwrite=True
-            )
+            fits.PrimaryHDU(data=starless_data, header=header).writeto(out_image, overwrite=True)
             ctx.progress(1.0, "starnet_recombine: pass-through")
             return _result(out_image)
 
@@ -151,5 +146,6 @@ def _result(out_image: Path) -> dict[str, Ref]:
             port="image",
             path=out_image,
             type=PortType.IMAGE_FITS,
+            display_ready=True,
         )
     }
