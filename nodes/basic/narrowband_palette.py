@@ -243,10 +243,12 @@ def _build_commands(
     oiii_seq = f"OIII_{input_basename}"
     ha_stack = "results_ha"
     oiii_stack = "results_oiii"
-    # `register results -transf=shift -interp=none` matches results_ha and
-    # results_oiii together; Siril sorts the matched files alphabetically and
-    # writes r_results_ha and r_results_oiii, so the registered identifiers we
-    # plug into PixelMath are the originals prefixed with r_.
+    # The two stacks get materialized as results_00001 (Ha) and results_00002
+    # (OIII) so `link results` can build results.seq. After
+    # `register results -transf=shift -interp=none` we copy the registered
+    # frames back under the semantic r_results_ha / r_results_oiii names that
+    # PixelMath and rgbcomp reference, keeping the Naztronomy identifiers
+    # intact.
     ha_aligned = f"r_{ha_stack}"
     oiii_aligned = f"r_{oiii_stack}"
     normalized_oiii = f"normalized_{oiii_aligned}"
@@ -275,9 +277,25 @@ def _build_commands(
             f"-out={out_name}"
         )
 
-    # Step 4: shift-only align the two stacks together. Siril picks up
-    # `results_ha` and `results_oiii` as a 2-frame sequence named `results`.
+    # Step 4: build a 2-frame sequence from the two stacks and shift-align it.
+    # Siril's `register` needs either an existing .seq file or files matching
+    # the basename_NNNNN.fit naming convention; results_ha.fit + results_oiii.fit
+    # match neither, so it errored with "Loading sequence `results' failed."
+    # Rename via load/save into results_NNNNN.fit, materialize results.seq with
+    # `link`, then register.
+    cmds.append(f"load {ha_stack}")
+    cmds.append("save results_00001")
+    cmds.append(f"load {oiii_stack}")
+    cmds.append("save results_00002")
+    cmds.append("link results")
     cmds.append("register results -transf=shift -interp=none")
+    # `register results` writes r_results_00001 (Ha; sorted first) and
+    # r_results_00002 (OIII). Copy them under the semantic names so the
+    # PixelMath formula and rgbcomp keep referencing Naztronomy's identifiers.
+    cmds.append("load r_results_00001")
+    cmds.append(f"save {ha_aligned}")
+    cmds.append("load r_results_00002")
+    cmds.append(f"save {oiii_aligned}")
 
     # Step 5: load the registered OIII stack and run PixelMath to normalize it
     # to Ha's intensity statistics. Saving the result to a deterministic name

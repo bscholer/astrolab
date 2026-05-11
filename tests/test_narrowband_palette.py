@@ -192,6 +192,56 @@ def test_shift_only_align_runs_after_both_stacks(
     assert align_idx > stack_oiii_idx
 
 
+@pytest.mark.parametrize("mode", ["hoo", "hso"])
+def test_results_seq_is_materialized_before_register(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Regression: Siril's `register results` needs results.seq (or
+    results_NNNNN.fit naming) to exist, which is not the case for the bare
+    results_ha.fit + results_oiii.fit stacks. Before #45 was patched, the
+    node errored with 'Loading sequence `results' failed.'.
+
+    The SSF must:
+      1. Copy results_ha -> results_00001 and results_oiii -> results_00002
+         via load/save (Siril SSF has no mv).
+      2. Call `link results` to build results.seq from the numbered pair.
+      3. Run `register results -transf=shift -interp=none`.
+      4. Copy r_results_00001 -> r_results_ha and r_results_00002 ->
+         r_results_oiii so PixelMath and rgbcomp keep their semantic
+         identifiers.
+    """
+    rt = _run_node(tmp_path, monkeypatch, mode)
+    cmds = rt.calls[0]["commands"]
+    align_idx = cmds.index("register results -transf=shift -interp=none")
+
+    pre = cmds[:align_idx]
+    expected_pre = [
+        "load results_ha",
+        "save results_00001",
+        "load results_oiii",
+        "save results_00002",
+        "link results",
+    ]
+    indices = [pre.index(line) for line in expected_pre]
+    assert indices == sorted(indices), (
+        "expected results.seq setup to appear in order before register, "
+        f"got these indices in {pre!r}: {indices}"
+    )
+
+    post = cmds[align_idx + 1 :]
+    expected_post = [
+        "load r_results_00001",
+        "save r_results_ha",
+        "load r_results_00002",
+        "save r_results_oiii",
+    ]
+    indices = [post.index(line) for line in expected_post]
+    assert indices == sorted(indices), (
+        "expected post-register rename to appear in order, "
+        f"got these indices in {post!r}: {indices}"
+    )
+
+
 @pytest.mark.parametrize("mode", ["hoo", "ohh", "hho", "ooh", "hoh", "oho", "hso"])
 def test_pixelmath_normalization_formula_exact_match(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
