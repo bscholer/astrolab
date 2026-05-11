@@ -825,7 +825,7 @@
         bind:value={descriptionDraft}
         onblur={saveDescriptionOnBlur}
         rows="2"
-        placeholder="Add notes (capture conditions, gear tweaks, etc.). Saves on blur."
+        placeholder="Add notes (capture conditions, gear tweaks, etc.). Unfocus to save."
       ></textarea>
     </div>
 

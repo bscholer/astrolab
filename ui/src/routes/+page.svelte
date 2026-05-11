@@ -869,7 +869,7 @@
                             id={`session-notes-${s.id}`}
                             class="session-notes-area"
                             rows="2"
-                            placeholder="Add notes (full moon, dew heater on, etc.). Saves on blur."
+                            placeholder="Add notes (full moon, dew heater on, etc.). Unfocus to save."
                             value={notesDraftById.get(s.id) ?? ''}
                             oninput={(e) =>
                               setNotesDraft(s.id, (e.currentTarget as HTMLTextAreaElement).value)
