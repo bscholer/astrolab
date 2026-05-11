@@ -14,15 +14,17 @@ description: |
   - calibrate runs with debayer=false so the Bayer mosaic stays intact.
     seqextract_HaOIII reads sub-pixel positions from the CFA pattern;
     debayering before extract destroys that information.
-  - No resample / pedestal-offset / bg_extract live before
-    narrowband_palette. Naztronomy's working flow extracts straight off
-    calibrated CFA frames; adding linear-domain conditioning in front
-    diverges from the proven path and risks subtle PixelMath artifacts
-    on the OIII normalization.
-  - narrowband_palette swallows the register + stack steps for both
-    channels itself, so there's no separate seq_register / seq_stack node
-    in this template. Its output is a single composed RGB FITS.
-  - Everything after narrowband_palette mirrors the OSC RGB template:
+  - seq_resample sits between calibrate and narrowband_extract with
+    mode=full (passthrough) as the default. Flip it to mode=draft for a
+    fast preview pass: ~4x speedup at scale=0.5, at the cost of some
+    Bayer-pattern smear that bleeds the Ha/OIII channels into each other.
+    Acceptable for "is the composition working" checks, not for finals.
+  - narrowband_extract does the expensive seqextract + per-channel
+    register + per-channel stack + shift-align of the two stacks. Its
+    outputs (the two aligned channel stacks) feed narrowband_compose,
+    which is the cheap PixelMath + rgbcomp half. Splitting at that
+    boundary means flipping the palette only re-runs the compose step.
+  - Everything after narrowband_compose mirrors the OSC RGB template:
     auto_crop trims the registration nodata border, GraXpert bg/denoise
     operate on linear data, stretch transitions to non-linear, then
     StarNet++ extract -> replace -> recombine, optional composition crop,
@@ -57,14 +59,41 @@ nodes:
     inputs:
       sequence: convert.sequence
 
-  - id: narrowband_palette
-    kind: narrowband_palette
+  - id: resample
+    kind: seq_resample
+    # Default mode=full (passthrough). Flip to draft for ~4x faster preview
+    # runs. Draft uses cubic interp which smears the Bayer pattern that
+    # seqextract_HaOIII relies on, so channel separation degrades; fine for
+    # composition / framing checks, not for finals.
     params:
       input_basename: pp_light
       fitseq: false
-      mode: hoo
+      mode: full
     inputs:
       sequence: calibrate.sequence
+
+  - id: narrowband_extract
+    kind: narrowband_extract
+    # Phase 1 (expensive): split CFA into Ha + OIII, register + stack each,
+    # shift-align the two stacks. Basename is rs_pp_light because
+    # seq_resample prepends rs_ to its output frames (passthrough mode
+    # hardlinks but still under the rs_ prefix).
+    params:
+      input_basename: rs_pp_light
+      fitseq: false
+    inputs:
+      sequence: resample.sequence
+
+  - id: narrowband_compose
+    kind: narrowband_compose
+    # Phase 2 (cheap): PixelMath OIII normalization + (optional synthetic
+    # green for HSO) + rgbcomp per palette. Flipping `mode` only re-runs
+    # this node, leaving the heavy extract step cached.
+    params:
+      mode: hoo
+    inputs:
+      ha: narrowband_extract.ha
+      oiii: narrowband_extract.oiii
 
   - id: auto_crop
     kind: auto_crop
@@ -76,7 +105,7 @@ nodes:
       threshold: 0.001
       padding: 0
     inputs:
-      image: narrowband_palette.image
+      image: narrowband_compose.image
 
   - id: graxpert_bg
     kind: graxpert
@@ -152,7 +181,7 @@ nodes:
 
 outputs:
   image: save.image
-  composed: narrowband_palette.image
+  composed: narrowband_compose.image
   stretched: stretch.image
   auto_cropped: auto_crop.image
   starless: starnet_extract.starless
