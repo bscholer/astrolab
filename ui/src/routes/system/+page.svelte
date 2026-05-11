@@ -511,8 +511,9 @@
     vector-effect: non-scaling-stroke;
   }
   .spark-fill { stroke: none; }
-  .spark-dual .spark-r { stroke: var(--accent); }
-  .spark-dual .spark-w { stroke: var(--bad); opacity: 0.85; }
+  /* dual disk spark: read keeps the tier accent, write is always pink so
+     the two traces stay distinguishable regardless of tier. */
+  .metric .spark-dual .spark-w { stroke: var(--bad); opacity: 0.85; }
 
   /* ---------- disk IO row ---------- */
   .io-row { display: flex; gap: 0.85rem; margin-top: -0.1rem; }
