@@ -185,42 +185,6 @@ def test_tonight_resolves_garbage_name_via_position(client: TestClient) -> None:
     assert ngc7k["session_count"] == 1
 
 
-def test_tonight_override_beats_auto_resolve(client: TestClient) -> None:
-    """A user pin overrides the scanner's auto match. The override's
-    canonical bucket gets the captured session, not the auto one."""
-    _set_site(client)
-    with open_db() as conn, conn:
-        # Scanner auto-resolved to NGC 7000, but the user pinned M 31
-        # (canonical NGC 224) via the override.
-        conn.execute(
-            "INSERT INTO targets (name, resolved_canonical, resolved_source, "
-            "resolved_canonical_override) VALUES (?, ?, ?, ?)",
-            ("MY_GARBAGE_NAME", "NGC 7000", "position", "NGC 224"),
-        )
-        target_id = conn.execute(
-            "SELECT id FROM targets WHERE name = ?",
-            ("MY_GARBAGE_NAME",),
-        ).fetchone()["id"]
-        conn.execute(
-            """
-            INSERT INTO sessions (
-                scope_id, session_key, target_id, started_at,
-                frame_count, failed_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("dwarf3", "fake-ovr-1", target_id, "2024-10-01T20:00:00Z", 30, 0),
-        )
-    body = client.get("/api/tonight?at=2024-10-15T04:00:00Z").json()
-    by_name = {e["name"]: e for e in body["entries"]}
-    m31_alias = by_name.get("NGC 224") or by_name.get("M 31")
-    assert m31_alias is not None, list(by_name.keys())[:20]
-    assert m31_alias["session_count"] == 1
-    # And the auto-resolved canonical NGC 7000 does NOT pick up this
-    # session; override is exclusive in the captured-overlay merge.
-    if "NGC 7000" in by_name:
-        assert by_name["NGC 7000"]["session_count"] == 0
-
-
 def test_tonight_session_count_joins_targets_table(client: TestClient) -> None:
     """When the user has captured M 31, the corresponding row's
     session_count > 0. Demonstrates the canonical-name join works

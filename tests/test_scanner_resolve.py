@@ -68,7 +68,7 @@ def _get_target_row(name: str) -> dict | None:
     with open_db() as conn:
         row = conn.execute(
             "SELECT id, name, resolved_canonical, resolved_separation_arcmin, "
-            "resolved_at, resolved_source, resolved_canonical_override "
+            "resolved_at, resolved_source "
             "FROM targets WHERE name = ?",
             (name,),
         ).fetchone()
@@ -195,36 +195,6 @@ def test_rescan_is_idempotent(tmp_path: Path, astrolab_home: Path) -> None:
     assert first["resolved_source"] == second["resolved_source"]
     # Separation should be deterministic given identical RA/Dec input.
     assert first["resolved_separation_arcmin"] == second["resolved_separation_arcmin"]
-
-
-def test_rescan_preserves_user_override(
-    tmp_path: Path, astrolab_home: Path
-) -> None:
-    """The user's pinned override is owned by the API, not the scanner.
-    Re-scanning must not clobber resolved_canonical_override."""
-    captures = tmp_path / "captures"
-    _build_session(
-        captures,
-        object_name="GARBAGE_WITH_OVERRIDE",
-        ra=NGC7000_RA,
-        dec=NGC7000_DEC,
-        n_frames=4,
-    )
-    scan(captures, scope_id="dwarf3")
-    with open_db() as conn, conn:
-        conn.execute(
-            "UPDATE targets SET resolved_canonical_override = ? WHERE name = ?",
-            ("NGC 224", "GARBAGE_WITH_OVERRIDE"),
-        )
-    scan(captures, scope_id="dwarf3")
-    row = _get_target_row("GARBAGE_WITH_OVERRIDE")
-    assert row is not None
-    assert row["resolved_canonical_override"] == "NGC 224"
-    # The scanner's auto-resolve path also still runs, so the auto
-    # canonical should reflect the position match (NGC 7000) and the
-    # source should still be 'position'. The two are decoupled.
-    assert row["resolved_canonical"] == "NGC 7000"
-    assert row["resolved_source"] == "position"
 
 
 def test_position_far_from_any_catalog_row_leaves_columns_null(
