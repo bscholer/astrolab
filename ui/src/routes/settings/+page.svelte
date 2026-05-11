@@ -87,11 +87,9 @@
     }
     scanning = true;
     try {
-      const r = await api.scan(root, 'dwarf3');
+      await api.scan(root, 'dwarf3');
       localStorage.setItem(LAST_SCAN_KEY, new Date().toISOString());
-      toast.success(
-        `Scanned: +${r.inserted} frames, +${r.masters_inserted} masters, -${r.removed} orphans`
-      );
+      toast.success('Scan started. Watch progress on the Library page.');
     } catch (e) {
       toast.error(`Scan failed: ${(e as Error).message}`);
     } finally {
