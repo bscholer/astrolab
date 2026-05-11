@@ -7,7 +7,7 @@
 #
 # Build examples
 #   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu .
-#   docker build --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04 -t astrolab:cuda .
+#   docker build --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 -t astrolab:cuda .
 
 ARG BASE=debian:bookworm-slim
 
@@ -110,40 +110,42 @@ LABEL org.opencontainers.image.title="astrolab" \
 # Runtime libs Siril's AppDir needs. Determined from ldd on the extracted
 # AppDir's siril-cli binary; only packages not already bundled in the AppDir
 # are listed here.
-RUN apt-get update -qq && \
+#
+# Package soname suffixes differ between Debian 12 (bookworm) and the CUDA
+# image's Ubuntu 22.04 (jammy) base. Dispatch on /etc/os-release.
+RUN set -eu; \
+    apt-get update -qq; \
+    . /etc/os-release; \
+    # Shared across both bases.
+    common="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
+            libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
+            libglib2.0-0 libxrender1 libxext6 libxft2 libfontconfig1 libsm6 \
+            libcurl4 ca-certificates curl unzip"; \
+    case "${ID}-${VERSION_CODENAME}" in \
+        debian-bookworm) extra="libcfitsio10 libopencv-core406" ;; \
+        ubuntu-jammy)    extra="libcfitsio9  libopencv-core4.5d" ;; \
+        *) echo "unsupported base ${ID}-${VERSION_CODENAME}" >&2; exit 1 ;; \
+    esac; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        # C runtime
-        libc6 \
-        libgcc-s1 \
-        libstdc++6 \
-        # Siril astronomy libs
-        libgsl27 \
-        libcfitsio10 \
-        libfftw3-double3 \
-        libfftw3-single3 \
-        libgomp1 \
-        # Image I/O
-        libopencv-core406 \
-        libexiv2-27 \
-        libheif1 \
-        libraw20 \
-        # Astrometry / WCS (Siril plate-solve)
-        libwcs7 \
-        # GTK/display libs Siril's AppRun init probe may touch (headless ok)
-        libglib2.0-0 \
-        # X libs GraXpert's bundled tkinter loads even in --cli mode
-        libxrender1 \
-        libxext6 \
-        libxft2 \
-        libfontconfig1 \
-        libsm6 \
-        # Network / TLS (for catalog fetches inside Siril)
-        libcurl4 \
-        ca-certificates \
-        # Needed by the entrypoint for StarNet download
-        curl \
-        unzip \
-    && rm -rf /var/lib/apt/lists/*
+        ${common} ${extra}; \
+    rm -rf /var/lib/apt/lists/*
+
+# CUDA-only: install cuDNN 8 from NVIDIA's archive on top of the bundled
+# cuDNN 9. GraXpert and StarNet++ ship onnxruntime / TensorFlow built against
+# cuDNN 8.x; without this the GPU path falls back to CPU silently. Skip on
+# the Debian base (no GPU, no need).
+RUN set -eu; \
+    . /etc/os-release; \
+    if [ "${ID}-${VERSION_CODENAME}" = "ubuntu-jammy" ]; then \
+        echo "installing cuDNN 8 for GraXpert / StarNet onnxruntime"; \
+        tmp="$(mktemp /tmp/cudnn8.XXXXXX.deb)"; \
+        curl -fL --silent --show-error -o "$tmp" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/libcudnn8_8.9.7.29-1+cuda12.2_amd64.deb"; \
+        dpkg -i "$tmp"; \
+        rm -f "$tmp"; \
+    else \
+        echo "skipping cuDNN 8 install (not on CUDA base)"; \
+    fi
 
 # Install uv via the standalone binary download (no installer script HOME issues)
 ARG UV_VERSION=0.5.26
