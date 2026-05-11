@@ -83,7 +83,9 @@ for any target.
 **Author:** Nazmus Nasir (Naztronomy) -- https://www.naztronomy.com  
 **License:** GNU General Public License v3 or later (GPL-3.0-or-later); copyright (c) Nazmus Nasir 2025
 
-When astrolab was taking shape, the hardest design question wasn't the caching or the DAG -- it was "what is the correct headless Siril command sequence for OSC smart-scope data?" Naz's script is the cleanest publicly available answer to that question. It's thoroughly commented, covers the edge cases you only learn by actually shooting with a Dwarf or Seestar, and it was written for the same goal: get good stacks out of data that didn't come from a "real" equatorial mount. Finding it saved a lot of trial-and-error spelunking through Siril's command documentation. astrolab's pipeline wouldn't look the way it does without it.
+When getting into astrophotography, and after purchasing a Dwarf 3, Naztronomy had the best videos on how to process the data in Siril, along with a hand-crafted Siril script to make this easier for beginners. Without this script, I likely would have given up on trying to learn how Siril worked. That said, Siril's UI/UX is still quite complex (even with Naz's script), and quickly iterating on renders can be quite time-intensive.
+
+As such, I set out to build Astrolab, to make the process easier. While it doesn't necessarily directly use Naz's code, it does make heavy use of the processing OSC processing pipeline.
 
 Thank you, Naz.
 
