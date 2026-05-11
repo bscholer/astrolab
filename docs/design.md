@@ -12,6 +12,8 @@ astrolab is an orchestration layer, not an image processor. The actual number-cr
 - **[GraXpert](https://www.graxpert.com)** (GPLv3) by Steffen Hirtle. ML background extraction and denoise.
 - **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) by Nikita Misiura. Star-nebula separation.
 
+The `calibrate_register_stack` pipeline also owes its shape to **[Naztronomy's Smart Telescope preprocessing script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py)** (GPL-3.0-or-later, Nazmus Nasir). The stage order -- convert, calibrate, background extract, plate-solve, register, rejection stack -- mirrors what Naz worked out there. astrolab reimplemented the sequence as graph nodes; it borrowed the recipe, not the code.
+
 Full attribution and license notes are in [LICENSES/THIRD_PARTY.md](../LICENSES/THIRD_PARTY.md).
 
 ---
