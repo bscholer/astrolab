@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -307,6 +307,16 @@ MIGRATIONS: dict[int, list[str]] = {
         # irreversible: any pinned values are gone after it runs.
         "ALTER TABLE targets DROP COLUMN resolved_canonical_override",
         "INSERT INTO schema_version (version) VALUES (10)",
+    ],
+    11: [
+        # Free-text notes/description on both projects and sessions. The
+        # user attaches per-render context (capture conditions, gear
+        # tweaks, processing rationale) that nothing else in the schema
+        # captures. Nullable; empty/null means "no note" so the UI can
+        # suppress empty labels cleanly.
+        "ALTER TABLE projects ADD COLUMN description TEXT",
+        "ALTER TABLE sessions ADD COLUMN description TEXT",
+        "INSERT INTO schema_version (version) VALUES (11)",
     ],
 }
 

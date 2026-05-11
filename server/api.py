@@ -269,6 +269,8 @@ class SessionSummary(BaseModel):
     # SUM(frames.size) for frames whose session_key matches.
     bytes_on_disk: int = 0
     calibration: list[CalibrationStatus]
+    # User-attached free-text notes. None when no note has been saved.
+    description: str | None = None
 
 
 class TargetDetail(BaseModel):
@@ -402,6 +404,14 @@ def _row_to_session_summary(
     if exptime is not None:
         usable = max(0, frame_count - failed_count)
         integration = float(exptime) * usable if usable > 0 else None
+    # `description` is post-migration; row may predate v10 and not carry
+    # the column at all. Guard with row.keys() membership so old rows
+    # surface as the "no note" None default.
+    description: str | None = (
+        row["description"]
+        if "description" in row.keys()  # noqa: SIM118
+        else None
+    )
     return SessionSummary(
         id=row["id"],
         session_key=row["session_key"],
@@ -419,6 +429,7 @@ def _row_to_session_summary(
         integration_seconds=integration,
         bytes_on_disk=bytes_on_disk,
         calibration=_calibration_for_session(conn, row["id"]),
+        description=description,
     )
 
 
@@ -592,46 +603,53 @@ def get_session(
 # ---------------------------------------------------------------------------
 
 
-class SessionReassignRequest(BaseModel):
+class SessionPatchRequest(BaseModel):
     """Body for PATCH /api/sessions/{id}.
 
-    Exactly one of `target_id` or `new_target_name` must be provided.
-    - `target_id`: reassign to an existing target row.
-    - `new_target_name`: create (or reuse) a target with that normalized
-      name and reassign to it. The user wanted "reassigning should
-      straight up change it", so when the supplied name collides with an
-      existing target after normalization, we merge into that target
-      instead of duplicating.
+    Three independent operations the user may pass:
+    - reassign to an existing target via `target_id`
+    - reassign to a (new or reused) target via `new_target_name`
+    - update freeform `description`
+
+    Reassign uses exactly-one-of semantics across `target_id` and
+    `new_target_name`. If both are unset, the request is a metadata-only
+    update (description). If neither is set and description is also
+    omitted, the call is a no-op; we return the current session row
+    rather than 400 since "no-op succeeds" is cheaper for clients.
+
+    `description=None` after model parse means "field omitted" if it
+    wasn't in `model_fields_set`, or "explicit clear" if it was. The
+    handler discriminates via `model_fields_set`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     target_id: int | None = None
     new_target_name: str | None = None
+    description: str | None = None
 
     @model_validator(mode="after")
-    def _exactly_one(self) -> SessionReassignRequest:
-        # Either-or: discriminate at the body level so the route never
-        # has to decide which signal wins (both is ambiguous, neither is
-        # a no-op).
+    def _validate_reassign(self) -> SessionPatchRequest:
+        # Either side of the reassign pair may be unset (then no reassign
+        # happens). What's NOT allowed is both set at once: that would
+        # make the operation ambiguous.
         has_id = self.target_id is not None
         has_name = bool(
             self.new_target_name is not None and self.new_target_name.strip()
         )
-        if has_id == has_name:
+        if has_id and has_name:
             raise ValueError(
-                "exactly one of target_id or new_target_name must be set"
+                "set exactly one of target_id or new_target_name, not both"
             )
         return self
 
 
-class SessionReassignResponse(BaseModel):
+class SessionPatchResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session: SessionSummary
-    # Target ids that were deleted as a result of this reassign (because
-    # they're now empty). The UI drops these from its local state on
-    # success so the library list shrinks without a full refetch.
+    # Target ids that were deleted as a result of a reassign (because
+    # they're now empty). Empty when the patch was description-only.
     deleted_target_ids: list[int]
 
 
@@ -650,23 +668,33 @@ def _maybe_delete_empty_target(
 
 
 @app.patch(
-    "/api/sessions/{session_id}", response_model=SessionReassignResponse
+    "/api/sessions/{session_id}", response_model=SessionPatchResponse
 )
 def patch_session(
-    session_id: int, req: SessionReassignRequest, conn: DBDep
-) -> SessionReassignResponse:
-    """Reassign a session to a different target.
+    session_id: int, req: SessionPatchRequest, conn: DBDep
+) -> SessionPatchResponse:
+    """Update session metadata and / or reassign to a different target.
 
-    The session's underlying `frames` rows are linked by `session_key`
-    (not target_id directly), so changing `sessions.target_id` is all we
-    need. Any source target left without sessions gets deleted; the
-    response carries the deleted ids so the UI can drop them locally.
+    Three independent fields the caller may set:
+      - `target_id` or `new_target_name`: reassign (mutually exclusive).
+      - `description`: free-text notes; empty string clears.
+
+    Reassign math: the session's `frames` rows are linked by
+    `session_key` (not target_id directly), so flipping
+    `sessions.target_id` is all that's needed. Any source target left
+    without sessions gets deleted; the response carries the deleted ids
+    so the UI can drop them locally.
 
     For `new_target_name` the input is normalized first; a normalized
     name that matches an existing target reuses that row rather than
     creating a duplicate (the user asked for "straight up change it",
     so collisions merge instead of raising).
     """
+    description_supplied = "description" in req.model_fields_set
+    reassign_requested = (
+        req.target_id is not None or bool((req.new_target_name or "").strip())
+    )
+
     session_row = conn.execute(
         "SELECT id, target_id FROM sessions WHERE id = ?",
         (session_id,),
@@ -678,8 +706,22 @@ def patch_session(
     source_target_id = session_row["target_id"]
 
     deleted: list[int] = []
+    new_target_id: int = -1
+    dest_name: str = ""
     with conn:
-        if req.target_id is not None:
+        if description_supplied:
+            # Normalize empty/whitespace to NULL so the "no note" sentinel
+            # is unambiguous in DB + DTO.
+            if req.description is None:
+                new_value: str | None = None
+            else:
+                stripped = req.description.strip()
+                new_value = stripped if stripped else None
+            conn.execute(
+                "UPDATE sessions SET description = ? WHERE id = ?",
+                (new_value, session_id),
+            )
+        if reassign_requested and req.target_id is not None:
             dest_row = conn.execute(
                 "SELECT id, name FROM targets WHERE id = ?", (req.target_id,)
             ).fetchone()
@@ -690,8 +732,7 @@ def patch_session(
                 )
             new_target_id = int(dest_row["id"])
             dest_name = dest_row["name"]
-        else:
-            # `model_validator` guarantees new_target_name is non-empty.
+        elif reassign_requested:
             raw_name = req.new_target_name or ""
             normalized = normalize_target(raw_name)
             if not normalized:
@@ -712,9 +753,10 @@ def patch_session(
                 new_target_id = int(cur.lastrowid or -1)
                 dest_name = normalized
 
-        # No-op when the user picks the session's current target. Still
-        # return a fresh response so the client gets a current snapshot.
-        if new_target_id != source_target_id:
+        # No-op when the user picks the session's current target, or when
+        # the patch was metadata-only (description). Still return a fresh
+        # response so the client gets a current snapshot.
+        if reassign_requested and new_target_id != source_target_id:
             conn.execute(
                 "UPDATE sessions SET target_id = ? WHERE id = ?",
                 (new_target_id, session_id),
@@ -743,7 +785,7 @@ def patch_session(
     if fresh is None:  # pragma: no cover  (we just updated it)
         raise HTTPException(status_code=500, detail="session vanished mid-reassign")
     summary = _row_to_session_summary(conn, fresh, target_name=fresh["target_name"])
-    return SessionReassignResponse(session=summary, deleted_target_ids=deleted)
+    return SessionPatchResponse(session=summary, deleted_target_ids=deleted)
 
 
 class ReassignCandidateTarget(BaseModel):
@@ -1178,14 +1220,14 @@ class CreateProjectFromSessionsRequest(BaseModel):
 
 
 @app.post("/api/projects")
-def create_project(req: CreateProjectRequest) -> dict:
+def create_project(req: CreateProjectRequest, conn: DBDep) -> dict:
     project = project_manager.create(
         name=req.name,
         template=req.template,
         base_job=req.job,
         source_session_ids=req.source_session_ids,
     )
-    return project.to_public_dict()
+    return _project_to_response(project, conn)
 
 
 class PatchProjectRequest(BaseModel):
@@ -1199,6 +1241,11 @@ class PatchProjectRequest(BaseModel):
     the diff when omitted."""
     force: bool = False
     """Bypass the cache for this submission (debug rerun)."""
+    description: str | None = None
+    """User-attached free-text notes. Pass an empty string to clear.
+    Updating description does NOT submit a new job; it's metadata,
+    not pipeline input. We use model_fields_set on the request to
+    distinguish 'description was supplied' from 'omitted'."""
 
 
 @app.post("/api/projects/from_session")
@@ -1240,7 +1287,7 @@ def create_project_from_session(
         base_job=job,
         source_session_ids=[str(req.session_id)],
     )
-    return project.to_public_dict()
+    return _project_to_response(project, conn)
 
 
 @app.post("/api/projects/from_sessions")
@@ -1306,7 +1353,28 @@ def create_project_from_sessions(
         base_job=job,
         source_session_ids=[str(s) for s in sids],
     )
-    return project.to_public_dict()
+    return _project_to_response(project, conn)
+
+
+class ProjectDisplay(BaseModel):
+    """Catalog-resolved display info for the project's prominent header.
+
+    Set when the project's source sessions agree on a single catalog
+    target (single-session projects, or multi-session bundles where every
+    session resolves to the same canonical). The UI promotes `name` to
+    the page header and surfaces `canonical` as the muted sub-label.
+
+    None when no single target can be inferred (multi-target bundles)
+    OR when the target's canonical lookup turned up empty. The UI falls
+    back to `project.name` in those cases.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    """Friendly common name, e.g. 'Triangulum Galaxy'."""
+    canonical: str
+    """Canonical catalog id, e.g. 'NGC 598'."""
 
 
 class ProjectCapture(BaseModel):
@@ -1404,6 +1472,85 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
     )
 
 
+def _display_for_project(
+    conn: sqlite3.Connection, session_ids: list[str]
+) -> ProjectDisplay | None:
+    """Resolve a single (common_name, canonical) pair for the project.
+
+    Rule:
+      - Single target across all source sessions: try to coalesce its
+        resolved canonical (override -> auto -> name lookup); if that
+        yields an OpenNGC entry with a common_name, return it.
+      - Multiple distinct targets: bail with None; the UI keeps the
+        user's own project name as the header.
+
+    Returning None is the "no friendly display" signal; the UI renders
+    `project.name` in that case so we never invent a header.
+    """
+    if not session_ids:
+        return None
+    try:
+        ids = [int(s) for s in session_ids]
+    except (ValueError, TypeError):
+        return None
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT t.id AS target_id, t.name AS name,
+               t.resolved_canonical AS resolved_canonical
+        FROM sessions s
+        LEFT JOIN targets t ON t.id = s.target_id
+        WHERE s.id IN ({placeholders})
+          AND t.id IS NOT NULL
+        """,  # noqa: S608  (placeholders are ints)
+        ids,
+    ).fetchall()
+    if not rows:
+        return None
+
+    # Resolve every target row to its canonical bucket; if they all agree,
+    # we have a single-target project. Two sessions of the same target
+    # share a row here (DISTINCT on target id), so the typical single-
+    # target project is exactly one row.
+    canonicals: set[str] = set()
+    sample: sqlite3.Row | None = None
+    for r in rows:
+        # Canonical bucket lookup, inlined: prefer the scanner's auto-
+        # resolved canonical, else try enrich(name). No user-override
+        # column post-rip; this is purely metadata.
+        c = r["resolved_canonical"]
+        if not c:
+            hit = openngc_enrich(r["name"])
+            c = hit.canonical if hit is not None else None
+        if c is None:
+            # An unresolved target sinks the whole project to "no
+            # display"; we don't want to silently drop one target's
+            # contribution to a multi-target bundle.
+            return None
+        canonicals.add(c)
+        sample = r
+    if len(canonicals) != 1 or sample is None:
+        return None
+    canonical = next(iter(canonicals))
+    entry = openngc_enrich(canonical)
+    if entry is None:
+        # The bucket key isn't in OpenNGC (e.g. a freeform user-pinned
+        # value). Fall back to the curated common-names table for a
+        # friendly label; if even that's empty, surface None so the UI
+        # keeps the project name visible.
+        common = lookup_common_name(canonical)
+        if not common:
+            return None
+        return ProjectDisplay(name=common, canonical=canonical)
+    common = entry.common_name
+    if not common:
+        # OpenNGC knows the row but has no friendly name (typical for
+        # most NGC/IC entries). Don't show a redundant "NGC 7380 / NGC
+        # 7380" header; let the UI keep the user's project name.
+        return None
+    return ProjectDisplay(name=common, canonical=entry.canonical)
+
+
 def _attach_preview(project_dict: dict) -> dict:
     """Resolve a (preview_hash, preview_port) pair for the project so
     the UI can render a thumbnail without a second roundtrip.
@@ -1459,6 +1606,10 @@ def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     payload["capture"] = _capture_for_project(
         conn, payload.get("source_session_ids") or []
     ).model_dump(mode="json")
+    display = _display_for_project(
+        conn, payload.get("source_session_ids") or []
+    )
+    payload["display"] = display.model_dump(mode="json") if display else None
     return payload
 
 
@@ -1537,22 +1688,49 @@ def list_gallery(conn: DBDep) -> list[GalleryEntry]:
 
 
 @app.patch("/api/projects/{project_id}")
-def patch_project(project_id: str, req: PatchProjectRequest) -> dict:
+def patch_project(project_id: str, req: PatchProjectRequest, conn: DBDep) -> dict:
     """Apply param overrides (and optionally toggle draft_mode), submit a new
-    job, and append a history entry. Returns the updated project."""
+    job, and append a history entry. Returns the updated project.
+
+    Description is metadata: it's persisted without submitting a new
+    job. We honor "description supplied" vs "omitted" via the request's
+    `model_fields_set` so descriptionless PATCHes are still idempotent.
+
+    A description-only PATCH (no overrides, no draft_mode toggle) skips
+    the override-merge / job-submit path entirely so the autosave-on-blur
+    UX doesn't kick the pipeline.
+    """
+    description_supplied = "description" in req.model_fields_set
+    overrides_supplied = "overrides" in req.model_fields_set
+    draft_supplied = "draft_mode" in req.model_fields_set
+    force_supplied = "force" in req.model_fields_set and req.force
+
     try:
-        project = project_manager.patch(
-            project_id,
-            overrides=req.overrides,
-            draft_mode=req.draft_mode,
-            label=req.label,
-            force=req.force,
-        )
+        # Description-only patch: skip overrides/job submission entirely.
+        # Without this, autosave-on-blur would tear down the in-flight
+        # job and queue a redundant new one for a metadata edit.
+        if description_supplied and not (
+            overrides_supplied or draft_supplied or force_supplied
+        ):
+            project = project_manager.set_description(project_id, req.description)
+        else:
+            project = project_manager.patch(
+                project_id,
+                overrides=req.overrides,
+                draft_mode=req.draft_mode,
+                label=req.label,
+                force=req.force,
+            )
+            if description_supplied:
+                # Combined edit: persist the note alongside the override.
+                project = project_manager.set_description(
+                    project_id, req.description
+                )
     except ProjectNotFound as exc:
         raise HTTPException(
             status_code=404, detail=f"project {project_id} not found"
         ) from exc
-    return project.to_public_dict()
+    return _project_to_response(project, conn)
 
 
 class SetCoverRequest(BaseModel):
@@ -1601,7 +1779,7 @@ def set_history_published(
 
 
 @app.post("/api/projects/{project_id}/revert/{seq}")
-def revert_project(project_id: str, seq: int) -> dict:
+def revert_project(project_id: str, seq: int, conn: DBDep) -> dict:
     """Move the current pointer to history seq `seq`. No new job; the prior
     history entry's job_id is what the UI displays."""
     try:
@@ -1612,7 +1790,7 @@ def revert_project(project_id: str, seq: int) -> dict:
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return project.to_public_dict()
+    return _project_to_response(project, conn)
 
 
 @app.delete("/api/projects/{project_id}")

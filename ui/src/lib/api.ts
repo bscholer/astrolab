@@ -35,7 +35,11 @@ export interface SessionSummary {
   // Total bytes on disk for frames belonging to this session.
   bytes_on_disk: number;
   calibration: CalibrationStatus[];
+  // User-attached free-text notes. Null when no note has been saved;
+  // the UI suppresses the label entirely in that case.
+  description: string | null;
 }
+
 
 export interface SkyInfo {
   ra_deg: number | null;
@@ -86,15 +90,20 @@ export interface TargetDetail {
   sessions: SessionSummary[];
 }
 
-// ----- session reassign --------------------------------------------------
+// ----- session patch (reassign + metadata) -------------------------------
 
-export interface SessionReassignRequest {
+export interface SessionPatchRequest {
+  // Reassign: exactly one of target_id / new_target_name (or neither, when
+  // patching description only). Empty string for description clears.
   target_id?: number;
   new_target_name?: string;
+  description?: string | null;
 }
 
-export interface SessionReassignResponse {
+export interface SessionPatchResponse {
   session: SessionSummary;
+  // Target ids deleted as a side effect (source target emptied on reassign).
+  // Empty when the patch was description-only.
   deleted_target_ids: number[];
 }
 
@@ -359,6 +368,22 @@ export interface ProjectCapture {
   bytes_on_disk: number;
 }
 
+/**
+ * Catalog-resolved display info for the project header.
+ *
+ * Present when every source session points at the same canonical target
+ * AND OpenNGC has a friendly common_name for it. The UI promotes `name`
+ * (e.g. "Triangulum Galaxy") to the page header and surfaces `canonical`
+ * (e.g. "NGC 598") as a muted sub-label.
+ *
+ * Null for multi-target projects, unresolved targets, or when OpenNGC
+ * has no common name; the UI falls back to `project.name` in that case.
+ */
+export interface ProjectDisplay {
+  name: string;
+  canonical: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -385,6 +410,12 @@ export interface Project {
   // Pinned cover seq. null/undefined = auto-pick the latest entry with
   // outputs (the v6 default behavior).
   cover_seq?: number | null;
+  // User-attached free-text notes. Null when no note has been saved;
+  // the UI suppresses the label entirely in that case.
+  description: string | null;
+  // Catalog-resolved display info for the page header. Null for
+  // multi-target / unresolved projects; UI falls back to `name`.
+  display: ProjectDisplay | null;
 }
 
 export interface CreateProjectFromSessionRequest {
@@ -406,6 +437,9 @@ export interface PatchProjectRequest {
   draft_mode?: boolean;
   label?: string;
   force?: boolean;
+  // Free-text notes. Empty string clears; omit to leave unchanged.
+  // Updating description does NOT kick the pipeline.
+  description?: string | null;
 }
 
 /**
@@ -578,8 +612,9 @@ async function deleteJSON<T>(path: string): Promise<T> {
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
-  patchSession: (id: number, req: SessionReassignRequest) =>
-    patchJSON<SessionReassignResponse>(`/api/sessions/${id}`, req),
+  getSession: (id: number) => getJSON<SessionSummary>(`/api/sessions/${id}`),
+  patchSession: (id: number, req: SessionPatchRequest) =>
+    patchJSON<SessionPatchResponse>(`/api/sessions/${id}`, req),
   getSessionReassignCandidates: (id: number) =>
     getJSON<ReassignCandidatesResponse>(
       `/api/sessions/${id}/reassign_candidates`

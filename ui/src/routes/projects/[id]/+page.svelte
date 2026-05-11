@@ -424,6 +424,7 @@
       const fresh = await api.getProject(rid);
       if (rid !== id) return;
       project = fresh;
+      syncDescriptionFromProject(fresh);
       schema = await api.getTemplateSchema(fresh.template_id);
       if (rid !== id) return;
       const initKind: Record<string, string> = {};
@@ -529,8 +530,46 @@
     }
   }
 
+  // ---- Notes (description) autosave ---------------------------------
+  // Local mirror of project.description so the textarea is responsive
+  // without round-tripping every keystroke. Saved on blur (no debounce
+  // timer needed); the PATCH does not submit a new job so it's cheap.
+  let descriptionDraft = $state<string>('');
+  let descriptionSaving = $state(false);
+
+  /** Sync the draft from server state. Called when the project payload
+   * lands so re-opens / undo / external edits all flow back into the
+   * textarea. Idempotent on identical values to keep the cursor
+   * position stable while typing. */
+  function syncDescriptionFromProject(p: Project | null) {
+    const next = p?.description ?? '';
+    if (descriptionDraft !== next) descriptionDraft = next;
+  }
+
+  async function saveDescriptionOnBlur() {
+    if (!project) return;
+    const server = project.description ?? '';
+    // No-op when nothing changed (the common case after focus + blur).
+    if (descriptionDraft === server) return;
+    descriptionSaving = true;
+    try {
+      const next = await api.patchProject(project.id, {
+        description: descriptionDraft,
+      });
+      project = next;
+      // Refresh the local mirror with whatever the server normalized to
+      // (empty string -> null), so the next blur doesn't keep retrying.
+      syncDescriptionFromProject(next);
+    } catch (e) {
+      toast.error(`Couldn't save notes: ${(e as Error).message}`);
+    } finally {
+      descriptionSaving = false;
+    }
+  }
+
   function onProjectUpdated(next: Project) {
     project = next;
+    syncDescriptionFromProject(next);
     softResetForNewJob();
     attachToJob(next.current_job_id);
   }
@@ -681,7 +720,24 @@
 <div class="project-root">
   <div class="header">
     {#if project}
-      <h1>{project.name}</h1>
+      <!-- Header title block: prefer the catalog-resolved display name
+           (e.g. "Triangulum Galaxy") with the canonical id as a muted
+           sub-label. When the project has no resolved display (multi-
+           target bundle or unresolved name), fall back to the user's
+           own project name. The user-set project.name still rides
+           below as a small editable line so users can rename without
+           losing the prominent catalog-derived header. -->
+      <div class="title-block">
+        {#if project.display}
+          <h1 title="Catalog: {project.display.canonical}">{project.display.name}</h1>
+          <span class="title-canonical muted small">{project.display.canonical}</span>
+          <span class="title-projectname muted small" title="User-set project name">
+            {project.name}
+          </span>
+        {:else}
+          <h1>{project.name}</h1>
+        {/if}
+      </div>
       <span class="version muted small">
         v{project.current_seq + 1} of {project.history.length}
       </span>
@@ -749,6 +805,29 @@
         <span class="status status-running">applying…</span>
       {/if}
     </p>
+
+    <!-- Free-text notes the user attaches to the project (capture
+         conditions, gear tweaks, processing rationale). Autosaves on
+         blur; the PATCH does not submit a new job so it's a cheap
+         metadata write. Empty/whitespace-only normalizes to null
+         server-side; we keep the textarea visible regardless so the
+         user can always start typing. -->
+    <div class="notes-block">
+      <label class="notes-label" for="project-notes">
+        Notes
+        {#if descriptionSaving}
+          <span class="muted small">· saving…</span>
+        {/if}
+      </label>
+      <textarea
+        id="project-notes"
+        class="notes-area"
+        bind:value={descriptionDraft}
+        onblur={saveDescriptionOnBlur}
+        rows="2"
+        placeholder="Add notes (capture conditions, gear tweaks, etc.). Saves on blur."
+      ></textarea>
+    </div>
 
     <!-- Single accordion: each node is one row, click to expand its
          params + larger preview. Replaces the old parallel pipeline
@@ -1156,8 +1235,33 @@
   }
   .header h1 {
     margin: 0;
-    flex: 1;
     font-size: 1.5rem;
+    line-height: 1.15;
+  }
+  /* Title-block stacks: prominent display name, muted canonical id
+     directly below, then the user-set project name in even smaller
+     muted text. Vertical stack keeps the header dense without burying
+     any of the three identifiers. */
+  .title-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.05rem;
+    flex: 1;
+    min-width: 0;
+  }
+  .title-canonical {
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .title-projectname {
+    /* The user's own project name lives below the catalog labels so
+       a rename still shows but doesn't compete with the catalog name
+       for the eye. Italic + extra muted to signal "this is your tag,
+       not the catalog truth". */
+    font-style: italic;
+    opacity: 0.75;
+    line-height: 1.1;
   }
   .back {
     color: var(--fg-mute, #888);
@@ -1222,6 +1326,40 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--fg-mute, #888);
+  }
+
+  /* Notes textarea sits below the capture line. Two rows by default so
+     it doesn't dominate the viewport; the user can drag-resize. We
+     accept the browser's native resize handle here on purpose: the
+     few users who want a paragraph of notes can grow it and the rest
+     get a compact one-liner. */
+  .notes-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin: 0.25rem 0 0.75rem;
+  }
+  .notes-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-mute, #888);
+  }
+  .notes-area {
+    width: 100%;
+    background: var(--bg-elev, #1a1a1a);
+    color: var(--fg, #e6e6e6);
+    border: 1px solid var(--border, #444);
+    border-radius: 6px;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    resize: vertical;
+    font-family: inherit;
+  }
+  .notes-area:focus {
+    outline: none;
+    border-color: var(--accent, #5eead4);
   }
 
   /* ---------- Pipeline accordion ----------
