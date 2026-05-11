@@ -229,6 +229,15 @@ class TargetSummary(BaseModel):
     # frames table's `size` column, joined via session_key so we don't
     # double-count when frames are shared across sessions.
     bytes_on_disk: int = 0
+    # Canonical id the UI buckets this target under on the Library page.
+    # Coalesces override -> auto-resolve -> name-resolve so two targets
+    # that point at the same catalog row (e.g. user pinned "C 20" -> "NGC
+    # 7000" and another resolved to "NGC 7000" by position) merge into a
+    # single group visually. Null when the target doesn't resolve at all.
+    canonical_group: str | None = None
+    # Friendly name for `canonical_group`, when OpenNGC has one. Used as
+    # the group-header label alongside the canonical id.
+    canonical_group_name: str | None = None
 
 
 class CalibrationStatus(BaseModel):
@@ -337,6 +346,34 @@ class ScanResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _canonical_group_for_row(row: sqlite3.Row | dict[str, Any]) -> str | None:
+    """Resolve the canonical bucket id the Library page groups by.
+
+    Coalesces in the order: user override -> position auto-resolve ->
+    name-derived canonical (re-enriched on the fly since the response
+    model suppresses `resolved_as` for source='name'). Returns None when
+    nothing resolves, which the UI renders as the "Unresolved" bucket.
+
+    Centralized so any future caller (CSV export, Tonight overlay) uses
+    the exact same merge rule the Library does.
+    """
+    override = row["resolved_canonical_override"]
+    if override:
+        return override
+    canonical = row["resolved_canonical"]
+    if canonical:
+        return canonical
+    # No persisted canonical: try resolving the user's stored name. This
+    # is the case the response model suppresses (`resolved_as` is None
+    # for source='name'), but we still need the canonical for grouping.
+    name = row["name"]
+    if name:
+        entry = openngc_enrich(name)
+        if entry is not None:
+            return entry.canonical
+    return None
 
 
 def _resolved_as_from_row(row: sqlite3.Row) -> ResolvedAs | None:
@@ -549,6 +586,12 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
         # 0 from the query means "nothing to integrate" — surface as None
         # so the UI can show '—' instead of '0s'.
         integ = float(r["integration_seconds"]) or None
+        group = _canonical_group_for_row(r)
+        group_name: str | None = None
+        if group is not None:
+            entry = openngc_enrich(group)
+            if entry is not None:
+                group_name = entry.common_name
         summaries.append(
             TargetSummary(
                 id=r["id"],
@@ -562,6 +605,8 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                 last_session_at=r["last_session_at"],
                 integration_seconds=integ,
                 bytes_on_disk=int(r["bytes_on_disk"] or 0),
+                canonical_group=group,
+                canonical_group_name=group_name,
             )
         )
     return summaries
