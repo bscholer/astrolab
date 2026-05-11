@@ -33,13 +33,14 @@ No local install needed. The image bundles Siril 1.4 and GraXpert 3.0.2.
 
 ```bash
 docker run -d \
+  --name astrolab \
   -p 8000:8000 \
   -v ~/Pictures/Siril:/captures:ro \
   -v astrolab-data:/data \
   ghcr.io/bscholer/astrolab:latest
 ```
 
-Open `http://localhost:8000`, go to **Settings**, set the captures path to `/captures`, hit **Refresh**, and your sessions appear.
+Open `http://localhost:8000`. The container auto-scans `/captures` on first run, so your sessions should appear within a few seconds.
 
 **NVIDIA GPU (for GraXpert and StarNet++ AI nodes):**
 
@@ -47,6 +48,7 @@ You need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud
 
 ```bash
 docker run -d \
+  --name astrolab \
   --gpus all \
   -p 8000:8000 \
   -v ~/Pictures/Siril:/captures:ro \
