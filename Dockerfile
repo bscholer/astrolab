@@ -7,7 +7,7 @@
 #
 # Build examples
 #   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu .
-#   docker build --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 -t astrolab:cuda .
+#   docker build --build-arg BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t astrolab:cuda .
 
 ARG BASE=debian:bookworm-slim
 
@@ -119,8 +119,8 @@ RUN set -eu; \
     # Shared across both bases.
     common="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
             libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
-            libglib2.0-0 libxrender1 libxext6 libxft2 libfontconfig1 libsm6 \
-            libcurl4 ca-certificates curl unzip"; \
+            libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
+            libsm6 libcurl4 ca-certificates curl unzip"; \
     case "${ID}-${VERSION_CODENAME}" in \
         debian-bookworm) extra="libcfitsio10 libopencv-core406" ;; \
         ubuntu-jammy)    extra="libcfitsio9  libopencv-core4.5d" ;; \
@@ -130,10 +130,10 @@ RUN set -eu; \
         ${common} ${extra}; \
     rm -rf /var/lib/apt/lists/*
 
-# CUDA-only: install cuDNN 8 from NVIDIA's archive on top of the bundled
-# cuDNN 9. GraXpert and StarNet++ ship onnxruntime / TensorFlow built against
-# cuDNN 8.x; without this the GPU path falls back to CPU silently. Skip on
-# the Debian base (no GPU, no need).
+# CUDA-only: install cuDNN 8 from NVIDIA's archive. GraXpert and StarNet++
+# ship onnxruntime / TensorFlow built against cuDNN 8.x; the cudnn-runtime
+# CUDA base ships cuDNN 9, so we use the plain `runtime` base (~3 GB smaller)
+# and install cuDNN 8 directly. Skip on the Debian base (no GPU, no need).
 RUN set -eu; \
     . /etc/os-release; \
     if [ "${ID}-${VERSION_CODENAME}" = "ubuntu-jammy" ]; then \
