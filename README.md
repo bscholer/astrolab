@@ -16,6 +16,8 @@ astrolab would not exist without three excellent open-source (and one freeware) 
 - **[GraXpert](https://www.graxpert.com)** (GPLv3) by Steffen Hirtle -- ML-powered background gradient extraction and denoise. Handles the gradients and light-pollution halos that Siril leaves for post-processing.
 - **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) by Nikita Misiura -- star-nebula separation. Makes recombination and per-layer stretching possible without tedious manual star masks.
 
+The OSC stacking pipeline in `calibrate_register_stack` follows the recipe Naztronomy worked out in his [Smart Telescope preprocessing script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py) ([repo](https://github.com/naztronaut/siril-scripts)). astrolab doesn't include any of that Python -- it independently reimplemented the equivalent Siril command sequence as cacheable graph nodes -- but the pipeline shape (convert, calibrate, background extract, plate-solve, register, rejection stack) came straight from that script. It's the clearest public reference for what the headless Siril sequence should look like for smart-telescope OSC data.
+
 Full attribution, license links, and usage notes are in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
 
 ---
