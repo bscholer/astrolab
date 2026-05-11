@@ -137,12 +137,16 @@ class NarrowbandComposeNode(Node[NarrowbandComposeParams]):
 
         ctx.progress(0.1, f"narrowband_compose: composing {params.mode.upper()}")
         runtime = SirilRuntime()
-        # Two or three Siril ops (PixelMath normalize, optional synthetic
-        # green, rgbcomp). phases=2 keeps the bar moving forward.
+        # Progress-emitting Siril ops: pm normalize, [pm synthetic for HSO],
+        # rgbcomp. phases must match the exact count for this mode, otherwise
+        # the bar rewinds when the next sub-command opens at 0%.
+        n_phases = (
+            3 if PALETTE_CONFIG[params.mode].get("requires_synthetic") else 2
+        )
         result = runtime.run(
             commands,
             working_dir=work_dir,
-            on_log=make_progress_handler(ctx, phases=2),
+            on_log=make_progress_handler(ctx, phases=n_phases),
             cancel=ctx.cancel,
         )
         if result.returncode != 0:

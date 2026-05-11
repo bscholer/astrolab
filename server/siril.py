@@ -76,9 +76,9 @@ def make_progress_handler(
     Siril's own message text.
     """
 
-    state: dict[str, float | int] = {"last": 0.0, "phase": 0}
+    state: dict[str, float | int] = {"last": 0.0, "phase": 0, "last_emitted": low}
     phase_size = (high - low) / max(phases, 1)
-    # Threshold for 'this is a regression, not just noise' — protects against
+    # Threshold for 'this is a regression, not just noise' - protects against
     # Siril emitting 99 -> 0 between sub-commands without misreading a small
     # 0.5 -> 0.4 jitter as a phase change.
     phase_reset_drop = 0.5
@@ -95,6 +95,15 @@ def make_progress_handler(
         scaled = low + state["phase"] * phase_size + frac * phase_size
         # Clamp to high so a stray >1.0 never escapes the band.
         scaled = min(scaled, high)
+        # Monotonic clamp: never emit a fraction lower than the last one. The
+        # phase counter saturates at phases-1 when the node passes a count
+        # that's smaller than the actual number of progress-emitting Siril
+        # sub-commands; without this clamp the bar would rewind into the
+        # previous slice every time a later sub-command opens at 0%.
+        # make_line_progress_handler in server/subproc.py applies the same
+        # clamp; keeping the two handlers consistent.
+        scaled = max(scaled, state["last_emitted"])
+        state["last_emitted"] = scaled
         ctx.progress(scaled, f"{prefix}{msg}" if prefix else msg)
 
     return handler
