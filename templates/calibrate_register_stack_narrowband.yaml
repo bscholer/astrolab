@@ -1,5 +1,5 @@
 id: calibrate_register_stack_narrowband
-version: 1
+version: 2
 description: |
   OSC narrowband (HOO/SHO/HSO etc.) pipeline for dual-band-filter smart
   telescope captures. Mirrors Naztronomy's Smart-Telescope-PP narrowband
@@ -26,9 +26,10 @@ description: |
     boundary means flipping the palette only re-runs the compose step.
   - Everything after narrowband_compose mirrors the OSC RGB template:
     auto_crop trims the registration nodata border, GraXpert bg/denoise
-    operate on linear data, stretch transitions to non-linear, then
-    StarNet++ extract -> replace -> recombine, optional composition crop,
-    save 16-bit PNG.
+    operate on linear data, the optional composition crop sits just
+    before stretch so autostretch's histogram only sees kept pixels,
+    stretch transitions to non-linear, then StarNet++ extract ->
+    replace -> recombine, save 16-bit PNG.
 
   Inputs the Job must supply:
     convert.lights  -> a directory of raw .fits subs (typically a Dwarf 3
@@ -132,13 +133,25 @@ nodes:
     inputs:
       image: graxpert_bg.image
 
+  - id: crop
+    kind: crop
+    # Interactive composition crop. Off by default; sits just before
+    # stretch so the autostretch histogram only sees the kept region
+    # (noisy borders / vignetting / nodata that gets cropped out can't
+    # skew the tone curve). Coords are normalized [0,1] so the box
+    # stays valid across resample modes.
+    params:
+      enabled: false
+    inputs:
+      image: graxpert_denoise.image
+
   - id: stretch
     kind: stretch
     # Linear-domain ops end here. StarNet++ wants stretched input.
     params:
       method: autostretch
     inputs:
-      image: graxpert_denoise.image
+      image: crop.image
 
   - id: starnet_extract
     kind: starnet_extract
@@ -167,17 +180,10 @@ nodes:
       stars: starnet_replace.image
     ui_depends_on: starnet_replace
 
-  - id: crop
-    kind: crop
-    params:
-      enabled: false
-    inputs:
-      image: starnet_recombine.image
-
   - id: save
     kind: save_image
     inputs:
-      image: crop.image
+      image: starnet_recombine.image
 
 outputs:
   image: save.image
