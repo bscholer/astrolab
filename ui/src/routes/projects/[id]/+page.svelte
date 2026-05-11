@@ -19,8 +19,11 @@
   import { page } from '$app/stores';
   import {
     api,
+    type CalibrationStatus,
     type CostClass,
     type Project,
+    type SessionSummary,
+    type SuggestedAdditions,
     type TemplateSchema
   } from '$lib/api';
   import { blastRadiusCost, isNodeVisible } from '$lib/graph';
@@ -33,6 +36,7 @@
   import HistoryStrip from '$lib/projects/HistoryStrip.svelte';
   import PipelineRow from '$lib/projects/PipelineRow.svelte';
   import CompareController from '$lib/projects/CompareController.svelte';
+  import SessionRow from '$lib/SessionRow.svelte';
 
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
@@ -56,6 +60,42 @@
 
   // Accordion expansion
   let expandedNodes = $state<Set<string>>(new Set());
+
+  // ---- Suggestion banner state -------------------------------------
+  // Local hide flag bumped whenever the dismissal localStorage key
+  // changes. Declared as `$state` so the banner's `isDismissed`
+  // check refires after a click; the banner re-shows automatically
+  // when suggestions_token changes (new orphan session captured).
+  let bannerDismissalTick = $state(0);
+  let bannerSwapping = $state(false);
+
+  // ---- Manage Sessions modal state ---------------------------------
+  let manageOpen = $state(false);
+  let sessionRows = $state<SessionSummary[]>([]);
+  let sessionRowsLoading = $state(false);
+  let modalSelected = $state<Set<number>>(new Set());
+  // Cache-eviction preview for the live diff. Refreshed on every
+  // checkbox toggle via the dry-run endpoint.
+  let modalEvictionBytes = $state<number>(0);
+  let modalSaving = $state(false);
+  let modalError = $state<string | null>(null);
+
+  // ---- Source sessions (read-only collapsible) ---------------------
+  // The "Sessions used" `<details>` lazily fans out api.getSession
+  // for each id in project.source_session_ids. Same SessionRow visuals
+  // as the Library page but with the interactive affordances suppressed.
+  let sourceSessions = $state<SessionSummary[] | null>(null);
+  let sourceSessionsLoading = $state(false);
+  let sourceSessionsError = $state<string | null>(null);
+  let sourceSessionsOpen = $state(false);
+  let sourceSessionsForProjectId = $state<string | null>(null);
+
+  // Per-session notes mirror the Library page so the textarea autosaves
+  // on blur. Open id, drafts, and saving id are owned here so the row's
+  // "saving..." affordance lights up correctly.
+  let sessionNotesOpenId = $state<number | null>(null);
+  let sessionNotesDraftById = $state<Map<number, string>>(new Map());
+  let sessionNotesSavingId = $state<number | null>(null);
 
   // Derived ordering / lookups
   const schemaByNodeId = $derived.by(() => {
@@ -152,6 +192,13 @@
     if (!id) return;
     project = null;
     schema = null;
+    // Drop the previous project's source-session list so the collapsible
+    // doesn't briefly render stale rows under the new project's header.
+    sourceSessions = null;
+    sourceSessionsForProjectId = null;
+    sourceSessionsError = null;
+    sessionNotesOpenId = null;
+    sessionNotesDraftById = new Map();
     pipeline.reset();
     subscription.detachFromJob();
     loadProject(id);
@@ -173,6 +220,310 @@
   onDestroy(() => {
     patchQueue.cancel();
     subscription.detachFromJob();
+  });
+
+  // ---- Source sessions: lazy-load on collapse open -----------------
+  async function loadSourceSessions() {
+    if (!project) return;
+    const projectId = project.id;
+    sourceSessionsLoading = true;
+    sourceSessionsError = null;
+    try {
+      const ids = project.source_session_ids
+        .map((s) => Number(s))
+        .filter((n) => Number.isFinite(n));
+      // Settled-not-rejected so a single 404 (session deleted out from
+      // under the project) doesn't break the whole list.
+      const results = await Promise.allSettled(ids.map((sid) => api.getSession(sid)));
+      // Guard against the user navigating mid-fetch: drop the result if
+      // the active project changed.
+      if (!project || project.id !== projectId) return;
+      const sessions: SessionSummary[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled') sessions.push(r.value);
+      }
+      sourceSessions = sessions;
+      sourceSessionsForProjectId = projectId;
+    } catch (e) {
+      sourceSessionsError = (e as Error).message;
+    } finally {
+      sourceSessionsLoading = false;
+    }
+  }
+
+  function onSourceSessionsToggle(e: Event) {
+    const open = (e.currentTarget as HTMLDetailsElement).open;
+    sourceSessionsOpen = open;
+    // Lazy-load on first open. Subsequent opens hit the cached array
+    // (sessions don't change without a rescan, and a rescan is a
+    // library-level action).
+    if (
+      open
+      && project
+      && (sourceSessions === null || sourceSessionsForProjectId !== project.id)
+    ) {
+      loadSourceSessions();
+    }
+  }
+
+  function toggleSessionNotes(s: SessionSummary) {
+    if (sessionNotesOpenId === s.id) {
+      sessionNotesOpenId = null;
+      return;
+    }
+    if (!sessionNotesDraftById.has(s.id)) {
+      const next = new Map(sessionNotesDraftById);
+      next.set(s.id, s.description ?? '');
+      sessionNotesDraftById = next;
+    }
+    sessionNotesOpenId = s.id;
+  }
+
+  function setSessionNotesDraft(sessionId: number, value: string) {
+    const next = new Map(sessionNotesDraftById);
+    next.set(sessionId, value);
+    sessionNotesDraftById = next;
+  }
+
+  async function saveSessionNotesOnBlur(s: SessionSummary) {
+    const draft = sessionNotesDraftById.get(s.id) ?? '';
+    const server = s.description ?? '';
+    if (draft === server) return;
+    sessionNotesSavingId = s.id;
+    try {
+      const resp = await api.patchSession(s.id, { description: draft });
+      const updated = resp.session;
+      if (sourceSessions) {
+        sourceSessions = sourceSessions.map((existing) =>
+          existing.id === s.id ? updated : existing,
+        );
+      }
+      const draftNext = new Map(sessionNotesDraftById);
+      draftNext.set(s.id, updated.description ?? '');
+      sessionNotesDraftById = draftNext;
+    } catch (e) {
+      toast.error(`Couldn't save notes: ${(e as Error).message}`);
+    } finally {
+      sessionNotesSavingId = null;
+    }
+  }
+
+  // Calibration tooltip helpers. Duplicated rather than imported because
+  // they're tiny and tightly coupled to the row visuals; lifting them
+  // into $lib feels like premature abstraction.
+  const KIND_NAME: Record<string, string> = {
+    dark: 'Dark',
+    flat: 'Flat',
+    bias: 'Bias',
+  };
+  const QUALITY_HELP: Record<string, string> = {
+    exact: 'exact match',
+    approx: 'approximate match (within tolerance)',
+    none: 'no match found',
+  };
+  function calLabel(kind: string): string {
+    return kind[0].toUpperCase();
+  }
+  function calTitle(c: CalibrationStatus): string {
+    const base = `${KIND_NAME[c.kind] ?? c.kind} ${QUALITY_HELP[c.quality] ?? c.quality}`;
+    return c.reason && c.quality !== 'exact' ? `${base}\n${c.reason}` : base;
+  }
+  function shortSessionDate(iso: string | null): string {
+    if (!iso) return '';
+    return iso.slice(0, 10);
+  }
+
+  // ---- Suggestion banner -------------------------------------------
+  function dismissalKey(projectId: string, token: string): string {
+    // Scope dismissals per (project, suggestions_token). A new captured
+    // session changes the token, so the banner reappears without us
+    // having to invalidate a separate flag.
+    return `astrolab.dismissed_suggestions.${projectId}.${token}`;
+  }
+
+  function isDismissed(s: SuggestedAdditions | null, projectId: string): boolean {
+    // Touch the tick so the derivation refires after a click; without
+    // it the dismissal check would only run once on page load.
+    void bannerDismissalTick;
+    if (!s || !s.session_ids.length || !s.suggestions_token) return true;
+    try {
+      return localStorage.getItem(dismissalKey(projectId, s.suggestions_token)) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function dismissBanner() {
+    if (!project || !project.suggested_additions) return;
+    const s = project.suggested_additions;
+    try {
+      localStorage.setItem(dismissalKey(project.id, s.suggestions_token), '1');
+    } catch {
+      // Quota exceeded / disabled storage / Safari private mode: dismissal
+      // doesn't persist but the banner still hides this session.
+    }
+    bannerDismissalTick++;
+  }
+
+  async function addSuggestedSessions() {
+    if (!project || !project.suggested_additions || bannerSwapping) return;
+    const merged = [
+      ...project.source_session_ids
+        .map((s) => Number.parseInt(s, 10))
+        .filter((n) => Number.isFinite(n)),
+      ...project.suggested_additions.session_ids
+    ];
+    bannerSwapping = true;
+    try {
+      const next = await api.patchProjectSessions(project.id, {
+        session_ids: merged,
+        auto_render: true
+      });
+      // The PATCH response is the Project DTO with eviction stats tacked
+      // on; the extras don't break the Project shape so onProjectUpdated
+      // only reads Project keys.
+      onProjectUpdated(next);
+      toast.success(
+        `Added ${project.suggested_additions.session_count} session${
+          project.suggested_additions.session_count === 1 ? '' : 's'
+        }; rendering...`
+      );
+    } catch (e) {
+      toast.error(`Couldn't add sessions: ${(e as Error).message}`);
+    } finally {
+      bannerSwapping = false;
+    }
+  }
+
+  // ---- Manage Sessions modal ---------------------------------------
+  function modalReset() {
+    manageOpen = true;
+    modalSelected = new Set();
+    sessionRows = [];
+    modalEvictionBytes = 0;
+    modalError = null;
+  }
+
+  async function openManageSessions() {
+    if (!project) return;
+    modalReset();
+    sessionRowsLoading = true;
+    modalError = null;
+    try {
+      // Pull the project's existing sessions + the suggested orphans;
+      // these are all the same-canonical sessions the modal needs. We
+      // fan out via getSession because there's no batch endpoint and
+      // the typical bundle is <20 rows.
+      const existingIds = project.source_session_ids
+        .map((s) => Number.parseInt(s, 10))
+        .filter((n) => Number.isFinite(n));
+      const suggestedIds = project.suggested_additions?.session_ids ?? [];
+      const ids = Array.from(new Set([...existingIds, ...suggestedIds]));
+      const fetched = await Promise.all(ids.map((sid) => api.getSession(sid)));
+      sessionRows = fetched.sort((a, b) =>
+        (a.started_at ?? '').localeCompare(b.started_at ?? '')
+      );
+      modalSelected = new Set(existingIds);
+      await refreshEvictionPreview();
+    } catch (e) {
+      modalError = (e as Error).message;
+    } finally {
+      sessionRowsLoading = false;
+    }
+  }
+
+  function closeManageSessions() {
+    manageOpen = false;
+  }
+
+  function toggleModalSelected(sid: number) {
+    const next = new Set(modalSelected);
+    if (next.has(sid)) next.delete(sid);
+    else next.add(sid);
+    modalSelected = next;
+  }
+
+  async function refreshEvictionPreview() {
+    if (!project) return;
+    try {
+      const r = await api.projectCacheDryRun(project.id, false);
+      modalEvictionBytes = r.bytes_to_free;
+    } catch {
+      modalEvictionBytes = 0;
+    }
+  }
+
+  function bestCalibrationQuality(s: SessionSummary): 'auto' | 'approx' | 'missing' {
+    // Treat the session's calibration list as triage: any "exact" /
+    // "approx" hit on a dark beats "missing". Multiple kinds collapse to
+    // the lowest-quality match so the badge is honest about the gap.
+    if (!s.calibration || s.calibration.length === 0) return 'missing';
+    let best: 'auto' | 'approx' | 'missing' = 'missing';
+    for (const c of s.calibration) {
+      if (c.quality === 'exact') {
+        if (best !== 'auto') best = 'auto';
+      } else if (c.quality === 'approx') {
+        if (best === 'missing') best = 'approx';
+      }
+    }
+    return best;
+  }
+
+  async function saveManageSessions() {
+    if (!project || modalSaving) return;
+    if (modalSelected.size === 0) {
+      modalError = 'select at least one session';
+      return;
+    }
+    modalSaving = true;
+    modalError = null;
+    try {
+      const next = await api.patchProjectSessions(project.id, {
+        session_ids: Array.from(modalSelected),
+        auto_render: true
+      });
+      onProjectUpdated(next);
+      const delta = modalSelected.size - project.source_session_ids.length;
+      const verb = delta > 0 ? `Added ${delta}` : delta < 0 ? `Removed ${-delta}` : 'Updated';
+      toast.success(`${verb} session${Math.abs(delta) === 1 ? '' : 's'}; rendering...`);
+      closeManageSessions();
+    } catch (e) {
+      modalError = (e as Error).message;
+    } finally {
+      modalSaving = false;
+    }
+  }
+
+  // Aggregated counts the live diff in the modal needs. Refires on
+  // every checkbox toggle.
+  const modalDiff = $derived.by(() => {
+    const sel = sessionRows.filter((s) => modalSelected.has(s.id));
+    const prevIds = new Set(
+      (project?.source_session_ids ?? [])
+        .map((s) => Number.parseInt(s, 10))
+        .filter((n) => Number.isFinite(n))
+    );
+    const sessionDelta = sel.length - prevIds.size;
+    let frameDelta = 0;
+    let integDelta = 0;
+    for (const s of sel) {
+      if (!prevIds.has(s.id)) {
+        frameDelta += s.frame_count;
+        integDelta += s.integration_seconds ?? 0;
+      }
+    }
+    for (const s of sessionRows) {
+      if (prevIds.has(s.id) && !modalSelected.has(s.id)) {
+        frameDelta -= s.frame_count;
+        integDelta -= s.integration_seconds ?? 0;
+      }
+    }
+    return {
+      sessionDelta,
+      frameDelta,
+      integDelta,
+      selectedCount: sel.length
+    };
   });
 
   function toggleNode(nid: string) {
@@ -347,6 +698,12 @@
       >&#x21B7; Redo</button>
       <button
         type="button"
+        class="hbtn"
+        onclick={openManageSessions}
+        title="Add or remove sessions on this project"
+      >Manage sessions...</button>
+      <button
+        type="button"
         class="hbtn warn reprocess"
         onclick={reprocess}
         disabled={reprocessing || patchQueue.patching}
@@ -356,6 +713,33 @@
       </button>
     {/if}
   </div>
+
+  {#if project?.suggested_additions && !isDismissed(project.suggested_additions, project.id)}
+    {@const s = project.suggested_additions}
+    <div class="suggest-banner" role="status">
+      <span class="suggest-text">
+        + Add {s.session_count} more session{s.session_count === 1 ? '' : 's'} to this project?
+        <span class="muted small">
+          {s.frame_count.toLocaleString()} frames, {formatIntegrationTime(s.integration_seconds)} of integration.
+        </span>
+      </span>
+      <span class="suggest-actions">
+        <button
+          type="button"
+          class="hbtn"
+          onclick={addSuggestedSessions}
+          disabled={bannerSwapping}
+        >{bannerSwapping ? 'Adding...' : 'Add ->'}</button>
+        <button
+          type="button"
+          class="hbtn dismiss"
+          onclick={dismissBanner}
+          aria-label="Dismiss this suggestion"
+          title="Dismiss"
+        >&times;</button>
+      </span>
+    </div>
+  {/if}
 
   {#if project === null}
     <p class="muted">Loading...</p>
@@ -406,6 +790,64 @@
         placeholder="Add notes (capture conditions, gear tweaks, etc.). Unfocus to save."
       ></textarea>
     </div>
+
+    <!-- Sessions used: collapsible read-only view of the source
+         sessions backing this project. Helpful for looking back at
+         raw capture metadata without leaving the project page.
+         Run / reassign / multi-select are intentionally omitted
+         (renders happen project-wide; reassigning would yank a
+         session out of this project, which is a surprising side
+         effect to hide behind a pencil). -->
+    {@const sessionCount = project.source_session_ids.length}
+    <details
+      class="sources"
+      ontoggle={onSourceSessionsToggle}
+    >
+      <summary class="sources-summary">
+        <svg
+          class="sources-chevron"
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+        <span class="sources-title">Sessions used</span>
+        <span class="sources-count muted">({sessionCount})</span>
+      </summary>
+      <div class="sources-body">
+        {#if sourceSessionsLoading && sourceSessions === null}
+          <p class="muted small">Loading sessions...</p>
+        {:else if sourceSessionsError && sourceSessions === null}
+          <p class="muted small">Couldn't load sessions: {sourceSessionsError}</p>
+        {:else if sourceSessions && sourceSessions.length === 0}
+          <p class="muted small">No source sessions resolved. The capture rows may have been removed since this project was created.</p>
+        {:else if sourceSessions}
+          <ul class="sources-list">
+            {#each sourceSessions as s (s.id)}
+              <SessionRow
+                session={s}
+                shortDate={shortSessionDate(s.started_at)}
+                notesOpen={sessionNotesOpenId === s.id}
+                notesDraft={sessionNotesDraftById.get(s.id) ?? ''}
+                notesSaving={sessionNotesSavingId === s.id}
+                onToggleNotes={() => toggleSessionNotes(s)}
+                onNotesInput={(v) => setSessionNotesDraft(s.id, v)}
+                onNotesBlur={() => saveSessionNotesOnBlur(s)}
+                {calLabel}
+                {calTitle}
+              />
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    </details>
 
     {#if schema && project}
       {@const isCover = project.cover_seq === project.current_seq}
@@ -486,6 +928,87 @@
   comparePreviews={compare.comparePreviews}
   onClose={() => { compare.compareOpen = false; }}
 />
+
+{#if manageOpen && project}
+  {@const projectCanonical = project.display?.canonical ?? null}
+  {@const prevIds = new Set(project.source_session_ids.map((s) => Number.parseInt(s, 10)))}
+  <div
+    class="manage-backdrop"
+    role="presentation"
+    onclick={closeManageSessions}
+    onkeydown={(e) => e.key === 'Escape' && closeManageSessions()}
+  >
+    <div
+      class="manage-dialog"
+      role="dialog"
+      tabindex="-1"
+      aria-modal="true"
+      aria-label="Manage sessions"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.key === 'Escape' && closeManageSessions()}
+    >
+      <header class="manage-dialog-head">
+        <span class="muted small">Manage sessions</span>
+        {#if projectCanonical}
+          <span class="muted">on {projectCanonical}</span>
+        {/if}
+        <button type="button" class="ghost-btn" onclick={closeManageSessions} aria-label="Close">&times;</button>
+      </header>
+
+      {#if sessionRowsLoading}
+        <p class="muted">Loading sessions...</p>
+      {:else if modalError}
+        <p class="err">{modalError}</p>
+      {:else}
+        <div class="manage-list">
+          {#each sessionRows as s (s.id)}
+            {@const checked = modalSelected.has(s.id)}
+            {@const cal = bestCalibrationQuality(s)}
+            {@const wasIn = prevIds.has(s.id)}
+            <label class="manage-session-row" class:was-in={wasIn}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onchange={() => toggleModalSelected(s.id)}
+              />
+              <span class="session-meta">
+                <span class="session-key">{s.target_name ?? `session ${s.id}`}</span>
+                <span class="muted small">
+                  {s.frame_count} frames · {formatIntegrationTime(s.integration_seconds ?? 0)} integ
+                  {#if s.started_at}
+                    · {s.started_at.slice(0, 10)}
+                  {/if}
+                </span>
+              </span>
+              <span class="cal-badge cal-{cal}" title="Calibration coverage">{cal}</span>
+            </label>
+          {/each}
+        </div>
+
+        <div class="manage-diff muted small">
+          Net change:
+          {modalDiff.sessionDelta > 0 ? '+' : ''}{modalDiff.sessionDelta} sessions,
+          {modalDiff.frameDelta > 0 ? '+' : ''}{modalDiff.frameDelta.toLocaleString()} frames,
+          {modalDiff.integDelta >= 0 ? '+' : ''}{formatIntegrationTime(Math.abs(modalDiff.integDelta))} integration.
+          {#if modalEvictionBytes > 0}
+            ~{formatBytes(modalEvictionBytes)} of cached renders will be evicted.
+          {/if}
+        </div>
+
+        <footer class="manage-dialog-foot">
+          <button type="button" class="hbtn" onclick={closeManageSessions} disabled={modalSaving}>Cancel</button>
+          <button
+            type="button"
+            class="hbtn warn"
+            onclick={saveManageSessions}
+            disabled={modalSelected.size === 0 || modalSaving}
+            title={modalSelected.size === 0 ? 'select at least one session' : ''}
+          >{modalSaving ? 'Saving...' : 'Save & render'}</button>
+        </footer>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .project-root {
@@ -632,5 +1155,194 @@
     margin: 0.25rem 0 0;
     font-size: 0.85rem;
     white-space: pre-wrap;
+  }
+
+  /* Suggestion banner: sits just below the header. Soft accent tint so
+     it reads as an invitation, not a warning. Collapses into nothing
+     when the suggestion is null / empty / dismissed. */
+  .suggest-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    background: var(--accent-soft, rgba(94, 234, 212, 0.10));
+    border: 1px solid rgba(94, 234, 212, 0.25);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    margin: 0.25rem 0 0.5rem;
+  }
+  .suggest-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .suggest-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .hbtn.dismiss {
+    color: var(--fg-mute, #888);
+    border-color: transparent;
+    padding: 0.2rem 0.5rem;
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .hbtn.dismiss:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--fg, #e6e6e6);
+  }
+
+  /* Sessions used collapsible. Read-only view of the project's source
+     sessions. Stays collapsed by default so the pipeline below remains
+     the page's center of gravity; rotates a chevron on open like the
+     rest of the app's <details> usage. */
+  .sources {
+    margin: 0 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 8px);
+    background: var(--bg-elev);
+    overflow: hidden;
+  }
+  .sources-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    user-select: none;
+  }
+  .sources-summary::-webkit-details-marker {
+    display: none;
+  }
+  .sources-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+  }
+  .sources-count {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem;
+  }
+  .sources-chevron {
+    color: var(--fg-mute);
+    transition: transform 160ms ease;
+    flex-shrink: 0;
+  }
+  .sources[open] .sources-chevron {
+    transform: rotate(180deg);
+  }
+  .sources[open] .sources-summary {
+    border-bottom: 1px solid var(--border);
+  }
+  .sources-body {
+    padding: 0.6rem 0.85rem 0.85rem;
+  }
+  .sources-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  /* Manage Sessions modal. Same backdrop convention as the Compare
+     dialog: full-viewport scrim, centered card, click-outside +
+     Escape close. */
+  .manage-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: grid;
+    place-items: center;
+    z-index: 50;
+  }
+  .manage-dialog {
+    background: var(--bg-elev, #1a1a1a);
+    border: 1px solid var(--border, #444);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    width: min(620px, 92vw);
+    max-height: 80vh;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+  .manage-dialog-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border-bottom: 1px solid var(--border, #444);
+    padding-bottom: 0.5rem;
+  }
+  .manage-dialog-head .ghost-btn {
+    margin-left: auto;
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--fg-mute, #888);
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  .manage-dialog-head .ghost-btn:hover {
+    color: var(--fg, #e6e6e6);
+  }
+  .manage-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .manage-session-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .manage-session-row:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .manage-session-row.was-in {
+    border-color: var(--border, #444);
+  }
+  .session-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+  .session-key {
+    font-variant-numeric: tabular-nums;
+  }
+  .cal-badge {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--border, #444);
+  }
+  .cal-auto { color: var(--accent, #5eead4); border-color: var(--accent, #5eead4); }
+  .cal-approx { color: var(--warn, #fbbf24); border-color: var(--warn, #fbbf24); }
+  .cal-missing { color: var(--fg-mute, #888); }
+  .manage-diff {
+    padding: 0.4rem 0.5rem;
+    border-top: 1px solid var(--border, #444);
+  }
+  .manage-dialog-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+  .err {
+    color: var(--bad, #f87171);
   }
 </style>

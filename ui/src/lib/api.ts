@@ -336,6 +336,26 @@ export interface ProjectHistoryEntry {
   // Whether this entry is opted in to the public gallery feed. Defaults
   // to false; the user toggles it via setHistoryPublished().
   published: boolean;
+  // Discriminator: 'edit' for ordinary override changes, 'swap_sessions'
+  // for entries created by the PATCH /sessions endpoint. Older entries
+  // predating the column come back as 'edit' by default.
+  kind?: string;
+  // Free-form blob attached to non-edit kinds. For swap_sessions: carries
+  // the new session_ids list, frame count, and integration time at the
+  // time of the swap so a future revert / audit can navigate back through
+  // it without re-querying the catalog.
+  snapshot?: Record<string, unknown> | null;
+}
+
+export interface SuggestedAdditions {
+  session_ids: number[];
+  session_count: number;
+  frame_count: number;
+  integration_seconds: number;
+  // Stable hash of session_ids. The UI keys a 'dismissed' localStorage
+  // flag on this token so capturing a new session re-shows the banner
+  // even after the user previously dismissed it.
+  suggestions_token: string;
 }
 
 export interface GalleryEntry {
@@ -416,6 +436,10 @@ export interface Project {
   // Catalog-resolved display info for the page header. Null for
   // multi-target / unresolved projects; UI falls back to `name`.
   display: ProjectDisplay | null;
+  // Inline suggestion payload: orphan sessions on the same canonical
+  // target. Null when there are no candidates or when the project is
+  // multi-target. The UI renders the suggestion banner off this.
+  suggested_additions: SuggestedAdditions | null;
 }
 
 export interface CreateProjectFromSessionRequest {
@@ -727,6 +751,27 @@ export const api = {
     deleteJSON<{ evicted_count: number; bytes_freed: number }>(
       `/api/projects/${id}/cache?keep_outputs=${keepOutputs}`
     ),
+  /** Preview the eviction the matching DELETE /cache would perform.
+   * Used by the Manage Sessions modal's live diff. */
+  projectCacheDryRun: (id: string, keepOutputs = false) =>
+    getJSON<{ evicted_count: number; bytes_to_free: number }>(
+      `/api/projects/${id}/cache?keep_outputs=${keepOutputs}`
+    ),
+  getProjectSuggestions: (id: string) =>
+    getJSON<SuggestedAdditions>(`/api/projects/${id}/suggestions`),
+  /** Replace the project's source-session set. Returns the updated
+   * project plus what the cache nuke freed. */
+  patchProjectSessions: (
+    id: string,
+    req: { session_ids: number[]; auto_render?: boolean }
+  ) =>
+    patchJSON<
+      Project & {
+        evicted_count: number;
+        evicted_bytes: number;
+        new_job_id: string | null;
+      }
+    >(`/api/projects/${id}/sessions`, req),
   getStorage: () => getJSON<StorageSnapshot>('/api/storage'),
   storageCleanup: (max_bytes?: number) =>
     postJSON<CleanupResponse>('/api/storage/cleanup', max_bytes !== undefined ? { max_bytes } : {}),
