@@ -29,10 +29,10 @@
   let diskReadHist = $state<number[]>([]);
   let diskWriteHist = $state<number[]>([]);
 
-  // For the disk sparkline we want a stable y-scale, not "scale to the
-  // max we've seen". Anything above 200 MiB/s saturates the line; that's
-  // already an unusual workload on this box.
-  const DISK_FULLSCALE_BPS = 200 * 1024 ** 2;
+  // Disk sparkline baseline. Idle activity scales against this floor so
+  // small reads/writes still register; bursts above it expand the y-axis
+  // so the line stays inside the card instead of shooting off the top.
+  const DISK_FLOOR_BPS = 200 * 1024 ** 2;
 
   // ---------- timers ----------
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -65,23 +65,23 @@
     const cpuPct = s.cpu.percent;
     const memPct = s.mem.total > 0 ? (s.mem.used / s.mem.total) * 100 : 0;
     const gpuUtil = s.gpu ? s.gpu.util : 0;
-    const readPct = (s.disk.read_bps / DISK_FULLSCALE_BPS) * 100;
-    const writePct = (s.disk.write_bps / DISK_FULLSCALE_BPS) * 100;
+    const readBps = s.disk.read_bps;
+    const writeBps = s.disk.write_bps;
 
     if (firstSample) {
       // Backfill so the spark doesn't draw as a single dot.
       cpuHist = Array(N).fill(cpuPct);
       memHist = Array(N).fill(memPct);
       gpuHist = Array(N).fill(gpuUtil);
-      diskReadHist = Array(N).fill(readPct);
-      diskWriteHist = Array(N).fill(writePct);
+      diskReadHist = Array(N).fill(readBps);
+      diskWriteHist = Array(N).fill(writeBps);
       return;
     }
     cpuHist = [...cpuHist.slice(1), cpuPct];
     memHist = [...memHist.slice(1), memPct];
     gpuHist = [...gpuHist.slice(1), gpuUtil];
-    diskReadHist = [...diskReadHist.slice(1), readPct];
-    diskWriteHist = [...diskWriteHist.slice(1), writePct];
+    diskReadHist = [...diskReadHist.slice(1), readBps];
+    diskWriteHist = [...diskWriteHist.slice(1), writeBps];
   }
 
   onMount(() => {
@@ -176,6 +176,9 @@
       ? (snap.gpu.vram_used / snap.gpu.vram_total) * 100
       : 0
   );
+  const diskMaxBps = $derived(
+    Math.max(DISK_FLOOR_BPS, ...diskReadHist, ...diskWriteHist)
+  );
   const thru = $derived(snap ? snap.jobs.throughput_6h : []);
   const thruMax = $derived(Math.max(4, ...thru));
   const thruTotal = $derived(thru.reduce((a, b) => a + b, 0));
@@ -266,8 +269,8 @@
         <span class="io io-w">W <span class="muted">{fmtRate(snap.disk.write_bps)}</span></span>
       </div>
       <svg class="spark spark-dual" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true">
-        <path class="spark-line spark-r" d={sparkPath(diskReadHist)} />
-        <path class="spark-line spark-w" d={sparkPath(diskWriteHist)} />
+        <path class="spark-line spark-r" d={sparkPath(diskReadHist, 200, 40, 0, diskMaxBps)} />
+        <path class="spark-line spark-w" d={sparkPath(diskWriteHist, 200, 40, 0, diskMaxBps)} />
       </svg>
       <footer class="m-foot muted small mono">
         {fmtBytes(snap.disk.used)} / {fmtBytes(snap.disk.total)}
