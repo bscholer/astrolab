@@ -87,7 +87,7 @@
     }
     scanning = true;
     try {
-      await api.scan(root, 'dwarf3');
+      await api.scan(root);
       localStorage.setItem(LAST_SCAN_KEY, new Date().toISOString());
       toast.success('Scan started. Watch progress on the Library page.');
     } catch (e) {

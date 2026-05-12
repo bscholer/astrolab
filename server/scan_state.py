@@ -103,10 +103,12 @@ def finish(stats: Any | None = None, error: str | None = None) -> None:
                 "inserted": stats.inserted,
                 "updated": stats.updated,
                 "skipped_unchanged": stats.skipped_unchanged,
+                "skipped_unknown": stats.skipped_unknown,
                 "removed": stats.removed,
                 "failed": stats.failed,
                 "masters_inserted": stats.masters_inserted,
                 "masters_updated": stats.masters_updated,
                 "masters_removed": stats.masters_removed,
                 "masters_skipped": stats.masters_skipped,
+                "scope_breakdown": dict(stats.scope_breakdown),
             }

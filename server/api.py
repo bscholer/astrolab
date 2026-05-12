@@ -366,7 +366,6 @@ class ScanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     root: str
-    scope_id: str = "dwarf3"
 
 
 class ScanResponse(BaseModel):
@@ -377,11 +376,16 @@ class ScanResponse(BaseModel):
     updated: int
     removed: int
     skipped_unchanged: int
+    skipped_unknown: int
     failed: int
     masters_inserted: int
     masters_updated: int
     masters_removed: int
     masters_skipped: int
+    scope_breakdown: dict[str, int]
+    """Frames ingested per detected scope_id. Only Dwarf 3 is validated
+    end-to-end through processing today; the UI uses this to warn when
+    captures from another scope land in the library."""
 
 
 # ---------------------------------------------------------------------------
@@ -1012,10 +1016,7 @@ def trigger_scan(req: ScanRequest) -> JSONResponse:
     if not scan_state.start():
         raise HTTPException(status_code=409, detail="already_running")
 
-    # scope_id on the request is no longer load-bearing — scope is detected
-    # per-file by the scanner. Kept on the model until the UI is updated to
-    # stop sending it (Phase 7).
-    log.info("scan triggered: root=%s (req.scope_id=%s, ignored)", root, req.scope_id)
+    log.info("scan triggered: root=%s", root)
 
     def _scan() -> None:
         try:

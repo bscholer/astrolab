@@ -135,12 +135,20 @@ export interface ScanLastStats {
   inserted: number;
   updated: number;
   skipped_unchanged: number;
+  /** FITS files we couldn't classify (unknown scope, unsupported IMAGETYP). */
+  skipped_unknown: number;
   removed: number;
   failed: number;
   masters_inserted: number;
   masters_updated: number;
   masters_removed: number;
   masters_skipped: number;
+  /**
+   * Frames ingested per detected scope_id. Only `dwarf3` is validated
+   * end-to-end through processing today; the UI surfaces a banner when
+   * any other scope's count is nonzero.
+   */
+  scope_breakdown: Record<string, number>;
 }
 
 export interface ScanStatusResponse {
@@ -746,8 +754,8 @@ export const api = {
     getJSON<ReassignCandidatesResponse>(
       `/api/sessions/${id}/reassign_candidates`
     ),
-  scan: (root: string, scope_id = 'dwarf3') =>
-    postJSON<ScanStartResponse>('/api/scan', { root, scope_id }),
+  scan: (root: string) =>
+    postJSON<ScanStartResponse>('/api/scan', { root }),
   scanStatus: () => getJSON<ScanStatusResponse>('/api/scan/status'),
   listJobs: () => getJSON<JobSummary[]>('/api/jobs'),
   getJob: (id: string) => getJSON<JobSummary>(`/api/jobs/${id}`),

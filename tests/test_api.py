@@ -170,7 +170,7 @@ def test_scan_endpoint(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures2"
     _seed_tree(captures)
     client = TestClient(app)
-    r = client.post("/api/scan", json={"root": str(captures), "scope_id": "dwarf3"})
+    r = client.post("/api/scan", json={"root": str(captures)})
     assert r.status_code == 202
     assert r.json() == {"status": "started"}
 
@@ -196,6 +196,6 @@ def test_scan_endpoint(tmp_path: Path, astrolab_home: Path) -> None:
 def test_scan_endpoint_rejects_missing_root(astrolab_home: Path) -> None:
     client = TestClient(app)
     r = client.post(
-        "/api/scan", json={"root": "/nonexistent-astrolab", "scope_id": "dwarf3"}
+        "/api/scan", json={"root": "/nonexistent-astrolab"}
     )
     assert r.status_code == 400
