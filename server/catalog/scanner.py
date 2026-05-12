@@ -27,6 +27,7 @@ import xxhash
 from .adapter import DiscoveredFrame, DiscoveredMaster, IngestAdapter
 from .adapter import lookup as adapter_lookup
 from .db import open_db
+from .filter_aliases import canonicalize as canonicalize_filter
 from .fits_reader import normalize_target, read_primary_header
 from .matching import match_all_sessions
 from .openngc import enrich as openngc_enrich
@@ -162,7 +163,7 @@ def _ingest_frame(
         "object": object_name,
         "instrument": header.get("INSTRUME"),
         "camera": header.get("CAMERA"),
-        "filter": header.get("FILTER"),
+        "filter": canonicalize_filter(header.get("FILTER")),
         "exptime": _coerce_float(header.get("EXPTIME") or hints.get("exptime_from_path")),
         "gain": _coerce_int(header.get("GAIN") or hints.get("gain_from_path")),
         "binning": _coerce_int(header.get("XBINNING") or hints.get("binning_from_path")),
@@ -237,7 +238,7 @@ def _ingest_master(
         "source": discovered.source,
         "instrument": discovered.instrument,
         "camera": discovered.camera,
-        "filter": discovered.filter,
+        "filter": canonicalize_filter(discovered.filter),
         "exptime": discovered.exptime,
         "gain": discovered.gain,
         "binning": discovered.binning,

@@ -118,7 +118,11 @@ def test_classifies_cali_frame_masters(tmp_path: Path) -> None:
     flat = next(m for m in masters if m.kind == "flat")
     assert flat.camera == "TELE"
     assert flat.binning == 1
-    assert flat.filter == "Astro"  # ir_1 maps to Astro
+    # ir_1 (Astro IR-cut) canonicalizes to "None" — the same form a light
+    # frame's FILTER='Astro' header lands as after the scanner runs it
+    # through filter_aliases. Matching joins on string equality, so both
+    # sides must use the same canonical.
+    assert flat.filter == "None"
     # No photographic gain or temperature on factory flats.
     assert flat.gain is None
     assert flat.ccd_temp is None

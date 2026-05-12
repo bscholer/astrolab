@@ -67,7 +67,10 @@ bias is filter-, exposure-, and temperature-independent)."""
 
 # Map the `ir_N` index on factory flats to the filter-name string the catalog
 # already stores for lights, so the matcher can join them transparently.
-FLAT_IR_TO_FILTER: dict[int, str] = {0: "VIS", 1: "Astro", 2: "Duo-Band"}
+# Values are canonical (see server.catalog.filter_aliases); both ``VIS`` and
+# ``Astro`` collapse to ``None`` (no narrowband filter), and ``Duo-Band`` to
+# ``HaOIII``.
+FLAT_IR_TO_FILTER: dict[int, str] = {0: "None", 1: "None", 2: "HaOIII"}
 
 CAM_FROM_DIR: dict[str, str] = {"cam_0": "TELE", "cam_1": "WIDE"}
 """Per Dwarf docs: cam_0 is the telephoto, cam_1 is the wide."""

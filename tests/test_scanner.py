@@ -77,7 +77,10 @@ def test_scan_inserts_frames_and_sessions(tmp_path: Path, astrolab_home: Path) -
         m33_session = next(s for s in sessions if "M 33" in s["session_key"])
         assert m33_session["frame_count"] == 3
         assert m33_session["failed_count"] == 1
-        assert m33_session["filter"] == "Astro"
+        # Dwarf 3 writes "Astro" on its IR-cut filter; canonicalization at
+        # scanner write time collapses that to "None" (no narrowband filter)
+        # so matchers can join across scopes (see filter_aliases.py).
+        assert m33_session["filter"] == "None"
         assert m33_session["exptime"] == 30.0
 
 
