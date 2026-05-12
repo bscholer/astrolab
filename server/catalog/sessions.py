@@ -12,7 +12,7 @@ clusters wherever the gap between consecutive frames exceeds
 behaviors:
 
 - **Mid-capture restart**: a short pause (a few minutes) to power-cycle
-  or refocus stays one session, which is what the user wants — they're
+  or refocus stays one session, which is what the user wants - they're
   still imaging the same target on the same night.
 - **Pack up and come back later**: a one-hour-plus gap reliably means
   the user moved scopes / took a break / re-set up, which is a new
@@ -22,7 +22,7 @@ Session ID stability across rescans
 -----------------------------------
 
 Re-running ``cluster_sessions`` against a frames table whose contents
-have grown (the common case — incremental scans add new frames) must
+have grown (the common case - incremental scans add new frames) must
 preserve ``sessions.id`` for clusters whose identity is unchanged.
 Projects pin to ``sessions.id``, and reissuing IDs every scan would
 orphan them.
@@ -185,7 +185,7 @@ def _match_cluster_to_session(
     """Pick the existing session with maximum frame overlap to ``cluster_frames``.
 
     ``consumed`` tracks session IDs already claimed by an earlier cluster
-    in this rebuild — one session can't be reused by two clusters.
+    in this rebuild - one session can't be reused by two clusters.
     Returns the chosen session_id, or ``None`` if no existing session
     shares any frames with this cluster (a brand-new session).
     """
@@ -269,7 +269,7 @@ def cluster_sessions(
         )
 
     # Existing sessions not matched to any cluster have lost all their
-    # frames — drop them. CASCADE on session_frames does the link cleanup.
+    # frames - drop them. CASCADE on session_frames does the link cleanup.
     orphans = [sid for sid in existing if sid not in consumed]
     if orphans:
         placeholders = ",".join("?" for _ in orphans)

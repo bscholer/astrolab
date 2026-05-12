@@ -47,7 +47,7 @@ FLAT_MASTER_RE = re.compile(
 """Flat master: ``flat_gain_2_bin_1_ir_0.fits``.
 
 Per Dwarf docs the ``gain_N`` on factory bias/flat is a different (low)
-gain index than the photographic ``GAIN_60`` on lights — we deliberately
+gain index than the photographic ``GAIN_60`` on lights - we deliberately
 don't store it on the master, since matching it against a session's
 photographic gain would cause every flat to miss. ``ir_N`` IS the filter
 type."""
@@ -87,7 +87,7 @@ def walk_factory_masters(root: Path) -> Iterator[DiscoveredMaster]:
         CALI_FRAME/bias/cam_{0,1}/bias_gain_*_bin_*.fits
 
     Files whose filenames don't match the per-kind regex are skipped
-    silently — Dwarf firmware sometimes drops extra ``.png`` previews and
+    silently - Dwarf firmware sometimes drops extra ``.png`` previews and
     similar that aren't ingest targets.
     """
     cali_root = root / "CALI_FRAME"

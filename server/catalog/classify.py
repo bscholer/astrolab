@@ -6,7 +6,7 @@ and a path, and returns either a :class:`Classified` describing how to file
 the frame, or ``None`` for "skip this file".
 
 Per-file classification means a single capture root can mix multiple
-scopes — we don't pick one adapter up front and assume everything beneath
+scopes - we don't pick one adapter up front and assume everything beneath
 follows that convention.
 
 The classifier never touches the filesystem. It's a pure function over
@@ -18,7 +18,7 @@ Scope detection
 
 Each scope writes a distinctive marker into one well-known FITS keyword.
 This survives firmware updates, user-organized folder trees, and
-hand-renamed files — which path-based detection does not.
+hand-renamed files - which path-based detection does not.
 
 ============  ===========  ============================================
 scope_id      keyword      pattern (case-insensitive prefix match)
@@ -40,10 +40,10 @@ Image-type detection
 
 Most scopes set ``IMAGETYP`` to one of ``LIGHT``/``DARK``/``FLAT``/``BIAS``
 (case varies, plus aliases like ``LIGHT FRAME``). NINA / ASIAIR / Seestar
-all do; Dwarf 3 does not — so for Dwarf 3 we use the path as a fallback:
+all do; Dwarf 3 does not - so for Dwarf 3 we use the path as a fallback:
 
 - ``CALI_FRAME/`` → not a frame at all (those are factory masters, handled
-  separately) — classifier returns ``None`` so the scanner skips them.
+  separately) - classifier returns ``None`` so the scanner skips them.
 - ``DWARF_DARK/`` → ``DARK``.
 - otherwise → ``LIGHT``.
 
@@ -160,14 +160,14 @@ def detect_image_type(
         mapped = _IMAGETYP_ALIASES.get(raw)
         if mapped is not None:
             return mapped
-        # Unknown IMAGETYP value — treat as not-a-frame. Better to skip
+        # Unknown IMAGETYP value - treat as not-a-frame. Better to skip
         # than to mis-classify into the lights pile.
         return None
 
     if scope_id == "dwarf3":
         parts = {p.lower() for p in path.parts}
         if "cali_frame" in parts:
-            return None  # factory master — separate walker handles these
+            return None  # factory master - separate walker handles these
         if "dwarf_dark" in parts:
             return "DARK"
         return "LIGHT"
@@ -185,7 +185,7 @@ def classify(header: dict[str, Any], path: Path) -> Classified | None:
 
     The header is whatever ``read_primary_header`` produced; missing keys
     are absent, not ``None``. ``path`` is used for filename skips, the
-    quality flag, and Dwarf 3's image-type fallback only — we do not stat
+    quality flag, and Dwarf 3's image-type fallback only - we do not stat
     or read the file.
     """
     name = path.name

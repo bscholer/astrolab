@@ -5,7 +5,7 @@ strings. Dwarf 3 calls its IR-cut filter ``Astro``; Seestar writes ``IRCUT``
 or ``LP``. The Dwarf 3 dual-band slot reports ``Duo`` in shotsInfo but flat
 masters under ``CALI_FRAME/`` are filed as ``Duo-Band``. None of that
 matters to the matcher, which joins ``frames.filter`` to ``masters.filter``
-with a string equality — so we normalize both at scanner write time.
+with a string equality - so we normalize both at scanner write time.
 
 Canonical forms are chosen to match the most common written convention
 (``HaOIII``, ``L``, ``R``, ``Ha``, etc.). The ``None`` value is a literal
