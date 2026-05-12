@@ -48,6 +48,12 @@ class SeqStackParams(BaseModel):
         default="rej",
         description="Stacking algorithm. 'rej' (default) is sigma-clipped rejection "
         "and is what you almost always want for deep-sky lights.",
+        json_schema_extra={
+            "agent_hint": (
+                "Use 'rej' for the cleanest deep-sky result;"
+                " 'mean' is faster but keeps cosmic rays."
+            ),
+        },
     )
     sigma_low: float = Field(
         default=3.0, gt=0.0, le=10.0,
@@ -56,7 +62,13 @@ class SeqStackParams(BaseModel):
             "sigma multiplier (e.g. 3.0). For percentile rejection ('p') it is a "
             "fraction in (0, 1] — e.g. 0.1 means reject the lowest 10%."
         ),
-        json_schema_extra={"ui_when": {"method": "rej"}},
+        json_schema_extra={
+            "ui_when": {"method": "rej"},
+            "agent_hint": (
+                "Lower = more aggressive rejection of dim outliers;"
+                " too low erases faint detail."
+            ),
+        },
     )
     sigma_high: float = Field(
         default=3.0, gt=0.0, le=10.0,
@@ -65,7 +77,13 @@ class SeqStackParams(BaseModel):
             "sigma multiplier (e.g. 3.0). For percentile rejection ('p') it is a "
             "fraction in (0, 1] — e.g. 0.1 means reject the highest 10%."
         ),
-        json_schema_extra={"ui_when": {"method": "rej"}},
+        json_schema_extra={
+            "ui_when": {"method": "rej"},
+            "agent_hint": (
+                "Lower = more hot pixels and cosmic rays removed;"
+                " too low clips bright star cores."
+            ),
+        },
     )
     rejection_type: Literal["w", "s", "p", "l", "m", "n"] = Field(
         default="w",
@@ -74,31 +92,59 @@ class SeqStackParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "rej"},
+            "agent_hint": (
+                "Winsorized ('w') is the best default;"
+                " switch to 'p' only if you are low on RAM."
+            ),
         },
     )
     norm: Literal["no", "add", "addscale", "mul", "mulscale"] = Field(
         default="addscale",
         description="Normalization. 'addscale' (additive + scale) is the standard for "
         "deep-sky lights with varying transparency.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Keep 'addscale' for varying transparency;"
+                " 'no' risks brightness banding across frames."
+            ),
+        },
     )
     output_norm: bool = Field(
         default=True,
         description="Pass -output_norm to clip the stacked output to [0,1].",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Keeping this on prevents blown-out hot pixels"
+                " from dominating the stretch."
+            ),
+        },
     )
     weight_from_quality: bool = Field(
         default=False,
         description="Pass -weight=wfwhm to weight by FWHM. Cheap quality boost when "
         "frames vary in seeing; harmless to leave off.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Enable when seeing varied across the session;"
+                " sharper frames contribute more to the final image."
+            ),
+        },
     )
     rgb_equal: bool = Field(
         default=True,
         description="Pass -rgb_equal so Siril rescales each channel mean to match. "
         "Fixes the pink/green color cast that OSC stacks tend to come out with; "
         "Naztronomy's smart-telescope script always sets this.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Keeps colors neutral; disabling often causes a green"
+                " or magenta cast in OSC stacks."
+            ),
+        },
     )
     maximize: bool = Field(
         default=True,
@@ -106,14 +152,20 @@ class SeqStackParams(BaseModel):
         "footprint instead of just the first frame's. Matters for dithered or "
         "drift-corrected sessions where edges would otherwise be cropped to the "
         "least-common rectangle.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": "Keep on to avoid losing the field edges from dithered captures.",
+        },
     )
     filter_included: bool = Field(
         default=True,
         description="Pass -filter-included so frames marked excluded by upstream "
         "quality assessment (eg seqapplyreg's filter-fwhm/round) are dropped from "
         "the stack. Cheap, off only if you want to ignore prior filtering.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": "Keeping this on ensures poor-seeing frames don't blur the final stack.",
+        },
     )
 
 

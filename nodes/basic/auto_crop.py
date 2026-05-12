@@ -38,6 +38,12 @@ class AutoCropParams(BaseModel):
         description="When off the node passes the input through unchanged. "
         "Default on — trimming the registration nodata border is almost always "
         "wanted and shrinks the data that stretch + save have to chew through.",
+        json_schema_extra={
+            "agent_hint": (
+                "Leaving on removes the black zero-fill border from registration,"
+                " giving a cleaner composed image."
+            ),
+        },
     )
     threshold: float = Field(
         default=1e-3,
@@ -47,7 +53,14 @@ class AutoCropParams(BaseModel):
         "computing the bounding box. The pedestal_offset step pushes real "
         "signal up by ~0.01, so values around 0.001 reliably catch the "
         "registration's zero-fill edge without trimming faint real data.",
-        json_schema_extra={"hash_precision": 6, "ui_section": "advanced"},
+        json_schema_extra={
+            "hash_precision": 6,
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Lower keeps more edge pixels; higher trims more aggressively"
+                " and may clip faint stars at the frame boundary."
+            ),
+        },
     )
     padding: int = Field(
         default=0,
@@ -56,7 +69,13 @@ class AutoCropParams(BaseModel):
         description="Extra pixels of margin to keep around the detected bbox. "
         "Useful when the threshold trims slightly into stars at the frame "
         "edge; bump up by a few px to recover them.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Increase by 10-50 px if the crop is cutting into real stars"
+                " or nebulosity at the frame edge."
+            ),
+        },
     )
 
 

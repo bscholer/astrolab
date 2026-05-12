@@ -36,6 +36,12 @@ class CropParams(BaseModel):
         description="When off the node passes through the input unchanged. "
         "The interactive crop picker in the UI flips this on once you drag "
         "a rectangle.",
+        json_schema_extra={
+            "agent_hint": (
+                "Enable with a tight box to remove distracting field edges"
+                " or center the subject for a stronger composition."
+            ),
+        },
     )
     x: float = Field(
         default=0.0,

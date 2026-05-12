@@ -61,6 +61,12 @@ class SeqResampleParams(BaseModel):
         "rejection params; flip back to 'full' for the final render. Each "
         "mode has its own cache lineage so toggling is cheap once both are "
         "built.",
+        json_schema_extra={
+            "agent_hint": (
+                "Use 'draft' for rapid parameter exploration; switch to 'full'"
+                " only for the final high-resolution render."
+            ),
+        },
     )
     interp: Literal[
         "nearest", "bilinear", "cubic", "lanczos2", "lanczos3", "area", "nogrid"
@@ -72,6 +78,10 @@ class SeqResampleParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"mode": "draft"},
+            "agent_hint": (
+                "Lanczos3 looks sharpest in draft previews but is slower;"
+                " 'area' minimizes aliasing when downscaling by large factors."
+            ),
         },
     )
 
