@@ -33,3 +33,9 @@ ui/node_modules/
 ui/.svelte-kit/
 ui/build/
 .claude/
+
+# Shared subagent definitions are checked in so the team and future Claude
+# Code sessions can discover them. Everything else under .claude/ is per-user
+# (worktrees, settings, transcripts) and stays ignored.
+!.claude/agents/
+!.claude/agents/**
