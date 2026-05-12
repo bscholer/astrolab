@@ -333,3 +333,88 @@ def test_raises_when_image_missing_after_zero_exit(
             ctx=_ctx(tmp_path),
             out_dir=out_dir,
         )
+
+
+# ---- Siril 1.4 shutdown-segfault tolerance -----------------------------------
+
+
+def _make_node_inputs(tmp_path: Path) -> dict[str, Ref]:
+    ha = tmp_path / "ha.fit"
+    oiii = tmp_path / "oiii.fit"
+    ha.write_bytes(b"HA")
+    oiii.write_bytes(b"OIII")
+    return {
+        "ha": Ref(node_hash="ext-ha", port="ha", path=ha, type=PortType.IMAGE_FITS),
+        "oiii": Ref(node_hash="ext-oiii", port="oiii", path=oiii, type=PortType.IMAGE_FITS),
+    }
+
+
+def test_rc0_image_present_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rc=0 + image written -> success (baseline happy path)."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        (out_dir / "image.fit").write_bytes(b"COMPOSED")
+
+    fake_rt = FakeRuntime(returncode=0, on_run=fake)
+    monkeypatch.setattr(
+        "nodes.basic.narrowband_compose.SirilRuntime", lambda *a, **k: fake_rt
+    )
+    refs = NarrowbandComposeNode().run(
+        inputs=_make_node_inputs(tmp_path),
+        params=NarrowbandComposeParams(),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    assert refs["image"].path.exists()
+
+
+def test_rc_minus11_image_present_warns_and_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """rc=-11 (Siril 1.4 shutdown segfault) + image present -> success with warning."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake(cmds, wd):
+        (out_dir / "image.fit").write_bytes(b"COMPOSED")
+
+    fake_rt = FakeRuntime(returncode=-11, on_run=fake)
+    monkeypatch.setattr(
+        "nodes.basic.narrowband_compose.SirilRuntime", lambda *a, **k: fake_rt
+    )
+
+    with caplog.at_level(logging.WARNING, logger="nodes._seq_runner"):
+        refs = NarrowbandComposeNode().run(
+            inputs=_make_node_inputs(tmp_path),
+            params=NarrowbandComposeParams(),
+            ctx=_ctx(tmp_path),
+            out_dir=out_dir,
+        )
+
+    assert refs["image"].path.exists()
+    assert any("segfault" in r.message for r in caplog.records)
+    assert any("-11" in r.message for r in caplog.records)
+
+
+def test_rc_minus11_image_missing_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rc=-11 + image absent -> failure (real crash, not just shutdown segfault)."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    fake_rt = FakeRuntime(returncode=-11)
+    monkeypatch.setattr(
+        "nodes.basic.narrowband_compose.SirilRuntime", lambda *a, **k: fake_rt
+    )
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        NarrowbandComposeNode().run(
+            inputs=_make_node_inputs(tmp_path),
+            params=NarrowbandComposeParams(),
+            ctx=_ctx(tmp_path),
+            out_dir=out_dir,
+        )
