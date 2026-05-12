@@ -1345,11 +1345,23 @@ def _describe_param(field_name: str, field_info: Any, prop: dict) -> dict[str, A
                 }[key]
                 constraints[alias] = branch[key]
 
-    default = (
-        field_info.default
-        if isinstance(field_info, FieldInfo)
-        else prop.get("default")
-    )
+    # Fields with default_factory have field_info.default == PydanticUndefined.
+    # Call the factory at catalog-build time so callers always get a concrete
+    # default value (e.g. graxpert.use_gpu auto-detects from /dev/nvidia0).
+    from pydantic_core import PydanticUndefined  # type: ignore[attr-defined]
+
+    if isinstance(field_info, FieldInfo):
+        default = field_info.default
+        if default is PydanticUndefined:
+            if field_info.default_factory is not None:
+                try:
+                    default = field_info.default_factory()  # type: ignore[call-arg]
+                except Exception:
+                    default = None
+            else:
+                default = None
+    else:
+        default = prop.get("default")
     description = (
         prop.get("description")
         or (field_info.description if isinstance(field_info, FieldInfo) else None)
