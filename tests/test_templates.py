@@ -19,15 +19,17 @@ def test_load_template_by_id() -> None:
     # bump invalidates downstream cache entries (intentional), so a stray
     # increment is something we want to catch in review, not let slip
     # silently.
-    assert t.version == 14
+    assert t.version == 15
     kinds = [n.kind for n in t.nodes]
     # Chain: convert -> calibrate -> resample -> pedestal -> bg_extract ->
     # register -> stack -> auto_crop -> graxpert_bg (linear) ->
     # graxpert_denoise (linear) -> crop (composition crop, linear) ->
-    # auto_bp_shift (linear pre-stretch BP shift) -> stretch ->
-    # starnet_extract (stretched) -> starnet_replace -> starnet_recombine
-    # -> save. auto_bp_shift precedes stretch so the non-linear curve
-    # sees a histogram with the background already crushed toward zero.
+    # color_balance (SCNR green, linear) -> auto_bp_shift (linear
+    # pre-stretch BP shift) -> stretch -> starnet_extract (stretched) ->
+    # starnet_replace -> starnet_recombine -> save. color_balance lives
+    # in the linear domain so the autostretch curve operates on
+    # green-neutralized data instead of baking the cast into a permanent
+    # stained look post-stretch.
     assert kinds == [
         "convert_lights",
         "calibrate",
@@ -40,6 +42,7 @@ def test_load_template_by_id() -> None:
         "graxpert",
         "graxpert",
         "crop",
+        "color_balance",
         "auto_bp_shift",
         "stretch",
         "starnet_extract",
@@ -118,7 +121,8 @@ def test_crop_runs_before_stretch() -> None:
     osc = load_template("calibrate_register_stack")
     by_id = {n.id: n for n in osc.nodes}
     assert by_id["crop"].inputs["image"] == "graxpert_denoise.image"
-    assert by_id["auto_bp_shift"].inputs["image"] == "crop.image"
+    assert by_id["color_balance"].inputs["image"] == "crop.image"
+    assert by_id["auto_bp_shift"].inputs["image"] == "color_balance.image"
     assert by_id["stretch"].inputs["image"] == "auto_bp_shift.image"
     assert by_id["starnet_extract"].inputs["image"] == "stretch.image"
 
