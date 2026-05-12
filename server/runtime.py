@@ -322,6 +322,7 @@ def run_job(
                 port=port,
                 path=ref.path,
                 type=node_cls.outputs[port],
+                display_ready=ref.display_ready,
             )
 
         cache_obj.commit(h, committed)
