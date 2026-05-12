@@ -1,0 +1,16 @@
+id: nina
+display_name: "N.I.N.A."
+notes: |
+  Best-effort ingest in v1. NINA captures user-managed calibration frames
+  (darks / flats / biases) that live in the user's capture tree; the universal
+  walker picks them up by IMAGETYP. The matcher behaves normally and will pair
+  them with lights when the metadata matches (instrument, exptime, gain, temp).
+
+  No on-device calibration; no firmware quirks to work around. End-to-end
+  pipeline behavior is not yet validated against real NINA data, hence
+  best-effort.
+
+calibration:
+  skip_match: false
+
+node_defaults: {}

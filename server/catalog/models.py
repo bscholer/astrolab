@@ -27,7 +27,21 @@ MasterSource = Literal["factory", "user", "astrolab"]
 """'factory' = bundled with the scope; 'user' = stacked on the scope by the
 user; 'astrolab' = built by our own master-build job (deferred)."""
 
-MatchQuality = Literal["exact", "approx", "none"]
+MatchQuality = Literal["exact", "approx", "none", "not_needed"]
+"""Calibration match outcome.
+
+- ``exact``: a master matched on the hard equality constraints with delta=0
+  on temperature (darks).
+- ``approx``: a master matched but with nonzero temperature delta inside
+  the tolerance window.
+- ``none``: no candidate master satisfies the constraints. The pipeline can
+  still run (the masters port is optional), but the user should see a clear
+  "no match" indicator.
+- ``not_needed``: the scope subtracts darks and flats on-device before
+  exporting lights (Seestar). The matcher does not search; the pipeline
+  runs the calibrate node as a debayer-only pass. Distinct from ``none``
+  because it's intentional, not a failure.
+"""
 
 
 class Target(BaseModel):

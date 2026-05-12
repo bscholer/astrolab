@@ -6,7 +6,13 @@
  */
 
 export type CalibrationKind = 'dark' | 'flat' | 'bias';
-export type MatchQuality = 'exact' | 'approx' | 'none';
+export type MatchQuality = 'exact' | 'approx' | 'none' | 'not_needed';
+/**
+ * 'not_needed' means the scope subtracts darks and flats on-device (Seestar)
+ * and the matcher deliberately did not look. Distinct from 'none' (matcher
+ * looked and found nothing), and the UI should render it as a benign state
+ * rather than a missing-calibration warning.
+ */
 
 export interface CalibrationStatus {
   kind: CalibrationKind;

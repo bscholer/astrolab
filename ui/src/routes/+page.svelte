@@ -442,14 +442,15 @@
   const QUALITY_HELP: Record<string, string> = {
     exact: 'exact match',
     approx: 'approximate match (within tolerance)',
-    none: 'no match found'
+    none: 'no match found',
+    not_needed: 'not needed (scope subtracts on device)'
   };
 
   function calTitle(c: CalibrationStatus): string {
     const base = `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
     // Only append the matcher's reason when it adds real info beyond the
     // quality label (it's redundant for 'exact', sometimes useful for
-    // 'approx', always useful for 'none').
+    // 'approx', always useful for 'none' and 'not_needed').
     return c.reason && c.quality !== 'exact' ? `${base}\n${c.reason}` : base;
   }
 
