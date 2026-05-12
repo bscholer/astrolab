@@ -108,7 +108,7 @@ def test_dark_approx_match_within_tolerance(db: sqlite3.Connection) -> None:
     far = _insert_master(db, kind="dark", exptime=30.0, ccd_temp=19.0, stack_count=20)
 
     out = match_session(db, sid)
-    assert out["dark"]["master_id"] == near, "should prefer closer temp over deeper stack"
+    assert out["dark"]["master_id"] == near, "closer temp bin wins even with smaller stack"
     assert out["dark"]["match_quality"] == "approx"
     assert abs(out["dark"]["details"]["delta_C"] - 1.0) < 1e-9
     assert far is not None  # exists but rejected
@@ -122,6 +122,29 @@ def test_dark_approx_tie_breaks_on_stack_depth(db: sqlite3.Connection) -> None:
     out = match_session(db, sid)
     assert out["dark"]["master_id"] == deep
     assert shallow is not None
+
+
+def test_dark_exact_temp_shallow_loses_to_nearby_deep_stack(db: sqlite3.Connection) -> None:
+    """A deeper stack 1 C off beats a shallower stack at the exact session temp.
+
+    Regression for the Dwarf 3 factory dark problem: the on-device stacker
+    produced a 3-frame master at the exact session temperature, but a 10-frame
+    master existed 1 C away.  The 1-C delta falls in the same 1-C bin as a
+    0-C delta, so stack_count is the deciding factor and the deeper master must
+    win.
+    """
+    sid = _insert_session(db, exptime=15.0, avg_temp=23.0)
+    shallow_exact = _insert_master(db, kind="dark", exptime=15.0, ccd_temp=23.0, stack_count=3,
+                                   path="/tmp/dark-exact-shallow.fits")
+    deep_nearby = _insert_master(db, kind="dark", exptime=15.0, ccd_temp=24.0, stack_count=10,
+                                 path="/tmp/dark-nearby-deep.fits")
+
+    out = match_session(db, sid)
+    assert out["dark"]["master_id"] == deep_nearby, (
+        "stack_10 @ +1C should beat stack_3 @ exact temp"
+    )
+    assert out["dark"]["match_quality"] == "approx"
+    assert shallow_exact is not None  # candidate existed but lost
 
 
 def test_dark_no_match_when_temp_too_far(db: sqlite3.Connection) -> None:
