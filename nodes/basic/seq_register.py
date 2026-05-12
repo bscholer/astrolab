@@ -78,6 +78,13 @@ class SeqRegisterParams(BaseModel):
         "seqplatesolve and reprojects frames; 'star' uses star-pattern matching "
         "via register -2pass. Platesolve is what Naztronomy uses and what we "
         "want for OSC smart-telescope captures with proper RA/DEC headers.",
+        json_schema_extra={
+            "agent_hint": (
+                "Use 'platesolve' for the most accurate alignment on captures"
+                " with RA/DEC headers; 'star' is a fallback for fields"
+                " without astrometric data."
+            ),
+        },
     )
     # --- platesolve method ---
     distortion: bool = Field(
@@ -93,6 +100,10 @@ class SeqRegisterParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "platesolve"},
+            "agent_hint": (
+                "Enabling improves edge sharpness on wide-field optics but"
+                " crashes Siril 1.4.2; leave off unless on a patched Siril build."
+            ),
         },
     )
     # --- star method ---
@@ -102,6 +113,10 @@ class SeqRegisterParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "star"},
+            "agent_hint": (
+                "Keeping this on gives tighter alignment at the cost"
+                " of extra processing time."
+            ),
         },
     )
     transform: Literal["homography", "affine", "similarity", "shift"] = Field(
@@ -110,6 +125,10 @@ class SeqRegisterParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "star"},
+            "agent_hint": (
+                "Homography handles most distortions; use 'shift' only for"
+                " very short dithered subs with no rotation."
+            ),
         },
     )
     min_pairs: int = Field(
@@ -120,6 +139,10 @@ class SeqRegisterParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "star"},
+            "agent_hint": (
+                "Lower allows registration on sparse star fields but risks"
+                " a bad transform from too few reference stars."
+            ),
         },
     )
     # --- shared seqapplyreg flags ---
@@ -128,23 +151,47 @@ class SeqRegisterParams(BaseModel):
         description="seqapplyreg framing: 'max' (default) keeps the union of "
         "all frame footprints, so dithered captures don't get cropped to the "
         "intersection. 'min' is the old default and crops aggressively.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Use 'max' to keep the full field from dithered sessions;"
+                " 'min' tightly crops to the common area."
+            ),
+        },
     )
     kernel: Literal["square", "nearest", "cubic", "lanczos2", "lanczos3"] = Field(
         default="square",
         description="seqapplyreg interpolation kernel. 'square' (Naztronomy "
         "default) preserves flux; 'lanczos3' is sharper but can introduce "
         "ringing on bright stars.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Lanczos3 looks sharper but can create halos around bright stars;"
+                " square is the safe photometry-preserving choice."
+            ),
+        },
     )
     filter_fwhm: float | None = Field(
         default=None, ge=0.0, le=1.0,
         description="Drop frames whose FWHM is in the worst N fraction. 0.2 keeps "
         "the best 80%. None disables FWHM filtering.",
+        json_schema_extra={
+            "agent_hint": (
+                "Setting to 0.1-0.3 discards the blurriest frames"
+                " and noticeably sharpens the final stack."
+            ),
+        },
     )
     filter_round: float | None = Field(
         default=None, ge=0.0, le=1.0,
         description="Drop frames whose roundness is in the worst N fraction.",
+        json_schema_extra={
+            "agent_hint": (
+                "Setting to 0.1-0.2 removes out-of-focus or trailed frames,"
+                " reducing elongated stars in the stack."
+            ),
+        },
     )
     # --- drizzle (subpixel reconstruction) ---
     # Drizzle (Fruchter & Hook) reprojects each input pixel onto a finer output
@@ -162,6 +209,10 @@ class SeqRegisterParams(BaseModel):
                 "Drizzle ~4x's stack storage and RAM at scale=2. "
                 "Re-stacking with drizzle off keeps the original cache lineage."
             ),
+            "agent_hint": (
+                "Enable for noticeably finer detail when frames are well-dithered;"
+                " has no benefit and wastes RAM when dither is off."
+            ),
         },
     )
     drizzle_scale: Literal[1, 2, 3] = Field(
@@ -172,6 +223,10 @@ class SeqRegisterParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"drizzle": True},
+            "agent_hint": (
+                "Scale 2 is the sweet spot for most smart-telescope sessions;"
+                " scale 3 gives diminishing returns and can exhaust memory."
+            ),
         },
     )
     drizzle_dropsize: float = Field(
@@ -183,6 +238,10 @@ class SeqRegisterParams(BaseModel):
             "ui_section": "advanced",
             "ui_when": {"drizzle": True},
             "hash_precision": 2,
+            "agent_hint": (
+                "Smaller drop size sharpens the output but requires many more"
+                " frames to fill the grid without gaps."
+            ),
         },
     )
 

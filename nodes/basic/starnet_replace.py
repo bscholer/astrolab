@@ -39,13 +39,25 @@ class StarnetReplaceParams(BaseModel):
         description="Off by default. Flip on when StarNet's stars layer "
         "shows obvious halos / edge artifacts and you'd rather have clean "
         "synthetic Gaussian stars in the final composite.",
+        json_schema_extra={
+            "agent_hint": (
+                "Enable when StarNet leaves ring artifacts or chunky halos;"
+                " synthetic stars look rounder and cleaner."
+            ),
+        },
     )
     profile: str = Field(
         default="gaussian",
         description="PSF model passed to synthstar. 'gaussian' is the "
         "robust default. Siril also accepts 'moffat' for telescopes whose "
         "real PSF has heavier tails.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Gaussian is the right choice for most refractors;"
+                " Moffat better matches the diffraction rings of Newtonians."
+            ),
+        },
     )
 
 

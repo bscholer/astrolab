@@ -86,6 +86,13 @@ class NarrowbandComposeParams(BaseModel):
         "traditional Ha-as-red, OIII-as-cyan composition that most OSC "
         "narrowband shooters expect. 'hso' adds a synthetic-green channel for "
         "a Hubble-like tone.",
+        json_schema_extra={
+            "agent_hint": (
+                "Choose 'hoo' for a classic red-nebula/cyan-shell look, 'hso' for"
+                " a Hubble gold-and-blue palette, or experiment with 'oho'/'hho'"
+                " for unusual color emphasis."
+            ),
+        },
     )
 
 

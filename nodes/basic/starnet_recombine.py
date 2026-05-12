@@ -39,6 +39,12 @@ class StarnetRecombineParams(BaseModel):
         description="On by default. Off makes the node forward the starless "
         "layer as the final image, which is useful when you want a "
         "starless-only render.",
+        json_schema_extra={
+            "agent_hint": (
+                "Disable to export a starless image for background-only"
+                " compositing or social media."
+            ),
+        },
     )
     blend: Literal["add", "screen", "max"] = Field(
         default="add",
@@ -48,7 +54,13 @@ class StarnetRecombineParams(BaseModel):
         "without blowing them out; 'max' is a hard pick-the-brightest "
         "useful when stars and nebulosity overlap and you want stars to "
         "dominate.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Use 'add' for a natural recompose; 'screen' tames blown-out"
+                " star cores; 'max' makes stars pop against dim nebulosity."
+            ),
+        },
     )
 
 

@@ -37,6 +37,12 @@ class StretchParams(BaseModel):
         "automatically (closest to what Siril GUI shows on load). 'mtf' is the "
         "classic three-slider midtones transfer function for manual control. "
         "'asinh' suits galaxy-style images with bright cores and dim halos.",
+        json_schema_extra={
+            "agent_hint": (
+                "Choose 'autostretch' for a quick natural look, 'mtf' for precise"
+                " manual control, or 'asinh' for galaxy cores with wide dynamic range."
+            ),
+        },
     )
 
     # --- autostretch ---
@@ -49,6 +55,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "autostretch"},
+            "agent_hint": (
+                "Linked keeps colors true; unlinked can flatten a color cast"
+                " but often looks washed out."
+            ),
         },
     )
     shadows_clip: float = Field(
@@ -61,6 +71,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 3,
             "ui_when": {"method": "autostretch"},
+            "agent_hint": (
+                "More negative = more shadow detail preserved;"
+                " less negative = punchier blacks."
+            ),
         },
     )
     target_bg: float = Field(
@@ -73,6 +87,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 3,
             "ui_when": {"method": "autostretch"},
+            "agent_hint": (
+                "Lower = darker sky background;"
+                " higher = brighter overall image that can look milky."
+            ),
         },
     )
 
@@ -85,6 +103,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 4,
             "ui_when": {"method": "mtf"},
+            "agent_hint": (
+                "Raise to crush the background to black;"
+                " too high clips faint nebulosity."
+            ),
         },
     )
     mtf_midtones: float = Field(
@@ -96,6 +118,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 4,
             "ui_when": {"method": "mtf"},
+            "agent_hint": (
+                "Lower = brighter midtones and lifted faint detail;"
+                " too low clips highlights."
+            ),
         },
     )
     mtf_highlights: float = Field(
@@ -106,6 +132,7 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 4,
             "ui_when": {"method": "mtf"},
+            "agent_hint": "Lower = brighter overall image but risks blowing out star cores.",
         },
     )
 
@@ -119,6 +146,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 2,
             "ui_when": {"method": "asinh"},
+            "agent_hint": (
+                "Higher lifts faint nebulosity more aggressively;"
+                " very high values flatten bright cores."
+            ),
         },
     )
     asinh_offset: float = Field(
@@ -130,6 +161,7 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "hash_precision": 4,
             "ui_when": {"method": "asinh"},
+            "agent_hint": "Slightly negative darkens the background and suppresses noise grain.",
         },
     )
     asinh_human: bool = Field(
@@ -140,6 +172,10 @@ class StretchParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "asinh"},
+            "agent_hint": (
+                "Enabling this preserves color saturation but can push greens"
+                " too strong on OSC sensors."
+            ),
         },
     )
 

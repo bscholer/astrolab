@@ -66,20 +66,38 @@ class CalibrateParams(BaseModel):
         "Bayer pattern. On by default — this is the right behavior for any sensor "
         "with BAYERPAT in the FITS header (Dwarf 3, Seestar, ZWO OSC). Flip off "
         "only for mono cameras or already-debayered inputs.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Leave on for any OSC (color) sensor; turning off with a"
+                " Bayer-pattern camera produces a cyan/magenta color cast."
+            ),
+        },
     )
     cosmetic: bool = Field(
         default=True,
         description="Pass -cc=dark to apply hot/cold pixel correction from the dark. "
         "Cheap and almost always wanted.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Keeping on removes bright hot-pixel specks that would otherwise"
+                " appear as stars in the final image."
+            ),
+        },
     )
     equalize_cfa: bool = Field(
         default=True,
         description="Pass -equalize_cfa when calibrating CFA flats; equalizes the two "
         "G channels of the Bayer pattern so post-debayer colors are balanced. Only "
         "meaningful with cfa=True; on by default for the OSC pipeline.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Keeps green channel balance even; turning off can cause"
+                " a subtle green or magenta tint."
+            ),
+        },
     )
     debayer: bool = Field(
         default=True,
@@ -87,7 +105,13 @@ class CalibrateParams(BaseModel):
         "OSC sensors (Dwarf 3): registration applies sub-pixel shifts that scramble "
         "the Bayer pattern, so we must debayer here before register/stack. Turn off "
         "only for mono cameras or pure-CFA workflows.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Leave on for OSC sensors; turning off means registration shifts"
+                " will scramble the Bayer mosaic and ruin color."
+            ),
+        },
     )
 
 

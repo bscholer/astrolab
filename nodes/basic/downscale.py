@@ -23,6 +23,12 @@ class DownscaleParams(BaseModel):
         gt=0,
         le=8192,
         description="Long edge of the output image, in pixels.",
+        json_schema_extra={
+            "agent_hint": (
+                "Lower produces a smaller, faster-loading thumbnail;"
+                " higher retains more fine detail for sharing."
+            ),
+        },
     )
 
 
