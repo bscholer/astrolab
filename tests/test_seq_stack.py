@@ -84,7 +84,9 @@ def test_stack_mean_no_rejection_args(tmp_path: Path, monkeypatch: pytest.Monkey
     out_dir.mkdir()
 
     def fake(cmds, wd):
-        (out_dir / "image.fit").write_bytes(b"")
+        # Non-empty payload; the new _check_siril_stack_result rejects
+        # zero-byte output as "missing or empty".
+        (out_dir / "image.fit").write_bytes(b"STACKED")
 
     fake_rt = FakeRuntime(on_run=fake)
     monkeypatch.setattr("nodes.basic.seq_stack.SirilRuntime", lambda *a, **k: fake_rt)

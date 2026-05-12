@@ -159,19 +159,22 @@ def _outputs_present_fitseq(seq_out: Path, out_basename: str) -> tuple[bool, str
 
 def _outputs_present_perframe(
     seq_out: Path, out_basename: str, min_count: int
-) -> tuple[bool, str]:
-    """Return (present, description) for a per-frame output check.
+) -> tuple[bool, str, int]:
+    """Return (present, description, actual_count) for a per-frame output check.
 
     present is True when at least `min_count` matching frames exist.
+    actual_count is the number found regardless, so callers can build
+    informative error messages.
     """
     frames = sorted(
         p
         for p in seq_out.iterdir()
         if p.name.startswith(f"{out_basename}_") and p.suffix in (".fit", ".fits")
     )
-    if len(frames) >= max(1, min_count):
-        return True, f"{len(frames)} frames"
-    return False, ""
+    actual = len(frames)
+    if actual >= max(1, min_count):
+        return True, f"{actual} frames", actual
+    return False, "", actual
 
 
 def _check_siril_seq_result(
@@ -209,7 +212,7 @@ def _check_siril_seq_result(
         if fitseq:
             outputs_ok, wrote = _outputs_present_fitseq(seq_out, out_basename)
         else:
-            outputs_ok, wrote = _outputs_present_perframe(seq_out, out_basename, min_count)
+            outputs_ok, wrote, _ = _outputs_present_perframe(seq_out, out_basename, min_count)
 
         if success_marker_present and outputs_ok:
             _log.warning(
@@ -238,12 +241,21 @@ def _check_siril_seq_result(
                 f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
             )
     else:
-        outputs_ok, wrote = _outputs_present_perframe(seq_out, out_basename, min_count)
+        outputs_ok, wrote, actual = _outputs_present_perframe(seq_out, out_basename, min_count)
         if not outputs_ok:
+            if actual == 0:
+                detail = (
+                    f"no {out_basename}_*.fit* frames landed in {seq_out} "
+                    f"(expected {min_count})"
+                )
+            else:
+                detail = (
+                    f"only {actual} {out_basename}_*.fit* frames landed in "
+                    f"{seq_out}, expected {min_count}"
+                )
             raise RuntimeError(
-                f"{node_name}: siril returned 0 but no {out_basename}_*.fit* "
-                f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
-                f"{result.stdout[-2000:]}"
+                f"{node_name}: siril returned 0 but {detail}.\n"
+                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
             )
 
     return wrote
