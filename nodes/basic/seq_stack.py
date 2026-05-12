@@ -12,6 +12,7 @@ calibrated lights of varying transparency. The output filename is fixed at
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +24,11 @@ from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
 from server.siril import SirilRuntime, make_progress_handler
+
+_log = logging.getLogger(__name__)
+
+# Rejection types that require all frames in RAM simultaneously.
+_MEMORY_HEAVY_REJECTION = frozenset({"w", "s"})
 
 
 class SeqStackParams(BaseModel):
@@ -44,13 +50,21 @@ class SeqStackParams(BaseModel):
         "and is what you almost always want for deep-sky lights.",
     )
     sigma_low: float = Field(
-        default=3.0, ge=0.5, le=10.0,
-        description="Lower sigma threshold for rejection. Only used when method='rej'.",
+        default=3.0, gt=0.0, le=10.0,
+        description=(
+            "Lower rejection threshold. For sigma-based methods ('w', 's') this is a "
+            "sigma multiplier (e.g. 3.0). For percentile rejection ('p') it is a "
+            "fraction in (0, 1] — e.g. 0.1 means reject the lowest 10%."
+        ),
         json_schema_extra={"ui_when": {"method": "rej"}},
     )
     sigma_high: float = Field(
-        default=3.0, ge=0.5, le=10.0,
-        description="Upper sigma threshold for rejection.",
+        default=3.0, gt=0.0, le=10.0,
+        description=(
+            "Upper rejection threshold. For sigma-based methods ('w', 's') this is a "
+            "sigma multiplier (e.g. 3.0). For percentile rejection ('p') it is a "
+            "fraction in (0, 1] — e.g. 0.1 means reject the highest 10%."
+        ),
         json_schema_extra={"ui_when": {"method": "rej"}},
     )
     rejection_type: Literal["w", "s", "p", "l", "m", "n"] = Field(
@@ -106,7 +120,7 @@ class SeqStackParams(BaseModel):
 @register("seq_stack")
 class SeqStackNode(Node[SeqStackParams]):
     id = "seq_stack"
-    version = 1
+    version = 2
     cost = "expensive"
     uses_siril = True
 
@@ -175,12 +189,72 @@ class SeqStackNode(Node[SeqStackParams]):
             on_log=make_progress_handler(ctx),
             cancel=ctx.cancel,
         )
-        _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
+        primary_error: RuntimeError | None = None
+        try:
+            _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
+        except RuntimeError as exc:
+            primary_error = exc
+
+        if primary_error is not None:
+            # Attempt OOM fallback: retry with percentile rejection if the
+            # configured rejection is memory-heavy and the output is absent.
+            can_retry = (
+                params.method == "rej"
+                and params.rejection_type in _MEMORY_HEAVY_REJECTION
+                and not out_image.exists()
+            )
+            if not can_retry:
+                raise primary_error
+
+            _log.warning(
+                "seq_stack: %s rejection ran out of memory at %s frames; "
+                "retrying with percentile rejection (0.1/0.1). "
+                "Consider increasing Docker memory if you want %s results.",
+                {"w": "winsor", "s": "sigma"}[params.rejection_type],
+                params.input_basename,
+                {"w": "winsor", "s": "sigma"}[params.rejection_type],
+            )
+
+            # Build percentile fallback command.
+            fallback_parts = [f"stack {params.input_basename} {params.method}"]
+            fallback_parts.append("p")
+            fallback_parts.append("0.1 0.1")
+            fallback_parts.append(f"-norm={params.norm}")
+            if params.output_norm:
+                fallback_parts.append("-output_norm")
+            if params.rgb_equal:
+                fallback_parts.append("-rgb_equal")
+            if params.maximize:
+                fallback_parts.append("-maximize")
+            if params.filter_included:
+                fallback_parts.append("-filter-included")
+            if params.weight_from_quality:
+                fallback_parts.append("-weight=wfwhm")
+            fallback_parts.append(f"-out={quote(out_image.resolve())}")
+
+            ctx.progress(0.5, "seq_stack: retrying with percentile rejection")
+            fallback_commands = [
+                f"cd {quote(work_dir.resolve())}",
+                " ".join(fallback_parts),
+            ]
+            fallback_result = runtime.run(
+                fallback_commands,
+                working_dir=work_dir,
+                on_log=make_progress_handler(ctx),
+                cancel=ctx.cancel,
+            )
+            try:
+                _check_siril_stack_result(
+                    fallback_result, node_name="seq_stack", out_image=out_image
+                )
+            except RuntimeError:
+                # Retry also failed: surface the original error.
+                raise primary_error from None
 
         # Toss the staging dir; the cache entry only needs image.fit.
         from nodes._seq_runner import drop_staged
         drop_staged(staged)
-        # Siril may have left an FWHM .reg or similar behind; rmdir then is fine to skip.
+        # Siril may have left an FWHM .reg or similar behind; rmdir is fine to skip.
         with contextlib.suppress(OSError):
             work_dir.rmdir()
 
