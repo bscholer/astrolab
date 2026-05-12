@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import image_ref, quote, stage_sequence
+from nodes._seq_runner import _check_siril_stack_result, image_ref, quote, stage_sequence
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -175,19 +175,7 @@ class SeqStackNode(Node[SeqStackParams]):
             on_log=make_progress_handler(ctx),
             cancel=ctx.cancel,
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"seq_stack: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-                f"--- stderr ---\n{result.stderr}"
-            )
-
-        if not out_image.exists():
-            raise RuntimeError(
-                f"seq_stack: siril returned 0 but {out_image} is missing.\n"
-                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
-            )
+        _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
 
         # Toss the staging dir; the cache entry only needs image.fit.
         from nodes._seq_runner import drop_staged
