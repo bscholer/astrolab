@@ -7,6 +7,7 @@ sqlite3.Row dicts.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -113,6 +114,29 @@ class Master(BaseModel):
     cache_ref: str | None = None
     source_frame_ids: list[int] | None = None
     scanned_at: float | None = None
+
+
+class DiscoveredMaster(BaseModel):
+    """A scope-specific helper's classification of a pre-built calibration master.
+
+    Used for masters the scope ships with (currently only Dwarf 3 factory
+    masters under ``CALI_FRAME/``). DAG-built masters bypass this path;
+    they're inserted directly by the master-build job.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    kind: MasterKind
+    source: MasterSource = "factory"
+    camera: str | None = None
+    instrument: str | None = None
+    filter: str | None = None
+    exptime: float | None = None
+    gain: int | None = None
+    binning: int | None = None
+    ccd_temp: float | None = None
+    stack_count: int | None = None
 
 
 class CalibrationMatch(BaseModel):

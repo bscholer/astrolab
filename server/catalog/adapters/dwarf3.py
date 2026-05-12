@@ -1,20 +1,27 @@
-"""Dwarf 3 ingest adapter.
+"""Dwarf 3-specific helpers.
 
-Walks a Dwarf 3 capture root and classifies frames by directory structure.
-Layout (verified May 2026):
+Most of the Dwarf 3 ingest path now runs through the universal classifier
+in :mod:`server.catalog.classify`. Two cases still need scope-specific
+knowledge:
 
-    DWARF_RAW_TELE_<TARGET>_EXP_<sec>_GAIN_<g>_<YYYY-MM-DD-HH-MM-SS-mmm>/
-        <TARGET>_<exp>s<gain>_Astro_<YYYYMMDD-HHMMSS>_<temp>C.fits     # ok lights
-        failed_*.fits                                                   # rejected lights
-        img_*.png, img_*.tif                                            # ignored
+1. **Factory calibration masters** under ``CALI_FRAME/`` carry almost no
+   FITS-header metadata. Exposure, photographic-gain index, IR-band index,
+   ccd temperature, and stack depth are all encoded in the filename per
+   the Dwarf 3 docs. :func:`walk_factory_masters` reads those filenames
+   and yields :class:`DiscoveredMaster` rows the scanner can ingest.
 
-    DWARF_DARK/tele_exp_<sec>_gain_<g>_bin_<b>_<...>/raw_*.fits        # raw darks
+2. **User-captured dark frames** under ``DWARF_DARK/`` ship with a
+   primary header but the Dwarf firmware fills it with stale or
+   plate-solve-poisoned values (RA / DEC / OBJECT carried over from the
+   last light capture; EXPTIME and GAIN sometimes wrong). The filename
+   on these is the authoritative source. :func:`enrich_dark_header`
+   parses it and overrides the affected header keys before the row is
+   written.
 
-    CALI_FRAME/{dark,bias,flat}/cam_*/...                              # pre-built masters
-        - SKIPPED in Phase 1.a (those belong in the masters table, not frames).
-
-The adapter does not read FITS data; it only sets fields it can determine
-from path conventions (image_type, quality, session_key, session_hints).
+These are the only places where path-or-filename parsing is still
+load-bearing. Lights are entirely header-driven through the universal
+classifier; mosaic panels are picked up because the OBJECT panel suffix
+``(N)`` is stripped by :func:`server.catalog.fits_reader.normalize_target`.
 """
 
 from __future__ import annotations
@@ -22,257 +29,180 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
-from server.catalog.adapter import DiscoveredFrame, DiscoveredMaster, register
+from server.catalog.models import DiscoveredMaster
 
-LIGHT_FOLDER_RE = re.compile(
-    r"^DWARF_RAW_TELE_(?P<target>.+?)_EXP_(?P<exp>[\d.]+)_GAIN_(?P<gain>\d+)_"
-    r"(?P<ts>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3})$"
-)
-"""Matches a Dwarf 3 light-capture session folder. Target may contain spaces
-and prefixes like 'MOSAIC_'; we keep that prefix in the captured target so
-mosaic sessions remain distinguishable until a later slice splits them out."""
-
-DARK_FOLDER_RE = re.compile(
-    r"^tele_exp_(?P<exp>[\d.]+)_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)_"
-    r"(?P<ts>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3})(?:_astro)?$"
-)
-"""Matches a Dwarf 3 raw-dark session folder under DWARF_DARK/."""
 
 DARK_MASTER_RE = re.compile(
     r"^dark_exp_(?P<exp>[\d.]+)_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)_"
     r"(?P<temp>-?\d+(?:\.\d+)?)C_stack_(?P<n>\d+)\.(?:fits|png)$"
 )
-"""Dark master: dark_exp_15.000000_gain_60_bin_1_38C_stack_10.fits.
-
-Carries the full set of attributes (exp, photographic gain, bin mode, ccd
-temp, stack depth)."""
+"""Dark master: ``dark_exp_15.000000_gain_60_bin_1_38C_stack_10.fits``.
+Carries exposure, photographic gain, bin mode, ccd temp, and stack depth."""
 
 FLAT_MASTER_RE = re.compile(
     r"^flat_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)_ir_(?P<ir>\d+)\.(?:fits|png)$"
 )
-"""Flat master: flat_gain_2_bin_1_ir_0.fits.
+"""Flat master: ``flat_gain_2_bin_1_ir_0.fits``.
 
-Per Dwarf docs the `gain_N` on factory bias/flat is a different (low) gain
-index than the photographic `GAIN_60` on lights — we deliberately don't
-store it on the master, since matching it against a session's photographic
-gain would cause every flat to miss. `ir_N` IS the filter type:
-0 = VIS, 1 = Astro, 2 = Duo-Band."""
+Per Dwarf docs the ``gain_N`` on factory bias/flat is a different (low)
+gain index than the photographic ``GAIN_60`` on lights — we deliberately
+don't store it on the master, since matching it against a session's
+photographic gain would cause every flat to miss. ``ir_N`` IS the filter
+type."""
 
 BIAS_MASTER_RE = re.compile(
     r"^bias_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)\.(?:fits|png)$"
 )
-"""Bias master: bias_gain_2_bin_1.fits. Only `bin` is matchable (factory
-bias is filter-, exposure-, and temperature-independent)."""
+"""Bias master: ``bias_gain_2_bin_1.fits``. Only ``bin`` is matchable
+(factory bias is filter-, exposure-, and temperature-independent)."""
 
-# Map the `ir_N` index on factory flats to the filter-name string the catalog
-# already stores for lights, so the matcher can join them transparently.
-# Values are canonical (see server.catalog.filter_aliases); both ``VIS`` and
-# ``Astro`` collapse to ``None`` (no narrowband filter), and ``Duo-Band`` to
-# ``HaOIII``.
+# Filename of a Dwarf 3 user dark, e.g.
+#   raw_60s_60_0002_20251020-032310186_20C.fits
+# Captures exposure, gain, frame index, timestamp, ccd temp.
+USER_DARK_FILENAME_RE = re.compile(
+    r"^raw_(?P<exp>[\d.]+)s_(?P<gain>\d+)_(?P<idx>\d+)_"
+    r"(?P<date>\d{8})-(?P<hms>\d{6})(?P<ms>\d{3})_"
+    r"(?P<temp>-?\d+(?:\.\d+)?)C\.fits$"
+)
+
+
 FLAT_IR_TO_FILTER: dict[int, str] = {0: "None", 1: "None", 2: "HaOIII"}
+"""``ir_N`` index on factory flats -> canonical filter name. Both ``VIS``
+(0) and ``Astro`` (1) collapse to ``None`` (no narrowband filter);
+``Duo-Band`` (2) is ``HaOIII``. See ``filter_aliases.py``."""
 
 CAM_FROM_DIR: dict[str, str] = {"cam_0": "TELE", "cam_1": "WIDE"}
-"""Per Dwarf docs: cam_0 is the telephoto, cam_1 is the wide."""
+"""Per Dwarf docs: ``cam_0`` is the telephoto, ``cam_1`` is the wide."""
 
 
-class DwarfThreeAdapter:
-    scope_id = "dwarf3"
+def walk_factory_masters(root: Path) -> Iterator[DiscoveredMaster]:
+    """Yield Dwarf 3 factory calibration masters under ``root/CALI_FRAME``.
 
-    def discover(self, root: Path) -> Iterator[DiscoveredFrame | DiscoveredMaster]:
-        if not root.exists():
-            return
-        for child in sorted(root.iterdir()):
-            if not child.is_dir():
-                continue
-            name = child.name
-            if name == "CALI_FRAME":
-                yield from self._walk_cali(child)
-                continue
-            if name == "DWARF_DARK":
-                yield from self._walk_darks(child)
-                continue
-            m = LIGHT_FOLDER_RE.match(name)
-            if m:
-                yield from self._walk_lights(child, m.groupdict())
-                continue
-            # Other top-level directories (e.g. hand-curated 'wizard_nebula',
-            # 'NGC7380', 'heart_nebula') are user folders not produced by the
-            # Dwarf 3 firmware. Skip; they would need a different rule.
+    Three subtrees, one per master kind:
 
-    def _walk_lights(self, folder: Path, hints: dict) -> Iterator[DiscoveredFrame]:
-        session_key = f"dwarf3:{folder.name}"
-        raw_target = hints["target"]
-        is_mosaic = raw_target.startswith("MOSAIC_")
-        # Strip the MOSAIC_ prefix so all panels share one target row.
-        target = raw_target[len("MOSAIC_"):] if is_mosaic else raw_target
-        session_hints = {
-            "target_from_path": target,
-            "exptime_from_path": float(hints["exp"]),
-            "gain_from_path": int(hints["gain"]),
-            "started_at_from_path": _path_ts_to_iso(hints["ts"]),
-            "is_mosaic": is_mosaic,
-        }
+        CALI_FRAME/dark/cam_{0,1}/dark_exp_*_gain_*_bin_*_*C_stack_*.fits
+        CALI_FRAME/flat/cam_{0,1}/flat_gain_*_bin_*_ir_*.fits
+        CALI_FRAME/bias/cam_{0,1}/bias_gain_*_bin_*.fits
 
-        # Mosaic captures nest one panel folder per panel under the outer
-        # session folder, each itself matching DWARF_RAW_TELE_*. Treat the
-        # outer folder as the session and yield frames from every panel under
-        # the same session_key.
-        if is_mosaic:
-            for child in sorted(folder.iterdir()):
-                if child.is_dir() and LIGHT_FOLDER_RE.match(child.name):
-                    yield from self._walk_panel(child, session_key, session_hints)
-            return
-
-        for f in sorted(folder.iterdir()):
-            if not f.is_file() or f.suffix.lower() != ".fits":
+    Files whose filenames don't match the per-kind regex are skipped
+    silently — Dwarf firmware sometimes drops extra ``.png`` previews and
+    similar that aren't ingest targets.
+    """
+    cali_root = root / "CALI_FRAME"
+    if not cali_root.exists():
+        return
+    for kind_dir in sorted(cali_root.iterdir()):
+        if not kind_dir.is_dir():
+            continue
+        kind = kind_dir.name
+        if kind not in {"dark", "flat", "bias"}:
+            continue
+        for cam_dir in sorted(kind_dir.iterdir()):
+            if not cam_dir.is_dir() or not cam_dir.name.startswith("cam_"):
                 continue
-            name = f.name
-            # Dwarf 3 deposits its own stacked-N_<...>.fits artifact alongside the
-            # raw subs. EXPTIME on these is total integration time, which would
-            # poison the session aggregate if treated as a raw light. Skip; if
-            # we want to track Dwarf-built masters they belong in the (deferred)
-            # masters table, not the frames table.
-            if name.startswith("stacked-") or name.startswith("img_"):
-                continue
-            quality = "failed" if name.startswith("failed_") else "ok"
-            yield DiscoveredFrame(
-                path=f,
-                image_type="LIGHT",
-                quality=quality,
-                session_key=session_key,
-                session_hints=session_hints,
-            )
-
-    def _walk_panel(
-        self, panel_dir: Path, session_key: str, session_hints: dict
-    ) -> Iterator[DiscoveredFrame]:
-        for f in sorted(panel_dir.iterdir()):
-            if not f.is_file() or f.suffix.lower() != ".fits":
-                continue
-            name = f.name
-            if name.startswith("stacked-") or name.startswith("img_"):
-                continue
-            quality = "failed" if name.startswith("failed_") else "ok"
-            yield DiscoveredFrame(
-                path=f,
-                image_type="LIGHT",
-                quality=quality,
-                session_key=session_key,
-                session_hints=session_hints,
-            )
-
-    def _walk_cali(self, cali_root: Path) -> Iterator[DiscoveredMaster]:
-        """Walk CALI_FRAME/{dark,bias,flat}/cam_*/ and yield masters.
-
-        Each kind has its own filename schema; using one regex misses bias
-        (no temp/exp) and flat (no temp/exp; carries `ir_N` filter) entirely.
-        """
-        for kind_dir in sorted(cali_root.iterdir()):
-            if not kind_dir.is_dir():
-                continue
-            kind = kind_dir.name
-            if kind not in {"dark", "flat", "bias"}:
-                continue
-            for cam_dir in sorted(kind_dir.iterdir()):
-                if not cam_dir.is_dir() or not cam_dir.name.startswith("cam_"):
+            camera = CAM_FROM_DIR.get(cam_dir.name)
+            for f in sorted(cam_dir.iterdir()):
+                if not f.is_file() or f.suffix.lower() not in (".fits", ".png"):
                     continue
-                camera = CAM_FROM_DIR.get(cam_dir.name)
-                for f in sorted(cam_dir.iterdir()):
-                    if not f.is_file():
-                        continue
-                    if f.suffix.lower() not in (".fits", ".png"):
-                        continue
-                    master = self._parse_master(f, kind, camera)
-                    if master is not None:
-                        yield master
-
-    def _parse_master(
-        self, f: Path, kind: str, camera: str | None
-    ) -> DiscoveredMaster | None:
-        """Match a master file against the per-kind regex and return its
-        DiscoveredMaster, or None if the filename doesn't fit the spec."""
-        if kind == "dark":
-            m = DARK_MASTER_RE.match(f.name)
-            if not m:
-                return None
-            return DiscoveredMaster(
-                path=f,
-                kind="dark",
-                source="factory",
-                camera=camera,
-                instrument="DWARFIII",
-                exptime=float(m.group("exp")),
-                gain=int(m.group("gain")),
-                binning=int(m.group("bin")),
-                ccd_temp=float(m.group("temp")),
-                stack_count=int(m.group("n")),
-            )
-        if kind == "flat":
-            m = FLAT_MASTER_RE.match(f.name)
-            if not m:
-                return None
-            ir = int(m.group("ir"))
-            return DiscoveredMaster(
-                path=f,
-                kind="flat",
-                source="factory",
-                camera=camera,
-                instrument="DWARFIII",
-                # gain/exptime/temp deliberately left None: factory flats
-                # encode an `ir_N` filter type and a low-gain mode that
-                # don't correspond to a session's photographic settings.
-                filter=FLAT_IR_TO_FILTER.get(ir),
-                binning=int(m.group("bin")),
-            )
-        if kind == "bias":
-            m = BIAS_MASTER_RE.match(f.name)
-            if not m:
-                return None
-            return DiscoveredMaster(
-                path=f,
-                kind="bias",
-                source="factory",
-                camera=camera,
-                instrument="DWARFIII",
-                # No filter / exptime / temp / photographic gain on factory
-                # bias; matching is binning-only.
-                binning=int(m.group("bin")),
-            )
-        return None
-
-    def _walk_darks(self, dark_root: Path) -> Iterator[DiscoveredFrame]:
-        for folder in sorted(dark_root.iterdir()):
-            if not folder.is_dir():
-                continue
-            m = DARK_FOLDER_RE.match(folder.name)
-            if not m:
-                continue
-            hints = {
-                "exptime_from_path": float(m.group("exp")),
-                "gain_from_path": int(m.group("gain")),
-                "binning_from_path": int(m.group("bin")),
-                "started_at_from_path": _path_ts_to_iso(m.group("ts")),
-            }
-            for f in sorted(folder.iterdir()):
-                if not f.is_file() or f.suffix.lower() != ".fits":
-                    continue
-                yield DiscoveredFrame(
-                    path=f,
-                    image_type="DARK",
-                    quality="ok",
-                    session_key=None,
-                    session_hints=hints,
-                )
+                master = _parse_master(f, kind, camera)
+                if master is not None:
+                    yield master
 
 
-def _path_ts_to_iso(ts: str) -> str:
-    """Convert 'YYYY-MM-DD-HH-MM-SS-mmm' to ISO 8601 'YYYY-MM-DDTHH:MM:SS.mmm'."""
-    parts = ts.split("-")
-    if len(parts) != 7:
-        return ts
-    y, mo, d, hh, mm, ss, mmm = parts
-    return f"{y}-{mo}-{d}T{hh}:{mm}:{ss}.{mmm}"
+def _parse_master(
+    path: Path, kind: str, camera: str | None
+) -> DiscoveredMaster | None:
+    if kind == "dark":
+        m = DARK_MASTER_RE.match(path.name)
+        if not m:
+            return None
+        return DiscoveredMaster(
+            path=path,
+            kind="dark",
+            source="factory",
+            camera=camera,
+            instrument="DWARFIII",
+            exptime=float(m.group("exp")),
+            gain=int(m.group("gain")),
+            binning=int(m.group("bin")),
+            ccd_temp=float(m.group("temp")),
+            stack_count=int(m.group("n")),
+        )
+    if kind == "flat":
+        m = FLAT_MASTER_RE.match(path.name)
+        if not m:
+            return None
+        ir = int(m.group("ir"))
+        return DiscoveredMaster(
+            path=path,
+            kind="flat",
+            source="factory",
+            camera=camera,
+            instrument="DWARFIII",
+            # gain/exptime/temp deliberately left None: factory flats
+            # encode an `ir_N` filter type and a low-gain mode that don't
+            # correspond to a session's photographic settings.
+            filter=FLAT_IR_TO_FILTER.get(ir),
+            binning=int(m.group("bin")),
+        )
+    if kind == "bias":
+        m = BIAS_MASTER_RE.match(path.name)
+        if not m:
+            return None
+        return DiscoveredMaster(
+            path=path,
+            kind="bias",
+            source="factory",
+            camera=camera,
+            instrument="DWARFIII",
+            # No filter / exptime / temp / photographic gain on factory
+            # bias; matching is binning-only.
+            binning=int(m.group("bin")),
+        )
+    return None
 
 
-register(DwarfThreeAdapter())
+def enrich_dark_header(header: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Fill in dark-frame header keys from the filename when missing.
+
+    Dwarf 3 user darks (``DWARF_DARK/.../raw_*.fits``) ship with headers
+    where ``OBJECT``, ``RA``, ``DEC``, and sometimes ``EXPTIME`` carry
+    junk from the last light capture, while ``EXPTIME`` / ``GAIN`` /
+    ``DATE-OBS`` / temperature are reliably encoded in the filename.
+
+    Strategy: drop OBJECT / RA / DEC entirely (the universal pipeline
+    treats darks as session-less and these fields would otherwise create
+    spurious target rows), and fill in EXPTIME / GAIN / DATE-OBS / CCD-TEMP
+    from the filename if missing. The returned dict is a copy; the input
+    is not mutated.
+    """
+    out = dict(header)
+    # Junk fields the firmware copies forward from the last light.
+    for key in ("OBJECT", "RA", "DEC", "FILTER"):
+        out.pop(key, None)
+
+    m = USER_DARK_FILENAME_RE.match(path.name)
+    if not m:
+        return out
+
+    # Fill only when missing. If the header set a value we trust it (some
+    # firmwares write reliable values, and overriding correct data with
+    # filename-derived data would lose precision e.g. on temperature).
+    if "EXPTIME" not in out:
+        out["EXPTIME"] = float(m.group("exp"))
+    if "GAIN" not in out:
+        out["GAIN"] = int(m.group("gain"))
+    if "DATE-OBS" not in out:
+        date = m.group("date")
+        hms = m.group("hms")
+        ms = m.group("ms")
+        out["DATE-OBS"] = (
+            f"{date[0:4]}-{date[4:6]}-{date[6:8]}T"
+            f"{hms[0:2]}:{hms[2:4]}:{hms[4:6]}.{ms}"
+        )
+    if "CCD-TEMP" not in out and "DET-TEMP" not in out:
+        out["CCD-TEMP"] = float(m.group("temp"))
+
+    return out

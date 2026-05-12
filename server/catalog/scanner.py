@@ -41,13 +41,13 @@ from typing import Any
 
 import xxhash
 
-from .adapter import DiscoveredMaster
 from .adapters import dwarf3 as dwarf3_adapter
 from .classify import classify
 from .db import open_db
 from .filter_aliases import canonicalize as canonicalize_filter
 from .fits_reader import normalize_target, read_primary_header
 from .matching import match_all_sessions
+from .models import DiscoveredMaster
 from .openngc import enrich as openngc_enrich
 from .sessions import cluster_sessions
 from .sky_match import (
@@ -464,19 +464,6 @@ def _walk_fits(root: Path) -> Iterator[Path]:
                 continue
 
 
-def _walk_dwarf3_factory_masters(root: Path) -> Iterator[DiscoveredMaster]:
-    """Yield Dwarf 3 factory calibration masters under ``CALI_FRAME/``.
-
-    Factory masters have nearly empty FITS headers — exposure, gain, ir
-    type, and stack depth are all encoded in the filename. The existing
-    Dwarf 3 adapter already handles this; we filter its mixed-output
-    stream down to masters only here, since lights and DWARF_DARK frames
-    now go through the universal walker.
-    """
-    adapter = dwarf3_adapter.DwarfThreeAdapter()
-    for item in adapter.discover(root):
-        if isinstance(item, DiscoveredMaster):
-            yield item
 
 
 _INCREMENTAL_CLUSTER_EVERY = 50
@@ -545,6 +532,13 @@ def scan(
                 stats.skipped_unknown += 1
                 continue
 
+            # Dwarf 3 user darks carry stale OBJECT/RA/DEC from the
+            # previous light capture in their headers and occasionally
+            # miss EXPTIME/GAIN/DATE-OBS. The filename is authoritative
+            # for those frames; enrich here before ingest.
+            if classified.scope_id == "dwarf3" and classified.image_type == "DARK":
+                header = dwarf3_adapter.enrich_dark_header(header, fits_path)
+
             with conn:
                 _ingest_frame(
                     conn, fits_path, header, classified, st, scan_started_at, stats
@@ -560,7 +554,7 @@ def scan(
         # Dwarf 3 factory masters live under CALI_FRAME/ with sparse
         # headers; the universal walker passes over them (classify()
         # returns None). Walk them through the scope-specific helper.
-        for master in _walk_dwarf3_factory_masters(root):
+        for master in dwarf3_adapter.walk_factory_masters(root):
             with conn:
                 _ingest_master(conn, master, "dwarf3", scan_started_at, stats)
 
