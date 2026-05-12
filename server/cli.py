@@ -18,7 +18,7 @@ import json
 import os
 import sys
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 # ---------------------------------------------------------------------------
 # HTTP helpers
@@ -36,7 +36,7 @@ def _client() -> Any:
     return httpx.Client(base_url=_base(), timeout=30.0)
 
 
-def _die(msg: str, code: int = 3) -> None:
+def _die(msg: str, code: int = 3) -> NoReturn:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(code)
 
