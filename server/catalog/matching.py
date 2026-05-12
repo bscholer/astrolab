@@ -6,7 +6,7 @@ point and will tighten once we have more nights of data to validate against.
 
 | kind | match by                                   | tolerance              |
 |------|--------------------------------------------|------------------------|
-| dark | instrument, camera, gain, exptime, bin     | temp +/- 3C; exp exact |
+| dark | instrument, camera, gain, exptime, bin     | temp +/- 5C; exp exact |
 | flat | instrument, camera, filter, bin            | date proximity         |
 | bias | instrument, camera, bin                    | exact                  |
 
@@ -17,11 +17,13 @@ it, otherwise no flat or bias would ever match a real session. Flats are
 matched on filter (Astro / VIS / Duo-Band, derived from the file's
 `ir_0/1/2` suffix); bias is matched on bin only.
 
-We always prefer 'exact' (zero-tolerance) matches when one exists. If only
-'approx' candidates exist we pick the one with the smallest temperature
-delta (for darks) or the most recent date_built (otherwise) and tag the
-match accordingly. 'none' means no candidate satisfies the hard equality
-constraints.
+For darks, all candidates within DARK_TEMP_TOLERANCE_C are ranked by
+(temp_delta_bin, -stack_count): candidates in the same 1-C bin are treated
+as thermally equivalent and the deeper stack wins.  A 0-delta master with
+only 3 frames will therefore lose to a 0.5-C-off master with 10 frames.
+'exact' quality is reported when the winner's delta is zero; 'approx'
+otherwise.  'none' means no candidate satisfies the hard equality
+constraints on exp/gain/bin or falls within the temperature window.
 
 User overrides land in calibration_matches.overridden=1 and are not
 clobbered by automatic matching.
@@ -37,8 +39,25 @@ from typing import Any
 
 from .models import MatchQuality
 
-DARK_TEMP_TOLERANCE_C: float = 3.0
-"""Allowed temperature delta for an 'approx' dark match. Per README."""
+DARK_TEMP_TOLERANCE_C: float = 5.0
+"""Allowed temperature delta for an 'approx' dark match.
+
+5 C covers the typical spread between Dwarf 3 factory darks (captured at
+fixed sensor temps) and real-world session temps without pulling in darks
+that are thermally meaningless.  The original 3 C limit was too tight: it
+rejected factory masters that differed by 4-5 C and left sessions with no
+dark at all.
+"""
+
+DARK_STACK_BIN_C: float = 2.0
+"""Temperature resolution used when comparing candidates by stack depth.
+
+Candidates whose temp delta falls in the same 2-C bin are considered
+thermally equivalent; the one with the higher stack_count wins.  This
+prevents a shallow exact-temp master from beating a much deeper master
+that is only 1-2 C off -- the typical spread between Dwarf 3 factory
+dark temps and real session sensor temps.
+"""
 
 log = logging.getLogger("astrolab.catalog.matching")
 
@@ -91,38 +110,33 @@ def _match_dark(
             {"reason": "no session ccd_temp; chose deepest stack"},
         )
 
-    exact: list[sqlite3.Row] = [c for c in candidates if c["ccd_temp"] == session_temp]
-    if exact:
-        chosen = max(exact, key=lambda r: (r["stack_count"] or 0))
-        return chosen["id"], "exact", {"delta_C": 0.0}
-
     in_tolerance = [
         c for c in candidates if abs((c["ccd_temp"] or 0) - session_temp) <= DARK_TEMP_TOLERANCE_C
     ]
-    if in_tolerance:
-        chosen = min(
-            in_tolerance,
-            key=lambda r: (
-                abs((r["ccd_temp"] or 0) - session_temp),
-                -(r["stack_count"] or 0),
-            ),
-        )
+    if not in_tolerance:
         return (
-            chosen["id"],
-            "approx",
-            {"delta_C": float((chosen["ccd_temp"] or 0) - session_temp)},
+            None,
+            "none",
+            {
+                "reason": (
+                    f"no dark within +/-{DARK_TEMP_TOLERANCE_C:g}C of "
+                    f"session temp {session_temp:.1f}C"
+                )
+            },
         )
 
-    return (
-        None,
-        "none",
-        {
-            "reason": (
-                f"no dark within +/-{DARK_TEMP_TOLERANCE_C:g}C of "
-                f"session temp {session_temp:.1f}C"
-            )
-        },
-    )
+    # Rank by (temp-delta bin, -stack_count).  Candidates in the same 1-C
+    # bin are thermally equivalent; prefer the deeper stack so a shallow
+    # exact-temp master does not beat a much better-sampled nearby master.
+    def _score(r: sqlite3.Row) -> tuple[float, int]:
+        delta = abs((r["ccd_temp"] or 0) - session_temp)
+        bin_ = int(delta / DARK_STACK_BIN_C)
+        return (bin_, -(r["stack_count"] or 0))
+
+    chosen = min(in_tolerance, key=_score)
+    delta_c = float((chosen["ccd_temp"] or 0) - session_temp)
+    quality: MatchQuality = "exact" if delta_c == 0.0 else "approx"
+    return chosen["id"], quality, {"delta_C": delta_c}
 
 
 def _match_flat(
