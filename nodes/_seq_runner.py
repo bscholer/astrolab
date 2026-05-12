@@ -59,6 +59,13 @@ _log = logging.getLogger(__name__)
 # shutdown teardown that sometimes segfaults.
 _SIRIL_SEQ_SUCCESS_MARKER = "Sequence processing succeeded."
 
+# Siril 1.4.x prints this exact line when a `stack` command succeeds, before
+# the same shutdown teardown that sometimes segfaults.  The marker is specific
+# to the `stack` command and does NOT appear in sequence-processing nodes
+# (register, bg_extract, calibrate).  Verified against Siril 1.4.3 stdout:
+#   log: Stacked sequence successfully.
+_SIRIL_STACK_SUCCESS_MARKER = "Stacked sequence successfully."
+
 # ---------------------------------------------------------------------------
 # Path quoting
 # ---------------------------------------------------------------------------
@@ -242,6 +249,58 @@ def _check_siril_seq_result(
     return wrote
 
 
+def _check_siril_stack_result(
+    result,
+    *,
+    node_name: str,
+    out_image: Path,
+) -> None:
+    """Validate a Siril `stack` command result, tolerating the Siril 1.4 shutdown segfault.
+
+    Stack produces exactly ONE output file.  The success path is simpler than
+    _check_siril_seq_result (no fitseq/per-frame branching needed).
+
+    Success criteria:
+      1. returncode is 0, OR (returncode != 0 AND stdout contains the exact
+         "Stacked sequence successfully." marker AND out_image exists and is
+         non-empty).
+      2. The output image file exists and is non-empty.
+
+    Raises RuntimeError on real failures:
+      - bad exit code and no success marker
+      - bad exit code and output missing / empty
+      - exit code 0 but output missing / empty
+    """
+    def _output_ok() -> bool:
+        return out_image.exists() and out_image.stat().st_size > 0
+
+    if result.returncode != 0:
+        success_marker_present = _SIRIL_STACK_SUCCESS_MARKER in result.stdout
+
+        if success_marker_present and _output_ok():
+            _log.warning(
+                "%s: siril exited %d after stack success message; treating as success "
+                "because output is present (Siril 1.4 shutdown segfault)",
+                node_name,
+                result.returncode,
+            )
+            return
+
+        raise RuntimeError(
+            f"{node_name}: siril exited {result.returncode}\n"
+            f"--- ssf ---\n{result.ssf}\n"
+            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+            f"--- stderr ---\n{result.stderr}"
+        )
+
+    # returncode == 0: output must still exist.
+    if not _output_ok():
+        raise RuntimeError(
+            f"{node_name}: siril returned 0 but output {out_image} is missing or empty.\n"
+            f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
+        )
+
+
 def run_siril_on_sequence(
     *,
     node_name: str,
@@ -292,6 +351,10 @@ def run_siril_on_sequence(
 
     Tolerates returncode -11 (Siril 1.4 shutdown segfault) when stdout contains
     "Sequence processing succeeded." and all expected outputs are present.
+
+    For stack operations use _check_siril_stack_result, which matches the
+    "Stacked sequence successfully." marker that the `stack` command emits
+    instead of "Sequence processing succeeded."
     """
     from server.siril import make_progress_handler
 
