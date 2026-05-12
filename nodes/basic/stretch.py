@@ -234,8 +234,11 @@ class StretchNode(Node[StretchParams]):
 def _build_stretch_cmd(p: StretchParams) -> str:
     """Render the per-method Siril command line."""
     if p.method == "autostretch":
-        flag = "-linked" if p.linked else "-unlinked"
-        return f"autostretch {flag} {p.shadows_clip:g} {p.target_bg:g}"
+        # Siril's `autostretch` is per-channel by default; `-linked` opts into
+        # one shared curve. There is no `-unlinked` flag — pass nothing for
+        # per-channel.
+        flag = "-linked " if p.linked else ""
+        return f"autostretch {flag}{p.shadows_clip:g} {p.target_bg:g}"
     if p.method == "mtf":
         return f"mtf {p.mtf_shadows:g} {p.mtf_midtones:g} {p.mtf_highlights:g}"
     if p.method == "asinh":
