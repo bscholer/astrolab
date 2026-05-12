@@ -33,7 +33,6 @@ from typing import Any
 
 from server.catalog.models import DiscoveredMaster
 
-
 DARK_MASTER_RE = re.compile(
     r"^dark_exp_(?P<exp>[\d.]+)_gain_(?P<gain>\d+)_bin_(?P<bin>\d+)_"
     r"(?P<temp>-?\d+(?:\.\d+)?)C_stack_(?P<n>\d+)\.(?:fits|png)$"

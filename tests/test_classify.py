@@ -23,7 +23,6 @@ from tests._fits_fixtures import (
     seestar_light_header,
 )
 
-
 # ---------- scope detection ----------------------------------------------
 
 
