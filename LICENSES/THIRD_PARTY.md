@@ -91,6 +91,31 @@ Thank you, Naz.
 
 ---
 
+## starbash (prior art for multi-scope ingest)
+
+**What astrolab took from it:** The FITS-header signatures used to identify
+NINA, ZWO ASIAIR, and Seestar captures (see
+[`server/catalog/classify.py`](../server/catalog/classify.py)) and the
+filter alias map ([`server/catalog/filter_aliases.py`](../server/catalog/filter_aliases.py))
+were derived by inspecting the per-scope header dumps that
+[starbash](https://github.com/geeksville/starbash) ships under
+`doc/fits/` along with its alias tables.
+
+**Project:** https://github.com/geeksville/starbash
+**Author:** Kevin Hester (`kevinh@geeksville.com`)
+**License:** GNU General Public License v3 (GPLv3); copyright (c) Kevin Hester 2025
+
+No starbash code is included in astrolab. The mappings here are factual
+observations about how each capture program writes its FITS headers, re-
+implemented clean-room. starbash is a CLI-driven, batch-oriented "recipe
+runner" - a different shape of tool than astrolab - but its cross-scope
+inventory of FITS dialects and filter-name conventions saved several days
+of guesswork.
+
+Thank you, Kevin.
+
+---
+
 ## OpenNGC catalog
 
 **What astrolab uses it for:** Target name resolution and sky coordinate lookup.

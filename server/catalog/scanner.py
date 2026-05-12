@@ -1,35 +1,55 @@
 """Catalog scanner.
 
-Walks a capture root via a registered ingest adapter, reads each FITS
-header, and upserts frames / sessions / targets in SQLite. Incremental:
-files whose (path, size, mtime) match a prior scan are skipped without
-opening the FITS.
+Walks a capture root, reads each FITS primary header, runs it through the
+universal classifier (see ``classify.py``) to decide scope and image type,
+and upserts frames / sessions / targets in SQLite. Incremental: files
+whose (path, size, mtime) match a prior scan are skipped without opening
+the FITS.
 
-Hashing strategy: xxhash64 of file contents, computed only on first ingest
-(or when size/mtime changed). xxhash is fast enough that 16MB FITS frames
-hash in tens of ms each; the practical bottleneck is the FITS header parse
-itself, not the hash.
+The walker is layout-agnostic — it just recursively globs ``*.fits`` and
+``*.fit`` under the root. Per-file scope detection means one root can mix
+Dwarf 3, NINA, ASIAIR, and Seestar captures without any configuration.
+
+Factory calibration masters (currently Dwarf 3's ``CALI_FRAME/`` tree) are
+walked through a small scope-specific helper because their headers are
+too sparse for the universal classifier to read; the rest of the masters
+pipeline is shared with the frames path.
+
+Sessions are derived from the frames table at the end of every scan via
+``cluster_sessions`` (see ``sessions.py``) rather than being inferred at
+ingest time from folder names. Time-gap clustering tolerates restart-
+mid-capture pauses and folds them into one session.
+
+Hashing strategy: xxhash64 of file contents, computed only on first
+ingest (or when size/mtime changed). xxhash is fast enough that 16MB FITS
+frames hash in tens of ms each; the practical bottleneck is the FITS
+header parse itself, not the hash.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import xxhash
 
-from .adapter import DiscoveredFrame, DiscoveredMaster, IngestAdapter
-from .adapter import lookup as adapter_lookup
+from .adapters import dwarf3 as dwarf3_adapter
+from .classify import classify
 from .db import open_db
+from .filter_aliases import canonicalize as canonicalize_filter
 from .fits_reader import normalize_target, read_primary_header
 from .matching import match_all_sessions
+from .models import DiscoveredMaster
 from .openngc import enrich as openngc_enrich
+from .sessions import cluster_sessions
 from .sky_match import (
     FrameSky,
     auto_tolerance_deg,
@@ -52,6 +72,7 @@ class ScanStats:
     def __init__(self) -> None:
         self.discovered: int = 0
         self.skipped_unchanged: int = 0
+        self.skipped_unknown: int = 0
         self.inserted: int = 0
         self.updated: int = 0
         self.failed: int = 0
@@ -60,13 +81,21 @@ class ScanStats:
         self.masters_updated: int = 0
         self.masters_skipped: int = 0
         self.masters_removed: int = 0
+        self.scope_breakdown: dict[str, int] = defaultdict(int)
+        """Frames ingested per detected scope_id. Surfaced by the API so the
+        UI can warn when non-Dwarf-3 scopes are present (only Dwarf 3 is
+        validated end-to-end through processing today)."""
 
     def __repr__(self) -> str:
+        breakdown = (
+            ",".join(f"{k}={v}" for k, v in sorted(self.scope_breakdown.items()))
+            or "-"
+        )
         return (
             f"ScanStats(discovered={self.discovered}, "
-            f"skipped={self.skipped_unchanged}, inserted={self.inserted}, "
-            f"updated={self.updated}, removed={self.removed}, "
-            f"failed={self.failed}, "
+            f"skipped={self.skipped_unchanged}, unknown={self.skipped_unknown}, "
+            f"inserted={self.inserted}, updated={self.updated}, "
+            f"removed={self.removed}, failed={self.failed}, scopes=[{breakdown}], "
             f"masters[ins={self.masters_inserted} upd={self.masters_updated} "
             f"skip={self.masters_skipped} rm={self.masters_removed}])"
         )
@@ -109,46 +138,19 @@ def _existing_row(conn: sqlite3.Connection, path_str: str) -> sqlite3.Row | None
 
 def _ingest_frame(
     conn: sqlite3.Connection,
-    discovered: DiscoveredFrame,
-    scope_id: str,
+    path: Path,
+    header: dict[str, Any],
+    classified: Any,
+    st: os.stat_result,
     scan_started_at: float,
     stats: ScanStats,
 ) -> None:
-    path = discovered.path
+    """Upsert one frame given a stat and classifier decision."""
     path_str = str(path)
-    try:
-        st = path.stat()
-    except FileNotFoundError:
-        log.warning("vanished mid-scan: %s", path)
-        return
-
     existing = _existing_row(conn, path_str)
-    if (
-        existing is not None
-        and existing["size"] == st.st_size
-        and existing["mtime"] == st.st_mtime
-        and existing["file_hash"] is not None
-    ):
-        # Touch scanned_at so the orphan-removal pass at the end of the scan
-        # knows we observed this row this run.
-        conn.execute(
-            "UPDATE frames SET scanned_at = ? WHERE path = ?",
-            (scan_started_at, path_str),
-        )
-        stats.skipped_unchanged += 1
-        return
-
-    try:
-        header = read_primary_header(path)
-    except Exception as exc:
-        log.warning("failed to read FITS header: %s (%s)", path, exc)
-        stats.failed += 1
-        return
-
     file_hash = _hash_file(path)
 
-    hints = discovered.session_hints or {}
-    object_name_raw = header.get("OBJECT") or hints.get("target_from_path")
+    object_name_raw = header.get("OBJECT")
     object_name = normalize_target(object_name_raw) if object_name_raw else None
 
     row: dict[str, Any] = {
@@ -157,21 +159,22 @@ def _ingest_frame(
         "inode": st.st_ino,
         "mtime": st.st_mtime,
         "size": st.st_size,
-        "image_type": discovered.image_type,
-        "quality": discovered.quality,
+        "image_type": classified.image_type,
+        "quality": classified.quality,
         "object": object_name,
         "instrument": header.get("INSTRUME"),
         "camera": header.get("CAMERA"),
-        "filter": header.get("FILTER"),
-        "exptime": _coerce_float(header.get("EXPTIME") or hints.get("exptime_from_path")),
-        "gain": _coerce_int(header.get("GAIN") or hints.get("gain_from_path")),
-        "binning": _coerce_int(header.get("XBINNING") or hints.get("binning_from_path")),
-        "ccd_temp": _coerce_float(header.get("DET-TEMP") or header.get("CCD-TEMP")),
-        "date_obs": header.get("DATE-OBS") or hints.get("started_at_from_path"),
+        "filter": canonicalize_filter(header.get("FILTER")),
+        "exptime": _coerce_float(header.get("EXPTIME") or header.get("EXPOSURE")),
+        "gain": _coerce_int(header.get("GAIN")),
+        "binning": _coerce_int(header.get("XBINNING")),
+        "ccd_temp": _coerce_float(
+            header.get("DET-TEMP") or header.get("CCD-TEMP") or header.get("SET-TEMP")
+        ),
+        "date_obs": header.get("DATE-OBS"),
         "ra": _coerce_float(header.get("RA")),
         "dec": _coerce_float(header.get("DEC")),
-        "scope_id": scope_id,
-        "session_key": discovered.session_key,
+        "scope_id": classified.scope_id,
         "fits_headers": json.dumps(header).encode("utf-8"),
         "scanned_at": scan_started_at,
     }
@@ -188,14 +191,7 @@ def _ingest_frame(
         stats.inserted += 1
     else:
         stats.updated += 1
-
-
-def _upsert_target(conn: sqlite3.Connection, name: str) -> int:
-    row = conn.execute("SELECT id FROM targets WHERE name = ?", (name,)).fetchone()
-    if row is not None:
-        return row["id"]
-    cur = conn.execute("INSERT INTO targets (name) VALUES (?)", (name,))
-    return cur.lastrowid or -1
+    stats.scope_breakdown[classified.scope_id] += 1
 
 
 def _ingest_master(
@@ -237,7 +233,7 @@ def _ingest_master(
         "source": discovered.source,
         "instrument": discovered.instrument,
         "camera": discovered.camera,
-        "filter": discovered.filter,
+        "filter": canonicalize_filter(discovered.filter),
         "exptime": discovered.exptime,
         "gain": discovered.gain,
         "binning": discovered.binning,
@@ -269,131 +265,41 @@ def _ingest_master(
 
 def _remove_orphans(
     conn: sqlite3.Connection,
-    scope_id: str,
     root: Path,
     scan_started_at: float,
     stats: ScanStats,
 ) -> None:
-    """Delete frame and master rows for files that the adapter no longer surfaces.
+    """Delete frame and master rows whose files no longer exist under ``root``.
 
-    Scoped to the prefix we just scanned, so unrelated paths from other roots
-    are not affected. Sessions and targets that lose all their members get
-    cleaned up at the end of _refresh_sessions.
+    Scoped to the prefix we just scanned, so unrelated paths from other
+    capture roots aren't affected. The scan timestamp filter is what
+    distinguishes survivors from corpses: every file we observed this run
+    has its ``scanned_at`` bumped, so anything still bearing an older
+    timestamp under our prefix has vanished from disk.
+
+    Multi-scope-aware: with per-file scope detection any subtree may carry
+    frames from multiple scopes, so we don't filter by scope_id here.
     """
     root_prefix = str(root.resolve()) + "/"
     cur = conn.execute(
         "DELETE FROM frames "
-        "WHERE scope_id = ? AND substr(path, 1, ?) = ? "
+        "WHERE substr(path, 1, ?) = ? "
         "AND (scanned_at IS NULL OR scanned_at < ?)",
-        (scope_id, len(root_prefix), root_prefix, scan_started_at),
+        (len(root_prefix), root_prefix, scan_started_at),
     )
     stats.removed = cur.rowcount or 0
     cur = conn.execute(
         "DELETE FROM masters "
-        "WHERE scope_id = ? AND substr(path, 1, ?) = ? "
+        "WHERE substr(path, 1, ?) = ? "
         "AND (scanned_at IS NULL OR scanned_at < ?)",
-        (scope_id, len(root_prefix), root_prefix, scan_started_at),
+        (len(root_prefix), root_prefix, scan_started_at),
     )
     stats.masters_removed = cur.rowcount or 0
 
 
-def _refresh_sessions(conn: sqlite3.Connection, scope_id: str) -> None:
-    """Recompute session rows from the frames table.
-
-    We rebuild from scratch each scan rather than try to maintain incremental
-    state, because frames can be removed or reclassified between scans and
-    keeping per-session counters consistent is fiddly. The cost is one
-    GROUP BY over frames per scan; cheap at the scales we care about.
-    """
-    keys = conn.execute(
-        "SELECT DISTINCT session_key FROM frames "
-        "WHERE session_key IS NOT NULL AND scope_id = ?",
-        (scope_id,),
-    ).fetchall()
-    for r in keys:
-        key = r["session_key"]
-        agg = conn.execute(
-            """
-            SELECT
-                MIN(date_obs) AS started_at,
-                MAX(date_obs) AS ended_at,
-                COUNT(*)      AS total,
-                SUM(CASE WHEN quality = 'failed' THEN 1 ELSE 0 END) AS failed,
-                MAX(object)   AS object,
-                MAX(instrument) AS instrument,
-                MAX(camera)   AS camera,
-                MAX(filter)   AS filter,
-                MAX(exptime)  AS exptime,
-                MAX(gain)     AS gain,
-                MAX(binning)  AS binning
-            FROM frames
-            WHERE session_key = ?
-            """,
-            (key,),
-        ).fetchone()
-
-        target_id: int | None = None
-        if agg["object"]:
-            target_id = _upsert_target(conn, agg["object"])
-
-        conn.execute(
-            """
-            INSERT INTO sessions (
-                scope_id, session_key, target_id, instrument, camera, filter,
-                exptime, gain, binning, started_at, ended_at, frame_count, failed_count
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(session_key) DO UPDATE SET
-                target_id    = excluded.target_id,
-                instrument   = excluded.instrument,
-                camera       = excluded.camera,
-                filter       = excluded.filter,
-                exptime      = excluded.exptime,
-                gain         = excluded.gain,
-                binning      = excluded.binning,
-                started_at   = excluded.started_at,
-                ended_at     = excluded.ended_at,
-                frame_count  = excluded.frame_count,
-                failed_count = excluded.failed_count
-            """,
-            (
-                scope_id,
-                key,
-                target_id,
-                agg["instrument"],
-                agg["camera"],
-                agg["filter"],
-                agg["exptime"],
-                agg["gain"],
-                agg["binning"],
-                agg["started_at"],
-                agg["ended_at"],
-                agg["total"],
-                agg["failed"] or 0,
-            ),
-        )
-
-        session_row = conn.execute(
-            "SELECT id FROM sessions WHERE session_key = ?", (key,)
-        ).fetchone()
-        session_id = session_row["id"]
-
-        # Re-link session_frames in one pass.
-        conn.execute("DELETE FROM session_frames WHERE session_id = ?", (session_id,))
-        conn.execute(
-            "INSERT INTO session_frames (session_id, frame_id) "
-            "SELECT ?, id FROM frames WHERE session_key = ?",
-            (session_id, key),
-        )
-
-    # Drop sessions whose frames all vanished, then orphan targets.
-    conn.execute(
-        "DELETE FROM sessions WHERE session_key NOT IN "
-        "(SELECT DISTINCT session_key FROM frames WHERE session_key IS NOT NULL)"
-    )
-    conn.execute(
-        "DELETE FROM targets WHERE id NOT IN "
-        "(SELECT DISTINCT target_id FROM sessions WHERE target_id IS NOT NULL)"
-    )
+# Session derivation is now in server.catalog.sessions.cluster_sessions —
+# time-gap clustering replaces folder-name-driven grouping. See
+# sessions.py for the algorithm and trade-offs.
 
 
 def frames_for_target(
@@ -412,7 +318,8 @@ def frames_for_target(
         """
         SELECT f.ra AS ra, f.dec AS dec, f.fits_headers AS hdr
         FROM frames f
-        JOIN sessions s ON s.session_key = f.session_key
+        JOIN session_frames sf ON sf.frame_id = f.id
+        JOIN sessions s ON s.id = sf.session_id
         WHERE s.target_id = ?
         """,
         (target_id,),
@@ -525,52 +432,135 @@ def _resolve_targets(conn: sqlite3.Connection) -> None:
         resolve_target(conn, trow["id"], trow["name"])
 
 
+def _walk_fits(root: Path) -> Iterator[Path]:
+    """Yield every ``*.fits`` / ``*.fit`` file under ``root`` (case-insensitive).
+
+    Uses ``os.scandir`` for cheap recursion. We don't follow symlinks to
+    avoid getting stuck in a cycle inside someone's home directory; users
+    who need cross-disk captures can mount the volumes properly.
+    """
+    if not root.exists():
+        return
+    stack: list[Path] = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except (PermissionError, FileNotFoundError):
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    name = entry.name.lower()
+                    if name.endswith(".fits") or name.endswith(".fit"):
+                        yield Path(entry.path)
+            except OSError:
+                continue
+
+
+
+
+_INCREMENTAL_CLUSTER_EVERY = 50
+"""Re-cluster sessions every N freshly-ingested light frames so the library
+populates progressively while a long scan runs. Cheap enough — one GROUP
+BY over the frames table per N reads — to not slow down the FITS-reading
+hot loop."""
+
+
 def scan(
     root: Path,
     *,
-    scope_id: str,
     db_path: Path | None = None,
     progress: ProgressFn | None = None,
-    adapter: IngestAdapter | None = None,
 ) -> ScanStats:
     """Scan a capture root and update the catalog.
 
-    Returns ScanStats with counters. A fresh DB is created if needed.
+    Per-file scope detection: there is no ``scope_id`` argument. Every
+    FITS under ``root`` is classified individually, which lets one root
+    mix multiple capture programs without surprise.
+
+    Returns ScanStats including a per-scope frame count in
+    ``scope_breakdown`` so the API can surface a warning about non-Dwarf-3
+    scopes (only Dwarf 3 is end-to-end validated through processing).
     """
     on_progress = progress or (lambda _seen, _total, _path: None)
-    chosen: IngestAdapter = adapter if adapter is not None else adapter_lookup(scope_id)
-
     scan_started_at = time.time()
     stats = ScanStats()
-    # Incremental session refresh: run every N frames so the library
-    # populates while the scan is still in progress. N=50 keeps the
-    # refresh cheap (one GROUP BY per 50 FITS reads) without making the
-    # UI feel sluggish on a large tree.
-    _INCREMENTAL_REFRESH_EVERY = 50
-    _frames_since_refresh = 0
+    frames_since_cluster = 0
+
     with open_db(db_path) as conn:
-        for discovered in chosen.discover(root):
+        for fits_path in _walk_fits(root):
             stats.discovered += 1
-            on_progress(stats.discovered, 0, str(discovered.path))
-            with conn:
-                if isinstance(discovered, DiscoveredFrame):
-                    _ingest_frame(conn, discovered, scope_id, scan_started_at, stats)
-                    _frames_since_refresh += 1
-                elif isinstance(discovered, DiscoveredMaster):
-                    _ingest_master(conn, discovered, scope_id, scan_started_at, stats)
-            # Periodically refresh sessions/targets so the library shows
-            # results incrementally. Skipped for masters-only iterations.
-            if _frames_since_refresh >= _INCREMENTAL_REFRESH_EVERY:
+            on_progress(stats.discovered, 0, str(fits_path))
+
+            try:
+                st = fits_path.stat()
+            except FileNotFoundError:
+                log.warning("vanished mid-scan: %s", fits_path)
+                continue
+
+            existing = _existing_row(conn, str(fits_path))
+            if (
+                existing is not None
+                and existing["size"] == st.st_size
+                and existing["mtime"] == st.st_mtime
+                and existing["file_hash"] is not None
+            ):
                 with conn:
-                    _refresh_sessions(conn, scope_id)
+                    conn.execute(
+                        "UPDATE frames SET scanned_at = ? WHERE path = ?",
+                        (scan_started_at, str(fits_path)),
+                    )
+                stats.skipped_unchanged += 1
+                continue
+
+            try:
+                header = read_primary_header(fits_path)
+            except Exception as exc:
+                log.warning("failed to read FITS header: %s (%s)", fits_path, exc)
+                stats.failed += 1
+                continue
+
+            classified = classify(header, fits_path)
+            if classified is None:
+                stats.skipped_unknown += 1
+                continue
+
+            # Dwarf 3 user darks carry stale OBJECT/RA/DEC from the
+            # previous light capture in their headers and occasionally
+            # miss EXPTIME/GAIN/DATE-OBS. The filename is authoritative
+            # for those frames; enrich here before ingest.
+            if classified.scope_id == "dwarf3" and classified.image_type == "DARK":
+                header = dwarf3_adapter.enrich_dark_header(header, fits_path)
+
+            with conn:
+                _ingest_frame(
+                    conn, fits_path, header, classified, st, scan_started_at, stats
+                )
+            frames_since_cluster += 1
+
+            if frames_since_cluster >= _INCREMENTAL_CLUSTER_EVERY:
+                with conn:
+                    cluster_sessions(conn)
                     _resolve_targets(conn)
-                _frames_since_refresh = 0
+                frames_since_cluster = 0
+
+        # Dwarf 3 factory masters live under CALI_FRAME/ with sparse
+        # headers; the universal walker passes over them (classify()
+        # returns None). Walk them through the scope-specific helper.
+        for master in dwarf3_adapter.walk_factory_masters(root):
+            with conn:
+                _ingest_master(conn, master, "dwarf3", scan_started_at, stats)
+
         with conn:
-            _remove_orphans(conn, scope_id, root, scan_started_at, stats)
-            _refresh_sessions(conn, scope_id)
+            _remove_orphans(conn, root, scan_started_at, stats)
+            cluster_sessions(conn)
         with conn:
             match_all_sessions(conn)
         with conn:
             _resolve_targets(conn)
+
     log.info("scan complete: %r", stats)
     return stats

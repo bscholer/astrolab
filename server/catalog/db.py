@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -353,6 +353,60 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT",
         "ALTER TABLE jobs ADD COLUMN force INTEGER NOT NULL DEFAULT 0",
         "INSERT INTO schema_version (version) VALUES (13)",
+    ],
+    14: [
+        # Drop session_key. It was a denormalized join column between
+        # frames and sessions; the proper join goes through
+        # session_frames (the junction table) and we use sessions.id as
+        # the stable cross-scan identifier now.
+        #
+        # The clusterer (sessions.cluster_sessions) preserves sessions.id
+        # across rescans by matching new clusters to existing sessions on
+        # frame-id overlap, so projects pinned to a session.id survive a
+        # rescan even if the cluster's first frame shifts (e.g. when a
+        # back-dated frame arrives in a later scan).
+        #
+        # frames.session_key drops with a plain ALTER (no constraints on
+        # it past the index). sessions.session_key had a UNIQUE
+        # constraint that SQLite refuses to drop with ALTER, so we
+        # round-trip through a rebuild table (CREATE new, copy rows,
+        # DROP old, RENAME).
+        "DROP INDEX IF EXISTS idx_frames_session_key",
+        "ALTER TABLE frames DROP COLUMN session_key",
+        """
+        CREATE TABLE sessions_new (
+            id              INTEGER PRIMARY KEY,
+            scope_id        TEXT,
+            target_id       INTEGER REFERENCES targets(id),
+            instrument      TEXT,
+            camera          TEXT,
+            filter          TEXT,
+            exptime         REAL,
+            gain            INTEGER,
+            binning         INTEGER,
+            started_at      TEXT,
+            ended_at        TEXT,
+            frame_count     INTEGER,
+            failed_count    INTEGER,
+            notes           TEXT,
+            description     TEXT
+        )
+        """,
+        """
+        INSERT INTO sessions_new (
+            id, scope_id, target_id, instrument, camera, filter,
+            exptime, gain, binning, started_at, ended_at,
+            frame_count, failed_count, notes, description
+        )
+        SELECT
+            id, scope_id, target_id, instrument, camera, filter,
+            exptime, gain, binning, started_at, ended_at,
+            frame_count, failed_count, notes, description
+        FROM sessions
+        """,
+        "DROP TABLE sessions",
+        "ALTER TABLE sessions_new RENAME TO sessions",
+        "INSERT INTO schema_version (version) VALUES (14)",
     ],
 }
 

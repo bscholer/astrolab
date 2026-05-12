@@ -130,6 +130,8 @@ The actual image processing is done by external tools that astrolab orchestrates
 
 The `calibrate_register_stack` template follows the pipeline shape from [Naztronomy's smart-telescope script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py). No code is copied; astrolab reimplements the same Siril command sequence as graph nodes so each step is cacheable. Stage order is his.
 
+The multi-scope ingest classifier (NINA, ZWO ASIAIR, Seestar) and the cross-scope filter alias table were derived clean-room from public header dumps in [starbash](https://github.com/geeksville/starbash) (Kevin Hester, GPLv3). No starbash code is in astrolab; the mappings are factual observations about how each capture program writes its FITS headers.
+
 Full notes in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
 
 ## Links

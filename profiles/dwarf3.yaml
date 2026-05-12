@@ -1,0 +1,20 @@
+id: dwarf3
+display_name: "DWARF 3"
+# Validated end-to-end through the calibrate / register / stack / save pipeline.
+# This is the scope astrolab was built around; defaults are tuned for it and no
+# overrides are needed.
+notes: |
+  Primary supported scope. Factory CALI_FRAME masters are picked up automatically
+  by the scanner; user DWARF_DARK frames are header-enriched from their filename
+  because the firmware writes stale OBJECT / RA / DEC fields. Mosaic captures are
+  detected via the OBJECT panel suffix '(N)', which the FITS reader strips so all
+  panels land under one target.
+
+calibration:
+  skip_match: false
+
+# No node defaults needed:
+# - Stack already defaults to 32-bit output (see seq_stack docstring), which is
+#   the same fix Naz's script applies via -32b for the "milky stack" issue.
+# - The narrowband_compose / extract pipeline is per-target, not per-scope.
+node_defaults: {}

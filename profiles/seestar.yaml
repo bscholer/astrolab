@@ -1,0 +1,25 @@
+id: seestar
+display_name: "ZWO Seestar S30 / S50"
+notes: |
+  Best-effort ingest in v1. Seestar subtracts darks and flats on-device before
+  exporting lights, so the matcher does not look for masters and the calibrate
+  node runs as a debayer-only pass. Stacking, registration, and the rest of the
+  post-processing pipeline run normally.
+
+  Known caveats (from Naz's smart-telescope script):
+  - drizzle + background extraction can hit a Siril CFA-debayer bug specifically
+    on Seestar data. astrolab's pipeline always debayers at calibrate time
+    (before register/drizzle), so we side-step that path; if a user explicitly
+    enables register.drizzle on a Seestar session and sees color artifacts,
+    that's the likely cause.
+  - The BAYERPAT header on Seestar is GRBG, not the RGGB everyone else writes.
+    Siril's debayer handles both, but custom CFA workflows must read the header.
+
+calibration:
+  # Seestar light frames are already dark- and flat-subtracted on the device.
+  # The matcher would otherwise mark sessions as 'no calibration match' which
+  # looks like a failure; this opts out cleanly and surfaces the reason.
+  skip_match: true
+  skip_reason: "Seestar subtracts darks and flats on-device; no calibration needed."
+
+node_defaults: {}

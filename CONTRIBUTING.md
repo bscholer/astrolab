@@ -207,70 +207,41 @@ subprocess and the runner translates that into a `JobCancelled` ->
 
 ## Adding a scope
 
-### What a scope adapter is
+Most scopes need a one-line entry, not a whole adapter. Astrolab's ingest is universal: the scanner walks `*.fits` / `*.fit` files recursively, reads each primary header, and asks a single classifier in `server/catalog/classify.py` to decide scope and image type. If your capture program writes a reasonable FITS header, adding support is trivial.
 
-An adapter is a Python class that walks a capture root and classifies what it finds into `DiscoveredFrame` and `DiscoveredMaster` objects. It never reads pixel data; it only looks at directory names, filenames, and a small set of FITS primary-header values. The contract is defined in `server/catalog/adapter.py` (`IngestAdapter` Protocol, `DiscoveredFrame`, `DiscoveredMaster`). The only implemented adapter is `server/catalog/adapters/dwarf3.py`; read it before writing a new one.
+### Path 1: header-driven scopes (NINA, ASIAIR, Seestar, EKOS, …)
 
-### What we need from you
+Most capture software identifies itself in one well-known FITS keyword:
 
-You don't need to write any code to start. Open a GitHub issue with a sample bundle (see below) and we'll usually write the adapter from that.
+| Capture program | Keyword | Example value |
+|---|---|---|
+| NINA | `SWCREATE` | `N.I.N.A. 3.2.0.3005 (x64)` |
+| ZWO ASIAIR | `CREATOR` | `ZWO ASIAIR Plus` |
+| ZWO Seestar | `CREATOR` | `ZWO Seestar S50` |
+| Dwarf 3 | `TELESCOP` | `DWARFIII` |
 
-The bundle needs to answer five questions:
+To add a new scope:
 
-1. **Folder layout.** What does a fresh capture root look like? Paste the directory tree, or run the collector script below. Include all top-level directories your device creates (lights, darks, flats, bias, pre-built masters, preview folders, etc.).
+1. Add a branch to `classify.py:detect_scope()` matching your scope's signature. One `if` per scope.
+2. Optionally add a `[scope_id]_light_header(**overrides)` builder to `tests/_fits_fixtures.py` so tests for your scope can spin up synthetic FITS without raw data.
+3. Add test coverage to `tests/test_classify.py` (one test per frame type is enough).
 
-2. **Filename patterns.** For each frame type (light, dark, flat, bias), give at least one real filename. If the filename encodes metadata (exposure, gain, filter, temperature, target name), label which part of the name carries which value.
+That's it. The universal walker handles target detection (OBJECT header), image type (IMAGETYP header), filter aliasing (`filter_aliases.py`), and time-gap session clustering (`sessions.py`) without scope-specific code. Only Dwarf 3 is end-to-end validated through processing today; the API surfaces a `scope_breakdown` count so the UI can warn when frames from other scopes land in the library.
 
-3. **Frame-type taxonomy.** Does your device produce calibration frames at all? If it does, does the filename or folder tell you the type, or is it only in the FITS `IMAGETYP` header? Does it produce per-session darks, a factory-calibration bundle shipped with the scope, or both?
+### Path 2: scopes with sparse or broken headers
 
-4. **Quirks.** Note anything that would trip up a naive directory walker: mosaic panel subfolders, failed-frame naming conventions (e.g. `failed_*.fits`), scope-side stacked output files alongside the raw subs, non-standard `IMAGETYP` values, pre-debayered files, or multi-night sessions that don't align with folder boundaries.
+A scope only needs more code when its FITS headers are unreliable. Dwarf 3 has two cases:
 
-5. **FITS primary headers.** For one light and one dark (or whatever your device's calibration type is), include the header values the collector script emits. We need OBJECT, EXPTIME, GAIN, FILTER, CAMERA, INSTRUME, IMAGETYP, and BAYERPAT at minimum. RA/DEC are redacted by default (see below).
+- **Factory calibration masters under `CALI_FRAME/`** carry almost no headers (just `SIMPLE`, `BITPIX`, `BAYERPAT`). Exposure, photographic gain, IR-band index, ccd temperature, and stack depth are all in the filename. Handled by `server/catalog/adapters/dwarf3.py:walk_factory_masters`.
+- **User dark frames under `DWARF_DARK/`** ship with stale `OBJECT` / `RA` / `DEC` carried over from the previous light capture and sometimes miss `EXPTIME` / `GAIN` / `DATE-OBS`. The filename is authoritative; the rest is overridden by `enrich_dark_header()` after classification.
 
-### Gathering the sample safely
+If your scope has a similar case, add a helper module under `server/catalog/adapters/<scope_id>.py` and have the scanner call it after the universal walk. Keep the helper as small as possible: most of the metadata should still come from the universal classifier.
 
-The adapter is structural: it only touches the primary FITS header, never the pixel array. The collector script reads the same fixed key list from `server/catalog/fits_reader.py`; that's all it can see. **No pixel data leaves your machine.**
+### Filing a scope request
 
-Run it from the repo root:
+Open a GitHub issue with a sample FITS primary header (one light per filter, plus one dark/flat/bias if your scope produces them). No pixel data, no folder tree; the universal walker doesn't care about folders. The `scripts/collect_scope_sample.py` helper extracts the headers we need with RA/DEC/DATE-OBS redacted by default.
 
-```bash
-uv sync
-python scripts/collect_scope_sample.py /path/to/your/captures --scope-name SEESTAR_S50
-```
-
-This writes `astrolab-scope-sample-SEESTAR_S50-<date>.txt` in your current directory. Open it in a text editor and review it before posting anywhere.
-
-Default behavior:
-- RA, DEC, and DATE-OBS are masked to `REDACTED`. These are the only values that could reveal your observing site or the timestamps of your sessions.
-- Everything else (OBJECT, EXPTIME, GAIN, FILTER, CAMERA, INSTRUME, IMAGETYP, BAYERPAT, sensor dimensions) is kept. These are the values the adapter actually needs, and they're generally not sensitive.
-
-If you're uneasy about OBJECT (your target names), add `--redact-object`. You can also hand-write the tree and headers as plain text; the script is just a convenience.
-
-If you can't run `uv sync` (no Python 3.12, no uv, wrong OS), hand-paste the directory tree and one sample header block per frame type. We'll work with that.
-
-Flags:
-- `--no-redact` keeps RA/DEC/DATE-OBS. Only use this if you're comfortable sharing your site coordinates.
-- `--redact-object` also masks the OBJECT header.
-- `--fits-per-dir N` controls how many FITS files per directory to sample headers from (default 1).
-- `--scope-name NAME` labels the bundle in the output filename.
-
-### Submitting
-
-Open one GitHub issue per scope model. Attach the `.txt` file (or paste it inline if it's short). Include the firmware version if you know it; folder layouts sometimes change between firmware releases.
-
-Title format: `Scope adapter request: <model name>` (e.g. `Scope adapter request: Seestar S50`).
-
-We'll write the adapter once the bundle lands. Once the adapter is merged, add a test under `tests/test_<scope_id>_adapter.py` modeled on `tests/test_dwarf3_adapter.py`.
-
-### Writing the adapter yourself
-
-If you want to write it:
-
-1. Create `server/catalog/adapters/<scope_id>.py`. Implement a class with `scope_id: str` and `discover(self, root: Path) -> Iterator[DiscoveredItem]`. Call `register(YourAdapter())` at module level.
-2. Import it from `server/catalog/adapters/__init__.py` so the registry sees it at startup.
-3. Add `tests/test_<scope_id>_adapter.py`. Use `tmp_path` fixtures, `_touch()` helpers, and cover at minimum: lights, calibration frames (or the absence of them), and any scope-specific quirks (mosaic, failed frames, ignored sidecar files). See `tests/test_dwarf3_adapter.py` for the pattern.
-
-The adapter must not read FITS data; that's the scanner's job. Set `image_type` and `quality` from path conventions where possible; leave `session_hints` populated with whatever the path encodes (exptime, gain, target, timestamp). The scanner wins wherever both the path and the header carry the same field.
+Title format: `Scope ingest request: <model name>` (e.g. `Scope ingest request: Seestar S50`).
 
 ## Adding a template
 

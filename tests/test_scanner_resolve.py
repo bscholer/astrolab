@@ -81,7 +81,7 @@ def test_named_target_resolves_via_name(tmp_path: Path, astrolab_home: Path) -> 
     OpenNGC."""
     captures = tmp_path / "captures"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC, n_frames=4)
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     row = _get_target_row("M 31")
     assert row is not None
     assert row["resolved_source"] == "name"
@@ -103,7 +103,7 @@ def test_garbage_name_resolves_via_position(tmp_path: Path, astrolab_home: Path)
         dec=NGC7000_DEC,
         n_frames=4,
     )
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     row = _get_target_row("MY_GARBAGE_NAME")
     assert row is not None
     assert row["resolved_source"] == "position"
@@ -128,7 +128,7 @@ def test_no_fov_headers_uses_fallback_tolerance(
         n_frames=4,
         fov_headers=False,
     )
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     row = _get_target_row("NOFOV_TARGET")
     assert row is not None
     assert row["resolved_source"] == "position"
@@ -149,7 +149,7 @@ def test_too_few_frames_leaves_columns_null_when_name_unresolved(
         dec=NGC7000_DEC,
         n_frames=2,
     )
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     row = _get_target_row("SPARSE_TARGET")
     assert row is not None
     assert row["resolved_canonical"] is None
@@ -164,7 +164,7 @@ def test_too_few_frames_still_name_resolves(
     the name path; we never block name-resolution on frame count."""
     captures = tmp_path / "captures"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC, n_frames=1)
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     row = _get_target_row("M 31")
     assert row is not None
     assert row["resolved_source"] == "name"
@@ -185,10 +185,10 @@ def test_rescan_is_idempotent(tmp_path: Path, astrolab_home: Path) -> None:
         dec=NGC7000_DEC,
         n_frames=4,
     )
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     first = _get_target_row("GARBAGE_FOR_RESCAN")
     assert first is not None
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     second = _get_target_row("GARBAGE_FOR_RESCAN")
     assert second is not None
     assert first["resolved_canonical"] == second["resolved_canonical"]
@@ -214,7 +214,7 @@ def test_position_far_from_any_catalog_row_leaves_columns_null(
         dec=-75.0,
         n_frames=4,
     )
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     row = _get_target_row("GARBAGE_IN_EMPTY_SKY")
     assert row is not None
     # Either no match at all, or a match within the tolerance; we don't

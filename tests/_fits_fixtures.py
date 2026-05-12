@@ -46,6 +46,108 @@ DEFAULT_DARK_HEADER: dict[str, Any] = {
 }
 
 
+# Cross-scope header builders. Values reflect what each capture program
+# actually writes (verified against starbash's per-scope header dumps under
+# https://github.com/geeksville/starbash/tree/main/doc/fits as of May 2026).
+# We don't reproduce starbash's code or files; these are clean-room
+# header dictionaries that exercise our classifier and scanner across
+# scopes without raw FITS files we don't have rights to.
+
+
+def asiair_light_header(**overrides: Any) -> dict[str, Any]:
+    """ZWO ASIAIR-flavored light frame header.
+
+    The discriminator is ``CREATOR``; everything else is just realistic
+    accompanying metadata so the scanner can populate session rows.
+    """
+    base = {
+        "CREATOR": "ZWO ASIAIR Plus",
+        "IMAGETYP": "Light",
+        "OBJECT": "M 31",
+        "DATE-OBS": "2025-08-25T05:52:13.488",
+        "EXPTIME": 30.0,
+        "EXPOSURE": 30.0,
+        "GAIN": 100,
+        "FILTER": "None",
+        "INSTRUME": "ZWO ASI2600MC Duo",
+        "TELESCOP": "OnStep",
+        "XBINNING": 1,
+        "YBINNING": 1,
+        "XPIXSZ": 3.76,
+        "YPIXSZ": 3.76,
+        "FOCALLEN": 494,
+        "CCD-TEMP": -10.0,
+        "RA": 10.99584,
+        "DEC": 41.415833,
+        "BAYERPAT": "RGGB",
+    }
+    base.update(overrides)
+    return base
+
+
+def nina_light_header(**overrides: Any) -> dict[str, Any]:
+    """N.I.N.A.-flavored light frame header.
+
+    Discriminator is ``SWCREATE``; NINA writes both ``EXPOSURE`` and
+    ``EXPTIME`` for the same value.
+    """
+    base = {
+        "SWCREATE": "N.I.N.A. 3.2.0.3005 (x64)",
+        "IMAGETYP": "LIGHT",
+        "OBJECT": "M 27",
+        "DATE-OBS": "2025-09-17T03:34:02.647",
+        "EXPTIME": 120.0,
+        "EXPOSURE": 120.0,
+        "GAIN": 100,
+        "FILTER": "HaOiii",
+        "INSTRUME": "ZWO ASI2600MC Duo",
+        "TELESCOP": "Ascar V 80mm extender",
+        "XBINNING": 1,
+        "YBINNING": 1,
+        "XPIXSZ": 3.76,
+        "YPIXSZ": 3.76,
+        "FOCALLEN": 600.0,
+        "CCD-TEMP": -10.0,
+        "SET-TEMP": -10.0,
+        "RA": 299.882295,
+        "DEC": 22.718996,
+        "BAYERPAT": "RGGB",
+    }
+    base.update(overrides)
+    return base
+
+
+def seestar_light_header(**overrides: Any) -> dict[str, Any]:
+    """ZWO Seestar S30/S50-flavored light frame header.
+
+    Discriminator is ``CREATOR`` (also ``INSTRUME``). Note ``BAYERPAT`` is
+    ``GRBG``, not the ``RGGB`` everyone else writes.
+    """
+    base = {
+        "CREATOR": "ZWO Seestar S50",
+        "IMAGETYP": "Light",
+        "OBJECT": "M 101",
+        "DATE-OBS": "2025-07-05T06:23:58.931",
+        "EXPTIME": 10.0,
+        "EXPOSURE": 10.0,
+        "GAIN": 80,
+        "FILTER": "IRCUT",
+        "INSTRUME": "Seestar S50",
+        "TELESCOP": "S50_153dd4e2",
+        "XBINNING": 1,
+        "YBINNING": 1,
+        "XPIXSZ": 2.9,
+        "YPIXSZ": 2.9,
+        "FOCALLEN": 250,
+        "CCD-TEMP": 18.375,
+        "RA": 211.000005,
+        "DEC": 54.233611,
+        "BAYERPAT": "GRBG",
+    }
+    base.update(overrides)
+    return base
+
+
 def write_fits(
     path: Path,
     *,

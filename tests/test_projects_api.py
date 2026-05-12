@@ -484,8 +484,8 @@ def test_display_surfaces_common_name_for_resolved_single_target(
         conn.execute("INSERT INTO targets (id, name) VALUES (101, 'M 33')")
         conn.execute(
             """
-            INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
-            VALUES (501, 'dwarf3', 'kdisplay', 101, 3)
+            INSERT INTO sessions (id, scope_id, target_id, frame_count)
+            VALUES (501, 'dwarf3', 101, 3)
             """,
         )
 
@@ -516,8 +516,8 @@ def test_display_is_null_for_unresolvable_target(
         )
         conn.execute(
             """
-            INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
-            VALUES (502, 'dwarf3', 'kfreeform', 102, 3)
+            INSERT INTO sessions (id, scope_id, target_id, frame_count)
+            VALUES (502, 'dwarf3', 102, 3)
             """,
         )
 

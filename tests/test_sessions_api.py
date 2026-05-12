@@ -44,10 +44,10 @@ def _seed_session(session_id: int = 1, target_name: str = "M 33") -> None:
         conn.execute(
             """
             INSERT INTO sessions
-            (id, scope_id, session_key, target_id, frame_count, failed_count)
-            VALUES (?, 'dwarf3', ?, 1, 5, 0)
+            (id, scope_id, target_id, frame_count, failed_count)
+            VALUES (?, 'dwarf3', 1, 5, 0)
             """,
-            (session_id, f"k{session_id}"),
+            (session_id,),
         )
 
 

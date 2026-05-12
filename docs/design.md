@@ -89,20 +89,16 @@ Templates are source-controlled artifacts, not DB rows. Hand-editable. The UI lo
 
 ### 4. Scope profiles
 
-Scope-specific knowledge lives in profiles, not in nodes. A profile has two sections: pipeline-side defaults and library-side ingest rules.
+Scope-specific knowledge lives in profiles, not in nodes. A profile carries pipeline-side defaults:
 
-**Pipeline defaults:**
 - Default param overrides for nodes (`-oscfilter=...`, focal length, pixel size, narrowband wavelengths for dual-band filters like Dwarf 3's).
 - Allowed filter list.
 - Default templates / template recommendations.
 - Quirks/workarounds (e.g. Seestar drizzle+BG-extract debayer bug).
 
-**Ingest rules** (consumed by the catalog scope adapter):
-- File path globs per frame type (`captures/<target>/lights/`, etc.); each scope's layout is different.
-- Filename pattern → metadata mapping when FITS headers don't carry it.
-- Default behavior when calibration frames don't exist for this scope (skip, fall back to library masters, or refuse).
+Ingest does **not** live in profiles. It's handled by a universal classifier (see [Ingest](#ingest) below) that reads FITS headers per-file and decides scope and image type. Folder-layout knowledge stays out of the pipeline because every capture program has its own conventions and we don't want a new YAML for each.
 
-Profiles are YAML. Adding a new scope = adding a profile (and possibly a small adapter module if path/filename rules need code).
+Profiles are YAML. Adding a new scope = adding a profile.
 
 ### 5. Content-addressed cache
 
@@ -150,18 +146,39 @@ Four logical subsystems, **one engine**.
 ```
 
 ### Catalog service
-Indexes FITS frames on the NAS by reading headers, normalized through per-scope **ingest adapters**. Owns `frames`, `sessions`, `targets`, `masters`, `calibration_matches` tables. Periodic + on-demand scans.
+Indexes FITS frames on the NAS by reading headers. Owns `frames`, `sessions`, `targets`, `masters`, `calibration_matches` tables. Periodic + on-demand scans.
 
 Target display names come from two sources consulted in order: the OpenNGC `Common Name` column, then a curated fallback table at `server/catalog/data/common_names.json` (keyed by catalog id, e.g. `"NGC 7380": "Wizard Nebula"`). The curated file is the right place to add popular names that OpenNGC leaves blank. `server/catalog/common_names.py` exposes `lookup(name) -> str | None`; prefer it over direct JSON access.
 
-Each smart telescope writes files into its own folder layout with its own naming conventions, and some don't save calibration frames at all. An ingest adapter handles that messiness so the core schema stays uniform. An adapter knows:
+#### Ingest
 
-- **Path globs** for lights / darks / flats / biases (Dwarf 3 vs Seestar vs Celestron Origin all differ).
-- **Filename → metadata** mapping when FITS headers are incomplete or non-standard. Path-derived target/session/filter is sometimes the only signal.
-- **Frame-type taxonomy** for that scope. Some smart scopes never produce darks; "no calibration available" is a valid baseline, not an error.
-- **Per-scope quirks**: pre-debayered files, non-standard `IMAGETYP` values, sub-session splits, multi-night session boundaries that don't match folder boundaries, etc.
+One scanner walks the capture root recursively for `*.fits` / `*.fit` and feeds each file's primary header to a universal classifier (`server/catalog/classify.py`). The classifier decides:
 
-Adding a new scope is "drop in an adapter + a profile YAML." No core-engine changes. Adapters live in `nodes/ingest/<scope_id>.py` (or as pure-data rules inside the profile when no code is needed).
+- **Scope** by single-keyword FITS-header signature: `TELESCOP=DWARFIII` for Dwarf 3, `CREATOR=ZWO Seestar...` for Seestar, `CREATOR=ZWO ASIAIR...` for ASIAIR, `SWCREATE=N.I.N.A....` for NINA. Per-file detection means a single capture root can mix scopes without configuration.
+- **Image type** from `IMAGETYP` for everyone except Dwarf 3 (which doesn't set it; we fall back to the path: `DWARF_DARK/` → DARK, `CALI_FRAME/` → factory master, else LIGHT).
+- **Filter** is canonicalized through `filter_aliases.py` so Dwarf 3's `Astro`, Seestar's `IRCUT`, and NINA's `None` all join correctly in the matcher.
+
+Two pieces of scope-specific knowledge survive in `server/catalog/adapters/dwarf3.py`:
+- `walk_factory_masters()` parses filenames under `CALI_FRAME/` because the masters carry almost no header metadata (exposure, gain, IR-band, temperature, and stack depth are all in the filename).
+- `enrich_dark_header()` fills in EXPTIME / GAIN / DATE-OBS / CCD-TEMP for Dwarf 3 user darks under `DWARF_DARK/`, whose headers carry stale RA/DEC/OBJECT from the previous light capture.
+
+#### Session derivation
+
+A session is **not** a folder. Sessions are derived at the end of every scan by `cluster_sessions()` (`server/catalog/sessions.py`):
+
+1. Group LIGHT frames by `(scope_id, target, instrument, camera, filter, exposure, gain, binning)`.
+2. Within each group, sort by `DATE-OBS` and split into clusters wherever consecutive frames are more than 60 minutes apart.
+3. Match each new cluster to an existing session by frame-id overlap; the highest-overlap session keeps its `sessions.id`, and clusters with no overlap to any existing session get a fresh row. Sessions matched by no cluster are deleted.
+
+A few-minute restart-mid-capture pause stays one session. A pack-up-and-come-back hour-plus gap reliably opens a new one. The frame-overlap match keeps `sessions.id` stable across rescans even when a back-dated frame arrives later and shifts a cluster's earliest timestamp, which matters because projects pin to `sessions.id`.
+
+#### Adding a new scope
+
+For most scopes, anything that writes a reasonable FITS header (NINA, ASIAIR, Seestar, EKOS/KStars, etc), adding ingest support is a one-line entry in `classify.py:detect_scope()`. No new adapter, no path conventions, no new YAML. The classifier reads the scope's distinctive header key (`SWCREATE`, `CREATOR`, or `TELESCOP`) and the same universal pipeline handles the rest.
+
+Scopes that ship factory masters with sparse headers, or that write deliberately broken values, can add a small helper module under `server/catalog/adapters/` and have the scanner call it after the universal walk. That's the shape `dwarf3.py` has now.
+
+Only Dwarf 3 is end-to-end validated through processing today. Other scopes ingest with best-effort metadata; the API surfaces a per-scope frame count so the UI can warn when non-Dwarf-3 captures land in the library.
 
 ### Pipeline runtime
 Loads templates, builds a `Job` (template + param overrides + input refs), validates, hashes, runs the dirty subgraph through node implementations, writes outputs to cache. Streams progress over WebSocket.
@@ -295,10 +312,10 @@ Canonical-JSON params: keys sorted, floats rounded to a fixed precision per para
 
 ### Catalog schema (SQLite, sketch)
 
-Authoritative definition: `server/catalog/db.py` migrations. Current schema version: 11.
+Authoritative definition: `server/catalog/db.py` migrations. Current schema version: 14.
 
 ```sql
--- indexes: object, image_type, session_key, (inode, mtime)
+-- indexes: object, image_type, (inode, mtime)
 CREATE TABLE frames (
     id              INTEGER PRIMARY KEY,
     file_hash       TEXT,                    -- xxhash of contents
@@ -319,16 +336,17 @@ CREATE TABLE frames (
     date_obs        TEXT,                    -- ISO 8601
     ra              REAL,
     dec             REAL,
-    scope_id        TEXT,
-    session_key     TEXT,
+    scope_id        TEXT,                    -- per-file classifier output
     fits_headers    BLOB,                    -- JSON of full header
     scanned_at      REAL
 );
 
+-- Frames link to sessions via session_frames (junction).
+-- session.id is the cross-table stable identifier; cluster_sessions
+-- preserves it across rescans by frame-id overlap.
 CREATE TABLE sessions (
     id              INTEGER PRIMARY KEY,
     scope_id        TEXT,
-    session_key     TEXT NOT NULL UNIQUE,
     target_id       INTEGER REFERENCES targets(id),
     instrument      TEXT,
     camera          TEXT,
@@ -667,7 +685,7 @@ Capture decisions with the *why*; future-us will want this.
 | 2 | Content-addressed cache | Iterate on post-stack params without re-stacking. The single highest-leverage design choice. |
 | 3 | Templates as files (YAML), not DB rows | Hand-editable, version-controlled, fork = copy. |
 | 4 | Polymorphic nodes for "swap an op type" | 80% of "I want a different op here" cases without needing graph editing. |
-| 5 | Scope profiles separate from nodes; per-scope ingest adapters in the catalog | Adding a new scope = data + a small adapter, not core-engine changes. Each smart scope writes a different file layout, so the messiness has to live somewhere; this contains it. |
+| 5 | Universal FITS-header-driven ingest; per-scope adapter only when headers can't be trusted | Per-file scope detection (via header signatures) supports mixed-scope captures with no configuration. Folder-layout knowledge stays out of the pipeline because every capture program disagrees on layout. Scope-specific code survives only for Dwarf 3 factory masters (no headers) and Dwarf 3 user darks (poisoned headers). |
 | 6 | Preview master as a sibling artifact, same DAG runs against it | "Turbo" preview is just the same graph with a smaller input. |
 | 7 | SvelteKit + FastAPI | Slider→preview loop wants real client reactivity; Svelte's reactivity model fits without React's overhead; Python backend keeps us in sirilpy/astropy land. |
 | 8 | No Celery/Redis | Single user; in-process async + subprocess pool is enough. |
