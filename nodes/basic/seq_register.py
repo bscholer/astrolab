@@ -380,18 +380,24 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
 
 
 def _seq_has_registration(seq_file: Path) -> bool:
-    """Return True if the Siril .seq file contains registration data.
+    """Return True if the Siril .seq file contains valid (non-null) registration data.
 
-    seqplatesolve writes per-frame 'R1' lines into the .seq when it
-    computes WCS registration. The input .seq from bg_extract has only 'I'
-    (image flag) lines and no 'R1' lines. After seqplatesolve runs -- even
-    when the process crashes during finalize -- the .seq contains 'R1'
-    lines with the per-frame homography matrices. We check for at least one
-    'R1' line as the signal that registration data was committed to disk.
+    seqplatesolve writes per-frame 'R1' lines into the .seq. Each R1 line ends
+    with a flag field: '1' means the frame was successfully solved, '0' means
+    the solve failed and the transformation matrix is null. We require at least
+    one R1 line whose last whitespace-delimited token is '1'.
+
+    The input .seq from bg_extract has no R1 lines at all (only 'I' lines).
+    A seqplatesolve run that failed all frames writes R1 lines with all-zero
+    matrices (last token '0'). Both cases return False so the caller can detect
+    a real registration failure rather than passing null matrices to seqapplyreg.
     """
     try:
         text = seq_file.read_text(encoding="utf-8", errors="replace")
-        return any(line.startswith("R1 ") or line.startswith("R1\t")
-                   for line in text.splitlines())
+        return any(
+            (line.startswith("R1 ") or line.startswith("R1\t"))
+            and line.split()[-1] == "1"
+            for line in text.splitlines()
+        )
     except OSError:
         return False
