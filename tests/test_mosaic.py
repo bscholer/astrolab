@@ -55,7 +55,7 @@ def test_mosaic_full_scan_collapses_to_one_target_one_session(
         targets = [r["name"] for r in conn.execute("SELECT name FROM targets")]
         assert targets == ["M 31"], "panel suffixes collapse to one target"
         sessions = conn.execute(
-            "SELECT session_key, frame_count FROM sessions"
+            "SELECT frame_count FROM sessions"
         ).fetchall()
         assert len(sessions) == 1
         assert sessions[0]["frame_count"] == 2

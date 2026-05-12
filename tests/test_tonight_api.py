@@ -170,11 +170,11 @@ def test_tonight_resolves_garbage_name_via_position(client: TestClient) -> None:
         conn.execute(
             """
             INSERT INTO sessions (
-                scope_id, session_key, target_id, started_at,
+                scope_id, target_id, started_at,
                 frame_count, failed_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?)
             """,
-            ("dwarf3", "fake-pos-1", target_id, "2024-10-01T20:00:00Z", 30, 0),
+            ("dwarf3", target_id, "2024-10-01T20:00:00Z", 30, 0),
         )
     body = client.get("/api/tonight?at=2024-10-15T04:00:00Z").json()
     ngc7k = next(
@@ -202,20 +202,20 @@ def test_tonight_session_count_joins_targets_table(client: TestClient) -> None:
         conn.execute(
             """
             INSERT INTO sessions (
-                scope_id, session_key, target_id, started_at,
+                scope_id, target_id, started_at,
                 frame_count, failed_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?)
             """,
-            ("dwarf3", "fake-session-1", target_id, "2024-10-01T20:00:00Z", 30, 1),
+            ("dwarf3", target_id, "2024-10-01T20:00:00Z", 30, 1),
         )
         conn.execute(
             """
             INSERT INTO sessions (
-                scope_id, session_key, target_id, started_at,
+                scope_id, target_id, started_at,
                 frame_count, failed_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?)
             """,
-            ("dwarf3", "fake-session-2", target_id, "2024-10-15T20:00:00Z", 50, 0),
+            ("dwarf3", target_id, "2024-10-15T20:00:00Z", 50, 0),
         )
 
     body = client.get("/api/tonight?at=2024-10-15T04:00:00Z").json()
@@ -246,11 +246,11 @@ def test_tonight_with_custom_target_name_no_crash(client: TestClient) -> None:
         conn.execute(
             """
             INSERT INTO sessions (
-                scope_id, session_key, target_id, started_at,
+                scope_id, target_id, started_at,
                 frame_count, failed_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?)
             """,
-            ("dwarf3", "fake-1", target_id, "2024-10-01T20:00:00Z", 30, 1),
+            ("dwarf3", target_id, "2024-10-01T20:00:00Z", 30, 1),
         )
     r = client.get("/api/tonight?at=2024-10-15T04:00:00Z")
     assert r.status_code == 200

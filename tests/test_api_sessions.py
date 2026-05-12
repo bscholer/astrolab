@@ -118,13 +118,14 @@ def test_patch_target_id_reassigns_session(
         moved = conn.execute(
             "SELECT target_id FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
-        # Frames are still bound by session_key, unchanged.
-        frame_session_key = conn.execute(
-            "SELECT session_key FROM frames WHERE session_key IS NOT NULL "
-            "LIMIT 1"
-        ).fetchone()
+        # The session_frames junction is untouched by a target reassign —
+        # we're only flipping sessions.target_id.
+        link_count = conn.execute(
+            "SELECT COUNT(*) FROM session_frames WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
     assert int(moved["target_id"]) == int(garbage_target_id)
-    assert frame_session_key is not None
+    assert link_count > 0
 
 
 def test_patch_new_target_name_creates_and_moves(

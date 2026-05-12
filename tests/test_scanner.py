@@ -64,17 +64,20 @@ def test_scan_inserts_frames_and_sessions(tmp_path: Path, astrolab_home: Path) -
         failed = [r for r in lights if r["quality"] == "failed"]
         assert len(failed) == 1
         assert failed[0]["object"] == "M 33"
-        assert failed[0]["session_key"] is not None
 
         targets = {r["name"] for r in conn.execute("SELECT name FROM targets").fetchall()}
         assert targets == {"M 33", "NGC 7380"}
 
         sessions = conn.execute(
-            "SELECT * FROM sessions ORDER BY session_key"
+            """
+            SELECT s.*, t.name AS target_name FROM sessions s
+            JOIN targets t ON t.id = s.target_id
+            ORDER BY t.name
+            """
         ).fetchall()
-        # Two light sessions; darks have no session_key so produce no row.
+        # Two light sessions; darks have null target so produce no session row.
         assert len(sessions) == 2
-        m33_session = next(s for s in sessions if "M 33" in s["session_key"])
+        m33_session = next(s for s in sessions if s["target_name"] == "M 33")
         assert m33_session["frame_count"] == 3
         assert m33_session["failed_count"] == 1
         # Dwarf 3 writes "Astro" on its IR-cut filter; canonicalization at

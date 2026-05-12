@@ -222,8 +222,9 @@ def _session_with_temp(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row
     return conn.execute(
         """
         SELECT s.*,
-               (SELECT AVG(ccd_temp) FROM frames
-                WHERE session_key = s.session_key AND ccd_temp IS NOT NULL) AS avg_ccd_temp
+               (SELECT AVG(f.ccd_temp) FROM frames f
+                JOIN session_frames sf ON sf.frame_id = f.id
+                WHERE sf.session_id = s.id AND f.ccd_temp IS NOT NULL) AS avg_ccd_temp
         FROM sessions s
         WHERE s.id = ?
         """,

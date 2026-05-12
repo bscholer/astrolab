@@ -49,13 +49,12 @@ def _seed_session(
         conn.execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, scope_id, session_key, target_id, instrument, camera, filter,
+            (id, scope_id, target_id, instrument, camera, filter,
              exptime, gain, binning, frame_count, failed_count)
-            VALUES (?, 'dwarf3', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, 'dwarf3', ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 session_id,
-                f"key-{session_id}",
                 target_id,
                 instrument,
                 camera,
@@ -69,15 +68,14 @@ def _seed_session(
         for i in range(n_frames):
             cur = conn.execute(
                 """
-                INSERT INTO frames (path, image_type, instrument, exptime, gain, session_key)
-                VALUES (?, 'LIGHT', ?, ?, ?, ?)
+                INSERT INTO frames (path, image_type, instrument, exptime, gain)
+                VALUES (?, 'LIGHT', ?, ?, ?)
                 """,
                 (
                     str(folder / f"frame_{i}.fits"),
                     instrument,
                     exptime,
                     gain,
-                    f"key-{session_id}",
                 ),
             )
             conn.execute(
@@ -146,8 +144,8 @@ def test_session_lights_folder_raises_when_split_across_dirs(
             "INSERT INTO targets (id, name) VALUES (1, 'X')"
         )
         db.execute(
-            """INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
-               VALUES (1, 'dwarf3', 'k1', 1, 2)"""
+            """INSERT INTO sessions (id, scope_id, target_id, frame_count)
+               VALUES (1, 'dwarf3', 1, 2)"""
         )
         for p in [folder1 / "f1.fits", folder2 / "f2.fits"]:
             cur = db.execute(

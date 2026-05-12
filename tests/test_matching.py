@@ -40,27 +40,30 @@ def _insert_session(
 ) -> int:
     target_cur = conn.execute("INSERT INTO targets (name) VALUES (?)", (target_name,))
     target_id = target_cur.lastrowid
-    conn.execute(
+    cur = conn.execute(
         """INSERT INTO sessions (
-            scope_id, session_key, target_id, instrument, camera, filter,
+            scope_id, target_id, instrument, camera, filter,
             exptime, gain, binning, frame_count, failed_count
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        ("dwarf3", "test-session-1", target_id, instrument, camera, filter_,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        ("dwarf3", target_id, instrument, camera, filter_,
          exptime, gain, binning, 10, 0),
     )
-    sid = conn.execute(
-        "SELECT id FROM sessions WHERE session_key = 'test-session-1'"
-    ).fetchone()["id"]
+    sid = int(cur.lastrowid or -1)
     if avg_temp is not None:
         # Seed at least one frame so the matcher's avg_ccd_temp subquery resolves.
-        conn.execute(
-            """INSERT INTO frames (path, image_type, scope_id, session_key, instrument,
+        # Link it through session_frames so the matcher's join finds it.
+        frame_cur = conn.execute(
+            """INSERT INTO frames (path, image_type, scope_id, instrument,
                                    camera, filter, exptime, gain, binning, ccd_temp)
-               VALUES (?, 'LIGHT', 'dwarf3', 'test-session-1', ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, 'LIGHT', 'dwarf3', ?, ?, ?, ?, ?, ?, ?)""",
             (
                 f"/tmp/seed-{sid}.fits",
                 instrument, camera, filter_, exptime, gain, binning, avg_temp,
             ),
+        )
+        conn.execute(
+            "INSERT INTO session_frames (session_id, frame_id) VALUES (?, ?)",
+            (sid, frame_cur.lastrowid),
         )
     return sid
 

@@ -145,11 +145,7 @@ def _ingest_frame(
     scan_started_at: float,
     stats: ScanStats,
 ) -> None:
-    """Upsert one frame given a stat and classifier decision.
-
-    ``session_key`` is left null on insert; the cluster pass at the end of
-    a scan writes it back as part of session derivation.
-    """
+    """Upsert one frame given a stat and classifier decision."""
     path_str = str(path)
     existing = _existing_row(conn, path_str)
     file_hash = _hash_file(path)
@@ -179,7 +175,6 @@ def _ingest_frame(
         "ra": _coerce_float(header.get("RA")),
         "dec": _coerce_float(header.get("DEC")),
         "scope_id": classified.scope_id,
-        "session_key": None,
         "fits_headers": json.dumps(header).encode("utf-8"),
         "scanned_at": scan_started_at,
     }
@@ -189,7 +184,7 @@ def _ingest_frame(
     sql = (
         f"INSERT INTO frames ({','.join(columns)}) VALUES ({placeholders}) "
         f"ON CONFLICT(path) DO UPDATE SET "
-        + ",".join(f"{c}=excluded.{c}" for c in columns if c != "session_key")
+        + ",".join(f"{c}=excluded.{c}" for c in columns)
     )
     conn.execute(sql, [row[c] for c in columns])
     if existing is None:
@@ -323,7 +318,8 @@ def frames_for_target(
         """
         SELECT f.ra AS ra, f.dec AS dec, f.fits_headers AS hdr
         FROM frames f
-        JOIN sessions s ON s.session_key = f.session_key
+        JOIN session_frames sf ON sf.frame_id = f.id
+        JOIN sessions s ON s.id = sf.session_id
         WHERE s.target_id = ?
         """,
         (target_id,),

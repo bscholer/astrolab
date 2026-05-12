@@ -291,7 +291,7 @@ class TargetSummary(BaseModel):
     # has both a frame count and an exposure time on file.
     integration_seconds: float | None = None
     # Total bytes the target's frames occupy on disk. Computed from the
-    # frames table's `size` column, joined via session_key so we don't
+    # frames table's `size` column, joined via session_frames so we don't
     # double-count when frames are shared across sessions.
     bytes_on_disk: int = 0
 
@@ -313,7 +313,6 @@ class SessionSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int
-    session_key: str
     target_name: str | None = None
     instrument: str | None = None
     camera: str | None = None
@@ -328,7 +327,7 @@ class SessionSummary(BaseModel):
     # Useful integration time = (frame_count - failed_count) * exptime.
     # Null when exptime isn't known.
     integration_seconds: float | None = None
-    # SUM(frames.size) for frames whose session_key matches.
+    # SUM(frames.size) for frames linked to this session via session_frames.
     bytes_on_disk: int = 0
     calibration: list[CalibrationStatus]
     # User-attached free-text notes. None when no note has been saved.
@@ -449,13 +448,18 @@ def _calibration_for_session(conn: sqlite3.Connection, session_id: int) -> list[
 def _row_to_session_summary(
     conn: sqlite3.Connection, row: sqlite3.Row, target_name: str | None
 ) -> SessionSummary:
-    # Bytes are the on-disk size of all frames sharing this session_key.
-    # Cheap one-row scalar; the session list pages don't fan out wide
-    # enough for this to be a problem (typical user has dozens of
-    # sessions, not thousands).
+    # Bytes are the on-disk size of all frames linked to this session via
+    # session_frames. Cheap one-row scalar; the session list pages don't
+    # fan out wide enough for this to be a problem (typical user has
+    # dozens of sessions, not thousands).
     size_row = conn.execute(
-        "SELECT IFNULL(SUM(size), 0) AS bytes FROM frames WHERE session_key = ?",
-        (row["session_key"],),
+        """
+        SELECT IFNULL(SUM(f.size), 0) AS bytes
+        FROM frames f
+        JOIN session_frames sf ON sf.frame_id = f.id
+        WHERE sf.session_id = ?
+        """,
+        (row["id"],),
     ).fetchone()
     bytes_on_disk = int(size_row["bytes"] if size_row else 0)
     frame_count = row["frame_count"] or 0
@@ -475,7 +479,6 @@ def _row_to_session_summary(
     )
     return SessionSummary(
         id=row["id"],
-        session_key=row["session_key"],
         target_name=target_name,
         instrument=row["instrument"],
         camera=row["camera"],
@@ -573,7 +576,8 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                (
                  SELECT IFNULL(SUM(f.size), 0)
                  FROM frames f
-                 JOIN sessions s2 ON s2.session_key = f.session_key
+                 JOIN session_frames sf ON sf.frame_id = f.id
+                 JOIN sessions s2 ON s2.id = sf.session_id
                  WHERE s2.target_id = t.id
                ) AS bytes_on_disk
         FROM targets t
@@ -722,8 +726,8 @@ def patch_session(session_id: int, req: SessionPatchRequest, conn: DBDep) -> Ses
       - `target_id` or `new_target_name`: reassign (mutually exclusive).
       - `description`: free-text notes; empty string clears.
 
-    Reassign math: the session's `frames` rows are linked by
-    `session_key` (not target_id directly), so flipping
+    Reassign math: the session's `frames` rows are linked through
+    `session_frames` (not target_id directly), so flipping
     `sessions.target_id` is all that's needed. Any source target left
     without sessions gets deleted; the response carries the deleted ids
     so the UI can drop them locally.
@@ -869,8 +873,8 @@ def _session_centroid(
         """
         SELECT f.ra AS ra, f.dec AS dec, f.fits_headers AS hdr
         FROM frames f
-        JOIN sessions s ON s.session_key = f.session_key
-        WHERE s.id = ?
+        JOIN session_frames sf ON sf.frame_id = f.id
+        WHERE sf.session_id = ?
         """,
         (session_id,),
     ).fetchall()
@@ -1944,7 +1948,7 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT s.session_key, s.exptime, s.gain, s.filter,
+        SELECT s.id, s.exptime, s.gain, s.filter,
                s.frame_count, s.failed_count,
                s.started_at, s.ended_at, t.name AS target_name
         FROM sessions s
@@ -1971,13 +1975,18 @@ def _capture_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
         integration_total += float(r["exptime"]) * usable
         integration_seen = True
 
-    keys = [r["session_key"] for r in rows if r["session_key"]]
+    session_ids_for_bytes = [r["id"] for r in rows]
     bytes_on_disk = 0
-    if keys:
-        ph = ",".join("?" for _ in keys)
+    if session_ids_for_bytes:
+        ph = ",".join("?" for _ in session_ids_for_bytes)
         size_row = conn.execute(
-            f"SELECT IFNULL(SUM(size), 0) AS bytes FROM frames WHERE session_key IN ({ph})",
-            keys,
+            f"""
+            SELECT IFNULL(SUM(f.size), 0) AS bytes
+            FROM frames f
+            JOIN session_frames sf ON sf.frame_id = f.id
+            WHERE sf.session_id IN ({ph})
+            """,
+            session_ids_for_bytes,
         ).fetchone()
         bytes_on_disk = int(size_row["bytes"] if size_row else 0)
 

@@ -65,7 +65,6 @@ class Frame(BaseModel):
     dec: float | None = None
 
     scope_id: str
-    session_key: str | None = None
     fits_headers: dict | None = None
     scanned_at: float | None = None
 
@@ -75,7 +74,6 @@ class Session(BaseModel):
 
     id: int | None = None
     scope_id: str
-    session_key: str
     target_id: int | None = None
     instrument: str | None = None
     camera: str | None = None
