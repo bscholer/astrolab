@@ -112,6 +112,10 @@ The Docker image is the supported runtime. It's amd64-only and runs anywhere Doc
 - **NVIDIA GPU** (the `:cuda` tag, plus `--gpus all` and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)) is recommended if you want GraXpert and StarNet++ to fly. Tested on Ampere and Ada.
 - **From source** (Linux only, see Quick Start above) works for dev. macOS source installs run everything except the Siril paths; the test suite mocks the Siril subprocess so the dev loop stays full-featured, but final validation belongs on a Linux box.
 
+### Apple Silicon caveat
+
+The image is amd64; on M-series Macs it runs through Rosetta. Siril, the calibrate / register / stack / save_image pipeline all work fine under Rosetta. **GraXpert and StarNet++ do not** — their PyInstaller-bundled Python stack hits a Rosetta amd64 emulation bug and segfaults at startup. Astrolab's pipeline will therefore crash on those nodes when run on Apple Silicon via Docker Desktop. The Siril-only path through `stack` works end to end and produces a usable PNG. For full pipelines with GraXpert / StarNet, run on a Linux or amd64-native host.
+
 ## Status
 
 Phase 0. Not stable, not packaged, schemas can change between commits. Useful enough to process my own captures every weekend; rough enough that I'd hate to ship it as v1.0.0 today. The [V1 milestone](https://github.com/bscholer/astrolab/milestone/1) tracks the punch list.

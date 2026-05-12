@@ -25,7 +25,7 @@ import numpy as np
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import image_ref, quote
+from nodes._seq_runner import _check_siril_single_image_result, image_ref, quote
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -126,18 +126,9 @@ class StarnetReplaceNode(Node[StarnetReplaceParams]):
             on_log=make_progress_handler(ctx, low=0.3, high=0.85),
             cancel=ctx.cancel,
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"starnet_replace: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-3000:]}\n"
-                f"--- stderr ---\n{result.stderr[-1500:]}"
-            )
-        if not synth_full.exists():
-            raise RuntimeError(
-                f"starnet_replace: siril returned 0 but {synth_full} missing.\n"
-                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
-            )
+        _check_siril_single_image_result(
+            result, node_name="starnet_replace", out_path=synth_full
+        )
 
         # Pull the synthetic-stars layer out: synth_full is starless + new
         # stars; subtracting starless yields the new stars in isolation.

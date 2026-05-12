@@ -41,7 +41,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import drop_staged, quote, stage_sequence
+from nodes._seq_runner import _check_siril_single_image_result, drop_staged, quote, stage_sequence
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -128,20 +128,15 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
             on_log=make_progress_handler(ctx, phases=6),
             cancel=ctx.cancel,
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"narrowband_extract: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-                f"--- stderr ---\n{result.stderr}"
-            )
-
         ha_src = work_dir / "r_results_ha.fit"
         oiii_src = work_dir / "r_results_oiii.fit"
-        if not ha_src.exists() or not oiii_src.exists():
+        _check_siril_single_image_result(
+            result, node_name="narrowband_extract", out_path=ha_src
+        )
+        if not oiii_src.exists():
             raise RuntimeError(
-                f"narrowband_extract: siril returned 0 but expected outputs "
-                f"are missing (ha={ha_src.exists()}, oiii={oiii_src.exists()}).\n"
+                f"narrowband_extract: siril exited {result.returncode} and "
+                f"{oiii_src} is missing or empty.\n"
                 f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
             )
 

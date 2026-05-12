@@ -36,7 +36,7 @@ import numpy as np
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import image_ref, quote
+from nodes._seq_runner import _check_siril_single_image_result, image_ref, quote
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -115,20 +115,9 @@ class AutoBpShiftNode(Node[AutoBpShiftParams]):
             on_log=make_progress_handler(ctx),
             cancel=ctx.cancel,
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"auto_bp_shift: siril exited {result.returncode}\n"
-                f"--- ssf ---\n{result.ssf}\n"
-                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-                f"--- stderr ---\n{result.stderr}"
-            )
-
-        if not out_image.exists():
-            raise RuntimeError(
-                f"auto_bp_shift: siril returned 0 but {out_image} is missing.\n"
-                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
-            )
-
+        _check_siril_single_image_result(
+            result, node_name="auto_bp_shift", out_path=out_image
+        )
         ctx.progress(1.0, f"auto_bp_shift: wrote {out_image.name}")
         return {"image": image_ref(out_image)}
 
