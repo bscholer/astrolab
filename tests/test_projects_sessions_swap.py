@@ -57,13 +57,12 @@ def _seed_session(
         conn.execute(
             """
             INSERT INTO sessions
-            (id, scope_id, session_key, target_id, instrument, exptime, gain,
+            (id, scope_id, target_id, instrument, exptime, gain,
              binning, filter, frame_count, failed_count)
-            VALUES (?, 'dwarf3', ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, 'dwarf3', ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 session_id,
-                f"k{session_id}",
                 target_id,
                 instrument,
                 exptime,
@@ -75,9 +74,8 @@ def _seed_session(
         )
         for p in paths:
             cur = conn.execute(
-                "INSERT INTO frames (path, image_type, session_key) "
-                "VALUES (?, 'LIGHT', ?)",
-                (str(p), f"k{session_id}"),
+                "INSERT INTO frames (path, image_type) VALUES (?, 'LIGHT')",
+                (str(p),),
             )
             conn.execute(
                 "INSERT INTO session_frames (session_id, frame_id) VALUES (?, ?)",

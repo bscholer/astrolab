@@ -7,6 +7,7 @@ sqlite3.Row dicts.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -26,7 +27,21 @@ MasterSource = Literal["factory", "user", "astrolab"]
 """'factory' = bundled with the scope; 'user' = stacked on the scope by the
 user; 'astrolab' = built by our own master-build job (deferred)."""
 
-MatchQuality = Literal["exact", "approx", "none"]
+MatchQuality = Literal["exact", "approx", "none", "not_needed"]
+"""Calibration match outcome.
+
+- ``exact``: a master matched on the hard equality constraints with delta=0
+  on temperature (darks).
+- ``approx``: a master matched but with nonzero temperature delta inside
+  the tolerance window.
+- ``none``: no candidate master satisfies the constraints. The pipeline can
+  still run (the masters port is optional), but the user should see a clear
+  "no match" indicator.
+- ``not_needed``: the scope subtracts darks and flats on-device before
+  exporting lights (Seestar). The matcher does not search; the pipeline
+  runs the calibrate node as a debayer-only pass. Distinct from ``none``
+  because it's intentional, not a failure.
+"""
 
 
 class Target(BaseModel):
@@ -64,7 +79,6 @@ class Frame(BaseModel):
     dec: float | None = None
 
     scope_id: str
-    session_key: str | None = None
     fits_headers: dict | None = None
     scanned_at: float | None = None
 
@@ -74,7 +88,6 @@ class Session(BaseModel):
 
     id: int | None = None
     scope_id: str
-    session_key: str
     target_id: int | None = None
     instrument: str | None = None
     camera: str | None = None
@@ -113,6 +126,29 @@ class Master(BaseModel):
     cache_ref: str | None = None
     source_frame_ids: list[int] | None = None
     scanned_at: float | None = None
+
+
+class DiscoveredMaster(BaseModel):
+    """A scope-specific helper's classification of a pre-built calibration master.
+
+    Used for masters the scope ships with (currently only Dwarf 3 factory
+    masters under ``CALI_FRAME/``). DAG-built masters bypass this path;
+    they're inserted directly by the master-build job.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    kind: MasterKind
+    source: MasterSource = "factory"
+    camera: str | None = None
+    instrument: str | None = None
+    filter: str | None = None
+    exptime: float | None = None
+    gain: int | None = None
+    binning: int | None = None
+    ccd_temp: float | None = None
+    stack_count: int | None = None
 
 
 class CalibrationMatch(BaseModel):

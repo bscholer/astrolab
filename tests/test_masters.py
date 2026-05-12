@@ -40,7 +40,7 @@ def test_scan_inserts_masters(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures"
     _build_tree_with_cali(captures)
 
-    stats = scan(captures, scope_id="dwarf3")
+    stats = scan(captures)
     assert stats.masters_inserted == 5
     assert stats.masters_skipped == 0
 
@@ -58,8 +58,8 @@ def test_scan_inserts_masters(tmp_path: Path, astrolab_home: Path) -> None:
 def test_master_ingest_idempotent(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures"
     _build_tree_with_cali(captures)
-    scan(captures, scope_id="dwarf3")
-    second = scan(captures, scope_id="dwarf3")
+    scan(captures)
+    second = scan(captures)
     assert second.masters_inserted == 0
     assert second.masters_skipped == 5
 
@@ -67,7 +67,7 @@ def test_master_ingest_idempotent(tmp_path: Path, astrolab_home: Path) -> None:
 def test_orphan_master_removed(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures"
     _build_tree_with_cali(captures)
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
 
     victim = (
         captures
@@ -78,7 +78,7 @@ def test_orphan_master_removed(tmp_path: Path, astrolab_home: Path) -> None:
     )
     victim.unlink()
 
-    stats = scan(captures, scope_id="dwarf3")
+    stats = scan(captures)
     assert stats.masters_removed == 1
     with open_db() as conn:
         n = conn.execute("SELECT COUNT(*) AS n FROM masters").fetchone()["n"]

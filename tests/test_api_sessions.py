@@ -93,7 +93,7 @@ def test_patch_target_id_reassigns_session(
         dec=NGC7000_DEC,
         folder_safe_name="MY_GARBAGE",
     )
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
 
     # Pick the M 31 session, move it to MY_GARBAGE.
     with open_db() as conn:
@@ -118,13 +118,14 @@ def test_patch_target_id_reassigns_session(
         moved = conn.execute(
             "SELECT target_id FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
-        # Frames are still bound by session_key, unchanged.
-        frame_session_key = conn.execute(
-            "SELECT session_key FROM frames WHERE session_key IS NOT NULL "
-            "LIMIT 1"
-        ).fetchone()
+        # The session_frames junction is untouched by a target reassign —
+        # we're only flipping sessions.target_id.
+        link_count = conn.execute(
+            "SELECT COUNT(*) FROM session_frames WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
     assert int(moved["target_id"]) == int(garbage_target_id)
-    assert frame_session_key is not None
+    assert link_count > 0
 
 
 def test_patch_new_target_name_creates_and_moves(
@@ -133,7 +134,7 @@ def test_patch_new_target_name_creates_and_moves(
     """new_target_name without an existing match creates a fresh row."""
     captures = tmp_path / "caps"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC)
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     session_id, _ = _ids(client)
 
     r = client.patch(
@@ -168,7 +169,7 @@ def test_patch_empties_source_target_deletes_it(
         dec=NGC7000_DEC,
         folder_safe_name="OTHER",
     )
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
 
     with open_db() as conn:
         lone = conn.execute(
@@ -209,7 +210,7 @@ def test_patch_new_target_name_reuses_existing(
         dec=NGC7000_DEC,
         folder_safe_name="MY_GARBAGE",
     )
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
 
     with open_db() as conn:
         garbage = conn.execute(
@@ -256,7 +257,7 @@ def test_patch_404_on_unknown_target_id(
 ) -> None:
     captures = tmp_path / "caps"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC)
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     session_id, _ = _ids(client)
     r = client.patch(
         f"/api/sessions/{session_id}", json={"target_id": 99999}
@@ -268,7 +269,7 @@ def test_patch_rejects_both_keys(client: TestClient, tmp_path: Path) -> None:
     """Both target_id AND new_target_name in the body is a 4xx (ambiguous)."""
     captures = tmp_path / "caps"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC)
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     session_id, _ = _ids(client)
     r = client.patch(
         f"/api/sessions/{session_id}",
@@ -282,7 +283,7 @@ def test_patch_with_neither_key_is_noop(client: TestClient, tmp_path: Path) -> N
     Returns 200 with the unchanged session; no target deleted."""
     captures = tmp_path / "caps"
     _build_session(captures, object_name="M 31", ra=M31_RA, dec=M31_DEC)
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     session_id, _ = _ids(client)
     r = client.patch(f"/api/sessions/{session_id}", json={})
     assert r.status_code == 200
@@ -296,7 +297,7 @@ def test_get_candidates_shape(client: TestClient, tmp_path: Path) -> None:
     _build_session(
         captures, object_name="NEAR_7000", ra=NGC7000_RA, dec=NGC7000_DEC
     )
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     session_id, _ = _ids(client)
     r = client.get(f"/api/sessions/{session_id}/reassign_candidates")
     assert r.status_code == 200, r.text
@@ -316,7 +317,7 @@ def test_get_candidates_empty_when_no_centroid(
     falls back to a free-text target picker."""
     captures = tmp_path / "caps"
     _build_session(captures, object_name="NO_POS", ra=None, dec=None)
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     session_id, _ = _ids(client)
     r = client.get(f"/api/sessions/{session_id}/reassign_candidates")
     assert r.status_code == 200
@@ -341,7 +342,7 @@ def test_get_candidates_excludes_current_target(
         dec=M31_DEC,
         folder_safe_name="M 32",
     )
-    run_scan(captures, scope_id="dwarf3")
+    run_scan(captures)
     with open_db() as conn:
         m31_session = conn.execute(
             "SELECT s.id AS id FROM sessions s "

@@ -59,12 +59,14 @@ def test_finish_captures_last_stats() -> None:
         inserted = 80
         updated = 5
         skipped_unchanged = 15
+        skipped_unknown = 0
         removed = 2
         failed = 1
         masters_inserted = 3
         masters_updated = 0
         masters_removed = 0
         masters_skipped = 1
+        scope_breakdown = {"dwarf3": 80}
 
     m.finish(stats=FakeStats())
     s = m.snapshot()

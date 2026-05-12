@@ -222,8 +222,9 @@ def _session_with_temp(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row
     return conn.execute(
         """
         SELECT s.*,
-               (SELECT AVG(ccd_temp) FROM frames
-                WHERE session_key = s.session_key AND ccd_temp IS NOT NULL) AS avg_ccd_temp
+               (SELECT AVG(f.ccd_temp) FROM frames f
+                JOIN session_frames sf ON sf.frame_id = f.id
+                WHERE sf.session_id = s.id AND f.ccd_temp IS NOT NULL) AS avg_ccd_temp
         FROM sessions s
         WHERE s.id = ?
         """,
@@ -236,10 +237,20 @@ def match_session(conn: sqlite3.Connection, session_id: int) -> dict[str, dict[s
 
     Returns a dict mapping kind -> {master_id, match_quality, details}. User
     overrides (overridden=1) are preserved.
+
+    Scopes whose profile declares ``calibration.skip_match=true`` (Seestar,
+    which subtracts darks and flats on-device) skip the matcher entirely:
+    every kind is tagged ``match_quality='not_needed'`` with the profile's
+    reason, and the calibrate node downstream runs as a debayer-only pass.
     """
+    from server.profiles import get as get_profile
+
     session = _session_with_temp(conn, session_id)
     if session is None:
         raise ValueError(f"session {session_id} not found")
+
+    profile = get_profile(session["scope_id"])
+    skip_match = profile.calibration.skip_match
 
     out: dict[str, dict[str, Any]] = {}
     now = time.time()
@@ -263,7 +274,17 @@ def match_session(conn: sqlite3.Connection, session_id: int) -> dict[str, dict[s
             }
             continue
 
-        master_id, quality, details = matcher(conn, session)
+        if skip_match:
+            master_id = None
+            quality = "not_needed"
+            details = {
+                "reason": (
+                    profile.calibration.skip_reason
+                    or f"scope '{profile.id}' pre-calibrates lights on device"
+                )
+            }
+        else:
+            master_id, quality, details = matcher(conn, session)
         out[kind] = {
             "master_id": master_id,
             "match_quality": quality,

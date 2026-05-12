@@ -304,6 +304,20 @@
           toast.success(
             `Scanned: +${st.inserted} frames, +${st.masters_inserted} masters, -${st.removed} orphans`
           );
+          // Only Dwarf 3 is end-to-end validated through processing today.
+          // Warn (once) when any frames from another scope landed in the
+          // library so the user knows calibration/processing may misbehave.
+          const breakdown = st.scope_breakdown ?? {};
+          const otherScopes = Object.entries(breakdown)
+            .filter(([scope, n]) => scope !== 'dwarf3' && n > 0)
+            .map(([scope, n]) => `${scope} (${n})`);
+          if (otherScopes.length > 0) {
+            toast.info(
+              `Detected non-Dwarf-3 captures: ${otherScopes.join(', ')}. ` +
+                `Metadata is best-effort; calibration and processing are validated only for Dwarf 3.`,
+              15_000
+            );
+          }
         }
       }
     } catch {
@@ -325,7 +339,7 @@
       return;
     }
     try {
-      await api.scan(captureRoot.trim(), 'dwarf3');
+      await api.scan(captureRoot.trim());
     } catch (e: unknown) {
       // 409 means already running — enter polling mode anyway.
       const status = (e as { status?: number }).status;
@@ -428,14 +442,15 @@
   const QUALITY_HELP: Record<string, string> = {
     exact: 'exact match',
     approx: 'approximate match (within tolerance)',
-    none: 'no match found'
+    none: 'no match found',
+    not_needed: 'not needed (scope subtracts on device)'
   };
 
   function calTitle(c: CalibrationStatus): string {
     const base = `${KIND_NAME[c.kind] ?? c.kind} · ${QUALITY_HELP[c.quality] ?? c.quality}`;
     // Only append the matcher's reason when it adds real info beyond the
     // quality label (it's redundant for 'exact', sometimes useful for
-    // 'approx', always useful for 'none').
+    // 'approx', always useful for 'none' and 'not_needed').
     return c.reason && c.quality !== 'exact' ? `${base}\n${c.reason}` : base;
   }
 

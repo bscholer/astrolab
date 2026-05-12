@@ -458,10 +458,12 @@
     // Treat the session's calibration list as triage: any "exact" /
     // "approx" hit on a dark beats "missing". Multiple kinds collapse to
     // the lowest-quality match so the badge is honest about the gap.
+    // 'not_needed' (scope subtracts on-device) rolls up to 'auto' because
+    // calibration is intentional and complete, not absent.
     if (!s.calibration || s.calibration.length === 0) return 'missing';
     let best: 'auto' | 'approx' | 'missing' = 'missing';
     for (const c of s.calibration) {
-      if (c.quality === 'exact') {
+      if (c.quality === 'exact' || c.quality === 'not_needed') {
         if (best !== 'auto') best = 'auto';
       } else if (c.quality === 'approx') {
         if (best === 'missing') best = 'approx';

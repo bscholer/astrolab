@@ -30,13 +30,13 @@ def _seed_session_with_png(conn, folder: Path, n_frames: int = 3) -> None:
     with conn:
         conn.execute("INSERT INTO targets (id, name) VALUES (1, 'M 33')")
         conn.execute(
-            """INSERT INTO sessions (id, scope_id, session_key, target_id, frame_count)
-               VALUES (1, 'dwarf3', 'k1', 1, ?)""",
+            """INSERT INTO sessions (id, scope_id, target_id, frame_count)
+               VALUES (1, 'dwarf3', 1, ?)""",
             (n_frames,),
         )
         for p in paths:
             cur = conn.execute(
-                "INSERT INTO frames (path, image_type, session_key) VALUES (?, 'LIGHT', 'k1')",
+                "INSERT INTO frames (path, image_type) VALUES (?, 'LIGHT')",
                 (str(p),),
             )
             conn.execute(

@@ -1,0 +1,14 @@
+id: asiair
+display_name: "ZWO ASIAIR"
+notes: |
+  Best-effort ingest in v1. ASIAIR captures user-managed calibration frames
+  alongside lights in its Autorun tree; the universal walker picks them up by
+  IMAGETYP and the matcher pairs them normally.
+
+  No on-device calibration; no firmware quirks to work around. End-to-end
+  pipeline behavior is not yet validated against real ASIAIR data.
+
+calibration:
+  skip_match: false
+
+node_defaults: {}
