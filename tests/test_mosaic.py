@@ -73,7 +73,7 @@ def test_mosaic_full_scan_collapses_to_one_target_one_session(
         headers={**DEFAULT_LIGHT_HEADER, "OBJECT": "M 31(2)"},
     )
 
-    stats = scan(captures, scope_id="dwarf3")
+    stats = scan(captures)
     assert stats.inserted == 2
 
     with open_db() as conn:

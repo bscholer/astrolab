@@ -172,7 +172,6 @@ def _bootstrap_capture_root() -> None:
             log.info("first-run scan: %s", root)
             stats = run_scan(
                 root,
-                scope_id="dwarf3",
                 progress=_make_progress_callback(),
             )
             scan_state.finish(stats=stats)
@@ -1009,12 +1008,14 @@ def trigger_scan(req: ScanRequest) -> JSONResponse:
     if not scan_state.start():
         raise HTTPException(status_code=409, detail="already_running")
 
-    scope_id = req.scope_id
-    log.info("scan triggered: scope=%s root=%s", scope_id, root)
+    # scope_id on the request is no longer load-bearing — scope is detected
+    # per-file by the scanner. Kept on the model until the UI is updated to
+    # stop sending it (Phase 7).
+    log.info("scan triggered: root=%s (req.scope_id=%s, ignored)", root, req.scope_id)
 
     def _scan() -> None:
         try:
-            stats = run_scan(root, scope_id=scope_id, progress=_make_progress_callback())
+            stats = run_scan(root, progress=_make_progress_callback())
             scan_state.finish(stats=stats)
             log.info("scan done: %r", stats)
         except Exception as exc:

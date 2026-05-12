@@ -28,14 +28,14 @@ def test_removed_files_are_orphaned(tmp_path: Path, astrolab_home: Path) -> None
     captures = tmp_path / "captures"
     folder = _build_minimal_tree(captures)
 
-    first = scan(captures, scope_id="dwarf3")
+    first = scan(captures)
     assert first.inserted == 2
 
     # Delete one frame from disk; rescan should remove its row.
     victim = folder / "M 33_30s60_Astro_20251021-222129500_24C.fits"
     victim.unlink()
 
-    second = scan(captures, scope_id="dwarf3")
+    second = scan(captures)
     assert second.removed == 1
     assert second.skipped_unchanged == 1
 
@@ -47,14 +47,14 @@ def test_removed_files_are_orphaned(tmp_path: Path, astrolab_home: Path) -> None
 def test_emptied_session_is_dropped(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures"
     folder = _build_minimal_tree(captures)
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
 
     # Remove the entire session folder; rescan should clean up sessions and targets.
     for f in folder.iterdir():
         f.unlink()
     folder.rmdir()
 
-    stats = scan(captures, scope_id="dwarf3")
+    stats = scan(captures)
     assert stats.removed == 2
 
     with open_db() as conn:
@@ -74,13 +74,13 @@ def test_orphan_cleanup_scoped_to_root(tmp_path: Path, astrolab_home: Path) -> N
         headers={**DEFAULT_LIGHT_HEADER, "OBJECT": "M 33"},
     )
 
-    scan(root_a, scope_id="dwarf3")
-    scan(root_b, scope_id="dwarf3")
+    scan(root_a)
+    scan(root_b)
 
     with open_db() as conn:
         assert conn.execute("SELECT COUNT(*) AS n FROM frames").fetchone()["n"] == 3
 
     # Re-scan root_a only; root_b's frame must survive.
-    scan(root_a, scope_id="dwarf3")
+    scan(root_a)
     with open_db() as conn:
         assert conn.execute("SELECT COUNT(*) AS n FROM frames").fetchone()["n"] == 3

@@ -48,7 +48,7 @@ def test_scan_inserts_frames_and_sessions(tmp_path: Path, astrolab_home: Path) -
     captures = tmp_path / "captures"
     _build_dwarf_tree(captures)
 
-    stats = scan(captures, scope_id="dwarf3")
+    stats = scan(captures)
     assert stats.discovered == 6
     assert stats.inserted == 6
     assert stats.failed == 0
@@ -88,11 +88,11 @@ def test_scan_is_incremental(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures"
     _build_dwarf_tree(captures)
 
-    first = scan(captures, scope_id="dwarf3")
+    first = scan(captures)
     assert first.inserted == 6
     assert first.skipped_unchanged == 0
 
-    second = scan(captures, scope_id="dwarf3")
+    second = scan(captures)
     assert second.inserted == 0
     assert second.updated == 0
     assert second.skipped_unchanged == 6
@@ -101,7 +101,7 @@ def test_scan_is_incremental(tmp_path: Path, astrolab_home: Path) -> None:
 def test_scan_picks_up_new_files(tmp_path: Path, astrolab_home: Path) -> None:
     captures = tmp_path / "captures"
     _build_dwarf_tree(captures)
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
 
     extra = captures / "DWARF_RAW_TELE_M 33_EXP_30_GAIN_60_2025-10-21-22-18-55-284"
     write_fits(
@@ -109,14 +109,17 @@ def test_scan_picks_up_new_files(tmp_path: Path, astrolab_home: Path) -> None:
         headers={**DEFAULT_LIGHT_HEADER, "OBJECT": "M 33"},
     )
 
-    stats = scan(captures, scope_id="dwarf3")
+    stats = scan(captures)
     assert stats.inserted == 1
     assert stats.skipped_unchanged == 6
 
     with open_db() as conn:
         m33_session = conn.execute(
-            "SELECT frame_count FROM sessions WHERE session_key LIKE ?",
-            ("dwarf3:DWARF_RAW_TELE_M 33_%",),
+            """
+            SELECT s.frame_count FROM sessions s
+            JOIN targets t ON t.id = s.target_id
+            WHERE t.name = 'M 33'
+            """
         ).fetchone()
         assert m33_session["frame_count"] == 4
 
@@ -124,14 +127,14 @@ def test_scan_picks_up_new_files(tmp_path: Path, astrolab_home: Path) -> None:
 def test_scan_handles_empty_root(tmp_path: Path, astrolab_home: Path) -> None:
     empty = tmp_path / "nothing"
     empty.mkdir()
-    stats = scan(empty, scope_id="dwarf3")
+    stats = scan(empty)
     assert stats.discovered == 0
     assert stats.inserted == 0
 
 
 def test_scan_handles_missing_root(tmp_path: Path, astrolab_home: Path) -> None:
     missing = tmp_path / "does-not-exist"
-    stats = scan(missing, scope_id="dwarf3")
+    stats = scan(missing)
     assert stats.discovered == 0
 
 
@@ -167,7 +170,7 @@ def test_scan_incremental_refresh_populates_sessions_early(
                 count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
                 sessions_seen_mid_scan.append(count)
 
-    scan(captures, scope_id="dwarf3", progress=_progress)
+    scan(captures, progress=_progress)
 
     # The incremental refresh must have fired and written at least one session.
     assert len(sessions_seen_mid_scan) > 0, "progress callback never reached frame 51"

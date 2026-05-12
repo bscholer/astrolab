@@ -43,7 +43,7 @@ def _seed_tree(root: Path) -> None:
 def client(tmp_path: Path, astrolab_home: Path) -> TestClient:
     captures = tmp_path / "captures"
     _seed_tree(captures)
-    scan(captures, scope_id="dwarf3")
+    scan(captures)
     return TestClient(app)
 
 
