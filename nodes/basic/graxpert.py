@@ -81,17 +81,31 @@ class GraxpertParams(BaseModel):
         },
     )
     use_gpu: bool = Field(
-        default=True,
-        description="Pass -gpu to GraXpert. The Linux box has the inference "
-        "GPU; CPU inference is doable but ~10x slower.",
+        default_factory=lambda: _gpu_available(),
+        description="Pass -gpu to GraXpert. Defaults to True when an NVIDIA "
+        "GPU device is visible to the process (auto-detected via "
+        "/dev/nvidia0), False otherwise. CPU inference is ~10x slower but "
+        "is the only option on Docker without --gpus all.",
         json_schema_extra={"ui_section": "advanced"},
     )
+
+
+def _gpu_available() -> bool:
+    """True when an NVIDIA device is mapped into this process.
+
+    GraXpert's bundled onnxruntime segfaults trying to init CUDA when no
+    NVIDIA libraries are present (e.g. the CPU Docker image, or a CUDA image
+    run without --gpus all). The cheapest reliable probe is the presence of
+    /dev/nvidia0, which Docker only creates when --gpus is passed.
+    """
+    from pathlib import Path as _P
+    return _P("/dev/nvidia0").exists()
 
 
 @register("graxpert")
 class GraxpertNode(Node[GraxpertParams]):
     id = "graxpert"
-    version = 1
+    version = 2
     cost = "expensive"
     preview_display_ready = True
 
