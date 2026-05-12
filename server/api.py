@@ -10,6 +10,7 @@ Endpoints:
 - POST /api/scan                         trigger a rescan (synchronous)
 - GET  /api/masters                      indexed calibration masters
 - POST /api/jobs                         submit a Template+Job to run
+- POST /api/nodes/{kind}/run             run a single node in isolation (QA / param sweep)
 - GET  /api/jobs                         list known jobs
 - GET  /api/jobs/{id}                    job detail (status, outputs, error)
 - GET  /api/jobs/{id}/events             buffered events as JSON list
@@ -1049,6 +1050,186 @@ def submit_job(req: SubmitJobRequest) -> SubmitJobResponse:
     job_id = job_manager.submit(req.template, req.job)
     log.info("job submitted: %s template=%s", job_id, req.template.id)
     return SubmitJobResponse(job_id=job_id)
+
+
+# ---------------------------------------------------------------------------
+# Single-node runner
+# ---------------------------------------------------------------------------
+
+
+class RefInput(BaseModel):
+    """Caller-supplied Ref pointing at an existing cache entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_hash: str
+    port: str
+    path: str
+    type: str
+
+
+class RunNodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inputs: dict[str, RefInput] = {}
+    params: dict[str, Any] = {}
+
+
+class RunNodeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str | None
+    node_hash: str
+    cache_hit: bool
+    outputs: dict[str, Any] | None = None
+
+
+@app.post("/api/nodes/{kind}/run", status_code=202)
+def run_single_node(kind: str, req: RunNodeRequest) -> RunNodeResponse:
+    """Run a single registered node in isolation given explicit input Refs + params.
+
+    Designed for LLM QA agents doing tight parameter sweeps on one node
+    (e.g. graxpert or stretch) without re-running the whole template's
+    upstream chain.
+
+    Returns 200 with cache_hit=true when the result is already cached.
+    Returns 202 with job_id when a new job was submitted.
+    """
+    from server.canonical import node_hash as compute_node_hash
+    from server.models import NodeSpec
+    from server.ports import PortType
+    from server.siril import get_siril_version
+
+    # 1. Look up the node class; 404 if unknown.
+    try:
+        node_cls = registry_lookup(kind)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"no node registered for kind={kind!r}"
+        ) from exc
+
+    # 2. Validate params against the node's params_schema; 400 on error.
+    try:
+        validated_params = node_cls.params_schema.model_validate(req.params)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid params: {exc}") from exc
+
+    # 3. Validate each input Ref: path must exist and type must match the node's declared input.
+    from server.models import Ref as RefModel
+
+    resolved_inputs: dict[str, RefModel] = {}
+    for port, ref_in in req.inputs.items():
+        if port not in node_cls.inputs:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown input port {port!r} for node {kind!r}; "
+                       f"declared inputs: {sorted(node_cls.inputs)}",
+            )
+        try:
+            port_type = PortType(ref_in.type)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown port type {ref_in.type!r} for input {port!r}",
+            ) from exc
+        expected_type = node_cls.inputs[port]
+        if port_type != expected_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"input port {port!r} type mismatch: "
+                    f"got {ref_in.type!r}, expected {str(expected_type)!r}"
+                ),
+            )
+        ref_path = Path(ref_in.path)
+        if not ref_path.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"input {port!r} path does not exist: {ref_in.path}",
+            )
+        resolved_inputs[port] = RefModel(
+            node_hash=ref_in.node_hash,
+            port=ref_in.port,
+            path=ref_path,
+            type=port_type,
+        )
+
+    # 4. Compute the node_hash the same way the template-driven path does.
+    extra: dict[str, str] | None = None
+    if node_cls.uses_siril:
+        extra = {"siril_version": get_siril_version()}
+    h = compute_node_hash(
+        node_id=node_cls.id,
+        node_version=node_cls.version,
+        inputs=resolved_inputs,
+        params=validated_params,
+        extra_keys=extra,
+    )
+
+    # 5. Cache hit: return outputs immediately.
+    cache = job_manager.cache
+    if cache.is_committed(h):
+        outputs_refs = cache.load_outputs(h)
+        outputs_payload: dict[str, Any] | None = None
+        if outputs_refs is not None:
+            outputs_payload = {
+                port: {
+                    "path": str(ref.path),
+                    "type": str(ref.type),
+                    "node_hash": ref.node_hash,
+                }
+                for port, ref in outputs_refs.items()
+            }
+        return RunNodeResponse(
+            job_id=None,
+            node_hash=h,
+            cache_hit=True,
+            outputs=outputs_payload,
+        )
+
+    # 6. Cache miss: build a one-node template and submit through JobManager.
+    #    The node id in the template must be "node" so the single spec
+    #    wires up cleanly; the external inputs use the "<node_id>.<port>" key
+    #    convention that run_job() expects.
+    node_id_in_tpl = "node"
+    tpl_inputs_map: dict[str, str] = {}  # no explicit edges; all come from job.inputs
+    node_spec = NodeSpec(
+        id=node_id_in_tpl,
+        kind=kind,
+        variant=None,
+        params=req.params,
+        inputs=tpl_inputs_map,
+    )
+    # Wire each declared input port through to the terminal output so the
+    # template output map is non-empty (run_job requires at least one output).
+    tpl_outputs: dict[str, str] = {
+        port: f"{node_id_in_tpl}.{port}" for port in node_cls.outputs
+    }
+    template = Template(
+        id=f"_single_node_{kind}",
+        version=1,
+        description=f"single-node runner: {kind}",
+        nodes=[node_spec],
+        outputs=tpl_outputs,
+    )
+
+    # job.inputs keys are "<node_id>.<port>"; job.param_overrides is empty
+    # because params are already baked into the node spec.
+    from server.models import Job as JobModel
+
+    job_inputs: dict[str, RefModel] = {
+        f"{node_id_in_tpl}.{port}": ref
+        for port, ref in resolved_inputs.items()
+    }
+    job = JobModel(
+        template_id=template.id,
+        template_version=template.version,
+        inputs=job_inputs,
+    )
+
+    job_id = job_manager.submit(template, job)
+    log.info("single-node job submitted: %s kind=%s hash=%s", job_id, kind, h[:12])
+    return RunNodeResponse(job_id=job_id, node_hash=h, cache_hit=False)
 
 
 @app.post("/api/jobs/{job_id}/rerun", response_model=SubmitJobResponse)
