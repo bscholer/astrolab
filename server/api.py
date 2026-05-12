@@ -1191,6 +1191,191 @@ def get_job_events(job_id: str) -> list[dict]:
     return [ev.to_dict() for ev in job_manager.get_events(job_id)]
 
 
+# ---------------------------------------------------------------------------
+# Job quality metrics
+# ---------------------------------------------------------------------------
+
+_SIRIL_WARNING_PHRASES = (
+    "calibration frames are probably incorrect",
+    "negative pixels",
+    "After dark subtraction",
+    "inconsistent",
+    "warning",
+)
+
+
+def _channel_stats(arr: np.ndarray) -> dict[str, Any]:
+    """Compute per-channel statistics for a 2-D float32 array clamped to [0,1]."""
+    flat = arr.ravel().astype(np.float64)
+    p01, p50, p99 = np.percentile(flat, [1, 50, 99])
+    return {
+        "mean": float(np.mean(flat)),
+        "median": float(np.median(flat)),
+        "stdev": float(np.std(flat)),
+        "p01": float(p01),
+        "p50": float(p50),
+        "p99": float(p99),
+        "clipped_low_pct": float(np.mean(flat <= 0.0)),
+        "clipped_high_pct": float(np.mean(flat >= 1.0)),
+    }
+
+
+def _background_stats(arr: np.ndarray) -> dict[str, Any]:
+    """Rough background: sigma-clipped mean of the lowest 10th-percentile pixels."""
+    flat = arr.ravel().astype(np.float64)
+    threshold = float(np.percentile(flat, 10))
+    low = flat[flat <= threshold]
+    # Simple sigma clip: discard values more than 3-sigma from the mean of the low pool.
+    for _ in range(3):
+        m, s = np.mean(low), np.std(low)
+        if s == 0:
+            break
+        low = low[np.abs(low - m) <= 3 * s]
+    level = float(np.mean(low)) if len(low) > 0 else float(np.mean(flat))
+    pct_below = float(np.mean(flat < level))
+    return {"estimated_level": level, "pct_below_threshold": pct_below}
+
+
+def _load_image_array(path: Path, port_type: str) -> np.ndarray:
+    """Return an (H, W, C) float32 array normalised to [0, 1].
+
+    Supports image/fits and image/png. Raises ValueError for unrecognised types.
+    """
+    if port_type == "image/fits":
+        from astropy.io import fits as astropy_fits
+
+        with astropy_fits.open(str(path)) as hdul:
+            data = hdul[0].data  # type: ignore[index]
+        if data is None:
+            raise ValueError("FITS primary HDU has no data")
+        arr = np.array(data, dtype=np.float32)
+        # Normalise to [0, 1] relative to the observed range.
+        lo, hi = arr.min(), arr.max()
+        arr = (arr - lo) / (hi - lo) if hi > lo else np.zeros_like(arr)
+        # Shape: (H, W) -> (H, W, 1), (C, H, W) -> (H, W, C)
+        if arr.ndim == 2:
+            arr = arr[:, :, np.newaxis]
+        elif arr.ndim == 3:
+            arr = np.moveaxis(arr, 0, -1)
+        return arr
+    if port_type == "image/png":
+        from PIL import Image as PilImage
+
+        img = PilImage.open(str(path)).convert("RGB")
+        arr = np.asarray(img, dtype=np.float32) / 255.0
+        return arr
+    raise ValueError(f"unsupported port type for quality metrics: {port_type!r}")
+
+
+def _color_balance(channels: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute R/G and B/G mean ratios. Warn when heavily skewed (>10%)."""
+    if len(channels) < 3:
+        return {}
+    r_mean = channels[0]["mean"]
+    g_mean = channels[1]["mean"]
+    b_mean = channels[2]["mean"]
+    if g_mean == 0:
+        return {}
+    r_g = r_mean / g_mean
+    b_g = b_mean / g_mean
+    warning: str | None = None
+    if abs(r_g - 1.0) > 0.10 or abs(b_g - 1.0) > 0.10:
+        warning = f"color balance skewed: R/G={r_g:.2f} B/G={b_g:.2f}"
+    return {"r_g_ratio": round(r_g, 4), "b_g_ratio": round(b_g, 4), "warning": warning}
+
+
+def _siril_warnings(record) -> list[str]:
+    """Parse job event messages for known Siril warning phrases."""
+    warnings: list[str] = []
+    events = job_manager.get_events(record.id)
+    for ev in events:
+        msg = ev.message or ""
+        if not msg:
+            continue
+        # Siril log lines are typically prefixed with "log: "
+        text = msg[5:] if msg.startswith("log: ") else msg
+        lower = text.lower()
+        if any(phrase.lower() in lower for phrase in _SIRIL_WARNING_PHRASES):
+            warnings.append(text.strip())
+    return warnings
+
+
+_IMAGE_PORT_TYPES = {"image/fits", "image/png"}
+
+_CHANNEL_NAMES_BY_COUNT: dict[int, list[str]] = {
+    1: ["L"],
+    2: ["L", "A"],
+    3: ["R", "G", "B"],
+    4: ["R", "G", "B", "A"],
+}
+
+
+@app.get("/api/jobs/{job_id}/quality")
+def get_job_quality(job_id: str) -> dict[str, Any]:
+    """Per-image quality metrics for a completed job whose primary output is an image.
+
+    - 404 if the job doesn't exist
+    - 409 if the job hasn't finished yet
+    - 400 if the primary output isn't an image port
+    """
+    record = job_manager.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    if record.status not in ("completed",):
+        raise HTTPException(
+            status_code=409,
+            detail=f"job {job_id} has not completed (status={record.status!r})",
+        )
+    if not record.outputs:
+        raise HTTPException(status_code=400, detail=f"job {job_id} has no outputs")
+
+    # Pick the first image-typed Ref from the job's outputs.
+    # The template.outputs maps public_name -> "<node_id>.<port>"; job outputs
+    # use the same public keys.
+    target_ref = None
+    for _pub_name, ref in record.outputs.items():
+        if str(ref.type) in _IMAGE_PORT_TYPES:
+            target_ref = ref
+            break
+
+    if target_ref is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"job {job_id} has no image output (found: "
+            + ", ".join(str(r.type) for r in record.outputs.values())
+            + ")",
+        )
+
+    try:
+        arr = _load_image_array(target_ref.path, str(target_ref.type))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"failed to load image: {exc}"
+        ) from exc
+
+    h, w, c = arr.shape
+    channel_names = _CHANNEL_NAMES_BY_COUNT.get(c, [str(i) for i in range(c)])
+    channels: list[dict[str, Any]] = []
+    for i in range(c):
+        stats = _channel_stats(arr[:, :, i])
+        stats["name"] = channel_names[i] if i < len(channel_names) else str(i)
+        # Reorder so 'name' comes first for readability.
+        channels.append({"name": stats.pop("name"), **stats})
+
+    background = _background_stats(arr[:, :, 0] if c == 1 else np.mean(arr, axis=2))
+    color_bal = _color_balance(channels)
+    dtype_name = arr.dtype.name
+
+    return {
+        "output_ref": {"path": str(target_ref.path), "type": str(target_ref.type)},
+        "dimensions": {"width": w, "height": h, "channels": c, "dtype": dtype_name},
+        "channels": channels,
+        "background": background,
+        "color_balance": color_bal,
+        "siril_warnings": _siril_warnings(record),
+    }
+
+
 _EVENT_POLL_SECONDS = 0.25
 
 
