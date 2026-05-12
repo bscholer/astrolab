@@ -38,6 +38,12 @@ class GraxpertParams(BaseModel):
         description="Off by default. GraXpert is expensive (AI inference + a "
         "multi-GB model download on first run); flip on once you've seen the "
         "stretched stack and want a cleaner gradient or denoise pass.",
+        json_schema_extra={
+            "agent_hint": (
+                "Enable when the stretched image shows a visible sky gradient"
+                " or patchy noise that Siril's polynomial removal missed."
+            ),
+        },
     )
     mode: Literal["bg_extract", "denoise"] = Field(
         default="bg_extract",
@@ -46,6 +52,12 @@ class GraxpertParams(BaseModel):
         "Siril's seqsubsky for cases where polynomial fits leave residual "
         "structure). 'denoise' applies the AI denoiser to a stretched "
         "image; safe to run after stretch.",
+        json_schema_extra={
+            "agent_hint": (
+                "Use 'bg_extract' for a mottled or gradient background;"
+                " 'denoise' to quiet grain in a stretched image."
+            ),
+        },
     )
     smoothing: float = Field(
         default=0.0,
@@ -57,6 +69,10 @@ class GraxpertParams(BaseModel):
         json_schema_extra={
             "hash_precision": 2,
             "ui_when": {"mode": "bg_extract"},
+            "agent_hint": (
+                "Higher smoothing is safer near extended nebulae;"
+                " lower can over-subtract faint diffuse emission."
+            ),
         },
     )
     correction: Literal["Subtraction", "Division"] = Field(
@@ -67,6 +83,10 @@ class GraxpertParams(BaseModel):
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"mode": "bg_extract"},
+            "agent_hint": (
+                "Subtraction is correct for light-pollution glow;"
+                " Division is for vignetting-style multiplicative gradients."
+            ),
         },
     )
     strength: float = Field(
@@ -78,6 +98,10 @@ class GraxpertParams(BaseModel):
         json_schema_extra={
             "hash_precision": 2,
             "ui_when": {"mode": "denoise"},
+            "agent_hint": (
+                "Higher removes more grain but blurs fine star and nebula detail;"
+                " 0.5 is a good starting point."
+            ),
         },
     )
     use_gpu: bool = Field(
@@ -86,7 +110,13 @@ class GraxpertParams(BaseModel):
         "GPU device is visible to the process (auto-detected via "
         "/dev/nvidia0), False otherwise. CPU inference is ~10x slower but "
         "is the only option on Docker without --gpus all.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Auto-detected from /dev/nvidia0. Force-on rarely helps;"
+                " force-off is only useful for reproducing CPU results."
+            ),
+        },
     )
 
 

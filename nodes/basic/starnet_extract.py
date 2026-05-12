@@ -44,6 +44,12 @@ class StarnetExtractParams(BaseModel):
         "when you want to process the starless layer differently from the "
         "stars (deeper stretch, denoise, color tweak, etc.) before "
         "recombining.",
+        json_schema_extra={
+            "agent_hint": (
+                "Enable when stars are bloated or you want to stretch nebulosity"
+                " more aggressively without blowing out star cores."
+            ),
+        },
     )
     stride: int = Field(
         default=256,
@@ -52,7 +58,13 @@ class StarnetExtractParams(BaseModel):
         description="StarNet++ tile stride in pixels. Smaller = more "
         "overlap = cleaner edges, but slower. 256 is StarNet's default; "
         "drop to 128 for very dense star fields.",
-        json_schema_extra={"ui_section": "advanced"},
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Smaller stride gives smoother star removal at tile boundaries;"
+                " drop to 128 if you see grid artifacts in dense fields."
+            ),
+        },
     )
 
 
