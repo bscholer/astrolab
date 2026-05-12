@@ -1,7 +1,10 @@
 id: calibrate_register_stack
-version: 14
+version: 15
 # v13 added an rgb_equal node between auto_bp_shift and stretch; v14 removes
 # it after testing showed the extra equalization pass was not needed in practice.
+# v15 inserts a color_balance (SCNR green) step between crop and auto_bp_shift
+# because every OSC stack we shipped came out with a visible green wash that
+# the rejection stack's -rgb_equal alone couldn't kill.
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script
   (https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py):
@@ -11,6 +14,7 @@ description: |
             registration nodata) -> graxpert_bg (AI background, optional;
             linear) -> graxpert_denoise (AI denoise, optional; linear)
             -> crop (interactive composition crop, off by default) ->
+            color_balance (SCNR green, on by default for OSC) ->
             auto_bp_shift (linear black-point shift; on by default,
             1% clip) -> stretch (autostretch by default) ->
             starnet_extract (split, optional; needs stretched input)
@@ -163,6 +167,19 @@ nodes:
     inputs:
       image: graxpert_denoise.image
 
+  - id: color_balance
+    kind: color_balance
+    # SCNR green (rmgreen) to kill the OSC Bayer-matrix green cast. Runs
+    # in the linear domain so the subsequent autostretch curve operates
+    # on color-neutral data instead of amplifying the green wash into a
+    # permanent stained look. On by default for OSC; flip off for targets
+    # where green emission is genuinely present.
+    params:
+      enabled: true
+      amount: 0.85
+    inputs:
+      image: crop.image
+
   - id: auto_bp_shift
     kind: auto_bp_shift
     # Linear black-point shift sized to a target clip fraction. The
@@ -175,7 +192,7 @@ nodes:
       enabled: true
       clip_fraction: 0.01
     inputs:
-      image: crop.image
+      image: color_balance.image
 
   - id: stretch
     kind: stretch
