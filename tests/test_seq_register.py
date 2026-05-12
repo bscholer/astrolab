@@ -517,6 +517,45 @@ def test_seq_has_registration_false_without_r1_lines(tmp_path: Path) -> None:
     assert _seq_has_registration(seq_file) is False
 
 
+def test_seq_has_registration_false_for_all_null_matrices(tmp_path: Path) -> None:
+    """_seq_has_registration returns False when all R1 lines have null matrices (last field 0).
+
+    seqplatesolve writes null R1 entries for frames it could not solve. When ALL
+    frames fail, the last field of every R1 line is '0'. seqapplyreg refuses to
+    apply null matrices ("null matrices, no transformation would be applied").
+    """
+    seq_file = tmp_path / "test.seq"
+    seq_file.write_text(
+        "#Siril sequence file.\n"
+        "S 'bkg_pp_light_' 1 3 3 5 1 6 0 0 0\n"
+        "L 3\n"
+        "I 1 1\n"
+        "I 2 1\n"
+        "I 3 1\n"
+        "R1 8.5 8.5 0.6 0 0.007 1564 H 0 0 0 0 0 0 0 0 0\n"
+        "R1 5.1 5.1 0.8 0 0.007 243 H 0 0 0 0 0 0 0 0 0\n"
+        "R1 4.7 4.7 0.8 0 0.007 154 H 0 0 0 0 0 0 0 0 0\n"
+    )
+    assert _seq_has_registration(seq_file) is False
+
+
+def test_seq_has_registration_true_with_mixed_null_and_valid(tmp_path: Path) -> None:
+    """_seq_has_registration returns True when at least one R1 line has last field 1."""
+    seq_file = tmp_path / "test.seq"
+    seq_file.write_text(
+        "#Siril sequence file.\n"
+        "S 'bkg_pp_light_' 1 3 2 5 1 6 0 0 0\n"
+        "L 3\n"
+        "I 1 1\n"
+        "I 2 0\n"
+        "I 3 1\n"
+        "R1 8.5 8.5 0.6 0 0.007 1564 H 0 0 0 0 0 0 0 0 0\n"
+        "R1 5.1 5.1 0.8 0 0.007 243 H 1.0 0.003 -14.6 0.003 -1.0 2161.0 1e-09 -1e-09 1\n"
+        "R1 4.7 4.7 0.8 0 0.007 154 H 0 0 0 0 0 0 0 0 0\n"
+    )
+    assert _seq_has_registration(seq_file) is True
+
+
 def test_seq_has_registration_false_for_missing_file(tmp_path: Path) -> None:
     """_seq_has_registration returns False when the file doesn't exist."""
     assert _seq_has_registration(tmp_path / "nonexistent.seq") is False
