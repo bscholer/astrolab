@@ -55,7 +55,13 @@ class SeqOffsetParams(BaseModel):
         "OSC factory-dark calibration. Set to 0 to skip the offset (passes "
         "through unchanged) — useful when calibration already produces "
         "non-negative data.",
-        json_schema_extra={"hash_precision": 4},
+        json_schema_extra={
+            "hash_precision": 4,
+            "agent_hint": (
+                "Set just high enough to lift negative pixels to zero; too high"
+                " raises the background brightness and makes the final sky look milky."
+            ),
+        },
     )
 
 

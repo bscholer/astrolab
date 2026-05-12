@@ -26,6 +26,7 @@ Endpoints:
 - GET  /api/storage                      cache size + per-project breakdown
 - GET  /api/system                       host telemetry (CPU/mem/disk/GPU + jobs)
 - POST /api/storage/cleanup              run eviction sweep
+- GET  /api/nodes                        node catalog (kinds, params, agent_hints)
 - GET  /api/settings                     read system settings
 - PATCH /api/settings                    update settings (cache_max_bytes)
 
@@ -85,6 +86,7 @@ from server.jobs import JobManager
 from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_preview
 from server.projects import ProjectManager, ProjectNotFound
+from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
@@ -1251,6 +1253,122 @@ def rerun_job(job_id: str) -> SubmitJobResponse:
 @app.get("/api/templates")
 def list_templates_endpoint() -> list[dict]:
     return [t.model_dump(mode="json") for t in list_templates()]
+
+
+@app.get("/api/nodes")
+def list_nodes_endpoint() -> dict[str, Any]:
+    """Return a catalog of every registered node with its metadata and params schema.
+
+    Keys are node kind strings (variant appended as '/variant' when set).
+    Param entries include type, default, constraints (ge/le/gt/lt/Literal),
+    description, agent_hint, ui_section, and ui_hidden from json_schema_extra.
+    """
+    catalog: dict[str, Any] = {}
+    for kind, variant in all_kinds():
+        node_cls = _REGISTRY[(kind, variant)]
+        key = kind if variant is None else f"{kind}/{variant}"
+        catalog[key] = _describe_node(node_cls)
+    return catalog
+
+
+def _describe_node(node_cls: type) -> dict[str, Any]:
+    """Build the catalog entry for a single node class."""
+    inputs = {port: pt.value for port, pt in node_cls.inputs.items()}
+    outputs = {port: pt.value for port, pt in node_cls.outputs.items()}
+
+    params_schema = node_cls.params_schema
+    schema = params_schema.model_json_schema()
+    properties = schema.get("properties", {})
+    params: dict[str, Any] = {}
+    for field_name, field_info in params_schema.model_fields.items():
+        prop = properties.get(field_name, {})
+        params[field_name] = _describe_param(field_name, field_info, prop)
+
+    return {
+        "version": node_cls.version,
+        "cost": node_cls.cost,
+        "uses_siril": node_cls.uses_siril,
+        "inputs": inputs,
+        "outputs": outputs,
+        "params": params,
+    }
+
+
+def _describe_param(field_name: str, field_info: Any, prop: dict) -> dict[str, Any]:
+    """Serialize a single param field into the catalog schema."""
+    from pydantic.fields import FieldInfo
+
+    extra: dict = {}
+    if isinstance(field_info, FieldInfo) and field_info.json_schema_extra:
+        if callable(field_info.json_schema_extra):
+            pass  # schema modifier functions are not dicts; skip
+        else:
+            extra = dict(field_info.json_schema_extra)
+
+    # Resolve the Python type name from the JSON schema 'type' or 'anyOf'.
+    raw_type = prop.get("type")
+    if raw_type is None:
+        # anyOf is used for Optional[...]; pick the non-null branch.
+        any_of = prop.get("anyOf", [])
+        non_null = [t.get("type") for t in any_of if t.get("type") != "null"]
+        raw_type = non_null[0] if non_null else None
+    # Translate JSON Schema type names to friendlier ones.
+    type_map = {"number": "float", "integer": "int", "string": "str", "boolean": "bool"}
+    param_type = type_map.get(raw_type or "", raw_type or "unknown")
+
+    # Detect Literal[...] from JSON Schema 'enum'.
+    enum_values = prop.get("enum")
+    if enum_values is not None:
+        param_type = f"Literal{enum_values!r}"
+
+    # Constraint extraction.
+    constraints: dict[str, Any] = {}
+    for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
+        if key in prop:
+            alias = {
+                "minimum": "ge",
+                "maximum": "le",
+                "exclusiveMinimum": "gt",
+                "exclusiveMaximum": "lt",
+            }[key]
+            constraints[alias] = prop[key]
+
+    # JSON Schema draft 2020 also puts constraints directly in anyOf branches.
+    for branch in prop.get("anyOf", []):
+        for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
+            if key in branch:
+                alias = {
+                    "minimum": "ge",
+                    "maximum": "le",
+                    "exclusiveMinimum": "gt",
+                    "exclusiveMaximum": "lt",
+                }[key]
+                constraints[alias] = branch[key]
+
+    default = (
+        field_info.default
+        if isinstance(field_info, FieldInfo)
+        else prop.get("default")
+    )
+    description = (
+        prop.get("description")
+        or (field_info.description if isinstance(field_info, FieldInfo) else None)
+        or ""
+    )
+    # agent_hint may be a concatenated string (tuple in source); resolve it.
+    raw_hint = extra.get("agent_hint", "")
+    agent_hint = raw_hint if isinstance(raw_hint, str) else " ".join(raw_hint)
+
+    entry: dict[str, Any] = {
+        "type": param_type,
+        "default": default,
+        "constraints": constraints,
+        "description": description,
+        "agent_hint": agent_hint,
+        "ui_section": extra.get("ui_section", ""),
+        "ui_hidden": extra.get("ui_hidden", False),
+    }
+    return entry
 
 
 class SubmitFromSessionRequest(BaseModel):

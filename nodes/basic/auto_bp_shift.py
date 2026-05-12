@@ -50,6 +50,12 @@ class AutoBpShiftParams(BaseModel):
         description="When off the node passes the input through unchanged. "
         "Default on: the linear BP shift is a near-universal first step "
         "before a non-linear stretch and the cost is negligible.",
+        json_schema_extra={
+            "agent_hint": (
+                "Disabling leaves a high background pedestal that makes"
+                " the subsequent stretch look washed out."
+            ),
+        },
     )
     clip_fraction: float = Field(
         default=0.01,
@@ -60,7 +66,13 @@ class AutoBpShiftParams(BaseModel):
         "matches the manual 'crank BP until ~1% clipped' workflow. 0 leaves "
         "the BP at the data minimum (linear rescale only, no clipping). "
         "Values above ~0.05 will start crushing real signal — careful.",
-        json_schema_extra={"hash_precision": 5},
+        json_schema_extra={
+            "hash_precision": 5,
+            "agent_hint": (
+                "Higher clips more background to black, giving a punchier image;"
+                " above 0.05 you start losing faint nebula detail."
+            ),
+        },
     )
 
 

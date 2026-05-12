@@ -46,6 +46,12 @@ class SeqBgExtractParams(BaseModel):
         "is what Naztronomy's script uses and is right for most light-pollution "
         "gradients; bump to 2-3 only if you have curved gradients (vignetting "
         "leaking through bad flats, very wide-field optics).",
+        json_schema_extra={
+            "agent_hint": (
+                "Higher degree removes curved gradients but risks over-fitting"
+                " and eating into faint nebulosity."
+            ),
+        },
     )
     samples: int = Field(
         default=10,
@@ -53,6 +59,12 @@ class SeqBgExtractParams(BaseModel):
         le=50,
         description="Number of background samples per frame. Naztronomy uses 10. "
         "More samples = smoother model but slower.",
+        json_schema_extra={
+            "agent_hint": (
+                "More samples produce a smoother gradient model;"
+                " fewer risk a patchy background."
+            ),
+        },
     )
 
 
