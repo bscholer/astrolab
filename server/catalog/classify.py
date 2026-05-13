@@ -180,6 +180,36 @@ def _detect_quality(path: Path) -> Quality:
     return "failed" if path.name.startswith("failed_") else "ok"
 
 
+def _is_derived_frame(header: dict[str, Any]) -> bool:
+    """Return True if the header marks this file as a Siril-derived product
+    rather than a raw sub.
+
+    Two independent signals, OR'd together:
+
+    - ``STACKCNT >= 2`` — FITS-standard "number of frames combined". A raw
+      single exposure can't have this; any value >= 2 means the file is a
+      master (stack of lights, master dark/flat/bias, etc.).
+    - ``PROGRAM`` starting with ``Siril`` — Siril stamps this on every FITS
+      it writes, including the per-frame outputs of ``seqextract_HaOIII``
+      which don't carry STACKCNT but are still not raw subs (each one is
+      one channel extracted from a Bayer sub).
+
+    Either is sufficient: a Siril stack hits both, a Siril extraction hits
+    only PROGRAM. Derived files like these belong in the masters table (or
+    not in the catalog at all); routing them through the frames pipeline
+    spawns ghost sessions with derivative FILTER strings like ``Astro_Ha``
+    or ``mixed`` that the matcher can't do anything useful with.
+    """
+    stackcnt = header.get("STACKCNT")
+    if stackcnt is not None:
+        try:
+            if int(stackcnt) >= 2:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return _hstr(header, "PROGRAM").lower().startswith("siril")
+
+
 def classify(header: dict[str, Any], path: Path) -> Classified | None:
     """Return the classifier's decision for one FITS file, or ``None`` to skip.
 
@@ -195,6 +225,9 @@ def classify(header: dict[str, Any], path: Path) -> Classified | None:
     for prefix in SKIP_FILENAME_PREFIXES:
         if name.startswith(prefix):
             return None
+
+    if _is_derived_frame(header):
+        return None
 
     scope_id = detect_scope(header)
     if scope_id is None:
