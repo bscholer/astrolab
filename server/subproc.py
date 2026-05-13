@@ -78,6 +78,11 @@ def make_line_progress_handler(
     """
 
     state = _ProgressState()
+    # Seed the high-water mark at the band floor: nodes typically call
+    # ctx.progress(low_ish, "running ...") right before handing off to the
+    # subprocess, and we don't want the first heartbeat tick (band/60) to
+    # appear to drop the bar below that.
+    state.last_frac = low
     band = high - low
     heartbeat_cap = low + band * 0.8
 
