@@ -220,9 +220,12 @@
   // Track multi-mode submission so we can disable both buttons during it.
   let runningMulti = $state(false);
   // The first checked session 'anchors' the bundle: every other session must
-  // share its target/gain/exptime/filter/instrument/binning. The anchor is
-  // the lowest-id session in the set so the rule is stable as the user
-  // toggles checkboxes around.
+  // share its target/gain/filter/instrument/binning. The anchor is the
+  // lowest-id session in the set so the rule is stable as the user toggles
+  // checkboxes around. `exptime` is intentionally NOT in this list — the
+  // calibrate node picks the right dark per (exptime, temp) bin so mixed-
+  // exposure bundles are valid. Keep this list in sync with backend
+  // job_builder.COMPAT_FIELDS.
   function getAnchor(detail: TargetDetail | undefined): SessionSummary | null {
     if (!detail || selectedSessionIds.size === 0) return null;
     const id = Math.min(...selectedSessionIds);
@@ -232,7 +235,6 @@
     'instrument',
     'camera',
     'filter',
-    'exptime',
     'gain',
     'binning'
   ] as const;
@@ -240,7 +242,6 @@
     instrument: 'instrument',
     camera: 'camera',
     filter: 'filter',
-    exptime: 'exposure',
     gain: 'gain',
     binning: 'binning'
   };
