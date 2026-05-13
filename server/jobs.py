@@ -33,6 +33,7 @@ from typing import Any, Literal, cast
 
 from .cache import ContentCache
 from .catalog.db import connect as open_catalog_db
+from .catalog.db import retry_on_locked
 from .models import Job, Ref, Template
 from .ports import PortType
 from .runtime import JobCancelled, RunError, run_job
@@ -393,6 +394,7 @@ class JobManager:
 
     # -- public API --------------------------------------------------------
 
+    @retry_on_locked
     def submit(self, template: Template, job: Job, *, force: bool = False) -> str:
         job_id = str(uuid.uuid4())
         submitted_at = _now()
@@ -427,6 +429,7 @@ class JobManager:
             conn.close()
         return job_id
 
+    @retry_on_locked
     def cancel(self, job_id: str) -> bool:
         """Flip cancel_requested. The worker's monitor thread sees it and
         sets its threading.Event. Returns True when the row was live
@@ -506,6 +509,7 @@ class JobWorker:
     def db_path(self) -> Path | None:
         return self._db_path
 
+    @retry_on_locked
     def reclaim_stale(self) -> int:
         """Mark abandoned 'running' rows as interrupted.
 
@@ -555,6 +559,7 @@ class JobWorker:
             conn.close()
         return reclaimed
 
+    @retry_on_locked
     def claim_next_queued(self) -> JobRecord | None:
         """Atomic claim of the oldest queued row. Returns the claimed
         record (with status='running') or None if the queue is empty."""
@@ -675,6 +680,7 @@ class JobWorker:
             monitor_stop.set()
             monitor_thread.join(timeout=5)
 
+    @retry_on_locked
     def _terminate(
         self,
         record: JobRecord,
@@ -749,6 +755,7 @@ class JobWorker:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _heartbeat(self, job_id: str) -> None:
         conn = open_catalog_db(self._db_path)
         try:
@@ -770,6 +777,7 @@ class JobWorker:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _emit_event(self, job_id: str, event: JobEvent) -> None:
         conn = open_catalog_db(self._db_path)
         try:

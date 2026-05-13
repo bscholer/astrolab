@@ -530,3 +530,44 @@ def open_db(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def retry_on_locked(fn):
+    """Retry a DB-touching callable on `OperationalError: database is locked`.
+
+    `busy_timeout = 10000` inside connect() absorbs nearly all writer-vs-
+    writer contention, but the rare WAL-checkpoint and journal-mode windows
+    can still surface SQLITE_BUSY. When that happens inside _emit_event mid-
+    pipeline (calibrate fires dozens of progress events; one unlucky one
+    crashed the run), the exception bubbles out of ctx.progress and fails
+    the whole job. This wrapper catches the locked/busy variants, sleeps
+    with jittered exponential backoff, and re-invokes the callable. Any
+    other OperationalError (schema mismatch, malformed disk image, ...)
+    passes straight through.
+
+    Wraps the entire callable, so each retry reopens its own connection;
+    callers don't need to share state across attempts.
+    """
+    import functools
+    import random
+    import time as _time
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        attempts = 8
+        delay = 0.03
+        for i in range(attempts):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if "locked" not in msg and "busy" not in msg:
+                    raise
+                if i == attempts - 1:
+                    raise
+                _time.sleep(delay + random.random() * delay)
+                delay = min(delay * 2, 1.0)
+        # Unreachable; the loop either returns or re-raises.
+        return None  # pragma: no cover
+
+    return wrapper
