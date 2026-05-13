@@ -21,6 +21,7 @@
     formatBytes,
     formatFailPct,
     failPctClass,
+    filterBadgeClass,
     formatIntegrationTime,
   } from '$lib/format';
   import Checkbox from '$lib/Checkbox.svelte';
@@ -100,18 +101,7 @@
     extrasAfterNotes,
   }: Props = $props();
 
-  /** Classify a filter string into one of the three styled badge variants
-   *  the design spec calls out. Anything unrecognized falls through to
-   *  neutral (same treatment as VIS). */
-  function filterBadgeClass(f: string | null | undefined): string {
-    if (!f) return '';
-    const k = f.toLowerCase();
-    if (k.includes('duo') || k.includes('narrow') || k === 'ha' || k.includes('oiii') || k.includes('sii'))
-      return 'filter-badge filter-duoband';
-    if (k.includes('astro') || k.includes('broad') || k.includes('rgb') || k.includes('lum'))
-      return 'filter-badge filter-astro';
-    return 'filter-badge filter-neutral';
-  }
+
 </script>
 
 <li class="session" class:dim={selectable?.disabled && !selectable.checked}>
@@ -304,34 +294,6 @@
     align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
-  }
-
-  /* Filter badge: small pill, color-coded by broad family.
-     Astro -> cool blue, Duo-Band -> green tint, anything else -> neutral
-     grey. Renders only when the parent passes a non-empty filter
-     string (we short-circuit above). No uppercase: filter names like
-     "Ha", "OIII", "Sii" carry case as signal. */
-  .filter-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.15rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    letter-spacing: 0.03em;
-    line-height: 1.2;
-    font-weight: 600;
-  }
-  .filter-badge.filter-astro {
-    background: rgba(95, 175, 250, 0.18);
-    color: #9ec8ff;
-  }
-  .filter-badge.filter-duoband {
-    background: rgba(94, 234, 212, 0.18);
-    color: #7fd8c4;
-  }
-  .filter-badge.filter-neutral {
-    background: var(--bg-soft, rgba(255, 255, 255, 0.06));
-    color: var(--fg-mute);
   }
 
   /* incompat-chip / reassign-btn / cal-row are copied verbatim so the

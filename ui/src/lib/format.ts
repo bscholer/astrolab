@@ -41,6 +41,38 @@ export function formatFailPct(failed: number, total: number): string {
 }
 
 /**
+ * Filter badge classification. Each rule maps a set of keyword tests to a
+ * CSS modifier class. Rules are checked top-to-bottom; first match wins.
+ * Add new filter families here — the class name is the only thing that
+ * needs to change when a new badge variant ships.
+ */
+const FILTER_RULES: { test: (k: string) => boolean; cls: string }[] = [
+  {
+    // Narrowband: Ha, OIII, SII, Duo-Band, any "narrow" suffix
+    test: (k) =>
+      k === 'ha' || k.includes('oiii') || k.includes('sii') ||
+      k.includes('duo') || k.includes('narrow'),
+    cls: 'filter-narrowband',
+  },
+  {
+    // Broadband: Astro, UV/IR cut, L, Lum, RGB, "broad" suffix
+    test: (k) =>
+      k.includes('astro') || k.includes('uv/ir') || k === 'l' ||
+      k.includes('lum') || k.includes('rgb') || k.includes('broad'),
+    cls: 'filter-broadband',
+  },
+];
+
+/** CSS class string for a filter badge. Always includes `filter-badge`; adds
+ *  a variant modifier when the filter name matches a known family. */
+export function filterBadgeClass(f: string | null | undefined): string {
+  if (!f) return 'filter-badge';
+  const k = f.toLowerCase();
+  const rule = FILTER_RULES.find((r) => r.test(k));
+  return rule ? `filter-badge ${rule.cls}` : 'filter-badge';
+}
+
+/**
  * CSS class hint for the failure pill. Pairs with .fail-pct in page
  * styles: zero gets a quiet good-color treatment, normal gets warn,
  * a quarter or more gets the loud bad treatment.
