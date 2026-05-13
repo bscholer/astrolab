@@ -176,14 +176,8 @@
       {#if modifiedCount > 0}
         <span
           class="badge-modified"
-          title="{modifiedCount} modified parameter{modifiedCount === 1 ? '' : 's'}"
-        >
-          {#if isExpanded}
-            {modifiedCount} modified
-          {:else}
-            ●{modifiedCount}
-          {/if}
-        </span>
+          title="{modifiedCount} param{modifiedCount === 1 ? '' : 's'} modified"
+        >●{modifiedCount}</span>
       {/if}
       {#if togglable}
         <button
@@ -392,6 +386,11 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+  @keyframes bar-shimmer {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+
   .head-progress {
     position: absolute;
     left: 0;
@@ -400,6 +399,14 @@
     background: var(--accent);
     transition: width 200ms ease;
     z-index: 2;
+    overflow: hidden;
+  }
+  .head-progress::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+    animation: bar-shimmer 2.2s linear infinite;
   }
   .preview-stretch-badge {
     position: absolute;
@@ -444,16 +451,6 @@
   .head-overlay > .badge-modified,
   .head-overlay > .output-tag,
   .head-overlay > .chevron { flex-shrink: 0; }
-  .node-row:not(.expanded) .badge-modified {
-    border: none;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 0.65rem;
-    padding: 0.05rem 0.45rem;
-    text-transform: none;
-    letter-spacing: 0;
-  }
   .output-tag {
     font-family: var(--font-mono);
     font-size: 0.6rem;
@@ -506,6 +503,14 @@
     background: var(--accent);
     transition: width 200ms ease;
     z-index: 2;
+    overflow: hidden;
+  }
+  .head-progress--bottom::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+    animation: bar-shimmer 2.2s linear infinite;
   }
 
   /* ---------- Body ---------- */
@@ -538,6 +543,8 @@
   @media (prefers-reduced-motion: reduce) {
     .flow-skeleton { animation: none; }
     .chevron { transition: none; }
+    .head-progress::after,
+    .head-progress--bottom::after { animation: none; }
   }
 
   /* ---------- Status pills ---------- */
@@ -631,15 +638,17 @@
   }
   .node-row.disabled .badge-modified { opacity: 0.7; }
 
+  /* Compact mod counter: just the dot-count in accent color, no border or
+     background so the step name keeps its width. Tooltip carries the full
+     "N params modified" text. */
   .badge-modified {
-    background: var(--accent-soft);
     color: var(--accent);
-    border: 1px solid var(--accent);
-    padding: 0.05rem 0.45rem;
-    border-radius: 999px;
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    opacity: 0.85;
+    padding: 0 0.1rem;
+    flex-shrink: 0;
+    cursor: default;
   }
   .no-params {
     margin: 0.2rem 0;
