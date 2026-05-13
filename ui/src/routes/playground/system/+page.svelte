@@ -1,8 +1,7 @@
 <!--
   System dashboard mock. Mirrors the real /system route we'll build next.
-  All data fabricated client-side and ticked on a 1.5s interval, matching
-  the /jobs polling cadence. Playground is `bare` so we paint our own
-  topbar to match the real layout.
+  All data fabricated client-side and ticked on a 1.5s interval. Playground
+  is `bare` so we paint our own topbar to match the real layout.
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
@@ -476,7 +475,6 @@
     <article class="card jobs-card">
       <header class="card-head">
         <h2>Now running</h2>
-        <a class="link mono small" href="/jobs">/jobs →</a>
       </header>
 
       <div class="counters">
@@ -505,7 +503,7 @@
           {#each snap.jobs.active as j (j.id)}
             <li class="active-job">
               <div class="aj-top">
-                <a class="aj-target" href="/jobs/{j.id}" title={j.id}>{j.target}</a>
+                <span class="aj-target" title={j.id}>{j.target}</span>
                 <span class="muted small mono">{fmtElapsed(j.started_at)}</span>
               </div>
               <div class="aj-meta muted small mono">{j.template}</div>
@@ -636,9 +634,6 @@
     letter-spacing: 0.08em;
     color: var(--fg-mute);
   }
-  .link { color: var(--fg-mute); }
-  .link:hover { color: var(--accent); }
-
   /* ---------- top metrics grid ---------- */
   .grid { display: grid; gap: 0.85rem; }
   .metrics {
