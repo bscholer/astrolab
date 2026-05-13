@@ -169,6 +169,7 @@ class SeqStackNode(Node[SeqStackParams]):
     version = 1
     cost = "expensive"
     uses_siril = True
+    preview_hidden = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"image": PortType.IMAGE_FITS}

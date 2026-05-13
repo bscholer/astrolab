@@ -714,15 +714,6 @@
     }
   }
 
-  async function copyToClipboard(text: string, msg = 'Copied to clipboard') {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success(msg);
-    } catch (e) {
-      toast.error(`Copy failed: ${(e as Error).message}`);
-    }
-  }
-
   function handleNodeOverrideChange(nodeId: string, partial: Record<string, unknown>) {
     patchQueue.onNodeOverrideChange(nodeId, partial);
     patchQueue.flush().then((updated) => { if (updated) onProjectUpdated(updated); });
@@ -993,7 +984,6 @@
           onNodeOverrideChange={handleNodeOverrideChange}
           onToggleEnabled={toggleNodeEnabled}
           onToggleCover={toggleCover}
-          onCopyPath={(path) => copyToClipboard(path, 'Copied output path')}
           finalOutputPort={nid === outputNodeId && finalOutput ? finalOutput[0] : undefined}
           finalOutputRef={nid === outputNodeId && finalOutput ? finalOutput[1] : undefined}
         />
@@ -1308,32 +1298,24 @@
     gap: 0.7rem;
   }
 
-  /* Prep strip: contiguous leading preview_hidden cards live here in a
-     flex-wrap row so they pack tightly side by side instead of leaving
-     a tall empty cell in the 4-col grid below. Each card is allowed
-     to flex with a 220px min so it stays readable; on narrow viewports
-     they wrap one-per-line. The strip sits above the main grid and
-     gets a small bottom margin so the prep phase reads as its own
-     band. */
+  /* Prep strip: contiguous leading preview_hidden cards (convert,
+     calibrate, resample, offset, bg_extract, stack) sit above the
+     main grid in a compact band. Mobile: single column so each card
+     gets the full width. Laptop+: 3-column grid so the 6 prep cards
+     form a tidy 2x3 block rather than a long one-card-wide rail.
+     Very wide screens keep the 3-column layout; the cards are compact
+     and there is no benefit to spreading them further. */
   .node-prep-strip {
     list-style: none;
     padding: 0;
     margin: 0 0 0.7rem;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
+    display: grid;
+    grid-template-columns: 1fr;
     gap: 0.7rem;
   }
-  .node-prep-strip > :global(.node-row) {
-    flex: 1 1 220px;
-    min-width: 220px;
-  }
-  /* On narrow viewports drop the min so two compact cards still fit
-     in a row before the wrap kicks in. */
-  @media (max-width: 480px) {
-    .node-prep-strip > :global(.node-row) {
-      flex-basis: 100%;
-      min-width: 0;
+  @media (min-width: 1024px) {
+    .node-prep-strip {
+      grid-template-columns: repeat(3, 1fr);
     }
   }
 
