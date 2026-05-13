@@ -163,6 +163,31 @@ body.project-page .container {
   font-variant-numeric: tabular-nums;
 }
 
+/* Filter badge — shared by SessionRow and the projects list.
+   Variant classes (.filter-narrowband, .filter-broadband) are produced by
+   filterBadgeClass() in format.ts; both match the rules dict there. */
+.filter-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+  border: 1px solid currentColor;
+  color: var(--fg-mute);
+  background: transparent;
+}
+.filter-badge.filter-narrowband {
+  color: #7fd8c4;
+  background: rgba(94, 234, 212, 0.12);
+}
+.filter-badge.filter-broadband {
+  color: #9ec8ff;
+  background: rgba(95, 175, 250, 0.12);
+}
+
 /* Stagger fade-up: each row reads in turn so lists land instead of
    slamming. Set --stagger inline (0,1,2,…) per row. */
 @keyframes rise-in {

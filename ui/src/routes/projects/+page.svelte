@@ -14,6 +14,7 @@
   import { toast } from '$lib/toast.svelte';
   import {
     failPctClass,
+    filterBadgeClass,
     formatBytes,
     formatFailPct,
     formatIntegrationTime,
@@ -35,19 +36,6 @@
     if (!s && !e) return '';
     if (!e || s === e) return s || e;
     return `${s} → ${e}`;
-  }
-
-  /** Class hint for the Astro/Duo-Band/etc. filter chip. Narrowband
-   * filters get the magenta treatment, broadband (Astro / UV/IR / L)
-   * the cool steel-blue. Falls through to a neutral chip otherwise. */
-  function filterClass(f: string | null | undefined): string {
-    if (!f) return '';
-    const k = f.toLowerCase();
-    if (k.includes('duo') || k.includes('ha') || k.includes('oiii') || k.includes('sii') || k.includes('narrow'))
-      return 'duoband';
-    if (k.includes('astro') || k.includes('uv/ir') || k === 'l' || k.includes('lum') || k.includes('rgb') || k.includes('broad'))
-      return 'astro';
-    return '';
   }
 
   let projects = $state<Project[] | null>(null);
@@ -238,7 +226,7 @@
               {/if}
               {#if r.capture.filter}
                 <span class="dot" aria-hidden="true">·</span>
-                <span class="filter-pill {filterClass(r.capture.filter)}">{r.capture.filter}</span>
+                <span class="{filterBadgeClass(r.capture.filter)}">{r.capture.filter}</span>
               {/if}
               {#if captureDateRange(r.capture)}
                 <span class="dot" aria-hidden="true">·</span>
@@ -452,27 +440,6 @@
   .fail-pct.fail-high {
     color: var(--bad);
     font-weight: 500;
-  }
-
-  /* Filter chip — narrowband / broadband at a glance. */
-  .filter-pill {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.05rem 0.45rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    letter-spacing: 0.02em;
-    border: 1px solid currentColor;
-    line-height: 1.4;
-    color: var(--fg-mute);
-  }
-  .filter-pill.astro {
-    color: #a3d8ff;
-    background: rgba(163, 216, 255, 0.10);
-  }
-  .filter-pill.duoband {
-    color: var(--bad);
-    background: color-mix(in oklab, var(--bad) 12%, transparent);
   }
 
   /* Project thumbnail — real preview from the current job's output.
