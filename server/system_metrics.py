@@ -23,7 +23,10 @@ import psutil
 from .catalog.db import connect as open_catalog_db
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .jobs import JobManager
+    from .projects import Project
 
 # psutil's first cpu_percent() call after import returns 0.0; priming it
 # at import time means the first endpoint hit reports a real value.
@@ -290,13 +293,13 @@ def _resolve_target_name(target_id: str | None, db_path: Path | None) -> str | N
 
 
 def _job_progress(record: Any, job_manager: Any | None = None) -> float:
-    """Cheap completed-nodes / total-nodes ratio.
+    """Step-aware completed-plus-current fraction of total nodes.
 
-    The runtime emits `node_completed` once per finished node; counting them
-    against the template's declared node list gives a monotonically increasing
-    fraction without scanning the (more verbose) `node_progress` stream. v1
-    accepts the coarse-grained value; finer-grained progress can layer in
-    later if anyone asks.
+    Coarse term: count `node_completed` / `node_cached` events; that gives a
+    monotone integer count of finished nodes. Fine-grained term: for the
+    most-recently-started node that hasn't completed yet, fold in the last
+    `node_progress` fraction we saw for it. The bar advances inside a single
+    node (e.g. Pedestal or Stack) instead of sitting flat for its duration.
 
     Events are read from `record.events` if populated (legacy/test code
     that synthesises records inline) and otherwise pulled from the job
@@ -315,17 +318,37 @@ def _job_progress(record: Any, job_manager: Any | None = None) -> float:
             events = job_manager.get_events(record.id)
         except Exception:
             events = []
-    completed = 0
-    seen_nodes: set[str] = set()
+
+    completed_nodes: set[str] = set()
+    # Per-node progress state. Tracks the last fraction we saw and whether the
+    # node is currently in-flight (started, not completed). Walking events in
+    # order keeps the rule simple: a later node_started supersedes earlier
+    # in-flight markers, a node_completed clears the in-flight flag.
+    last_started: str | None = None
+    fractions: dict[str, float] = {}
     for ev in events:
-        if (
-            ev.type in ("node_completed", "node_cached")
-            and ev.node_id is not None
-            and ev.node_id not in seen_nodes
-        ):
-            seen_nodes.add(ev.node_id)
-            completed += 1
-    return min(1.0, completed / total)
+        nid = ev.node_id
+        if ev.type in ("node_completed", "node_cached") and nid is not None:
+            completed_nodes.add(nid)
+            if last_started == nid:
+                last_started = None
+            fractions.pop(nid, None)
+        elif ev.type == "node_started" and nid is not None:
+            if nid not in completed_nodes:
+                last_started = nid
+                fractions.setdefault(nid, 0.0)
+        elif ev.type == "node_progress" and nid is not None:
+            if nid not in completed_nodes and ev.fraction is not None:
+                prev = fractions.get(nid, 0.0)
+                # Clamp to [0, 1] and stay monotone per node so a stray late
+                # event below the high-water mark doesn't yank the bar back.
+                fractions[nid] = max(prev, min(1.0, float(ev.fraction)))
+
+    completed = len(completed_nodes)
+    current_fraction = 0.0
+    if last_started is not None and last_started not in completed_nodes:
+        current_fraction = fractions.get(last_started, 0.0)
+    return min(1.0, (completed + current_fraction) / total)
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -337,7 +360,11 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
-def _jobs_block(job_manager: JobManager, now: datetime) -> dict[str, Any]:
+def _jobs_block(
+    job_manager: JobManager,
+    now: datetime,
+    project_lookup: Callable[[str], Project | None] | None = None,
+) -> dict[str, Any]:
     records = job_manager.list_jobs()
     queued = 0
     running = 0
@@ -363,11 +390,29 @@ def _jobs_block(job_manager: JobManager, now: datetime) -> dict[str, Any]:
 
         if r.status in ("queued", "running"):
             started_iso = r.started_at
+            project_id: str | None = None
+            project_name: str | None = None
+            project_version: int | None = None
+            if project_lookup is not None:
+                try:
+                    project = project_lookup(r.id)
+                except Exception:
+                    project = None
+                if project is not None:
+                    project_id = project.id
+                    project_name = project.name
+                    # current_seq is a 0-indexed history pointer; users see it
+                    # one-indexed everywhere else in the UI (the prow-thumb
+                    # version badge renders `v{current_seq + 1}`).
+                    project_version = int(project.current_seq) + 1
             active.append(
                 {
                     "id": r.id,
                     "target_name": _resolve_target_name(r.job.target_id, db_path),
                     "template_name": r.template.id,
+                    "project_id": project_id,
+                    "project_name": project_name,
+                    "project_version": project_version,
                     "started_at": started_iso,
                     "progress": _job_progress(r, job_manager) if r.status == "running" else 0.0,
                 }
@@ -404,12 +449,22 @@ def _now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def collect_system_metrics(job_manager: JobManager) -> dict[str, Any]:
+def collect_system_metrics(
+    job_manager: JobManager,
+    project_lookup: Callable[[str], Project | None] | None = None,
+) -> dict[str, Any]:
     """Return the full `/api/system` payload.
 
     Pure read of psutil + JobManager state. Safe to call from a request
     handler; the only mutable state mutated is `_DISK_IO_PREV` (for byte-rate
     deltas) and the lazy GPU/target-name caches.
+
+    `project_lookup` resolves a job id to the owning Project so each row in
+    the active-jobs list can render the user-facing project name + version
+    instead of the template id. The caller is responsible for handing in a
+    snapshot-safe accessor (e.g. ProjectManager.project_for_job); when None
+    is supplied, those fields come back null and the UI falls back to the
+    legacy target/template labels.
     """
     now = _now_utc()
     host = _host_block()
@@ -418,7 +473,7 @@ def collect_system_metrics(job_manager: JobManager) -> dict[str, Any]:
     working_path = job_manager.cache.root
     disk = _disk_block(working_path)
     gpu = _gpu_block()
-    jobs = _jobs_block(job_manager, now)
+    jobs = _jobs_block(job_manager, now, project_lookup=project_lookup)
 
     return {
         "host": host,

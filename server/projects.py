@@ -305,6 +305,22 @@ class ProjectManager:
         with self._lock:
             return list(self._records.values())
 
+    def project_for_job(self, job_id: str) -> Project | None:
+        """Find the project whose history contains `job_id`.
+
+        Linear scan over (projects x history); the typical library has a
+        handful of projects each with a short history so this stays cheap.
+        Callers (e.g. /api/system) hit this once per active job per poll, so
+        a per-call lookup beats maintaining a parallel index that has to
+        stay in sync with every history mutation.
+        """
+        with self._lock:
+            for project in self._records.values():
+                for entry in project.history:
+                    if entry.job_id == job_id:
+                        return project
+        return None
+
     def patch(
         self,
         project_id: str,

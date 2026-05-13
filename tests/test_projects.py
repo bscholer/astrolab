@@ -102,6 +102,35 @@ def pm(tmp_path: Path) -> tuple[ProjectManager, _FakeJobManager]:
     return pm, fake
 
 
+def test_project_for_job_finds_owning_project_across_history(pm) -> None:
+    """The /api/system dashboard uses this to render the project name on
+    each active job. Hit it across the initial render, a settled-then-
+    new history entry, and an unknown job id."""
+    manager, jobs = pm
+    project = manager.create(
+        name="M31",
+        template=_make_template(),
+        base_job=_make_job(),
+        source_session_ids=[],
+    )
+    initial_job_id = project.history[0].job_id
+
+    # Original render's job is reachable.
+    found = manager.project_for_job(initial_job_id)
+    assert found is not None and found.id == project.id
+
+    # Settle, then patch to grow history. Both history entries' jobs
+    # should resolve to the same project.
+    jobs.mark_completed(initial_job_id)
+    manager.patch(project.id, overrides={"ds": {"target_size_px": 32}})
+    new_job_id = project.history[-1].job_id
+    assert manager.project_for_job(new_job_id) is not None
+    assert manager.project_for_job(new_job_id).id == project.id
+
+    # Unknown ids return None rather than raising.
+    assert manager.project_for_job("does-not-exist") is None
+
+
 def test_rapid_patches_collapse_interrupted_history(pm) -> None:
     """A debounced slider drag fires N PATCHes in rapid succession; each
     cancels the prior in-flight job. Without collapse this would leave

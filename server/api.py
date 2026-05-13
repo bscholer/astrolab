@@ -2878,7 +2878,7 @@ def get_storage() -> dict:
 @app.get("/api/system")
 def get_system() -> dict:
     """Host telemetry for the dashboard: CPU/mem/disk/GPU and job stats."""
-    return collect_system_metrics(job_manager)
+    return collect_system_metrics(job_manager, project_lookup=project_manager.project_for_job)
 
 
 class CleanupRequest(BaseModel):
