@@ -27,15 +27,13 @@
     y: number;
     width: number;
     height: number;
-    /** Cost pill content for the form header. */
-    costLabel: string;
     /** Emit a partial overrides map for the parent to merge. */
     onchange: (next: { enabled: boolean; x: number; y: number; width: number; height: number }) => void;
     /** Reset the override back to template default (full frame, disabled). */
     onreset: () => void;
   }
 
-  const { previewUrl, enabled, x, y, width, height, costLabel, onchange, onreset }: Props = $props();
+  const { previewUrl, enabled, x, y, width, height, onchange, onreset }: Props = $props();
 
   // Local working box. Seed from props; commit (call onchange) on pointerup.
   // We don't reactively re-seed on every prop change because the user is
@@ -216,7 +214,6 @@
 
 <div class="form">
   <header class="form-head">
-    <span class="cost-pill">{costLabel}</span>
     <span class="muted small">crop</span>
     <span class="status-pill" class:on={enabled} class:off={!enabled}>
       {enabled ? 'on' : 'off'}
@@ -332,18 +329,6 @@
   .small { font-size: 0.8rem; }
   .muted { color: var(--fg-mute); }
 
-  .cost-pill {
-    display: inline-block;
-    padding: 0.05rem 0.45rem;
-    border-radius: 999px;
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-    background: rgba(94, 211, 168, 0.18);
-    color: var(--good);
-    border: 1px solid var(--good);
-  }
   .status-pill {
     display: inline-block;
     padding: 0.05rem 0.45rem;

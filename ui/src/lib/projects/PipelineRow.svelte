@@ -9,7 +9,7 @@
 <script lang="ts">
   import { fade, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
-  import { api, type CostClass, type Project, type TemplateNodeSchema } from '$lib/api';
+  import { api, type Project, type TemplateNodeSchema } from '$lib/api';
   import { isTogglable, nodeDisplayName } from '$lib/graph';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
@@ -27,7 +27,6 @@
     previewLoaded: boolean;
     isOutput: boolean;
     isExpanded: boolean;
-    closureCost: CostClass;
     /** The hash for the node that feeds this node's image input (for CropEditor). */
     upstreamHash: string | undefined;
     upstreamPort: string | undefined;
@@ -61,7 +60,6 @@
     previewLoaded,
     isOutput,
     isExpanded,
-    closureCost,
     upstreamHash,
     upstreamPort,
     durationMs,
@@ -289,7 +287,6 @@
               y={Number(eff('y') ?? 0)}
               width={Number(eff('width') ?? 1)}
               height={Number(eff('height') ?? 1)}
-              costLabel={closureCost}
               onchange={(next) => {
                 const partial: Record<string, unknown> = {};
                 for (const [k, v] of Object.entries(next)) {
@@ -307,7 +304,6 @@
               {schemaProps}
               defaults={fullDefaults}
               {overrides}
-              cost={closureCost}
               hideFields={togglable ? ['enabled'] : []}
               onchange={(next) => onNodeOverrideChange(nid, next)}
             />

@@ -3370,7 +3370,6 @@ def get_template_schema(template_id: str) -> dict:
                 "node_id": spec.id,
                 "kind": spec.kind,
                 "variant": spec.variant,
-                "cost": node_cls.cost,
                 "schema": schema,
                 "defaults": defaults,
                 "template_params": spec.params,

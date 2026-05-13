@@ -30,14 +30,13 @@
   drag is in progress.
 -->
 <script lang="ts">
-  import type { CostClass, JSONSchemaField } from '$lib/api';
+  import type { JSONSchemaField } from '$lib/api';
 
   interface Props {
     nodeId: string;
     schemaProps: Record<string, JSONSchemaField>;
     defaults: Record<string, unknown>;
     overrides: Record<string, unknown>;
-    cost: CostClass;
     onchange: (next: Record<string, unknown>) => void;
     /** Field names the form should NOT render. Used for fields the parent
      * surfaces directly (e.g. `enabled`, which has its own toggle on the
@@ -50,7 +49,6 @@
     schemaProps,
     defaults,
     overrides,
-    cost,
     onchange,
     hideFields = []
   }: Props = $props();
@@ -218,12 +216,6 @@
 </script>
 
 <div class="form">
-  <header class="form-head">
-    <span class="cost-pill cost-{cost}" title="Editing this node re-runs {cost} downstream work">
-      {cost}
-    </span>
-  </header>
-
   {#snippet paramControl(name: string, field: JSONSchemaField)}
     {@const ft = fieldType(field)}
     {@const val = effective(name)}
@@ -350,42 +342,11 @@
     flex-direction: column;
     gap: 0.55rem;
   }
-  .form-head {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.25rem;
-  }
   .small {
     font-size: 0.8rem;
   }
   .muted {
     color: var(--fg-mute, #888);
-  }
-
-  .cost-pill {
-    display: inline-block;
-    padding: 0.05rem 0.45rem;
-    border-radius: 999px;
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-  }
-  .cost-cheap {
-    background: rgba(94, 211, 168, 0.18);
-    color: var(--good, #5ed3a8);
-    border: 1px solid var(--good, #5ed3a8);
-  }
-  .cost-medium {
-    background: rgba(240, 179, 94, 0.18);
-    color: var(--warn, #f0b35e);
-    border: 1px solid var(--warn, #f0b35e);
-  }
-  .cost-expensive {
-    background: rgba(255, 122, 138, 0.18);
-    color: var(--bad, #ff7a8a);
-    border: 1px solid var(--bad, #ff7a8a);
   }
 
   .param {
