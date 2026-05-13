@@ -19,11 +19,30 @@ thing from scratch.
 3. Docker will ask for your password once to finish setup. After a minute or two
    you'll see a small whale icon in your menu bar — that means Docker is running.
 
-> **Apple Silicon note:** astrolab's image is built for Intel (amd64). It runs on
-> M-series Macs through an emulation layer and the core stacking pipeline works fine.
-> The AI-based background removal (GraXpert) and star removal (StarNet++) nodes will
-> crash on Apple Silicon due to an emulation bug outside our control. If you need
-> those nodes, run astrolab on a Linux machine instead.
+**Give Docker more resources:** Docker Desktop runs a small Linux VM in the background,
+and by default it gets a modest slice of your machine. Stacking jobs are CPU- and
+memory-intensive, so it's worth bumping those limits. Open Docker Desktop →
+**Settings → Resources** and set:
+- **CPU limit** — at least half your cores (e.g. 8 of 16)
+- **Memory limit** — 8 GB or more if you can spare it
+- **Virtual disk size** — 64 GB+ if you plan to process a lot of sessions; the cache
+  can grow
+
+Click **Apply & Restart** when done.
+
+> **Apple Silicon (M1/M2/M3/M4) note:** astrolab's image is built for Intel (amd64).
+> It runs on M-series Macs through an emulation layer and the core stacking pipeline
+> works fine. The AI-based background removal (GraXpert) and star removal (StarNet++)
+> nodes will crash on Apple Silicon due to an emulation bug outside our control. If you
+> need those nodes, run astrolab on a Linux machine instead.
+>
+> You will also see a warning like this when you run the container — it is expected and
+> harmless:
+>
+> ```
+> WARNING: The requested image's platform (linux/amd64) does not match the detected
+> host platform (linux/arm64/v8) and no specific platform was requested
+> ```
 
 ---
 
@@ -41,6 +60,13 @@ sets this up for you, but Windows needs a couple things first.
 5. Restart your computer when prompted.
 6. After restarting, launch Docker Desktop from the Start menu. The first launch
    takes a minute or two. When you see the Docker whale in the system tray, it's ready.
+
+**Give Docker more resources:** Open Docker Desktop → **Settings → Resources** and set:
+- **CPU limit** — at least half your cores
+- **Memory limit** — 8 GB or more if you can spare it
+- **Virtual disk size** — 64 GB+ if you plan to process a lot of sessions
+
+Click **Apply & Restart** when done.
 
 ---
 
@@ -63,19 +89,12 @@ docker run hello-world
 
 ## Step 2 — Find your captures folder
 
-astrolab needs to know where your raw image files live. The right path depends on
-which capture software you use:
+astrolab needs to know where your raw image files live. Point it at whichever folder
+contains your session subfolders — for Dwarf 3 users that's usually `~/Pictures/Siril`,
+for NINA or ASIAIR users it's wherever you configured or copied your images to.
 
-| Software | Typical path |
-|----------|-------------|
-| Dwarf Lab (Dwarf 3) | `~/Pictures/Siril` |
-| NINA | wherever you configured NINA's image directory |
-| ZWO ASIAIR | wherever you copy files off the ASIAIR SD card |
-| Seestar | wherever Seestar saves its sessions |
-| Manual / other | the folder that contains your session subfolders |
-
-You don't need to organise the files — astrolab scans the folder recursively and
-figures out sessions on its own.
+> **Note:** You don't need to organize the files in any particular way. astrolab scans
+> the folder recursively and figures out sessions on its own.
 
 ---
 
@@ -167,5 +186,5 @@ Something else on your machine is using port 8000. Change `-p 8000:8000` to
 `-p 8001:8000` and open http://localhost:8001 instead.
 
 **Container crashes immediately on Apple Silicon (M1/M2/M3/M4)**
-See the note in the macOS section above. The Siril-only pipeline works; the AI nodes
-(GraXpert, StarNet++) do not.
+See the Apple Silicon note in the macOS section above. The Siril-only pipeline works;
+the AI nodes (GraXpert, StarNet++) do not.
