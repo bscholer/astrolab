@@ -106,7 +106,10 @@
 
   const upstreamPreviewUrl = $derived.by(() => {
     if (!upstreamHash) return null;
-    return api.previewUrl(upstreamHash, upstreamPort ?? 'image');
+    // Use force_stretch so the crop editor always shows an autostretched
+    // preview regardless of whether the upstream node (e.g. graxpert) marks
+    // its output as display-ready linear data.
+    return api.previewUrlStretched(upstreamHash, upstreamPort ?? 'image');
   });
 </script>
 
