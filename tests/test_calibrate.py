@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import nodes.basic  # noqa: F401  registers calibrate
-from nodes.basic.calibrate import CalibrateNode, CalibrateParams
+from nodes.basic.calibrate import CalibrateNode, CalibrateParams, _scoped_progress_ctx
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.siril import SirilBinary, SirilResult
@@ -270,6 +270,50 @@ def _write_fits_light(path: Path, *, exptime: float, gain: int, ccd_temp: float)
     hdu.header["GAIN"] = gain
     hdu.header["DET-TEMP"] = ccd_temp
     hdu.writeto(str(path), overwrite=True)
+
+
+def test_scoped_progress_ctx_maps_group_fraction_into_overall_window(tmp_path: Path) -> None:
+    """Each per-group Siril call streams 0->1 progress within its slice.
+    The scoped ctx must map those into a monotonic window so the bar
+    doesn't reset every time the loop opens a new group.
+
+    Setup: 100 total frames, three groups of 30 + 50 + 20. The progress
+    window is [0.05, 0.95]. We record the fractions the parent ctx
+    sees as each group reports 0%, 50%, 100% locally and assert
+    they're monotonically increasing across the whole run, never
+    sliding backwards, and that the very last call lands at 0.95.
+    """
+    seen: list[float] = []
+
+    def parent_progress(f: float, _: str) -> None:
+        seen.append(f)
+
+    parent = RunContext(
+        tmpdir=tmp_path,
+        progress=parent_progress,
+        log=logging.getLogger("test"),
+    )
+
+    total = 100
+    groups: list[tuple[int, int]] = [(0, 30), (30, 50), (80, 20)]
+    for base, size in groups:
+        g = _scoped_progress_ctx(
+            parent, base_done=base, size=size, total=total,
+            progress_lo=0.05, progress_hi=0.95,
+        )
+        for f in (0.0, 0.5, 1.0):
+            g.progress(f, "siril log line")
+
+    # Strictly monotonic non-decreasing — no resets.
+    for a, b in zip(seen, seen[1:], strict=False):
+        assert b >= a - 1e-9, f"progress went backwards: {a} -> {b}"
+    # First call at first group's start = window floor.
+    assert seen[0] == pytest.approx(0.05)
+    # Last call at last group's end = window ceiling.
+    assert seen[-1] == pytest.approx(0.95)
+    # Mid-window probe: end of group 1 (30 done) maps to
+    # 0.05 + 0.9 * 30/100 = 0.32
+    assert seen[2] == pytest.approx(0.32, abs=1e-6)
 
 
 def test_calibrate_multi_dark_uses_dark_bins_param_for_metadata(

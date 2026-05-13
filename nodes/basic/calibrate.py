@@ -282,6 +282,42 @@ def _extract_fitseq_frames(fitseq_path: Path, dest_dir: Path, basename: str) -> 
     return written
 
 
+def _scoped_progress_ctx(
+    parent: RunContext,
+    *,
+    base_done: int,
+    size: int,
+    total: int,
+    progress_lo: float,
+    progress_hi: float,
+) -> RunContext:
+    """Return a RunContext whose `progress` rescales a per-group 0-1
+    fraction into the overall progress window.
+
+    Siril doesn't know it's only processing a slice of the bundle, so
+    it streams progress that climbs from 0 to ~1 within each group.
+    The naive passthrough makes the overall bar reset every time the
+    multi-dark loop starts a new group. The wrapper maps that local
+    fraction into `[progress_lo + span * base_done/total,
+    progress_lo + span * (base_done + size)/total]` so the bar moves
+    monotonically across all groups.
+
+    A fraction of 0 maps to the group's start; a fraction of 1 maps
+    to the group's end. Values outside [0, 1] are clamped so a noisy
+    Siril log line can't push the bar past the group boundary.
+    """
+    span = progress_hi - progress_lo
+    width = (size / total) * span if total > 0 else 0.0
+    base = progress_lo + (base_done / total) * span if total > 0 else progress_lo
+    parent_progress = parent.progress
+
+    def _wrapped(fraction: float, message: str) -> None:
+        clamped = 0.0 if fraction < 0.0 else (1.0 if fraction > 1.0 else fraction)
+        parent_progress(base + clamped * width, message)
+
+    return parent.model_copy(update={"progress": _wrapped})
+
+
 def _run_group_calibrate(
     *,
     group_dir: Path,
@@ -595,20 +631,40 @@ class CalibrateNode(Node[CalibrateParams]):
 
         total = sum(len(v) for v in groups.values())
         done = 0
+        # The header-read + dispatch span eats 5% off the top and the
+        # final merge another 5%; Siril's per-group progress maps into
+        # the 5%-95% middle so the bar moves monotonically across all
+        # groups instead of bouncing 0->100 per Siril invocation.
+        progress_lo = 0.05
+        progress_hi = 0.95
 
         for i, (dark_path, frames) in enumerate(groups.items(), start=1):
             ctx.progress(
-                0.05 + 0.9 * (done / max(total, 1)),
+                progress_lo + (progress_hi - progress_lo) * (done / max(total, 1)),
                 f"calibrate: group {i}/{len(groups)} "
                 f"({len(frames)} frames, dark={dark_path.name if dark_path else 'none'})",
             )
             group_dir = out_dir / f"_group_{i:03d}"
+            # Wrap ctx so Siril's per-group 0-1 fraction is scaled into the
+            # overall progress window. Without this the bar resets to ~0%
+            # at the top of every group (Siril doesn't know it's only
+            # processing a slice of the bundle).
+            group_base = done
+            group_size = len(frames)
+            group_ctx = _scoped_progress_ctx(
+                ctx,
+                base_done=group_base,
+                size=group_size,
+                total=total,
+                progress_lo=progress_lo,
+                progress_hi=progress_hi,
+            )
             outputs = _run_group_calibrate(
                 group_dir=group_dir,
                 frames=frames,
                 dark_path=dark_path,
                 params=params,
-                ctx=ctx,
+                ctx=group_ctx,
                 runtime=SirilRuntime(),
                 flat_ref=flat_ref,
                 bias_ref=bias_ref,
