@@ -44,7 +44,6 @@
       currentOverrides: Record<string, unknown>
     ) => void;
     onToggleCover: () => void;
-    onCopyPath: (path: string) => void;
     finalOutputPort: string | undefined;
     finalOutputRef: { node_hash: string; path: string } | undefined;
   };
@@ -71,7 +70,6 @@
     onNodeOverrideChange,
     onToggleEnabled,
     onToggleCover,
-    onCopyPath,
     finalOutputPort,
     finalOutputRef,
   }: Props = $props();
@@ -242,18 +240,6 @@
               <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
             </svg>
             {isCover ? 'Cover' : 'Set as cover'}
-          </button>
-          <button
-            type="button"
-            class="cover-btn"
-            onclick={() => onCopyPath(finalOutputRef!.path)}
-            title="Copy filesystem path"
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="9" y="9" width="13" height="13" rx="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-            Copy path
           </button>
           <a
             class="cover-btn"
