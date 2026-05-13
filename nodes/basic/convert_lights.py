@@ -50,7 +50,6 @@ class ConvertLightsParams(BaseModel):
         "debayer downstream after calibration; flip on only for OSC flows that "
         "skip calibration.",
         json_schema_extra={
-            "ui_section": "advanced",
             "agent_hint": (
                 "Leave off for the standard pipeline; enabling here and also at"
                 " calibration will double-debayer and ruin color."
