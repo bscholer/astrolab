@@ -60,13 +60,17 @@ class TooFewFrames(JobBuildError):
 
 
 class IncompatibleSessions(JobBuildError):
-    """Raised when a multi-session request bundles sessions that don't share
-    the metadata the stacker treats as identical (target, gain, exptime,
-    filter, instrument, camera, binning).
+    """Raised when a multi-session request bundles sessions that don't
+    share the metadata the stacker treats as identical (gain, filter,
+    instrument, camera, binning).
 
-    We keep this strict for now: dedicated DAGs for differing exposures /
-    filters are out of scope. The error names every conflicting field with
-    the offending values so the UI can render a useful diagnostic.
+    Target identity is intentionally NOT enforced here. It IS enforced
+    by the API layer (api._assert_sessions_share_target), which uses
+    canonical-group resolution so manually-retargeted sessions match
+    correctly. Doing raw target_id equality here would reject those
+    cases even after the API check passed. Keep validation logic in
+    one place; the stacker compat check focuses on stacking-relevant
+    fields only.
     """
 
 
@@ -75,14 +79,21 @@ MIN_FRAMES_FOR_STACK = 3
 # Fields a multi-session bundle must agree on before we will stack them.
 # Order matters only for stable error formatting.
 #
-# `exptime` is intentionally NOT in this list: the calibrate node now
-# accepts a list of master darks and selects the right one per-frame from
-# the bundle's per-bin matches, so a bundle that mixes 30s and 60s subs is
-# fine as long as a dark exists for each. Keep this list in sync with the
-# inline filter in api._suggestions_for_project (the "add frames to an
-# existing project" banner uses the same criteria).
+# Notable absences:
+# - target_id: enforced upstream via canonical-group resolution in the
+#   API layer (api._assert_sessions_share_target), so manually-
+#   retargeted sessions that resolve to the same canonical match
+#   correctly. Raw target_id equality would reject those even after
+#   the API check passed.
+# - exptime: the calibrate node accepts a list of master darks and
+#   selects the right one per-frame from the bundle's per-bin matches,
+#   so a bundle that mixes 30s and 60s subs is fine as long as a dark
+#   exists for each.
+#
+# Keep this list in sync with the inline filter in
+# api._suggestions_for_project (the "add frames to an existing
+# project" banner uses the same criteria).
 COMPAT_FIELDS: tuple[str, ...] = (
-    "target_id",
     "instrument",
     "camera",
     "filter",

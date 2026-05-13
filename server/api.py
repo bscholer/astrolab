@@ -1802,17 +1802,32 @@ def create_project_from_session(req: CreateProjectFromSessionRequest, conn: DBDe
 def create_project_from_sessions(req: CreateProjectFromSessionsRequest, conn: DBDep) -> dict:
     """Create a Project that stacks multiple compatible catalog sessions.
 
-    Compatibility rule: every session must share target/instrument/camera/
-    filter/exptime/gain/binning. The job builder enforces this and returns
-    a 400 with the offending fields named when it doesn't hold. Sessions
-    are de-duplicated and order-normalized so [3,1] and [1,3] hit the same
-    cache lineage.
+    Compatibility rule: every session must resolve to the same canonical
+    target group (so manually-retargeted sessions match) AND share
+    instrument/camera/filter/gain/binning (the fields the stacker treats
+    as identical). exptime is no longer required to match — the calibrate
+    node picks the right dark per-frame for mixed-exposure bundles.
+    Sessions are de-duplicated and order-normalized so [3,1] and [1,3]
+    hit the same cache lineage.
     """
     if not req.session_ids:
         raise HTTPException(status_code=400, detail="session_ids must not be empty")
     # build_from_sessions normalizes order and de-dupes internally; we just
     # mirror that here so the project record stores the canonical list.
     sids = sorted(set(req.session_ids))
+
+    # Confirm every session exists before the canonical-group check so
+    # an unknown id surfaces as 404, not a 400 from a None canonical
+    # mismatching a real one.
+    for sid in sids:
+        row = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (sid,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"session {sid} not found")
+
+    # Same-target gate (canonical-group aware). Doing this BEFORE
+    # build_from_sessions keeps the IncompatibleSessions error from the
+    # builder focused on stacking-relevant mismatches.
+    _assert_sessions_share_target(conn, sids)
 
     try:
         template = load_template(req.template_id)
@@ -2055,6 +2070,93 @@ def _canonical_group_for_session(conn: sqlite3.Connection, session_id: int) -> s
     if row is None:
         return None
     return _canonical_group_for_target_row(row["target_id"], row["name"], row["resolved_canonical"])
+
+
+def _assert_sessions_share_target(
+    conn: sqlite3.Connection,
+    session_ids: list[int],
+    *,
+    expected_canonical: str | None = None,
+) -> None:
+    """Raise HTTPException(400) unless every session resolves to the
+    same canonical target group.
+
+    Single source of truth for the "are these the same astronomical
+    object?" check used by:
+      - POST /api/projects/from_sessions (expected_canonical=None: all
+        proposed sessions must agree with each other)
+      - PATCH /api/projects/{id}/sessions (expected_canonical=project's
+        canonical group)
+      - api._suggestions_for_project's pre-filter (calls
+        _canonical_group_for_session directly; same primitive)
+
+    Uses canonical-group resolution (not raw target_id), so a user who
+    re-targets a session via the Library edit affordance still passes
+    the check as long as the new target resolves to the same canonical.
+    target_id equality alone would reject those cases even though they
+    semantically represent the same object — that's the bug this
+    helper exists to prevent.
+
+    Sessions whose canonical group is unresolved (no target row, or
+    no canonical inference) are treated as a distinct "untargeted"
+    bucket: they only match other untargeted sessions, never a named
+    canonical.
+    """
+    if not session_ids:
+        return
+    resolved: dict[int, str | None] = {
+        sid: _canonical_group_for_session(conn, sid) for sid in session_ids
+    }
+    if expected_canonical is None:
+        # POST shape: all proposed sessions must share one group;
+        # pick the first as the reference.
+        reference_sid = session_ids[0]
+        reference = resolved[reference_sid]
+    else:
+        reference_sid = None
+        reference = expected_canonical
+    for sid, canonical in resolved.items():
+        if canonical == reference:
+            continue
+        target_name_row = conn.execute(
+            "SELECT t.name AS target_name FROM sessions s "
+            "LEFT JOIN targets t ON t.id = s.target_id WHERE s.id = ?",
+            (sid,),
+        ).fetchone()
+        target_name = (
+            target_name_row["target_name"]
+            if target_name_row and target_name_row["target_name"]
+            else "unknown"
+        )
+        cand_label = canonical or "unresolved"
+        ref_label = reference or "unresolved"
+        if expected_canonical is None:
+            ref_row = conn.execute(
+                "SELECT t.name AS target_name FROM sessions s "
+                "LEFT JOIN targets t ON t.id = s.target_id WHERE s.id = ?",
+                (reference_sid,),
+            ).fetchone()
+            ref_target = (
+                ref_row["target_name"]
+                if ref_row and ref_row["target_name"]
+                else "unknown"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"session {sid} is on target {target_name} "
+                    f"(canonical {cand_label}) but session {reference_sid} "
+                    f"is on target {ref_target} (canonical {ref_label})"
+                ),
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"session {sid} is on target {target_name} "
+                f"(canonical {cand_label}) but this project is on "
+                f"canonical {ref_label}"
+            ),
+        )
 
 
 def _display_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> ProjectDisplay | None:
@@ -2712,32 +2814,22 @@ def patch_project_sessions(project_id: str, req: PatchProjectSessionsRequest, co
         raise HTTPException(status_code=400, detail="session_ids must not be empty")
 
     new_ids = sorted(set(req.session_ids))
+    # Verify every proposed session exists, then enforce the same-target
+    # gate against the project's canonical_group. The shared helper
+    # handles the canonical-vs-canonical comparison so the POST and
+    # PATCH endpoints (and the suggestions filter) all agree on what
+    # "same target" means.
+    for sid in new_ids:
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"session {sid} not found")
     project_canonical = _canonical_group_for_project(conn, project.source_session_ids)
-    # Same-target gate: every proposed session must resolve to the same
-    # canonical_group as the project. Mismatches surface with a precise
-    # message naming the offending session + its canonical so the UI can
-    # render a useful diagnostic.
     if project_canonical is not None:
-        for sid in new_ids:
-            cand_row = conn.execute(
-                "SELECT s.id, t.name AS target_name FROM sessions s "
-                "LEFT JOIN targets t ON t.id = s.target_id WHERE s.id = ?",
-                (sid,),
-            ).fetchone()
-            if cand_row is None:
-                raise HTTPException(status_code=404, detail=f"session {sid} not found")
-            cand_canonical = _canonical_group_for_session(conn, sid)
-            if cand_canonical != project_canonical:
-                target_name = cand_row["target_name"] or "unknown"
-                cand_label = cand_canonical or "unresolved"
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"session {sid} is on target {target_name} "
-                        f"(canonical {cand_label}) but this project is on "
-                        f"canonical {project_canonical}"
-                    ),
-                )
+        _assert_sessions_share_target(
+            conn, new_ids, expected_canonical=project_canonical
+        )
 
     # Pin template id+version: a swap must NOT silently upgrade the
     # template even if a newer version is on disk. The granularity-rip
