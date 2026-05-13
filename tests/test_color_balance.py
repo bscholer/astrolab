@@ -1,5 +1,5 @@
-"""color_balance node: SCNR green emits the right Siril command and tolerates
-the Siril 1.4 shutdown segfault when the output is on disk."""
+"""color_balance node: SCNR green emits the right Siril command and surfaces
+non-zero returncodes / missing outputs as a RuntimeError."""
 
 from __future__ import annotations
 
@@ -134,35 +134,3 @@ def test_run_raises_when_siril_fails(
             ctx=_ctx(tmp_path),
             out_dir=out_dir,
         )
-
-
-def test_rc_minus11_output_present_warns_and_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """rc=-11 (Siril 1.4 shutdown segfault) + output written -> success with warning."""
-    data = np.full((16, 16, 3), 0.5, dtype=np.float32)
-    src = _write_fits(tmp_path / "in.fit", data)
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    def fake(cmds, wd):
-        (out_dir / "image.fit").write_bytes(b"FAKE")
-
-    fake_rt = FakeRuntime(returncode=-11, on_run=fake)
-    monkeypatch.setattr(
-        "nodes.basic.color_balance.SirilRuntime", lambda *a, **k: fake_rt
-    )
-
-    with caplog.at_level(logging.WARNING, logger="nodes._seq_runner"):
-        refs = ColorBalanceNode().run(
-            inputs={
-                "image": Ref(node_hash="ext", port="image", path=src,
-                             type=PortType.IMAGE_FITS),
-            },
-            params=ColorBalanceParams(),
-            ctx=_ctx(tmp_path),
-            out_dir=out_dir,
-        )
-
-    assert refs["image"].path.exists()
-    assert any("segfault" in r.message for r in caplog.records)
