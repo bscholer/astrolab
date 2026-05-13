@@ -64,16 +64,25 @@ class SeqRegisterParams(BaseModel):
     )
     # --- platesolve method ---
     distortion: bool = Field(
-        default=True,
-        description="Pass -disto=ps_distortion to seqplatesolve so optical "
-        "distortion is modeled when reprojecting. Almost always wanted on "
-        "wide-field smart telescopes.",
+        default=False,
+        description="Pass -disto=ps_distortion to seqplatesolve to model "
+        "optical distortion during reprojection. Disabled by default because "
+        "Siril 1.4's seqplatesolve fails the finalize step when consolidating "
+        "the distortion polynomial across long sequences (1900+ frames). On "
+        "1.4.2 this surfaced as a SIGSEGV via GLib-GIO g_file_info_get_size "
+        "NULL assert; on 1.4.3 it became a clean exit 1 with 'Finalizing "
+        "sequence processing failed.' Same underlying bug, unfixed in 1.4.3. "
+        "The Dwarf 3 optics are well-corrected enough that WCS-only "
+        "registration produces indistinguishable results at 60mm aperture. "
+        "Enable only on shorter sequences or after upstream patches the "
+        "distortion-finalize path.",
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "platesolve"},
             "agent_hint": (
                 "Enabling improves edge sharpness on wide-field optics but"
-                " crashes Siril 1.4.2; leave off unless on a patched Siril build."
+                " breaks the finalize step on long Siril 1.4 sequences;"
+                " leave off unless you have verified a fixed Siril build."
             ),
         },
     )
