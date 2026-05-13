@@ -1069,11 +1069,11 @@
   }
 
   .target:hover {
-    border-color: var(--border-strong);
+    border-color: rgba(94, 234, 212, 0.35);
     transform: translateY(-1px);
   }
   .target.open {
-    border-color: var(--border-strong);
+    border-color: rgba(94, 234, 212, 0.35);
   }
 
   .target-row {
