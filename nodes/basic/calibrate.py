@@ -99,7 +99,6 @@ class CalibrateParams(BaseModel):
         "the Bayer pattern, so we must debayer here before register/stack. Turn off "
         "only for mono cameras or pure-CFA workflows.",
         json_schema_extra={
-            "ui_section": "advanced",
             "agent_hint": (
                 "Leave on for OSC sensors; turning off means registration shifts"
                 " will scramble the Bayer mosaic and ruin color."
