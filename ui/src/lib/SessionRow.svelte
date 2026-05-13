@@ -23,6 +23,7 @@
     failPctClass,
     formatIntegrationTime,
   } from '$lib/format';
+  import Checkbox from '$lib/Checkbox.svelte';
 
   type Props = {
     session: SessionSummary;
@@ -116,8 +117,7 @@
 <li class="session" class:dim={selectable?.disabled && !selectable.checked}>
   {#if selectable}
     <label class="session-pick" title={selectable.reason ?? ''}>
-      <input
-        type="checkbox"
+      <Checkbox
         checked={selectable.checked}
         disabled={selectable.disabled && !selectable.checked}
         onchange={selectable.onToggle}
@@ -276,47 +276,6 @@
     padding: 0.35rem;
     margin: -0.35rem 0 -0.35rem -0.2rem;
     cursor: pointer;
-  }
-  .session-pick input[type='checkbox'] {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
-    margin: 0;
-    border: 1.5px solid var(--border-strong);
-    border-radius: 4px;
-    background: var(--bg);
-    cursor: inherit;
-    display: inline-grid;
-    place-content: center;
-    transition: background-color 140ms ease, border-color 140ms ease;
-  }
-  .session-pick input[type='checkbox']::before {
-    content: '';
-    width: 10px;
-    height: 10px;
-    transform: scale(0);
-    background-color: var(--accent-ink);
-    clip-path: polygon(14% 44%, 0 60%, 40% 100%, 100% 20%, 80% 6%, 38% 70%);
-    transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-  .session-pick input[type='checkbox']:checked {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .session-pick input[type='checkbox']:checked::before {
-    transform: scale(1);
-  }
-  .session-pick input[type='checkbox']:hover:not(:disabled) {
-    border-color: var(--accent);
-  }
-  .session-pick input[type='checkbox']:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .session-pick input[disabled] {
-    cursor: not-allowed;
-    opacity: 0.5;
   }
   .session-content {
     flex: 1;
@@ -584,5 +543,49 @@
   .session-notes-area:focus {
     outline: none;
     border-color: var(--accent);
+  }
+
+  /* ---- Mobile layout (<=480px) --------------------------------------- */
+  /* On narrow screens the horizontally-wrapping row of metadata turns into
+     a jumble. Instead: stack session-head and session-body as distinct
+     lines, each on one row. Cal badges and action buttons line up on the
+     bottom row so the primary date + tags stay scannable on top. */
+  @media (max-width: 480px) {
+    .session {
+      padding: 0.5rem 0.55rem;
+      gap: 0.4rem;
+    }
+
+    .session-head {
+      flex-wrap: nowrap;
+      gap: 0.4rem;
+    }
+
+    .session-when {
+      flex-shrink: 0;
+    }
+
+    .session-tags {
+      /* Let tags truncate rather than wrap so they stay on the first row. */
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    .session-body {
+      /* Stack: first flex row has frame info + fail%, second has cal + actions.
+         In practice flex-wrap handles this because cal-row has margin-left:auto
+         and the line breaks naturally; enforcing wrap here makes it reliable. */
+      gap: 0.35rem;
+      row-gap: 0.3rem;
+    }
+
+    /* On mobile the cal row should not push to the far right on its own
+       line — drop the auto margin so it flows inline after the stats. */
+    .cal-row {
+      margin-left: 0;
+    }
   }
 </style>
