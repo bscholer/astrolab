@@ -64,15 +64,10 @@ class SeqRegisterParams(BaseModel):
     )
     # --- platesolve method ---
     distortion: bool = Field(
-        default=False,
-        description="Pass -disto=ps_distortion to seqplatesolve to model "
-        "optical distortion during reprojection. Disabled by default because "
-        "Siril 1.4.2 seqplatesolve crashes (SIGSEGV via GLib-GIO g_file_info_get_size "
-        "NULL assert) during the finalize step when consolidating the distortion "
-        "polynomial across long sequences. The Dwarf 3 optics are well-corrected "
-        "enough that WCS-only registration produces indistinguishable results "
-        "at 60mm aperture. Enable only if you are on a Siril version that has "
-        "fixed the finalize crash.",
+        default=True,
+        description="Pass -disto=ps_distortion to seqplatesolve so optical "
+        "distortion is modeled when reprojecting. Almost always wanted on "
+        "wide-field smart telescopes.",
         json_schema_extra={
             "ui_section": "advanced",
             "ui_when": {"method": "platesolve"},
@@ -225,7 +220,7 @@ class SeqRegisterParams(BaseModel):
 @register("seq_register")
 class SeqRegisterNode(Node[SeqRegisterParams]):
     id = "seq_register"
-    version = 2  # bumped: distortion default False to avoid Siril 1.4.2 finalize crash
+    version = 1
     cost = "expensive"
     uses_siril = True
 

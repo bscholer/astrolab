@@ -28,14 +28,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import (
-    _check_siril_seq_result,
-    drop_staged,
-    quote,
-    run_siril_on_sequence,
-    seq_ref,
-    stage_sequence,
-)
+from nodes._seq_runner import drop_staged, quote, run_siril_on_sequence, seq_ref, stage_sequence
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -191,24 +184,25 @@ class CalibrateNode(Node[CalibrateParams]):
                 on_log=make_progress_handler(ctx),
                 cancel=ctx.cancel,
             )
-            # _check_siril_seq_result tolerates the Siril 1.4 shutdown segfault
-            # (returncode -11) when outputs are all present. It raises on real
-            # failures. min_count=n_input enforces the one-output-per-input
-            # invariant that calibrate guarantees (it never drops frames).
-            wrote = _check_siril_seq_result(
-                result,
-                node_name="calibrate",
-                seq_out=seq_out,
-                out_basename=out_basename,
-                fitseq=False,
-                min_count=n_input,
-            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"calibrate: siril exited {result.returncode}\n"
+                    f"--- ssf ---\n{result.ssf}\n"
+                    f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                    f"--- stderr ---\n{result.stderr}"
+                )
             frames = sorted(
                 p
                 for p in seq_out.iterdir()
                 if p.name.startswith(f"{out_basename}_")
                 and p.suffix in (".fit", ".fits")
             )
+            if not frames:
+                raise RuntimeError(
+                    f"calibrate: siril returned 0 but no {out_basename}_*.fit* "
+                    f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
+                    f"{result.stdout[-2000:]}"
+                )
             if len(frames) != n_input:
                 raise RuntimeError(
                     f"calibrate: expected {n_input} calibrated frames, "

@@ -86,36 +86,6 @@ def test_platesolve_default_emits_seqplatesolve_and_seqapplyreg(
     ps_cmd = next(c for c in cmds if c.startswith("seqplatesolve "))
     assert "-nocache" in ps_cmd
     assert "-force" in ps_cmd
-    # distortion is OFF by default (Siril 1.4.2 crashes on finalize with -disto).
-    assert "-disto=ps_distortion" not in ps_cmd
-
-
-def test_distortion_true_emits_disto_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """distortion=True (opt-in) adds -disto=ps_distortion to seqplatesolve."""
-    seq_in = tmp_path / "in"
-    seq_in.mkdir()
-    (seq_in / "bkg_pp_light.fit").write_bytes(b"FAKE")
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    def fake(cmds, wd):
-        (out_dir / "sequence" / "r_bkg_pp_light.fit").write_bytes(b"FAKE")
-
-    fake_rt = FakeRuntime(on_run=fake)
-    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: fake_rt)
-
-    SeqRegisterNode().run(
-        inputs={
-            "sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
-                            type=PortType.SEQUENCE_FITS),
-        },
-        params=SeqRegisterParams(distortion=True),
-        ctx=_ctx(tmp_path),
-        out_dir=out_dir,
-    )
-    ps_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("seqplatesolve "))
     assert "-disto=ps_distortion" in ps_cmd
 
 

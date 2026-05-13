@@ -30,13 +30,6 @@ run_siril_on_sequence(*, node_name, seq_in, seq_out, commands,
     human-readable "wrote N frames" summary. Raises RuntimeError on
     Siril failure or missing output.
 
-    Siril 1.4.x segfaults on process teardown after a successful sequence
-    operation (returncode -11 / SIGSEGV). When stdout contains the literal
-    "Sequence processing succeeded." message AND all expected outputs are
-    present, the segfault is treated as success with a warning log entry.
-    Real failures (bad returncode + no success message, or missing outputs)
-    still raise RuntimeError.
-
 seq_ref(path) -> Ref
     Build a SEQUENCE_FITS Ref whose node_hash is the empty-string
     placeholder that the runner patches in after run() returns.
@@ -47,17 +40,10 @@ image_ref(path) -> Ref
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from server.models import Ref
 from server.ports import PortType
-
-_log = logging.getLogger(__name__)
-
-# Siril 1.4.x prints this exact line on a clean sequence run, before the
-# shutdown teardown that sometimes segfaults.
-_SIRIL_SEQ_SUCCESS_MARKER = "Sequence processing succeeded."
 
 # ---------------------------------------------------------------------------
 # Path quoting
@@ -142,106 +128,6 @@ def drop_staged(staged: list[Path]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _outputs_present_fitseq(seq_out: Path, out_basename: str) -> tuple[bool, str]:
-    """Return (present, description) for a FITSEQ output check."""
-    expected = seq_out / f"{out_basename}.fit"
-    if expected.exists():
-        return True, expected.name
-    return False, ""
-
-
-def _outputs_present_perframe(
-    seq_out: Path, out_basename: str, min_count: int
-) -> tuple[bool, str]:
-    """Return (present, description) for a per-frame output check.
-
-    present is True when at least `min_count` matching frames exist.
-    """
-    frames = sorted(
-        p
-        for p in seq_out.iterdir()
-        if p.name.startswith(f"{out_basename}_") and p.suffix in (".fit", ".fits")
-    )
-    if len(frames) >= max(1, min_count):
-        return True, f"{len(frames)} frames"
-    return False, ""
-
-
-def _check_siril_seq_result(
-    result,
-    *,
-    node_name: str,
-    seq_out: Path,
-    out_basename: str,
-    fitseq: bool,
-    min_count: int,
-) -> str:
-    """Validate a Siril sequence result, tolerating the Siril 1.4 shutdown segfault.
-
-    Siril 1.4.x sometimes exits with returncode -11 (SIGSEGV) during process
-    teardown after a sequence operation completes successfully. Every output file
-    and the .seq index are already on disk before the crash; only the exit code
-    is wrong.
-
-    Success criteria:
-      1. returncode is 0, OR (returncode != 0 AND stdout contains the exact
-         "Sequence processing succeeded." marker AND all outputs are present)
-      2. The expected output file(s) exist in seq_out.
-
-    When the segfault path is taken a warning is logged so it is visible in the
-    server log without surfacing as a user-facing error.
-
-    Returns a human-readable "wrote ..." summary.
-    Raises RuntimeError on real failures (bad exit code + no success marker,
-    bad exit code + outputs missing, or zero returncode + outputs missing).
-    """
-    if result.returncode != 0:
-        # Check for the known Siril 1.4 shutdown-segfault pattern.
-        success_marker_present = _SIRIL_SEQ_SUCCESS_MARKER in result.stdout
-
-        if fitseq:
-            outputs_ok, wrote = _outputs_present_fitseq(seq_out, out_basename)
-        else:
-            outputs_ok, wrote = _outputs_present_perframe(seq_out, out_basename, min_count)
-
-        if success_marker_present and outputs_ok:
-            _log.warning(
-                "%s: siril exited %d after success message; treating as success "
-                "because outputs are present (Siril 1.4 shutdown segfault)",
-                node_name,
-                result.returncode,
-            )
-            return wrote
-
-        # Real failure: bad exit code and either no success message or outputs missing.
-        raise RuntimeError(
-            f"{node_name}: siril exited {result.returncode}\n"
-            f"--- ssf ---\n{result.ssf}\n"
-            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-            f"--- stderr ---\n{result.stderr}"
-        )
-
-    # returncode == 0: validate outputs are present.
-    if fitseq:
-        outputs_ok, wrote = _outputs_present_fitseq(seq_out, out_basename)
-        if not outputs_ok:
-            raise RuntimeError(
-                f"{node_name}: siril returned 0 but FITSEQ container "
-                f"{seq_out / f'{out_basename}.fit'} is missing.\n"
-                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
-            )
-    else:
-        outputs_ok, wrote = _outputs_present_perframe(seq_out, out_basename, min_count)
-        if not outputs_ok:
-            raise RuntimeError(
-                f"{node_name}: siril returned 0 but no {out_basename}_*.fit* "
-                f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
-                f"{result.stdout[-2000:]}"
-            )
-
-    return wrote
-
-
 def run_siril_on_sequence(
     *,
     node_name: str,
@@ -254,7 +140,6 @@ def run_siril_on_sequence(
     ctx,
     runtime,
     phases: int = 1,
-    min_count: int = 1,
 ) -> str:
     """Stage, run, validate, and clean up a Siril sequence operation.
 
@@ -281,17 +166,9 @@ def run_siril_on_sequence(
         A SirilRuntime (or compatible fake) instance.
     phases:
         Number of sequential Siril sub-commands; forwarded to make_progress_handler.
-    min_count:
-        Minimum number of per-frame output files required for success (ignored for
-        fitseq mode). Callers that know the exact expected frame count should pass
-        it here so an unexpectedly short output is caught as a failure even when
-        Siril exited 0.
 
     Returns a human-readable summary such as "pp_light.fit" or "3 frames".
     Raises RuntimeError on Siril failure or missing output.
-
-    Tolerates returncode -11 (Siril 1.4 shutdown segfault) when stdout contains
-    "Sequence processing succeeded." and all expected outputs are present.
     """
     from server.siril import make_progress_handler
 
@@ -312,15 +189,37 @@ def run_siril_on_sequence(
         on_log=make_progress_handler(ctx, phases=phases),
         cancel=ctx.cancel,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{node_name}: siril exited {result.returncode}\n"
+            f"--- ssf ---\n{result.ssf}\n"
+            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+            f"--- stderr ---\n{result.stderr}"
+        )
 
-    wrote = _check_siril_seq_result(
-        result,
-        node_name=node_name,
-        seq_out=seq_out,
-        out_basename=out_basename,
-        fitseq=fitseq,
-        min_count=min_count,
-    )
+    # Validate expected output.
+    if fitseq:
+        expected = seq_out / f"{out_basename}.fit"
+        if not expected.exists():
+            raise RuntimeError(
+                f"{node_name}: siril returned 0 but FITSEQ container "
+                f"{expected} is missing.\n--- stdout (tail) ---\n"
+                f"{result.stdout[-2000:]}"
+            )
+        wrote = expected.name
+    else:
+        frames = sorted(
+            p
+            for p in seq_out.iterdir()
+            if p.name.startswith(f"{out_basename}_") and p.suffix in (".fit", ".fits")
+        )
+        if not frames:
+            raise RuntimeError(
+                f"{node_name}: siril returned 0 but no {out_basename}_*.fit* "
+                f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
+                f"{result.stdout[-2000:]}"
+            )
+        wrote = f"{len(frames)} frames"
 
     drop_staged(staged)
     return wrote
