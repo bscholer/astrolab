@@ -2,8 +2,8 @@
 # Multi-stage Dockerfile for astrolab.
 #
 # Build args
-#   BASE  debian:bookworm-slim          → CPU image (default, tagged :latest/:cpu)
-#         nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04  → CUDA image (tagged :cuda)
+#   BASE  debian:bookworm-slim          → CPU image (published as :latest/:cpu on release, :dev on main)
+#         nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04  → CUDA image (published as :cuda on release, :dev-cuda on main)
 #
 # Build examples
 #   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu .
