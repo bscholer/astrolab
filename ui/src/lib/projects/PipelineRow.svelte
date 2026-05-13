@@ -119,6 +119,7 @@
   class:expanded={isExpanded}
   class:output={isOutput}
   class:disabled={togglable && !enabled}
+  class:preview-hidden={nschema.preview_hidden}
   transition:fade={{ duration: 160, easing: cubicOut }}
 >
   <div class="node-head">
@@ -134,39 +135,41 @@
       onclick={onToggle}
     ></button>
 
-    <div class="head-thumb">
-      {#if (status === 'completed' || status === 'cached') && hash}
-        {#if !previewLoaded}
-          <div class="flow-skeleton" aria-hidden="true"></div>
+    {#if !nschema.preview_hidden}
+      <div class="head-thumb">
+        {#if (status === 'completed' || status === 'cached') && hash}
+          {#if !previewLoaded}
+            <div class="flow-skeleton" aria-hidden="true"></div>
+          {/if}
+          <img
+            class="head-img"
+            class:loaded={previewLoaded}
+            src={api.previewUrl(hash, port)}
+            alt=""
+            loading="lazy"
+            onload={onPreviewLoad}
+            onerror={onPreviewError}
+          />
+          {#if !nschema.preview_display_ready && nschema.outputs?.[port] === 'image/fits'}
+            <span class="preview-stretch-badge" title="Preview is auto-stretched for visibility — actual output may look different">&#8776;</span>
+          {/if}
+        {:else if status === 'running' && progress}
+          <span class="head-pct">{Math.round((progress.fraction ?? 0) * 100)}%</span>
+        {:else}
+          <span class="head-status muted">{status}</span>
         {/if}
-        <img
-          class="head-img"
-          class:loaded={previewLoaded}
-          src={api.previewUrl(hash, port)}
-          alt=""
-          loading="lazy"
-          onload={onPreviewLoad}
-          onerror={onPreviewError}
-        />
-        {#if !nschema.preview_display_ready && nschema.outputs?.[port] === 'image/fits'}
-          <span class="preview-stretch-badge" title="Preview is auto-stretched for visibility — actual output may look different">&#8776;</span>
+        {#if status === 'running' && progress}
+          <div class="head-progress" style:width="{(progress.fraction ?? 0) * 100}%"></div>
         {/if}
-      {:else if status === 'running' && progress}
-        <span class="head-pct">{Math.round((progress.fraction ?? 0) * 100)}%</span>
-      {:else}
-        <span class="head-status muted">{status}</span>
-      {/if}
-      {#if status === 'running' && progress}
-        <div class="head-progress" style:width="{(progress.fraction ?? 0) * 100}%"></div>
-      {/if}
-    </div>
+      </div>
+    {/if}
 
     <div class="head-overlay">
       <span class="head-name">{nodeDisplayName(kind, nid)}</span>
       <span class="status status-mini status-{togglable && !enabled ? 'off' : status}">
         {togglable && !enabled
           ? 'off'
-          : status}{#if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"> · {formatStepDuration(durationMs)}</span>{/if}
+          : status}{#if status === 'running' && progress && nschema.preview_hidden}<span class="dur"> · {Math.round((progress.fraction ?? 0) * 100)}%</span>{:else if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"> · {formatStepDuration(durationMs)}</span>{/if}
       </span>
       {#if isOutput}
         <span class="output-tag">final</span>
@@ -216,6 +219,13 @@
         <polyline points="6 9 12 15 18 9" />
       </svg>
     </div>
+
+    {#if nschema.preview_hidden && status === 'running' && progress}
+      <div
+        class="head-progress head-progress--bottom"
+        style:width="{(progress.fraction ?? 0) * 100}%"
+      ></div>
+    {/if}
   </div>
 
   {#if isExpanded}
@@ -467,6 +477,40 @@
   }
   .chevron.rotated { transform: rotate(180deg); }
   .node-row:not(.expanded) .chevron { color: rgba(255, 255, 255, 0.7); }
+
+  /* ---------- Hidden-preview variant ----------
+     Used for pre-stack sequence ops (convert, calibrate, resample,
+     offset, bg_extract) where a per-frame preview is technically
+     renderable but not informative. The thumb is dropped; the overlay
+     becomes a normal in-flow header strip; a thin progress bar at the
+     bottom of the head still surfaces live progress. The card body
+     (params + progress %) is unchanged. */
+  .node-row.preview-hidden .node-head {
+    min-height: 2.6rem;
+  }
+  .node-row.preview-hidden .head-overlay {
+    position: static;
+    background: none;
+    color: inherit;
+    padding: 0.6rem 0.75rem;
+  }
+  .node-row.preview-hidden .head-name {
+    text-shadow: none;
+    color: var(--fg);
+  }
+  .node-row.preview-hidden .chevron { color: var(--fg-mute); }
+  /* Bottom-anchored progress strip mirroring the thumb's, but living
+     directly under the compact head so the user still sees the bar
+     advance while a sequence node is running. */
+  .head-progress--bottom {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    background: var(--accent);
+    transition: width 200ms ease;
+    z-index: 2;
+  }
 
   /* ---------- Body ---------- */
 
