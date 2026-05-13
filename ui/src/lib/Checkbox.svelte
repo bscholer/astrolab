@@ -45,7 +45,7 @@
     min-height: 16px;
     margin: 0;
     padding: 0;
-    border: 1.5px solid var(--border-strong);
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
     border-radius: 3px;
     background: var(--bg);
     cursor: pointer;
