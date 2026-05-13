@@ -5,7 +5,7 @@ Output port : image (IMAGE_FITS) - same FITS, sliced to the requested rect
 
 Coordinates are stored in [0, 1] (normalized to the input frame's spatial
 dims) so the dragged rectangle in the UI stays valid even after upstream
-nodes change the resolution (e.g. flipping resample mode draft <-> full).
+nodes change the resolution (e.g. toggling draft mode on/off).
 The runtime maps normalized -> pixels at run time.
 
 Disabled by default — the node only kicks in once the user actually drags a

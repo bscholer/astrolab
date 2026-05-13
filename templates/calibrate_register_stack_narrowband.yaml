@@ -15,7 +15,7 @@ description: |
     seqextract_HaOIII reads sub-pixel positions from the CFA pattern;
     debayering before extract destroys that information.
   - seq_resample sits between calibrate and narrowband_extract with
-    mode=full (passthrough) as the default. Flip it to mode=draft for a
+    enabled=false (passthrough) as the default. Toggle it on for a
     fast preview pass: ~4x speedup at scale=0.5, at the cost of some
     Bayer-pattern smear that bleeds the Ha/OIII channels into each other.
     Acceptable for "is the composition working" checks, not for finals.
@@ -62,14 +62,14 @@ nodes:
 
   - id: resample
     kind: seq_resample
-    # Default mode=full (passthrough). Flip to draft for ~4x faster preview
+    # Default enabled=false (passthrough). Toggle on for ~4x faster preview
     # runs. Draft uses cubic interp which smears the Bayer pattern that
     # seqextract_HaOIII relies on, so channel separation degrades; fine for
     # composition / framing checks, not for finals.
     params:
       input_basename: pp_light
       fitseq: false
-      mode: full
+      enabled: false
     inputs:
       sequence: calibrate.sequence
 
