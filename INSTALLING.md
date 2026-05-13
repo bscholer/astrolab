@@ -20,13 +20,13 @@ thing from scratch.
    you'll see a small whale icon in your menu bar — that means Docker is running.
 
 **Give Docker more resources:** Docker Desktop runs a small Linux VM in the background,
-and by default it gets a modest slice of your machine. Stacking jobs are CPU- and
-memory-intensive, so it's worth bumping those limits. Open Docker Desktop →
+and by default it gets a modest slice of your machine. Siril is extremely CPU- and
+memory-intensive, so drag both sliders as high as they'll go. Open Docker Desktop →
 **Settings → Resources** and set:
-- **CPU limit** — at least half your cores (e.g. 8 of 16)
-- **Memory limit** — 8 GB or more if you can spare it
-- **Virtual disk size** — 64 GB+ if you plan to process a lot of sessions; the cache
-  can grow
+- **CPU limit** — drag to the maximum
+- **Memory limit** — drag to the maximum
+- **Virtual disk size** — set this generously. Cache artifacts from a single 2K image
+  run can top 1 TB. 500 GB is a reasonable floor; more is better.
 
 Click **Apply & Restart** when done.
 
@@ -62,9 +62,10 @@ sets this up for you, but Windows needs a couple things first.
    takes a minute or two. When you see the Docker whale in the system tray, it's ready.
 
 **Give Docker more resources:** Open Docker Desktop → **Settings → Resources** and set:
-- **CPU limit** — at least half your cores
-- **Memory limit** — 8 GB or more if you can spare it
-- **Virtual disk size** — 64 GB+ if you plan to process a lot of sessions
+- **CPU limit** — drag to the maximum
+- **Memory limit** — drag to the maximum
+- **Virtual disk size** — set this generously. Cache artifacts from a single 2K image
+  run can top 1 TB. 500 GB is a reasonable floor; more is better.
 
 Click **Apply & Restart** when done.
 
