@@ -36,6 +36,7 @@
   import PipelineRow from '$lib/projects/PipelineRow.svelte';
   import CompareController from '$lib/projects/CompareController.svelte';
   import SessionRow from '$lib/SessionRow.svelte';
+  import Checkbox from '$lib/Checkbox.svelte';
 
   let project = $state<Project | null>(null);
   let schema = $state<TemplateSchema | null>(null);
@@ -1086,8 +1087,7 @@
             {@const cal = bestCalibrationQuality(s)}
             {@const wasIn = prevIds.has(s.id)}
             <label class="manage-session-row" class:was-in={wasIn}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={checked}
                 onchange={() => toggleModalSelected(s.id)}
               />
