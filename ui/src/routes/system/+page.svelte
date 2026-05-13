@@ -342,15 +342,32 @@
       {:else}
         <ul class="active-list">
           {#each snap.jobs.active as j (j.id)}
+            {@const primaryLabel = j.project_name ?? j.target_name ?? j.template_name ?? j.id}
+            {@const subLabel = j.project_name
+              ? j.target_name && j.target_name !== j.project_name
+                ? j.target_name
+                : j.template_name
+              : j.target_name
+                ? j.template_name
+                : null}
             <li class="active-job">
               <div class="aj-top">
-                <a class="aj-target" href="/jobs/{j.id}" title={j.id}>
-                  {j.target_name ?? j.template_name ?? j.id}
-                </a>
+                {#if j.project_id}
+                  <a class="aj-target" href="/projects/{j.project_id}" title={j.id}>
+                    {primaryLabel}
+                    {#if j.project_version != null}
+                      <span class="aj-version mono">v{j.project_version}</span>
+                    {/if}
+                  </a>
+                {:else}
+                  <span class="aj-target" title={j.id}>
+                    {primaryLabel}
+                  </span>
+                {/if}
                 <span class="muted small mono">{fmtElapsed(j.started_at)}</span>
               </div>
-              {#if j.target_name && j.template_name}
-                <div class="aj-meta muted small mono">{j.template_name}</div>
+              {#if subLabel}
+                <div class="aj-meta muted small mono">{subLabel}</div>
               {/if}
               <div class="progress" aria-label="progress">
                 <div class="progress-fill" style="--pct: {(j.progress * 100).toFixed(1)}%"></div>
@@ -614,6 +631,20 @@
     letter-spacing: -0.01em;
   }
   .aj-target:hover { color: var(--accent); }
+  .aj-version {
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    /* Mono baseline sits low under the display serif; nudge up to align. */
+    position: relative;
+    top: -0.15em;
+  }
   .aj-meta { grid-column: 1 / -1; }
   .progress {
     grid-column: 1 / 2;

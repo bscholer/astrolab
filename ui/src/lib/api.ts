@@ -678,7 +678,14 @@ export interface SystemActiveJob {
   id: string;
   target_name: string | null;
   template_name: string | null;
+  // Project that owns this job (the active history entry on a project).
+  // Null for ad-hoc submissions that aren't backed by a Project row.
+  project_id: string | null;
+  project_name: string | null;
+  // 1-indexed version, matches the v{N} chips elsewhere in the UI.
+  project_version: number | null;
   started_at: string | null;
+  // Step-aware [0, 1]: (completed_nodes + current_node_fraction) / total.
   progress: number;
 }
 

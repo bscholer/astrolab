@@ -188,8 +188,116 @@ def test_active_jobs_progress_from_events(tmp_path: Path) -> None:
     assert by_id["q1"]["progress"] == 0.0
     assert by_id["r1"]["template_name"] == "t-test"
     assert by_id["r1"]["target_name"] is None
+    # project_lookup not supplied: project fields come back null.
+    assert by_id["r1"]["project_id"] is None
+    assert by_id["r1"]["project_name"] is None
+    assert by_id["r1"]["project_version"] is None
     assert payload["jobs"]["running"] == 1
     assert payload["jobs"]["queued"] == 1
+
+
+def test_step_aware_progress_includes_current_node_fraction(tmp_path: Path) -> None:
+    """One node finished, another mid-flight: bar should land between
+    completed/total and (completed+1)/total instead of stalling at the
+    coarse step."""
+    from server.system_metrics import collect_system_metrics
+
+    tpl = _template(("n1", "n2", "n3", "n4"))
+    running = _record(
+        job_id="r1",
+        status="running",
+        template=tpl,
+        events=[
+            JobEvent(type="node_started", timestamp="t", node_id="n1"),
+            JobEvent(type="node_completed", timestamp="t", node_id="n1"),
+            JobEvent(type="node_started", timestamp="t", node_id="n2"),
+            JobEvent(type="node_progress", timestamp="t", node_id="n2", fraction=0.5),
+        ],
+    )
+    jm = FakeJobManager([running], cache_root=tmp_path)
+
+    with patch("server.system_metrics._nvidia_smi_query", return_value=None):
+        payload = collect_system_metrics(jm)  # type: ignore[arg-type]
+
+    by_id = {a["id"]: a for a in payload["jobs"]["active"]}
+    # (1 completed + 0.5 in-flight) / 4 nodes = 0.375
+    assert pytest.approx(by_id["r1"]["progress"], abs=1e-9) == 0.375
+
+
+def test_step_aware_progress_monotonic_within_node(tmp_path: Path) -> None:
+    """A stray late progress event below the high-water mark must not yank
+    the bar backwards within a node."""
+    from server.system_metrics import collect_system_metrics
+
+    tpl = _template(("n1", "n2"))
+    running = _record(
+        job_id="r1",
+        status="running",
+        template=tpl,
+        events=[
+            JobEvent(type="node_started", timestamp="t", node_id="n1"),
+            JobEvent(type="node_progress", timestamp="t", node_id="n1", fraction=0.8),
+            JobEvent(type="node_progress", timestamp="t", node_id="n1", fraction=0.2),
+        ],
+    )
+    jm = FakeJobManager([running], cache_root=tmp_path)
+
+    with patch("server.system_metrics._nvidia_smi_query", return_value=None):
+        payload = collect_system_metrics(jm)  # type: ignore[arg-type]
+
+    by_id = {a["id"]: a for a in payload["jobs"]["active"]}
+    # max(0.8, 0.2) / 2 nodes = 0.4 - not (0.0 + 0.2) / 2 = 0.1
+    assert pytest.approx(by_id["r1"]["progress"], abs=1e-9) == 0.4
+
+
+def test_active_jobs_include_project_name_and_version(tmp_path: Path) -> None:
+    """project_lookup feeds project_name + 1-indexed project_version through
+    so the system page can render "M31 · v3" instead of the template id."""
+    from server.system_metrics import collect_system_metrics
+
+    tpl = _template(("n1", "n2"))
+    running = _record(job_id="r1", status="running", template=tpl)
+    jm = FakeJobManager([running], cache_root=tmp_path)
+
+    class _StubProject:
+        def __init__(self, pid: str, name: str, seq: int) -> None:
+            self.id = pid
+            self.name = name
+            self.current_seq = seq
+
+    def lookup(job_id: str):
+        if job_id == "r1":
+            return _StubProject(pid="p1", name="M31", seq=2)
+        return None
+
+    with patch("server.system_metrics._nvidia_smi_query", return_value=None):
+        payload = collect_system_metrics(jm, project_lookup=lookup)  # type: ignore[arg-type]
+
+    by_id = {a["id"]: a for a in payload["jobs"]["active"]}
+    assert by_id["r1"]["project_id"] == "p1"
+    assert by_id["r1"]["project_name"] == "M31"
+    # current_seq=2 surfaces as v3 in the UI.
+    assert by_id["r1"]["project_version"] == 3
+
+
+def test_project_lookup_failure_does_not_break_payload(tmp_path: Path) -> None:
+    """A bad project_lookup callable must not crash the dashboard poll."""
+    from server.system_metrics import collect_system_metrics
+
+    tpl = _template(("n1",))
+    running = _record(job_id="r1", status="running", template=tpl)
+    jm = FakeJobManager([running], cache_root=tmp_path)
+
+    def broken(_job_id: str):
+        raise RuntimeError("db gone")
+
+    with patch("server.system_metrics._nvidia_smi_query", return_value=None):
+        payload = collect_system_metrics(jm, project_lookup=broken)  # type: ignore[arg-type]
+
+    by_id = {a["id"]: a for a in payload["jobs"]["active"]}
+    assert by_id["r1"]["project_id"] is None
+    assert by_id["r1"]["project_name"] is None
+    assert by_id["r1"]["project_version"] is None
 
 
 def test_gpu_null_when_nvidia_smi_missing(tmp_path: Path) -> None:
