@@ -82,11 +82,12 @@ def test_platesolve_default_emits_seqplatesolve_and_seqapplyreg(
     # Naztronomy-style flags on seqapplyreg.
     assert "-framing=max" in apply_cmd
     assert "-kernel=square" in apply_cmd
-    # seqplatesolve flags.
+    # seqplatesolve flags. -disto=ps_distortion is OFF by default because
+    # Siril 1.4's distortion-finalize step is broken on long sequences.
     ps_cmd = next(c for c in cmds if c.startswith("seqplatesolve "))
     assert "-nocache" in ps_cmd
     assert "-force" in ps_cmd
-    assert "-disto=ps_distortion" in ps_cmd
+    assert "-disto=ps_distortion" not in ps_cmd
 
 
 def test_star_method_emits_register_two_pass(
