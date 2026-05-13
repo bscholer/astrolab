@@ -40,6 +40,7 @@ It is built around the Dwarf 3 capture layout for now, but nothing in the pipeli
 ### Docker (recommended)
 
 No local install needed. The image bundles Siril 1.4 and GraXpert 3.0.2.
+New to Docker? See [INSTALLING.md](INSTALLING.md) for a step-by-step setup guide.
 
 **CPU-only (most users):**
 
