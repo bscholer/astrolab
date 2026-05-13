@@ -303,9 +303,14 @@ def test_get_candidates_shape(client: TestClient, tmp_path: Path) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert "targets" in body and "catalog" in body
-    # Catalog has at least NGC 7000 (the obvious neighbor of these coordinates).
+    # Catalog is non-empty (NEAR_7000 sits at NGC 7000's coords so there's
+    # obvious nearby OpenNGC rows) and sorted by separation. The current
+    # target's own canonical (NGC 7000, auto-resolved by position) is
+    # filtered out — suggesting the user's existing pick as a "new"
+    # choice looks like a bug.
+    assert body["catalog"], "expected at least one nearby catalog entry"
     canonicals = {c["canonical"] for c in body["catalog"]}
-    assert "NGC 7000" in canonicals
+    assert "NGC 7000" not in canonicals
     seps = [c["separation_arcmin"] for c in body["catalog"]]
     assert seps == sorted(seps)
 
@@ -355,3 +360,9 @@ def test_get_candidates_excludes_current_target(
     body = r.json()
     target_names = {c["name"] for c in body["targets"]}
     assert "M 31" not in target_names
+    # Same for the OpenNGC catalog list — M 31 resolves to NGC 224 in
+    # OpenNGC, and that's the canonical the targets table has stored for
+    # an "M 31" session. Suggesting the user's current pick back to them
+    # as a "new" choice looks like a bug.
+    catalog_canonicals = {c["canonical"] for c in body["catalog"]}
+    assert "NGC 224" not in catalog_canonicals
