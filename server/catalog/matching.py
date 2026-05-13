@@ -419,17 +419,17 @@ def match_bundle_darks(
     sorted_ids = sorted(set(session_ids))
     placeholders = ",".join("?" for _ in sorted_ids)
     # Coalesce frame metadata onto session metadata. Frames written by
-    # the catalog scanner usually carry full headers, but tests (and
-    # historical rescans) sometimes leave binning / gain / instrument
-    # null on the frame row; the session row always has them once
-    # compatibility checks have passed. exptime stays frame-level
-    # because mixed-exptime bundles are exactly the case we want to
-    # bin on; falling back to the session's exptime would collapse all
-    # frames into one (wrong) bucket for those bundles.
+    # the catalog scanner usually carry full headers, but tests and
+    # historical rescans sometimes leave individual columns null. The
+    # session row always has the gating fields populated once compat
+    # has passed, and a session is single-exptime by definition
+    # (mixed-exptime bundles span multiple sessions), so falling back
+    # to s.exptime when f.exptime is null still puts the frame in the
+    # right bin.
     frames = conn.execute(
         f"""
         SELECT
-            f.exptime                                AS exptime,
+            COALESCE(f.exptime, s.exptime)           AS exptime,
             COALESCE(f.gain, s.gain)                 AS gain,
             COALESCE(f.binning, s.binning)           AS binning,
             f.ccd_temp                               AS ccd_temp,
