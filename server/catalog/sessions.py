@@ -222,18 +222,24 @@ def cluster_sessions(
         target_id = _upsert_target(conn, target) if target else None
         matched_id = _match_cluster_to_session(cluster.frame_ids, existing, consumed)
         if matched_id is not None:
+            # Match-update path: preserve user-edited columns. target_id
+            # is reassignable via PATCH /api/sessions/{id}, so re-deriving
+            # it from frame OBJECT every rescan would silently clobber a
+            # manual reassignment. Other columns here are pipeline-derived
+            # (instrument, camera, filter, exptime, ...) and a user has
+            # no way to edit them, so refreshing them is fine.
             consumed.add(matched_id)
             conn.execute(
                 """
                 UPDATE sessions SET
-                    scope_id = ?, target_id = ?, instrument = ?, camera = ?,
+                    scope_id = ?, instrument = ?, camera = ?,
                     filter = ?, exptime = ?, gain = ?, binning = ?,
                     started_at = ?, ended_at = ?,
                     frame_count = ?, failed_count = ?
                 WHERE id = ?
                 """,
                 (
-                    scope_id, target_id, instrument, camera,
+                    scope_id, instrument, camera,
                     filter_, exptime, gain, binning,
                     cluster.started_at, cluster.ended_at,
                     len(cluster.frame_ids), cluster.failed_count,
