@@ -59,13 +59,6 @@ _log = logging.getLogger(__name__)
 # shutdown teardown that sometimes segfaults.
 _SIRIL_SEQ_SUCCESS_MARKER = "Sequence processing succeeded."
 
-# Siril 1.4.x prints this exact line when a `stack` command succeeds, before
-# the same shutdown teardown that sometimes segfaults.  The marker is specific
-# to the `stack` command and does NOT appear in sequence-processing nodes
-# (register, bg_extract, calibrate).  Verified against Siril 1.4.3 stdout:
-#   log: Stacked sequence successfully.
-_SIRIL_STACK_SUCCESS_MARKER = "Stacked sequence successfully."
-
 # ---------------------------------------------------------------------------
 # Path quoting
 # ---------------------------------------------------------------------------
@@ -159,22 +152,19 @@ def _outputs_present_fitseq(seq_out: Path, out_basename: str) -> tuple[bool, str
 
 def _outputs_present_perframe(
     seq_out: Path, out_basename: str, min_count: int
-) -> tuple[bool, str, int]:
-    """Return (present, description, actual_count) for a per-frame output check.
+) -> tuple[bool, str]:
+    """Return (present, description) for a per-frame output check.
 
     present is True when at least `min_count` matching frames exist.
-    actual_count is the number found regardless, so callers can build
-    informative error messages.
     """
     frames = sorted(
         p
         for p in seq_out.iterdir()
         if p.name.startswith(f"{out_basename}_") and p.suffix in (".fit", ".fits")
     )
-    actual = len(frames)
-    if actual >= max(1, min_count):
-        return True, f"{actual} frames", actual
-    return False, "", actual
+    if len(frames) >= max(1, min_count):
+        return True, f"{len(frames)} frames"
+    return False, ""
 
 
 def _check_siril_seq_result(
@@ -212,7 +202,7 @@ def _check_siril_seq_result(
         if fitseq:
             outputs_ok, wrote = _outputs_present_fitseq(seq_out, out_basename)
         else:
-            outputs_ok, wrote, _ = _outputs_present_perframe(seq_out, out_basename, min_count)
+            outputs_ok, wrote = _outputs_present_perframe(seq_out, out_basename, min_count)
 
         if success_marker_present and outputs_ok:
             _log.warning(
@@ -241,76 +231,15 @@ def _check_siril_seq_result(
                 f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
             )
     else:
-        outputs_ok, wrote, actual = _outputs_present_perframe(seq_out, out_basename, min_count)
+        outputs_ok, wrote = _outputs_present_perframe(seq_out, out_basename, min_count)
         if not outputs_ok:
-            if actual == 0:
-                detail = (
-                    f"no {out_basename}_*.fit* frames landed in {seq_out} "
-                    f"(expected {min_count})"
-                )
-            else:
-                detail = (
-                    f"only {actual} {out_basename}_*.fit* frames landed in "
-                    f"{seq_out}, expected {min_count}"
-                )
             raise RuntimeError(
-                f"{node_name}: siril returned 0 but {detail}.\n"
-                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
+                f"{node_name}: siril returned 0 but no {out_basename}_*.fit* "
+                f"frames landed in {seq_out}.\n--- stdout (tail) ---\n"
+                f"{result.stdout[-2000:]}"
             )
 
     return wrote
-
-
-def _check_siril_stack_result(
-    result,
-    *,
-    node_name: str,
-    out_image: Path,
-) -> None:
-    """Validate a Siril `stack` command result, tolerating the Siril 1.4 shutdown segfault.
-
-    Stack produces exactly ONE output file.  The success path is simpler than
-    _check_siril_seq_result (no fitseq/per-frame branching needed).
-
-    Success criteria:
-      1. returncode is 0, OR (returncode != 0 AND stdout contains the exact
-         "Stacked sequence successfully." marker AND out_image exists and is
-         non-empty).
-      2. The output image file exists and is non-empty.
-
-    Raises RuntimeError on real failures:
-      - bad exit code and no success marker
-      - bad exit code and output missing / empty
-      - exit code 0 but output missing / empty
-    """
-    def _output_ok() -> bool:
-        return out_image.exists() and out_image.stat().st_size > 0
-
-    if result.returncode != 0:
-        success_marker_present = _SIRIL_STACK_SUCCESS_MARKER in result.stdout
-
-        if success_marker_present and _output_ok():
-            _log.warning(
-                "%s: siril exited %d after stack success message; treating as success "
-                "because output is present (Siril 1.4 shutdown segfault)",
-                node_name,
-                result.returncode,
-            )
-            return
-
-        raise RuntimeError(
-            f"{node_name}: siril exited {result.returncode}\n"
-            f"--- ssf ---\n{result.ssf}\n"
-            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-            f"--- stderr ---\n{result.stderr}"
-        )
-
-    # returncode == 0: output must still exist.
-    if not _output_ok():
-        raise RuntimeError(
-            f"{node_name}: siril returned 0 but output {out_image} is missing or empty.\n"
-            f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
-        )
 
 
 def run_siril_on_sequence(
@@ -363,10 +292,6 @@ def run_siril_on_sequence(
 
     Tolerates returncode -11 (Siril 1.4 shutdown segfault) when stdout contains
     "Sequence processing succeeded." and all expected outputs are present.
-
-    For stack operations use _check_siril_stack_result, which matches the
-    "Stacked sequence successfully." marker that the `stack` command emits
-    instead of "Sequence processing succeeded."
     """
     from server.siril import make_progress_handler
 

@@ -11,49 +11,25 @@ Two alignment methods are supported:
   and is more robust against star-poor fields, dithered captures, and
   moving targets -- Dwarf 3 frames carry RA/DEC headers so it Just Works.
 
-  In Siril 1.4.2, seqplatesolve crashes (SIGSEGV or SIGABRT) during the
-  finalize step that runs after all frames are solved and the .seq is
-  written. The .seq file contains correct registration data before the
-  crash; seqapplyreg can use it without issue. To work around this, the
-  platesolve path runs two SEPARATE Siril processes: one for seqplatesolve
-  (validated by checking the .seq was written with reg data, regardless of
-  exit code) and one for seqapplyreg.
-
 - `star` (legacy): `register -2pass` (star-pattern matching) plus
   `seqapplyreg`. Useful when frames have no usable astrometric headers.
-  This method runs both commands in a single Siril process (no finalize
-  crash in the register command).
 
 In both modes seqapplyreg writes the actual r_<basename>_*.fit files.
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import (
-    _check_siril_seq_result,
-    drop_staged,
-    quote,
-    run_siril_on_sequence,
-    seq_ref,
-    stage_sequence,
-)
+from nodes._seq_runner import quote, run_siril_on_sequence, seq_ref
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
 from server.siril import SirilRuntime
-
-_log = logging.getLogger(__name__)
-
-# Siril 1.4.2 seqplatesolve prints this before writing the .seq file.
-# It does NOT print "Sequence processing succeeded." before crashing.
-_PLATESOLVE_SUCCESS_MARKER = "Astrometric registration computed."
 
 
 class SeqRegisterParams(BaseModel):
@@ -249,7 +225,7 @@ class SeqRegisterParams(BaseModel):
 @register("seq_register")
 class SeqRegisterNode(Node[SeqRegisterParams]):
     id = "seq_register"
-    version = 3  # bumped: platesolve split into two Siril processes to survive finalize crash
+    version = 2  # bumped: distortion default False to avoid Siril 1.4.2 finalize crash
     cost = "expensive"
     uses_siril = True
 
@@ -287,144 +263,38 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
             apply_opts.append(f"-scale={params.drizzle_scale}")
             apply_opts.append(f"-pixfrac={params.drizzle_dropsize}")
 
-        out_basename = f"r_{params.input_basename}"
-
         if params.method == "platesolve":
-            wrote = self._run_platesolve(params, apply_opts, seq_in, seq_out, ctx)
+            ctx.progress(0.2, "seq_register: plate-solving sequence")
+            ps_opts = ["-nocache", "-force"]
+            if params.distortion:
+                ps_opts.append("-disto=ps_distortion")
+            align_commands: list[str] = [
+                f"seqplatesolve {params.input_basename} {' '.join(ps_opts)}",
+                f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+            ]
         else:  # star
-            wrote = self._run_star(params, apply_opts, seq_in, seq_out, out_basename, ctx)
+            ctx.progress(0.2, "seq_register: star-aligning sequence")
+            reg_opts: list[str] = [
+                f"-transf={params.transform}",
+                f"-minpairs={params.min_pairs}",
+            ]
+            if params.two_pass:
+                reg_opts.append("-2pass")
+            align_commands = [
+                f"register {params.input_basename} {' '.join(reg_opts)}",
+                f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+            ]
 
-        ctx.progress(1.0, f"seq_register: wrote {wrote}")
-        return {"sequence": seq_ref(seq_out)}
-
-    def _run_platesolve(
-        self,
-        params: SeqRegisterParams,
-        apply_opts: list[str],
-        seq_in: Path,
-        seq_out: Path,
-        ctx: RunContext,
-    ) -> str:
-        """Platesolve path: two separate Siril processes.
-
-        Siril 1.4.2 seqplatesolve crashes (SIGSEGV / SIGABRT) during the
-        finalize step that runs after all frames are solved and the .seq is
-        written to disk. The registration data is intact in the .seq before
-        the crash; seqapplyreg can consume it without issue.
-
-        Running the two commands in separate processes avoids the crash
-        propagating to seqapplyreg. The first process is declared successful
-        when stdout contains "Astrometric registration computed." AND the
-        updated .seq file is present -- regardless of exit code.
-        """
-        from server.siril import make_progress_handler
-
-        runtime = SirilRuntime()
-        seq_out.mkdir(parents=True, exist_ok=True)
-
-        if not seq_in.exists():
-            raise RuntimeError(f"seq_register: input dir does not exist: {seq_in}")
-
-        staged = stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
-        if not staged:
-            raise RuntimeError(
-                f"seq_register: no input frames matching basename "
-                f"'{params.input_basename}' under {seq_in}"
-            )
-
-        # --- Phase 1: seqplatesolve ---
-        ctx.progress(0.2, "seq_register: plate-solving sequence")
-        ps_opts = ["-nocache", "-force"]
-        if params.distortion:
-            ps_opts.append("-disto=ps_distortion")
-        ps_commands = [
-            f"cd {quote(seq_out.resolve())}",
-            f"seqplatesolve {params.input_basename} {' '.join(ps_opts)}",
-        ]
-        ps_result = runtime.run(
-            ps_commands,
-            working_dir=seq_out,
-            on_log=make_progress_handler(ctx, phases=2),
-            cancel=ctx.cancel,
-        )
-
-        # Validate seqplatesolve: the .seq must exist with reg data.
-        # Siril 1.4.2 crashes after writing it, so we check content not exit code.
-        seq_file = seq_out / f"{params.input_basename}_.seq"
-        if not seq_file.exists():
-            seq_file = seq_out / f"{params.input_basename}.seq"
-        reg_data_written = seq_file.exists() and _seq_has_registration(seq_file)
-        success_marker = _PLATESOLVE_SUCCESS_MARKER in ps_result.stdout
-
-        if not (success_marker and reg_data_written):
-            raise RuntimeError(
-                f"seq_register: seqplatesolve exited {ps_result.returncode} "
-                f"without completing registration\n"
-                f"--- ssf ---\n{ps_result.ssf}\n"
-                f"--- stdout (tail) ---\n{ps_result.stdout[-4000:]}\n"
-                f"--- stderr ---\n{ps_result.stderr}"
-            )
-        if ps_result.returncode != 0:
-            _log.warning(
-                "seq_register: seqplatesolve exited %d after writing reg data; "
-                "continuing to seqapplyreg (Siril 1.4 finalize crash)",
-                ps_result.returncode,
-            )
-
-        # --- Phase 2: seqapplyreg (fresh Siril process) ---
-        ctx.progress(0.6, "seq_register: applying registration")
-        apply_commands = [
-            f"cd {quote(seq_out.resolve())}",
-            f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
-        ]
-        apply_result = runtime.run(
-            apply_commands,
-            working_dir=seq_out,
-            on_log=make_progress_handler(ctx, phases=2),
-            cancel=ctx.cancel,
-        )
-
-        wrote = _check_siril_seq_result(
-            apply_result,
-            node_name="seq_register",
-            seq_out=seq_out,
-            out_basename=f"r_{params.input_basename}",
-            fitseq=params.fitseq,
-            min_count=1,
-        )
-        drop_staged(staged)
-        return wrote
-
-    def _run_star(
-        self,
-        params: SeqRegisterParams,
-        apply_opts: list[str],
-        seq_in: Path,
-        seq_out: Path,
-        out_basename: str,
-        ctx: RunContext,
-    ) -> str:
-        """Star-pattern path: single Siril process (register + seqapplyreg).
-
-        The `register` command does not crash on finalize, so the original
-        single-process approach is kept for this path.
-        """
-        ctx.progress(0.2, "seq_register: star-aligning sequence")
-        reg_opts: list[str] = [
-            f"-transf={params.transform}",
-            f"-minpairs={params.min_pairs}",
-        ]
-        if params.two_pass:
-            reg_opts.append("-2pass")
+        out_basename = f"r_{params.input_basename}"
         commands = [
             f"cd {quote(seq_out.resolve())}",
-            f"register {params.input_basename} {' '.join(reg_opts)}",
-            f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+            *align_commands,
         ]
-        # phases=2 partitions the [0.2, 0.95] band so the second command's
-        # fresh 0% sweep advances to the upper half instead of visually
-        # rewinding the bar to zero.
-        return run_siril_on_sequence(
+        # Two Siril sub-commands in succession (platesolve+applyreg or
+        # register+applyreg). phases=2 partitions the [0.2, 0.95] band so
+        # the second command's fresh 0% sweep advances to the upper half
+        # instead of visually rewinding the bar to zero.
+        wrote = run_siril_on_sequence(
             node_name="seq_register",
             seq_in=seq_in,
             seq_out=seq_out,
@@ -437,26 +307,5 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
             phases=2,
         )
 
-
-def _seq_has_registration(seq_file: Path) -> bool:
-    """Return True if the Siril .seq file contains valid (non-null) registration data.
-
-    seqplatesolve writes per-frame 'R1' lines into the .seq. Each R1 line ends
-    with a flag field: '1' means the frame was successfully solved, '0' means
-    the solve failed and the transformation matrix is null. We require at least
-    one R1 line whose last whitespace-delimited token is '1'.
-
-    The input .seq from bg_extract has no R1 lines at all (only 'I' lines).
-    A seqplatesolve run that failed all frames writes R1 lines with all-zero
-    matrices (last token '0'). Both cases return False so the caller can detect
-    a real registration failure rather than passing null matrices to seqapplyreg.
-    """
-    try:
-        text = seq_file.read_text(encoding="utf-8", errors="replace")
-        return any(
-            (line.startswith("R1 ") or line.startswith("R1\t"))
-            and line.split()[-1] == "1"
-            for line in text.splitlines()
-        )
-    except OSError:
-        return False
+        ctx.progress(1.0, f"seq_register: wrote {wrote}")
+        return {"sequence": seq_ref(seq_out)}

@@ -16,11 +16,7 @@ from typing import Any
 
 import pytest
 
-from nodes._seq_runner import (
-    _check_siril_seq_result,
-    _check_siril_stack_result,
-    run_siril_on_sequence,
-)
+from nodes._seq_runner import _check_siril_seq_result, run_siril_on_sequence
 from server.models import RunContext
 from server.siril import SirilBinary, SirilResult
 
@@ -33,19 +29,6 @@ _SUCCESS_STDOUT = (
     "log: Sequence processing succeeded.\n"
     "log: Execution time: 47.75 s\n"
     "Writing sequence file bkg_rs_pp_light_.seq\n"
-)
-
-# Siril 1.4.3 stdout from a successful `stack` command (verified on live box).
-_STACK_SUCCESS_STDOUT = (
-    "log: Stacking sequence light_\n"
-    "log: Starting stacking...\n"
-    "progress: Median stacking in progress..., 0.00%\n"
-    "progress: Finalizing stacking..., 94.12%\n"
-    "progress: Median stacking complete., 100.00%\n"
-    "log: Median stacking complete. 3 images have been stacked.\n"
-    "log: Saving FITS: file /data/cache/abc123/image.fit, 1 layer(s), 32x32 pixels, 32 bits\n"
-    "log: Stacked sequence successfully.\n"
-    "log: Execution time: 15.94 ms\n"
 )
 
 _FAILURE_STDOUT = (
@@ -369,69 +352,3 @@ class TestRunSirilOnSequenceSegfaultTolerance:
                 ctx=_ctx(tmp_path),
                 runtime=fake_rt,
             )
-
-
-# ---------------------------------------------------------------------------
-# _check_siril_stack_result: unit tests for all five cases
-# ---------------------------------------------------------------------------
-
-
-class TestCheckSirilStackResult:
-    """Tests for _check_siril_stack_result (stack-specific segfault tolerance).
-
-    The five cases mirror the spec in the issue:
-      1. rc=0 + success log + output present -> success
-      2. rc=-11 + success log + output present -> success with warning
-      3. rc=-11 + success log + output MISSING -> failure
-      4. rc=-11 + NO success log -> failure
-      5. rc=1 -> failure
-    """
-
-    def test_rc0_success_log_output_present_succeeds(self, tmp_path: Path) -> None:
-        """rc=0 + success log + output present -> succeeds without error."""
-        out_image = tmp_path / "image.fit"
-        out_image.write_bytes(b"FAKEFIT")
-
-        result = _make_result(returncode=0, stdout=_STACK_SUCCESS_STDOUT)
-        # Must not raise.
-        _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
-
-    def test_rc_minus11_success_log_output_present_warns_and_succeeds(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """rc=-11 + success log + output present -> success WITH warning (segfault path)."""
-        out_image = tmp_path / "image.fit"
-        out_image.write_bytes(b"FAKEFIT")
-
-        result = _make_result(returncode=-11, stdout=_STACK_SUCCESS_STDOUT)
-        with caplog.at_level(logging.WARNING, logger="nodes._seq_runner"):
-            _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
-
-        assert any("segfault" in record.message for record in caplog.records)
-        assert any("-11" in record.message for record in caplog.records)
-
-    def test_rc_minus11_success_log_output_missing_raises(self, tmp_path: Path) -> None:
-        """rc=-11 + success log + output MISSING -> still a real failure."""
-        out_image = tmp_path / "image.fit"
-        # Deliberately NOT written.
-
-        result = _make_result(returncode=-11, stdout=_STACK_SUCCESS_STDOUT)
-        with pytest.raises(RuntimeError, match="exited -11"):
-            _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
-
-    def test_rc_minus11_no_success_log_raises(self, tmp_path: Path) -> None:
-        """rc=-11 + NO success log -> real failure regardless of output file."""
-        out_image = tmp_path / "image.fit"
-        out_image.write_bytes(b"FAKEFIT")
-
-        result = _make_result(returncode=-11, stdout=_FAILURE_STDOUT)
-        with pytest.raises(RuntimeError, match="exited -11"):
-            _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
-
-    def test_rc1_raises(self, tmp_path: Path) -> None:
-        """rc=1 (real Siril error, not segfault) -> failure."""
-        out_image = tmp_path / "image.fit"
-
-        result = _make_result(returncode=1, stdout=_FAILURE_STDOUT)
-        with pytest.raises(RuntimeError, match="exited 1"):
-            _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
