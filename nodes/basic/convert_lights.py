@@ -72,6 +72,7 @@ class ConvertLightsNode(Node[ConvertLightsParams]):
     version = 1
     cost = "medium"
     uses_siril = True
+    preview_hidden = True
 
     inputs = {"lights": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}

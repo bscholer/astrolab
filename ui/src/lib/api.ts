@@ -537,6 +537,11 @@ export interface TemplateNodeSchema {
   // True when this node's FITS output is already display-ready (post-stretch);
   // the preview does not apply autostretch, so it faithfully represents the output.
   preview_display_ready?: boolean;
+  // True when this node's preview is intentionally suppressed in the UI: the
+  // card renders progress + params without a thumbnail well. Used for the
+  // pre-stack sequence ops (convert, calibrate, resample, offset, bg_extract)
+  // whose per-frame previews are visually uninformative.
+  preview_hidden?: boolean;
 }
 
 export interface JSONSchemaField {
