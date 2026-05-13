@@ -117,12 +117,16 @@ class Job(BaseModel):
     param_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """node_id -> partial params merged over the template's defaults."""
 
-    inputs: dict[str, Ref] = Field(default_factory=dict)
+    inputs: dict[str, Ref | list[Ref]] = Field(default_factory=dict)
     """External inputs into the pipeline, keyed by '<node_id>.<port>'.
 
     For nodes whose inputs are sourced from outside the DAG (e.g. the first
     node reading frames from disk), the runner reads from this map instead of
     from another node's output.
+
+    List values are used for list-valued ports (see ports.LIST_PORTS), eg the
+    calibrate node's `dark` port accepts a list of masters so one job can use
+    different darks for different temperature / exposure bins.
     """
 
     preview_only: bool = False

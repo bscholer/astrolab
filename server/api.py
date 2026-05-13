@@ -2237,9 +2237,12 @@ def _suggestions_for_project(
         # job_builder; we don't import it here to keep this helper
         # cheap, just enumerate the fields inline (target_id is
         # already covered by the canonical-group filter above).
+        # Keep in sync with job_builder.COMPAT_FIELDS — `exptime` is
+        # deliberately absent because the calibrate node now handles
+        # mixed exposures via per-bin dark selection.
         if compat_reference is not None:
             mismatch = False
-            for field in ("instrument", "camera", "filter", "exptime", "gain", "binning"):
+            for field in ("instrument", "camera", "filter", "gain", "binning"):
                 if r[field] != compat_reference[field]:
                     mismatch = True
                     break

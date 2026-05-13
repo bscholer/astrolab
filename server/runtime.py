@@ -171,8 +171,10 @@ def run_job(
     by_id = {n.id: n for n in template.nodes}
     order = _topo_order(template)
 
-    # Maps "<node_id>.<port>" -> Ref, growing as we run.
-    refs: dict[str, Ref] = dict(job.inputs)
+    # Maps "<node_id>.<port>" -> Ref or list[Ref], growing as we run. List
+    # values are reserved for list-typed ports (ports.LIST_PORTS); scalar
+    # outputs from nodes always produce a single Ref.
+    refs: dict[str, Ref | list[Ref]] = dict(job.inputs)
 
     for nid in order:
         if cancel_event.is_set():
@@ -183,7 +185,8 @@ def run_job(
 
         # Resolve inputs from prior outputs (or from job.inputs for sources).
         # Optional inputs may be omitted; required inputs must resolve.
-        resolved_inputs: dict[str, Ref] = {}
+        # Values may be a single Ref or a list[Ref] for list-typed ports.
+        resolved_inputs: dict[str, Ref | list[Ref]] = {}
         for in_port in node_cls.inputs:
             src = spec.inputs.get(in_port)
             external_key = f"{nid}.{in_port}"
@@ -289,7 +292,16 @@ def run_job(
                 cancel=cancel_event,
             )
             try:
-                produced = node_inst.run(resolved_inputs, params, ctx, out_dir)
+                # Node.run still types `inputs` as dict[str, Ref] because the
+                # vast majority of nodes only consume scalar ports. Nodes that
+                # declare a list-typed input (ports.LIST_PORTS) receive a
+                # list[Ref] at that key and must widen the type locally.
+                produced = node_inst.run(
+                    resolved_inputs,  # type: ignore[arg-type]
+                    params,
+                    ctx,
+                    out_dir,
+                )
             except JobCancelled:
                 shutil.rmtree(out_dir, ignore_errors=True)
                 on_event({"type": "node_failed", "node_id": nid, "error": "cancelled"})
@@ -337,5 +349,14 @@ def run_job(
                 "<template>",
                 f"declared output '{public_name}' references unresolved '{internal}'",
             )
-        public[public_name] = refs[internal]
+        # Templates only expose scalar outputs as public; list-typed refs come
+        # from job.inputs and never end up declared as template.outputs.
+        ref = refs[internal]
+        if isinstance(ref, list):
+            raise RunError(
+                "<template>",
+                f"declared output '{public_name}' resolved to a list of refs; "
+                "list-typed ports cannot be exposed as public outputs",
+            )
+        public[public_name] = ref
     return public

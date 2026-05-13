@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -136,11 +136,27 @@ def canonical_json(
     ).encode("utf-8")
 
 
+def _encode_ref(h: hashlib._Hash, ref: RefLike) -> None:
+    """Mix one Ref into the hash. Shared by single-ref and list-ref ports."""
+    h.update(ref.node_hash.encode("utf-8"))
+    h.update(b"/")
+    h.update(ref.port.encode("utf-8"))
+    # External Refs (node_hash='ext') come from outside the runtime (eg
+    # the session folder selected by the UI), so their filesystem path
+    # IS the discriminator and must be mixed in. Internal Refs are fully
+    # identified by their producer hash + port; mixing the path would
+    # couple downstream hashes to the cache root location, silently
+    # invalidating everything when ASTROLAB_HOME moves.
+    if ref.node_hash == "ext":
+        h.update(b"@")
+        h.update(str(ref.path).encode("utf-8"))
+
+
 def node_hash(
     *,
     node_id: str,
     node_version: int,
-    inputs: Mapping[str, RefLike],
+    inputs: Mapping[str, RefLike | Sequence[RefLike]],
     params: BaseModel | Mapping[str, Any],
     params_model: type[BaseModel] | None = None,
     extra_keys: Mapping[str, str] | None = None,
@@ -149,7 +165,10 @@ def node_hash(
 
     Parts hashed:
       - node id and version (a version bump invalidates cache cleanly)
-      - inputs sorted by port name; each input contributes its own node_hash
+      - inputs sorted by port name; each input contributes its own node_hash.
+        List-valued inputs (e.g. MASTER_FITS_LIST) are sorted by their refs'
+        (node_hash, port, path) to make the hash insensitive to the order in
+        which the job builder discovered the masters.
       - canonical params bytes
       - any extra keys (e.g. {"siril_version": "1.4.0"} for nodes that shell
         out to Siril; bumping the underlying tool invalidates cleanly)
@@ -164,21 +183,25 @@ def node_hash(
 
     h.update(b"\x00inputs=")
     for port in sorted(inputs.keys()):
-        ref = inputs[port]
+        value = inputs[port]
         h.update(port.encode("utf-8"))
         h.update(b"=")
-        h.update(ref.node_hash.encode("utf-8"))
-        h.update(b"/")
-        h.update(ref.port.encode("utf-8"))
-        # External Refs (node_hash='ext') come from outside the runtime (eg
-        # the session folder selected by the UI), so their filesystem path
-        # IS the discriminator and must be mixed in. Internal Refs are fully
-        # identified by their producer hash + port; mixing the path would
-        # couple downstream hashes to the cache root location, silently
-        # invalidating everything when ASTROLAB_HOME moves.
-        if ref.node_hash == "ext":
-            h.update(b"@")
-            h.update(str(ref.path).encode("utf-8"))
+        if isinstance(value, list | tuple):
+            # Deterministic ordering: sort by the same fields _encode_ref
+            # consumes, so the hash doesn't shift when the job builder
+            # discovers darks in a different order across runs.
+            ordered = sorted(
+                value,
+                key=lambda r: (r.node_hash, r.port, str(r.path)),
+            )
+            h.update(b"[")
+            for i, ref in enumerate(ordered):
+                if i:
+                    h.update(b",")
+                _encode_ref(h, ref)
+            h.update(b"]")
+        else:
+            _encode_ref(h, cast("RefLike", value))
         h.update(b";")
 
     h.update(b"\x00params=")
@@ -195,13 +218,14 @@ def node_hash(
     return h.hexdigest()
 
 
-class RefLike:
+@runtime_checkable
+class RefLike(Protocol):
     """Structural type matching server.models.Ref for the parts node_hash needs.
 
-    Defined here as a minimal protocol so canonical.py has no import cycle with
+    Defined here as a Protocol so canonical.py has no import cycle with
     models.py. Anything with `.node_hash: str`, `.port: str`, and `.path` works.
     """
 
     node_hash: str
     port: str
-    path: Any  # pathlib.Path or anything else with a stable str()
+    path: Any  # pathlib.Path or anything with a stable str()
