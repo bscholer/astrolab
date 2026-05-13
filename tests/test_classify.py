@@ -200,3 +200,56 @@ def test_classify_unknown_scope_returns_none() -> None:
     error on them — many capture trees have stray FITS exports."""
     header = {"INSTRUME": "Random Mono CCD", "IMAGETYP": "LIGHT"}
     assert classify(header, Path("/x.fits")) is None
+
+
+# ---------- Siril-derived frame rejection -------------------------------
+
+
+def test_classify_skips_siril_stack() -> None:
+    """A Siril-written stack (STACKCNT>=2, PROGRAM=Siril) is not a raw sub."""
+    header = dict(DEFAULT_LIGHT_HEADER)
+    header["STACKCNT"] = 31
+    header["PROGRAM"] = "Siril 1.4.0-beta4"
+    header["FILTER"] = "Astro_Ha"
+    p = Path("/captures/wizard_nebula/result_Ha_1860.0s.fit")
+    assert classify(header, p) is None
+
+
+def test_classify_skips_siril_seqextract_per_frame() -> None:
+    """seqextract_HaOIII writes per-frame channel extractions with PROGRAM=Siril
+    but no STACKCNT — the PROGRAM signal alone must still skip them, otherwise
+    they pollute sessions with bogus FILTER values like 'Duo-Band_Ha'."""
+    header = dict(DEFAULT_LIGHT_HEADER)
+    header["PROGRAM"] = "Siril 1.4.0-beta3"
+    header["FILTER"] = "Duo-Band_Ha"
+    p = Path("/captures/NGC7380/process/Ha_light_00141.fit")
+    assert classify(header, p) is None
+
+
+def test_classify_skips_siril_rgb_composition() -> None:
+    """`rgbcomp` writes FILTER='mixed' and STACKCNT>=2 on the composed FITS."""
+    header = dict(DEFAULT_LIGHT_HEADER)
+    header["STACKCNT"] = 99
+    header["PROGRAM"] = "Siril 1.4.0-beta4"
+    header["FILTER"] = "mixed"
+    p = Path("/captures/wizard_nebula/NGC_7380_099x60sec_HOO.fit")
+    assert classify(header, p) is None
+
+
+def test_classify_skips_stackcnt_even_without_program() -> None:
+    """STACKCNT>=2 is sufficient by itself — a user-built master from any tool
+    that didn't stamp PROGRAM is still a master, not a raw sub."""
+    header = dict(DEFAULT_LIGHT_HEADER)
+    header["STACKCNT"] = 20
+    p = Path("/captures/masters/master_light.fit")
+    assert classify(header, p) is None
+
+
+def test_classify_passes_stackcnt_one() -> None:
+    """STACKCNT=1 (some firmwares stamp it on single exposures) must NOT skip."""
+    header = dict(DEFAULT_LIGHT_HEADER)
+    header["STACKCNT"] = 1
+    p = Path("/captures/DWARF_RAW_TELE_M33/M33_30s60_Astro.fits")
+    result = classify(header, p)
+    assert result is not None
+    assert result.image_type == "LIGHT"

@@ -44,6 +44,8 @@ HEADER_KEYS_TO_KEEP: tuple[str, ...] = (
     "IMAGETYP",
     "NAXIS1",
     "NAXIS2",
+    "STACKCNT",
+    "PROGRAM",
 )
 """Headers we care about. Anything else is dropped to keep blob size sane."""
 
