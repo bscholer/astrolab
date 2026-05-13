@@ -23,7 +23,7 @@ User crop (explicit bbox)
 
 Coordinates are stored in [0,1] (normalized to the input frame's spatial
 dims) so the dragged rectangle in the UI stays valid even after upstream
-nodes change the resolution (e.g. flipping resample mode draft <-> full).
+nodes change the resolution (e.g. toggling draft mode on/off).
 The runtime maps normalized -> pixels at run time.
 
 WCS keys CRPIX1/CRPIX2 (if present) are shifted so a future plate-solve on

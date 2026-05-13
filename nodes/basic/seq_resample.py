@@ -1,20 +1,18 @@
-"""seq_resample: spatially downscale every frame in a sequence.
+"""seq_resample: spatially downscale every frame in a sequence ("draft mode").
 
 Input port  : sequence (SEQUENCE_FITS)
 Output port : sequence (SEQUENCE_FITS) - rs_<basename>_*.fit
 
-Wraps Siril 1.4's `seqresample` for fast iteration. Pulling `scale` down
-(e.g. 0.5) shrinks each frame by that factor before the expensive
-register / stack stages run, which gives ~4x speedup at scale=0.5 and
-~16x at scale=0.25. Pixel-statistic params (stretch, sigma rejection,
-bg-extract degree) translate accurately between draft and full-res; only
-per-pixel sharpness suffers.
+Wraps Siril 1.4's `seqresample` for fast iteration. When enabled, each
+frame downscales to half resolution (scale=0.5) before the expensive
+register / stack stages run, giving ~4x speedup. Pixel-statistic params
+(stretch, sigma rejection, bg-extract degree) translate accurately
+between draft and full-res; only per-pixel sharpness suffers.
 
-Default scale is 1.0 (passthrough -- Siril effectively just re-emits the
-sequence under the new prefix). Users pull the slider down for fast
-iteration loops, then crank it back to 1.0 when they're ready for the
-final render. Both lineages stay independently cached so flipping back
-and forth is cheap once each has been computed.
+Disabled by default: pass-through at native resolution. Users flip the
+toggle on for fast iteration loops, then flip it off when they're ready
+for the final render. Both lineages stay independently cached so
+toggling back and forth is cheap once each has been computed.
 
 Lives between calibrate and offset in the canned template: dark/flat
 dimensions still need to match raw lights at calibrate time, but
@@ -52,19 +50,18 @@ class SeqResampleParams(BaseModel):
         description="Operate on a FITSEQ container instead of per-frame files.",
         json_schema_extra={"ui_hidden": True},
     )
-    mode: Literal["full", "draft"] = Field(
-        default="full",
-        description="'full' resamples at native resolution (passthrough -- "
-        "downstream sees frames unchanged). 'draft' downscales each frame to "
-        "half resolution before the heavy register/stack stages run, giving "
-        "~4x speedup. Use 'draft' for fast iteration on stretch / pedestal / "
-        "rejection params; flip back to 'full' for the final render. Each "
-        "mode has its own cache lineage so toggling is cheap once both are "
-        "built.",
+    enabled: bool = Field(
+        default=False,
+        description="Off (default): frames pass through at native resolution. "
+        "On: each frame downscales to half resolution before the heavy "
+        "register/stack stages run, giving ~4x speedup. Use for fast "
+        "iteration on stretch / pedestal / rejection params; toggle back off "
+        "for the final render. Each state has its own cache lineage so "
+        "flipping is cheap once both are built.",
         json_schema_extra={
             "agent_hint": (
-                "Use 'draft' for rapid parameter exploration; switch to 'full'"
-                " only for the final high-resolution render."
+                "Enable for rapid parameter exploration; disable for the final"
+                " high-resolution render."
             ),
         },
     )
@@ -76,8 +73,7 @@ class SeqResampleParams(BaseModel):
         "(default) is a good speed/quality compromise; 'lanczos3' is sharper "
         "but slower; 'area' is best for downscaling without aliasing.",
         json_schema_extra={
-            "ui_section": "advanced",
-            "ui_when": {"mode": "draft"},
+            "ui_when": {"enabled": True},
             "agent_hint": (
                 "Lanczos3 looks sharpest in draft previews but is slower;"
                 " 'area' minimizes aliasing when downscaling by large factors."
@@ -114,7 +110,7 @@ class SeqResampleNode(Node[SeqResampleParams]):
         seq_out = out_dir_path / "sequence"
         out_basename = f"rs_{params.input_basename}"
 
-        if params.mode == "full":
+        if not params.enabled:
             # Siril's seqresample at scale=1.0 errors out with "Scale is 1.0,
             # nothing to do." rather than no-op'ing, so we handle the
             # passthrough ourselves: hardlink each frame from upstream into
@@ -128,7 +124,7 @@ class SeqResampleNode(Node[SeqResampleParams]):
             scale = 0.5
             ctx.progress(
                 0.2,
-                f"seq_resample: mode={params.mode} (scale={scale:g})",
+                f"seq_resample: draft (scale={scale:g})",
             )
             commands = [
                 f"cd {quote(seq_out.resolve())}",

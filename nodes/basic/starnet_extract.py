@@ -59,7 +59,6 @@ class StarnetExtractParams(BaseModel):
         "overlap = cleaner edges, but slower. 256 is StarNet's default; "
         "drop to 128 for very dense star fields.",
         json_schema_extra={
-            "ui_section": "advanced",
             "agent_hint": (
                 "Smaller stride gives smoother star removal at tile boundaries;"
                 " drop to 128 if you see grid artifacts in dense fields."

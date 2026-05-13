@@ -74,9 +74,9 @@ nodes:
     params:
       input_basename: pp_light
       fitseq: false
-      mode: full
-      # Flip mode to 'draft' in the UI for fast iteration (~4x speedup);
-      # back to 'full' for the final render. Both lineages stay cached.
+      enabled: false
+      # Flip the toggle on in the UI for fast iteration (~4x speedup);
+      # off for the final render. Both lineages stay cached.
     inputs:
       sequence: calibrate.sequence
 

@@ -1,2 +1,0 @@
-requires 1.4.0
-pyscript /tmp/astrolab_spike/spike.py
