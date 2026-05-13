@@ -55,7 +55,6 @@ class StarnetRecombineParams(BaseModel):
         "useful when stars and nebulosity overlap and you want stars to "
         "dominate.",
         json_schema_extra={
-            "ui_section": "advanced",
             "agent_hint": (
                 "Use 'add' for a natural recompose; 'screen' tames blown-out"
                 " star cores; 'max' makes stars pop against dim nebulosity."

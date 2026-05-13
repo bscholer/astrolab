@@ -52,7 +52,6 @@ class StarnetReplaceParams(BaseModel):
         "robust default. Siril also accepts 'moffat' for telescopes whose "
         "real PSF has heavier tails.",
         json_schema_extra={
-            "ui_section": "advanced",
             "agent_hint": (
                 "Gaussian is the right choice for most refractors;"
                 " Moffat better matches the diffraction rings of Newtonians."
