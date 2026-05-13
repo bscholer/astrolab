@@ -143,6 +143,23 @@
     !project || !project.history.some((h) => h.seq === (project!.current_seq + 1))
   );
 
+  // Split the visible pipeline into a leading "prep strip" of compact
+  // preview_hidden cards and a remainder that flows through the normal
+  // grid. Lone compact cards stuck in a 4-col grid row of tall cards
+  // leave huge gaps; lifting the contiguous leading run into a flex
+  // strip packs them tightly and reads as a single prep phase.
+  const visibleSchemaNodes = $derived.by(() => {
+    if (!schema || !project) return [] as TemplateSchema['nodes'];
+    const ov = project.current_overrides as Record<string, Record<string, unknown>>;
+    return schema.nodes.filter((n) => isNodeVisible(n.node_id, schemaByNodeId, ov));
+  });
+  const prepSplitIndex = $derived.by(() => {
+    const idx = visibleSchemaNodes.findIndex((n) => !n.preview_hidden);
+    return idx === -1 ? visibleSchemaNodes.length : idx;
+  });
+  const prepNodes = $derived(visibleSchemaNodes.slice(0, prepSplitIndex));
+  const mainNodes = $derived(visibleSchemaNodes.slice(prepSplitIndex));
+
   function pickPreviewPort(nodeId: string): string {
     const node = schema?.nodes.find((n) => n.node_id === nodeId);
     if (node?.outputs) {
@@ -942,48 +959,53 @@
 
     {#if schema && project}
       {@const isCover = project.cover_seq === project.current_seq}
+      {#snippet pipelineRow(nschema: TemplateSchema['nodes'][number])}
+        {@const nid = nschema.node_id}
+        {@const upstream = upstreamHashFor(nid)}
+        <PipelineRow
+          {nschema}
+          project={project!}
+          status={pipeline.nodeStatus[nid] ?? 'pending'}
+          progress={pipeline.nodeProgress[nid]}
+          hash={pipeline.nodeHash[nid]}
+          port={pipeline.nodePort[nid] ?? 'image'}
+          kind={pipeline.nodeKind[nid] ?? nschema.kind ?? nid}
+          previewLoaded={pipeline.previewLoaded[nid] ?? false}
+          isOutput={nid === outputNodeId}
+          isExpanded={expandedNodes.has(nid)}
+          closureCost={blastRadiusCost(project!.template, nid, costByNode)}
+          upstreamHash={upstream.hash}
+          upstreamPort={upstream.port}
+          durationMs={pipeline.nodeDurationMs[nid]}
+          {isCover}
+          {coverBusy}
+          onToggle={() => toggleNode(nid)}
+          onPreviewLoad={() => pipeline.onPreviewLoad(nid)}
+          onPreviewError={() => pipeline.onPreviewError(nid)}
+          onNodeOverrideChange={handleNodeOverrideChange}
+          onToggleEnabled={toggleNodeEnabled}
+          onToggleCover={toggleCover}
+          onCopyPath={(path) => copyToClipboard(path, 'Copied output path')}
+          finalOutputPort={nid === outputNodeId && finalOutput ? finalOutput[0] : undefined}
+          finalOutputRef={nid === outputNodeId && finalOutput ? finalOutput[1] : undefined}
+        />
+      {/snippet}
       <section class="nodes">
         <h2 class="section-h">Pipeline</h2>
-        <ol class="node-list">
-          {#each schema.nodes as nschema (nschema.node_id)}
-            {@const nid = nschema.node_id}
-            {@const visible = isNodeVisible(
-              nid,
-              schemaByNodeId,
-              project.current_overrides as Record<string, Record<string, unknown>>
-            )}
-            {#if visible}
-              {@const upstream = upstreamHashFor(nid)}
-              <PipelineRow
-                {nschema}
-                {project}
-                status={pipeline.nodeStatus[nid] ?? 'pending'}
-                progress={pipeline.nodeProgress[nid]}
-                hash={pipeline.nodeHash[nid]}
-                port={pipeline.nodePort[nid] ?? 'image'}
-                kind={pipeline.nodeKind[nid] ?? nschema.kind ?? nid}
-                previewLoaded={pipeline.previewLoaded[nid] ?? false}
-                isOutput={nid === outputNodeId}
-                isExpanded={expandedNodes.has(nid)}
-                closureCost={blastRadiusCost(project.template, nid, costByNode)}
-                upstreamHash={upstream.hash}
-                upstreamPort={upstream.port}
-                durationMs={pipeline.nodeDurationMs[nid]}
-                {isCover}
-                {coverBusy}
-                onToggle={() => toggleNode(nid)}
-                onPreviewLoad={() => pipeline.onPreviewLoad(nid)}
-                onPreviewError={() => pipeline.onPreviewError(nid)}
-                onNodeOverrideChange={handleNodeOverrideChange}
-                onToggleEnabled={toggleNodeEnabled}
-                onToggleCover={toggleCover}
-                onCopyPath={(path) => copyToClipboard(path, 'Copied output path')}
-                finalOutputPort={nid === outputNodeId && finalOutput ? finalOutput[0] : undefined}
-                finalOutputRef={nid === outputNodeId && finalOutput ? finalOutput[1] : undefined}
-              />
-            {/if}
-          {/each}
-        </ol>
+        {#if prepNodes.length > 0}
+          <ol class="node-prep-strip" aria-label="Prep steps">
+            {#each prepNodes as nschema (nschema.node_id)}
+              {@render pipelineRow(nschema)}
+            {/each}
+          </ol>
+        {/if}
+        {#if mainNodes.length > 0}
+          <ol class="node-list">
+            {#each mainNodes as nschema (nschema.node_id)}
+              {@render pipelineRow(nschema)}
+            {/each}
+          </ol>
+        {/if}
       </section>
     {/if}
 
@@ -1264,6 +1286,35 @@
     grid-auto-flow: dense;
     align-items: start;
     gap: 0.7rem;
+  }
+
+  /* Prep strip: contiguous leading preview_hidden cards live here in a
+     flex-wrap row so they pack tightly side by side instead of leaving
+     a tall empty cell in the 4-col grid below. Each card is allowed
+     to flex with a 220px min so it stays readable; on narrow viewports
+     they wrap one-per-line. The strip sits above the main grid and
+     gets a small bottom margin so the prep phase reads as its own
+     band. */
+  .node-prep-strip {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.7rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.7rem;
+  }
+  .node-prep-strip > :global(.node-row) {
+    flex: 1 1 220px;
+    min-width: 220px;
+  }
+  /* On narrow viewports drop the min so two compact cards still fit
+     in a row before the wrap kicks in. */
+  @media (max-width: 480px) {
+    .node-prep-strip > :global(.node-row) {
+      flex-basis: 100%;
+      min-width: 0;
+    }
   }
 
   .status {
