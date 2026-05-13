@@ -376,6 +376,10 @@ export interface ProjectHistoryEntry {
   // time of the swap so a future revert / audit can navigate back through
   // it without re-querying the catalog.
   snapshot?: Record<string, unknown> | null;
+  // True when this entry's job ended in a `failed` state. Omitted for
+  // queued / running / completed entries; the strip uses it to outline
+  // failed versions the same way the pipeline marks failed node cards.
+  failed?: boolean;
 }
 
 export interface SuggestedAdditions {

@@ -2322,9 +2322,20 @@ def _attach_preview(project_dict: dict) -> dict:
     return project_dict
 
 
+def _attach_history_status(project_dict: dict) -> None:
+    """Mark history entries whose underlying job ended in `failed` so the
+    UI can outline them. Successful, queued, and running entries get no
+    flag; the strip only needs to highlight the bad ones."""
+    for entry in project_dict.get("history") or []:
+        record = job_manager.get(entry["job_id"])
+        if record is not None and record.status == "failed":
+            entry["failed"] = True
+
+
 def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     payload = project.to_public_dict()
     _attach_preview(payload)
+    _attach_history_status(payload)
     session_ids = payload.get("source_session_ids") or []
     payload["capture"] = _capture_for_project(conn, session_ids).model_dump(mode="json")
     display = _display_for_project(conn, session_ids)
