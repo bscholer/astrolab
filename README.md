@@ -27,14 +27,13 @@ It is built around the Dwarf 3 capture layout for now, but nothing in the pipeli
 - Surfaces a **Tonight** planner with altitude/visibility for the targets you've already captured, so you know what's worth re-imaging.
 - Gallery view surfaces the renders you opt in to publish; everything else stays in your private history.
 
-<!-- Screenshot: Project page open on a finished stack, history strip at the bottom with at least two revisions visible. This is the iterate-and-compare core. -->
 <img src="docs/screenshots/project.png" alt="Project page with history strip showing multiple revisions" width="720" />
 
-<!-- Screenshot: Compare view with two revisions side by side or using the before/after slider. -->
 <img src="docs/screenshots/compare.png" alt="Compare view with two revisions" width="720" />
 
-<!-- Screenshot: Tonight planner with targets queued and rise/set bars visible. -->
-<img src="docs/screenshots/tonight.png" alt="Tonight planner with targets queued" width="720" />
+<img src="docs/screenshots/tonight.png" alt="Tonight planner with targets listed" width="720" />
+
+<img src="docs/screenshots/system.png" alt="System monitoring dashboard, showing live CPU, memory, disk, GPU stats, and more" width="720" />
 
 ## Quick start
 
