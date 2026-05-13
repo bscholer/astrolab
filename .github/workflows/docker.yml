@@ -49,10 +49,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # CPU variant: :latest (on main only), :cpu, :vX.Y.Z (on tag), :vX.Y.Z-cpu (on tag)
-      # flavor latest=false disables docker/metadata-action's default behavior of
-      # auto-tagging :latest on any semver match. We manage :latest manually via
-      # the type=raw line below so it only ever follows main HEAD on the CPU image.
+      # CPU variant tagging:
+      #   main push  → :dev                      (moving target, safe to clobber)
+      #   git tag v* → :latest, :cpu, :v{X.Y.Z}, :v{X.Y.Z}-cpu
+      #   PR         → nothing pushed
+      # flavor latest=false disables metadata-action's auto :latest-on-semver
+      # so we control exactly when :latest moves. type=semver only fires on
+      # tag refs, so the release-flavored raw tags below need explicit enable
+      # gates to avoid firing on a main push.
       - name: Compute tags (cpu)
         if: matrix.variant == 'cpu'
         id: meta-cpu
@@ -61,14 +65,17 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           flavor: latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=cpu
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=cpu,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{version}}-cpu
 
-      # CUDA variant: :cuda, :vX.Y.Z-cuda. NEVER :latest.
-      # flavor latest=false is critical here: without it, semver auto-tagged
-      # :latest on tag pushes and the CUDA image overwrote the CPU :latest.
+      # CUDA variant tagging:
+      #   main push  → :dev-cuda
+      #   git tag v* → :cuda, :v{X.Y.Z}-cuda
+      #   PR         → nothing pushed
+      # NEVER :latest: that one belongs to the CPU image.
       - name: Compute tags (cuda)
         if: matrix.variant == 'cuda'
         id: meta-cuda
@@ -77,7 +84,8 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           flavor: latest=false
           tags: |
-            type=raw,value=cuda
+            type=raw,value=dev-cuda,enable={{is_default_branch}}
+            type=raw,value=cuda,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern=v{{version}}-cuda
 
       - name: Build and push (cpu)
