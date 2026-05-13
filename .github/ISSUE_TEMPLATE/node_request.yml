@@ -1,0 +1,65 @@
+name: New node request
+description: A new pipeline node (a step that takes typed inputs and emits typed outputs).
+title: "[node] "
+labels: ["enhancement", "node"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nodes are the unit of work in astrolab. Use this template if you want a
+        new processing step rather than a UI / workflow change. See
+        [CONTRIBUTING.md](https://github.com/bscholer/astrolab/blob/main/CONTRIBUTING.md)
+        for what a node looks like in code.
+
+  - type: input
+    id: name
+    attributes:
+      label: Proposed node name
+      placeholder: "deconvolve, mosaic_assemble, drizzle_combine, ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: What does it do?
+      description: One paragraph. What it computes, what it replaces, when you'd use it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: io
+    attributes:
+      label: Inputs and outputs
+      description: Port types you expect (IMAGE_FITS, SEQUENCE_FITS, etc.) and what the user has to supply.
+      placeholder: |
+        inputs:
+          image: IMAGE_FITS
+        outputs:
+          image: IMAGE_FITS
+    validations:
+      required: true
+
+  - type: textarea
+    id: tool
+    attributes:
+      label: What does the work?
+      description: A Siril command, a sirilpy call, a third-party CLI (GraXpert / StarNet++ / ...), pure numpy, etc. If it's a third-party tool, link it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where does it fit in the pipeline?
+      description: Which existing node(s) feed it, which consume its output, and which template(s) should ship it by default.
+    validations:
+      required: false
+
+  - type: textarea
+    id: params
+    attributes:
+      label: Parameters
+      description: What knobs would the user expose? Mark which are basic vs advanced, and which (if any) should default-on.
+    validations:
+      required: false

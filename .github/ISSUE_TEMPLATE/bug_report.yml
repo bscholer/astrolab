@@ -1,0 +1,102 @@
+name: Bug report
+description: Something is broken or behaves wrong.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The more concrete you are, the faster this gets fixed.
+        Especially helpful: the **exact** error from the job event stream and the
+        **node** it failed on. Vague "stacking didn't work" reports tend to die in triage.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: One or two sentences. What did you expect, what did you get?
+      placeholder: "Registration completed with 6/152 frames; rest failed with 'no items found in the view cone'."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Steps to trigger it. If it's intermittent, say so and how often.
+      placeholder: |
+        1. Open project X (or: create a fresh project from session Y)
+        2. Toggle Draft mode on
+        3. Press Reprocess
+        4. Wait through Register; fails ~50% of the time
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: astrolab version
+      description: Docker tag, git SHA, or release tag. `docker inspect ghcr.io/bscholer/astrolab` works.
+      placeholder: "v0.2.0-cuda"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - Docker (CPU)
+        - Docker (CUDA / NVIDIA GPU)
+        - Native dev (uv + pnpm)
+        - Other (explain in details)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: capture-source
+    attributes:
+      label: Capture source
+      description: The instrument the failing FITS came from.
+      options:
+        - Dwarf 3
+        - Other smart telescope
+        - Traditional setup (mount + camera)
+        - Not capture-related
+    validations:
+      required: true
+
+  - type: textarea
+    id: failing-node
+    attributes:
+      label: Which node failed, and what's the error?
+      description: |
+        Open the failing project → the strip card on the failing node. The event panel
+        has the error line. Copy it verbatim. If multiple nodes failed, list them in order.
+      placeholder: |
+        Node: seq_register
+        Error: "Finalizing sequence processing failed."
+        Last log line: "log: 6 images successfully platesolved out of 152 included"
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server logs / job event timeline
+      description: |
+        Anything from `docker logs <container>` around the failure timestamp, or the
+        relevant slice of the job's event stream. Trim to ~30 lines; don't paste an
+        entire log file.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, theories, related issues, prior workarounds.
+    validations:
+      required: false
