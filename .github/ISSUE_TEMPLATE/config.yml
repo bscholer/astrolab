@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/bscholer/astrolab/discussions
+    about: For "is this how I should...", "does astrolab support...", "I'm trying to..." — anything that's a question more than a defect.

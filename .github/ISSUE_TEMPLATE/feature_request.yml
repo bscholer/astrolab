@@ -1,0 +1,51 @@
+name: Feature request
+description: A new capability or a meaningful change to an existing one.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two sentences on the problem beats five paragraphs on the solution.
+        If you already have a fix in mind, great, but lead with what's hurting.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the underlying problem?
+      description: The thing you're actually trying to do, not the feature you think you need.
+      placeholder: "Every time I switch from draft to full I lose track of which version was the draft preview. I end up reprocessing both to compare."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: Sketch of the change. If you don't know, leave it blank.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Things you tried, workarounds you currently use, related capabilities you'd give up.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does this live?
+      options:
+        - Project page (the iterate-and-compare loop)
+        - Library / scanner / sessions
+        - Tonight planner
+        - System dashboard
+        - Gallery / compare
+        - A specific node (say which in the proposal)
+        - API / CLI
+        - Other / not sure
+    validations:
+      required: true
