@@ -358,8 +358,6 @@ export interface SubmitFromSessionRequest {
 
 // ----- projects ----------------------------------------------------------
 
-export type CostClass = 'cheap' | 'medium' | 'expensive';
-
 export interface ProjectHistoryEntry {
   seq: number;
   job_id: string;
@@ -516,7 +514,6 @@ export interface TemplateNodeSchema {
   node_id: string;
   kind: string;
   variant: string | null;
-  cost: CostClass;
   // Pydantic v2 JSON Schema; we don't model it deeply, just walk it.
   schema: {
     properties: Record<string, JSONSchemaField>;

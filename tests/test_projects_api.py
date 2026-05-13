@@ -192,11 +192,6 @@ def test_template_schema_endpoint(client) -> None:
     by_id = {n["node_id"]: n for n in body["nodes"]}
     # All pipeline steps are present.
     assert {"convert", "calibrate", "bg_extract", "register", "stack", "stretch", "save"} <= set(by_id)
-    # Cost classes match the node defs (cheap finishing nodes vs expensive heavy ones).
-    assert by_id["stretch"]["cost"] == "cheap"
-    assert by_id["save"]["cost"] == "cheap"
-    assert by_id["stack"]["cost"] == "expensive"
-    assert by_id["register"]["cost"] == "expensive"
     # Schema carries Pydantic Field metadata: descriptions, ranges, enums.
     stretch_props = by_id["stretch"]["schema"]["properties"]
     assert stretch_props["method"]["enum"] == ["autostretch", "mtf", "asinh"]

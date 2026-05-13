@@ -20,13 +20,12 @@
   import {
     api,
     type CalibrationStatus,
-    type CostClass,
     type Project,
     type SessionSummary,
     type SuggestedAdditions,
     type TemplateSchema
   } from '$lib/api';
-  import { blastRadiusCost, isNodeVisible } from '$lib/graph';
+  import { isNodeVisible } from '$lib/graph';
   import { toast } from '$lib/toast.svelte';
   import { formatBytes, formatDuration, formatIntegrationTime, shortAgo } from '$lib/format';
   import { createPipelineState } from '$lib/projects/usePipelineState.svelte';
@@ -113,13 +112,6 @@
     for (const n of schema.nodes) out[n.node_id] = n;
     return out;
   });
-  const costByNode = $derived.by(() => {
-    if (!schema) return {} as Record<string, CostClass>;
-    const out: Record<string, CostClass> = {};
-    for (const n of schema.nodes) out[n.node_id] = n.cost;
-    return out;
-  });
-
   const outputNodeId = $derived.by(() => {
     if (!schema) return null;
     const entries = Object.entries(schema.outputs);
@@ -973,7 +965,6 @@
           previewLoaded={pipeline.previewLoaded[nid] ?? false}
           isOutput={nid === outputNodeId}
           isExpanded={expandedNodes.has(nid)}
-          closureCost={blastRadiusCost(project!.template, nid, costByNode)}
           upstreamHash={upstream.hash}
           upstreamPort={upstream.port}
           durationMs={pipeline.nodeDurationMs[nid]}
