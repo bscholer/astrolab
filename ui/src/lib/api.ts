@@ -881,5 +881,13 @@ export const api = {
     // so we tag URLs with that session id; within the session the browser
     // can cache freely, across sessions it refetches.
     return `/api/preview/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}`;
+  },
+  previewUrlStretched(nodeHash: string, port: string): string {
+    // Like previewUrl but passes force_stretch=1 so the server ignores the
+    // output manifest's display_ready flag. Used by the crop editor: the
+    // upstream of the crop node may be graxpert (which marks its output as
+    // display-ready linear data), which the regular preview endpoint would
+    // serve unmodified -- near-black for linear astrophoto data.
+    return `/api/preview/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}&force_stretch=1`;
   }
 };
