@@ -20,7 +20,7 @@
   // Suppress the second-and-Nth toast so a downed backend doesn't spam.
   let warnedOnce = false;
 
-  // Rolling history. ~120 samples at 250ms = 30s of sparkline.
+  // Rolling history. ~120 samples at 750ms = ~90s of sparkline.
   const N = 120;
   // Buffers stay empty until the first successful poll, then we backfill
   // with that sample so the sparkline starts as a flat line rather than
@@ -117,7 +117,7 @@
 
   onMount(() => {
     load();
-    pollHandle = setInterval(load, 250);
+    pollHandle = setInterval(load, 750);
     // Separate clock so elapsed-time labels tick smoothly between polls.
     clockHandle = setInterval(() => (nowTick = Date.now()), 1000);
   });
