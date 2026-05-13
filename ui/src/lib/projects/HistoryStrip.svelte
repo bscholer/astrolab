@@ -10,7 +10,7 @@
 -->
 <script lang="ts">
   import { shortAgo } from '$lib/format';
-  import type { Project } from '$lib/api';
+  import type { Project, HistoryQualitySummary } from '$lib/api';
 
   type Props = {
     project: Project;
@@ -39,6 +39,8 @@
   }: Props = $props();
 
   let historyEl = $state<HTMLOListElement | null>(null);
+  // Per-entry popover open state for touch devices.
+  let dotPopoverOpen = $state<Record<number, boolean>>({});
 
   // Auto-scroll to right edge on mount and on each new entry.
   $effect(() => {
@@ -59,6 +61,75 @@
     if (compareA === seq) return 'A';
     if (compareB === seq) return 'B';
     return null;
+  }
+
+  function fmtIntegration(s: number): string {
+    return s >= 3600 ? (s / 3600).toFixed(1) + 'h' : (s / 60).toFixed(0) + 'm';
+  }
+  function fmtExp(n: number): string {
+    return n.toExponential(2);
+  }
+  function fmtFwhm(n: number | null): string {
+    if (n === null) return '—';
+    return n.toFixed(2) + ' px';
+  }
+
+  // Compute per-metric medians from entries that have quality_summary.
+  const qualityMedians = $derived.by(() => {
+    const noises: number[] = [];
+    const sharpnesses: number[] = [];
+    const integrations: number[] = [];
+    for (const h of project.history) {
+      const q = h.quality_summary;
+      if (!q) continue;
+      noises.push(q.noise);
+      sharpnesses.push(q.sharpness);
+      if (q.integration_s !== null) integrations.push(q.integration_s);
+    }
+    function median(arr: number[]): number | null {
+      if (arr.length === 0) return null;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+    }
+    return {
+      noise: median(noises),
+      sharpness: median(sharpnesses),
+      integration: median(integrations),
+      noiseCount: noises.length,
+      sharpnessCount: sharpnesses.length,
+      integrationCount: integrations.length,
+    };
+  });
+
+  type DotColor = 'good' | 'warn' | 'bad' | 'none';
+
+  function noiseDotColor(q: HistoryQualitySummary, m: number | null, count: number): DotColor {
+    if (m === null || count < 2) return 'none';
+    // Lower noise is better.
+    if (q.noise <= m * 0.9) return 'good';
+    if (q.noise <= m * 1.1) return 'warn';
+    return 'bad';
+  }
+  function sharpnessDotColor(q: HistoryQualitySummary, m: number | null, count: number): DotColor {
+    if (m === null || count < 2) return 'none';
+    // Higher sharpness is better.
+    if (q.sharpness >= m * 1.1) return 'good';
+    if (q.sharpness >= m * 0.9) return 'warn';
+    return 'bad';
+  }
+  function integrationDotColor(q: HistoryQualitySummary, m: number | null, count: number): DotColor {
+    if (q.integration_s === null || m === null || count < 2) return 'none';
+    // Higher integration is better.
+    if (q.integration_s >= m * 1.1) return 'good';
+    if (q.integration_s >= m * 0.9) return 'warn';
+    return 'bad';
+  }
+
+  function toggleDotPopover(seq: number) {
+    dotPopoverOpen = { ...dotPopoverOpen, [seq]: !dotPopoverOpen[seq] };
   }
 </script>
 
@@ -82,6 +153,11 @@
   <ol class="history-strip" bind:this={historyEl}>
     {#each project.history as h (h.seq)}
       {@const slot = slotFor(h.seq)}
+      {@const q = h.quality_summary ?? null}
+      {@const meds = qualityMedians}
+      {@const iColor = q ? integrationDotColor(q, meds.integration, meds.integrationCount) : 'none'}
+      {@const nColor = q ? noiseDotColor(q, meds.noise, meds.noiseCount) : 'none'}
+      {@const sColor = q ? sharpnessDotColor(q, meds.sharpness, meds.sharpnessCount) : 'none'}
       <li
         class="hist-entry"
         class:active={h.seq === project.current_seq}
@@ -93,6 +169,43 @@
           <span class="hist-seq muted">v{h.seq + 1}</span>
           <span class="hist-label">{shortHistoryLabel(h.label)}</span>
           <span class="hist-time muted small">{shortAgo(h.created_at)}</span>
+          <span
+            class="dot-row"
+            role="button"
+            tabindex="0"
+            aria-label="Quality summary"
+            onclick={(e) => { e.stopPropagation(); toggleDotPopover(h.seq); }}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggleDotPopover(h.seq); } }}
+          >
+            <span class="qdot qdot-{iColor}" title="Integration"></span>
+            <span class="qdot qdot-{nColor}" title="Noise"></span>
+            <span class="qdot qdot-{sColor}" title="Sharpness"></span>
+            <span
+              class="dot-tooltip"
+              class:dot-tooltip-open={dotPopoverOpen[h.seq]}
+              aria-hidden="true"
+            >
+              {#if q}
+                <span class="dtt-row">
+                  <span class="dtt-label">Integration</span>
+                  <span class="dtt-val">{q.integration_s !== null ? fmtIntegration(q.integration_s) : '—'}</span>
+                </span>
+                <span class="dtt-def">Total useful exposure across sessions; longer = more depth</span>
+                <span class="dtt-row">
+                  <span class="dtt-label">Noise</span>
+                  <span class="dtt-val">{fmtExp(q.noise)}</span>
+                </span>
+                <span class="dtt-def">Background standard deviation; lower = cleaner</span>
+                <span class="dtt-row">
+                  <span class="dtt-label">Sharpness</span>
+                  <span class="dtt-val">{fmtExp(q.sharpness)}{q.fwhm_px !== null ? ' / ' + fmtFwhm(q.fwhm_px) : ''}</span>
+                </span>
+                <span class="dtt-def">Laplacian variance + Siril findstar FWHM; higher = sharper</span>
+              {:else}
+                <span class="dtt-def">No quality data for this version</span>
+              {/if}
+            </span>
+          </span>
         </button>
         <button
           type="button"
@@ -359,5 +472,102 @@
     font-weight: 700;
     font-size: 0.8rem;
     line-height: 1;
+  }
+
+  /* ---------- Quality dots ---------- */
+
+  .dot-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.2rem;
+    position: relative;
+    cursor: default;
+    /* Contain the absolutely-positioned tooltip. */
+  }
+  .qdot {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  /* Traffic-light fills; 'none' is transparent with muted border. */
+  .qdot-good {
+    background: color-mix(in oklab, var(--good) 60%, transparent);
+    border-color: var(--good);
+  }
+  .qdot-warn {
+    background: color-mix(in oklab, var(--warn) 60%, transparent);
+    border-color: var(--warn);
+  }
+  .qdot-bad {
+    background: color-mix(in oklab, var(--bad) 60%, transparent);
+    border-color: var(--bad);
+  }
+  .qdot-none {
+    background: transparent;
+    border-color: var(--fg-mute, #666);
+  }
+
+  /* Tooltip: CSS :hover driven; swaps to click-open on touch via .dot-tooltip-open. */
+  .dot-tooltip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.6rem;
+    white-space: nowrap;
+    z-index: 20;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(3px);
+    transition: opacity 120ms ease, transform 120ms ease;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 16rem;
+    font-size: 0;
+  }
+  /* Desktop: open on hover of the dot row. */
+  @media (hover: hover) {
+    .dot-row:hover .dot-tooltip {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  /* Touch: open via state class. */
+  .dot-tooltip-open {
+    opacity: 1 !important;
+    transform: translateY(0) !important;
+    pointer-events: auto;
+  }
+  .dtt-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    font-size: 0.75rem;
+  }
+  .dtt-label {
+    color: var(--fg-mute);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-family: var(--font-mono);
+  }
+  .dtt-val {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.75rem;
+    color: var(--fg);
+  }
+  .dtt-def {
+    font-size: 0.68rem;
+    color: var(--fg-mute);
+    line-height: 1.3;
+    margin-bottom: 0.1rem;
   }
 </style>

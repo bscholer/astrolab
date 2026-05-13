@@ -9,7 +9,7 @@
 <script lang="ts">
   import { fade, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
-  import { api, type Project, type TemplateNodeSchema } from '$lib/api';
+  import { api, type Project, type TemplateNodeSchema, type JobQuality } from '$lib/api';
   import { isTogglable, nodeDisplayName } from '$lib/graph';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
@@ -46,6 +46,7 @@
     onToggleCover: () => void;
     finalOutputPort: string | undefined;
     finalOutputRef: { node_hash: string; path: string } | undefined;
+    jobQuality?: JobQuality | null;
   };
 
   let {
@@ -72,7 +73,21 @@
     onToggleCover,
     finalOutputPort,
     finalOutputRef,
+    jobQuality,
   }: Props = $props();
+
+  let qualityOpen = $state(false);
+
+  function fmtF(n: number): string {
+    return n.toFixed(4);
+  }
+  function fmtPct(n: number): string {
+    return (n * 100).toFixed(2) + '%';
+  }
+  function fmtFwhm(n: number | null): string {
+    if (n === null) return '';
+    return n.toFixed(2) + ' px';
+  }
 
   const nid = $derived(nschema.node_id);
   const overrides = $derived(
@@ -259,6 +274,65 @@
             Open full
           </a>
         </div>
+        {#if jobQuality}
+          <button
+            type="button"
+            class="quality-toggle"
+            onclick={() => (qualityOpen = !qualityOpen)}
+            aria-expanded={qualityOpen}
+          >
+            <span class="quality-toggle-arrow" class:rotated={qualityOpen}>&#9656;</span>
+            Quality
+          </button>
+          <div class="quality-drawer" class:open={qualityOpen} aria-hidden={!qualityOpen}>
+            <div class="quality-grid">
+              <span class="qg-section">Background</span>
+              <span class="qg-label">BG sigma</span>
+              <span class="qg-val">{fmtF(jobQuality.background.sigma)}</span>
+              <span class="qg-label">BG level</span>
+              <span class="qg-val">{fmtF(jobQuality.background.estimated_level)}</span>
+
+              <span class="qg-section">Stars</span>
+              <span class="qg-label" class:qg-unavail={jobQuality.sharpness.fwhm_px === null} title={jobQuality.sharpness.fwhm_px === null ? 'Siril findstar unavailable' : ''}>FWHM</span>
+              <span class="qg-val" class:qg-unavail={jobQuality.sharpness.fwhm_px === null}>{jobQuality.sharpness.fwhm_px !== null ? fmtFwhm(jobQuality.sharpness.fwhm_px) : '—'}</span>
+              <span class="qg-label" class:qg-unavail={jobQuality.sharpness.roundness === null} title={jobQuality.sharpness.roundness === null ? 'Siril findstar unavailable' : ''}>Roundness</span>
+              <span class="qg-val" class:qg-unavail={jobQuality.sharpness.roundness === null}>{jobQuality.sharpness.roundness !== null ? fmtF(jobQuality.sharpness.roundness) : '—'}</span>
+
+              <span class="qg-section"></span>
+              <span class="qg-label">Stars</span>
+              <span class="qg-val">{jobQuality.sharpness.star_count ?? '—'}</span>
+              <span class="qg-label"></span>
+              <span class="qg-val"></span>
+
+              <span class="qg-section">Sharpness</span>
+              <span class="qg-label">Lap. var</span>
+              <span class="qg-val">{fmtF(jobQuality.sharpness.laplacian_variance)}</span>
+              <span class="qg-label"></span>
+              <span class="qg-val"></span>
+
+              {#if jobQuality.color_balance.r_g_ratio !== undefined || jobQuality.color_balance.b_g_ratio !== undefined}
+                <span class="qg-section">Color</span>
+                <span class="qg-label">R/G</span>
+                <span class="qg-val">{jobQuality.color_balance.r_g_ratio !== undefined ? fmtF(jobQuality.color_balance.r_g_ratio) : '—'}</span>
+                <span class="qg-label">B/G</span>
+                <span class="qg-val">{jobQuality.color_balance.b_g_ratio !== undefined ? fmtF(jobQuality.color_balance.b_g_ratio) : '—'}</span>
+              {/if}
+
+              {#if jobQuality.channels.length > 0}
+                <span class="qg-section">Integrity</span>
+                <span class="qg-label">Sat. high</span>
+                <span class="qg-val">{fmtPct(jobQuality.channels[0].clipped_high_pct)}</span>
+                <span class="qg-label">Sat. low</span>
+                <span class="qg-val">{fmtPct(jobQuality.channels[0].clipped_low_pct)}</span>
+              {/if}
+
+              <span class="qg-section">Warnings</span>
+              <span class="qg-warnings" style="grid-column: 2 / -1;">
+                {jobQuality.siril_warnings.length > 0 ? jobQuality.siril_warnings.join(' · ') : 'none'}
+              </span>
+            </div>
+          </div>
+        {/if}
       {:else}
         {#if kind === 'crop'}
           {@const eff = (k: string) => (k in overrides ? overrides[k] : fullDefaults[k])}
@@ -698,4 +772,89 @@
     box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 0 14px var(--accent-soft);
   }
   .cover-btn:disabled { opacity: 0.55; cursor: progress; }
+
+  /* ---------- Quality drawer ---------- */
+
+  .quality-toggle {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--fg-mute);
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-radius: 0;
+    line-height: 1;
+    align-self: flex-start;
+    margin-top: 0.15rem;
+  }
+  .quality-toggle:hover {
+    color: var(--fg);
+  }
+  .quality-toggle-arrow {
+    font-size: 0.6rem;
+    transition: transform 150ms ease;
+    display: inline-block;
+  }
+  .quality-toggle-arrow.rotated {
+    transform: rotate(90deg);
+  }
+  .quality-drawer {
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 150ms ease;
+  }
+  .quality-drawer.open {
+    max-height: 40rem;
+  }
+  .quality-grid {
+    display: grid;
+    grid-template-columns: 5.5rem 4.5rem 1fr 4.5rem 1fr;
+    column-gap: 0.4rem;
+    row-gap: 0.25rem;
+    align-items: baseline;
+    padding: 0.5rem 0 0.2rem;
+    font-size: 0.75rem;
+  }
+  .qg-section {
+    font-size: 0.62rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-mute);
+    white-space: nowrap;
+    font-weight: 600;
+    padding-top: 0.1rem;
+  }
+  .qg-label {
+    color: var(--fg-mute);
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+  .qg-val {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.75rem;
+    color: var(--fg);
+    white-space: nowrap;
+  }
+  .qg-unavail {
+    opacity: 0.45;
+    font-style: italic;
+    cursor: help;
+  }
+  .qg-warnings {
+    font-size: 0.72rem;
+    color: var(--fg-mute);
+    word-break: break-word;
+    white-space: normal;
+    line-height: 1.35;
+    padding: 0.1rem 0;
+  }
 </style>

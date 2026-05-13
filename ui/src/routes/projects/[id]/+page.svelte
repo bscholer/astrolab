@@ -986,6 +986,7 @@
           onToggleCover={toggleCover}
           finalOutputPort={nid === outputNodeId && finalOutput ? finalOutput[0] : undefined}
           finalOutputRef={nid === outputNodeId && finalOutput ? finalOutput[1] : undefined}
+          jobQuality={nid === outputNodeId ? (subscription.activeJob?.quality ?? null) : null}
         />
       {/snippet}
       <section class="nodes">
