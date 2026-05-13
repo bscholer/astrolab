@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from server.catalog.db import connect
-from server.catalog.matching import match_session
+from server.catalog.matching import match_bundle_darks, match_session
 
 
 @pytest.fixture
@@ -246,6 +246,105 @@ def test_user_override_preserved(db: sqlite3.Connection) -> None:
     assert out["dark"]["master_id"] == pinned
     assert out["dark"]["overridden"] is True
     assert auto is not None  # candidate exists but ignored
+
+
+# ---------------------------------------------------------------------------
+# match_bundle_darks (per-bin matching for multi-session / multi-exposure)
+# ---------------------------------------------------------------------------
+
+
+def _add_light_frame(
+    conn: sqlite3.Connection,
+    *,
+    session_id: int,
+    exptime: float,
+    gain: int = 60,
+    ccd_temp: float | None = 24.0,
+    binning: int = 1,
+    instrument: str = "DWARFIII",
+    camera: str = "TELE",
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO frames (path, image_type, scope_id, instrument,
+                               camera, exptime, gain, binning, ccd_temp)
+           VALUES (?, 'LIGHT', 'dwarf3', ?, ?, ?, ?, ?, ?)""",
+        (
+            f"/tmp/light-{session_id}-{exptime}-{ccd_temp}-"
+            f"{conn.execute('SELECT COUNT(*) FROM frames').fetchone()[0]}.fits",
+            instrument, camera, exptime, gain, binning, ccd_temp,
+        ),
+    )
+    fid = int(cur.lastrowid or -1)
+    conn.execute(
+        "INSERT INTO session_frames (session_id, frame_id) VALUES (?, ?)",
+        (session_id, fid),
+    )
+    return fid
+
+
+def test_bundle_dark_match_single_session_single_bin(db: sqlite3.Connection) -> None:
+    """A homogeneous session (one exptime, one temp bin) yields exactly
+    one bin and one matched master."""
+    sid = _insert_session(db, exptime=30.0, avg_temp=24.0)
+    # Replace the auto-seeded frame with a couple that sit in the same bin.
+    db.execute("DELETE FROM frames")
+    _add_light_frame(db, session_id=sid, exptime=30.0, ccd_temp=24.0)
+    _add_light_frame(db, session_id=sid, exptime=30.0, ccd_temp=24.5)
+    spot_on = _insert_master(db, kind="dark", exptime=30.0, ccd_temp=24.0)
+
+    bins = match_bundle_darks(db, [sid])
+    assert len(bins) == 1
+    assert bins[0].master_id == spot_on
+    assert bins[0].frame_count == 2
+
+
+def test_bundle_dark_match_splits_by_exposure(db: sqlite3.Connection) -> None:
+    """A bundle whose frames span two exposures gets one bin per exposure
+    and picks a distinct master for each."""
+    sid = _insert_session(db, exptime=30.0, avg_temp=24.0)
+    db.execute("DELETE FROM frames")
+    _add_light_frame(db, session_id=sid, exptime=15.0, ccd_temp=24.0)
+    _add_light_frame(db, session_id=sid, exptime=15.0, ccd_temp=24.0)
+    _add_light_frame(db, session_id=sid, exptime=30.0, ccd_temp=24.0)
+    m15 = _insert_master(db, kind="dark", exptime=15.0, ccd_temp=24.0)
+    m30 = _insert_master(db, kind="dark", exptime=30.0, ccd_temp=24.0)
+
+    bins = match_bundle_darks(db, [sid])
+    by_exp = {b.exptime: b for b in bins}
+    assert set(by_exp.keys()) == {15.0, 30.0}
+    assert by_exp[15.0].master_id == m15
+    assert by_exp[30.0].master_id == m30
+    assert by_exp[15.0].frame_count == 2
+    assert by_exp[30.0].frame_count == 1
+
+
+def test_bundle_dark_match_fallback_on_out_of_tolerance(db: sqlite3.Connection) -> None:
+    """When the closest dark for an exp/gain bin is past the temp tolerance,
+    we still pick it but tag the bin as a fallback."""
+    sid = _insert_session(db, exptime=30.0, avg_temp=24.0)
+    db.execute("DELETE FROM frames")
+    _add_light_frame(db, session_id=sid, exptime=30.0, ccd_temp=24.0)
+    # Only candidate is 15C away — outside the 5C tolerance.
+    far = _insert_master(db, kind="dark", exptime=30.0, ccd_temp=9.0)
+
+    bins = match_bundle_darks(db, [sid])
+    assert len(bins) == 1
+    assert bins[0].master_id == far
+    assert bins[0].fallback is True
+
+
+def test_bundle_dark_match_no_master_for_exptime(db: sqlite3.Connection) -> None:
+    """If no dark exists at the bin's exposure, the bin's master_id is None
+    so the calibrate node can decide whether to pass through or drop."""
+    sid = _insert_session(db, exptime=30.0, avg_temp=24.0)
+    db.execute("DELETE FROM frames")
+    _add_light_frame(db, session_id=sid, exptime=120.0, ccd_temp=24.0)
+    _insert_master(db, kind="dark", exptime=30.0, ccd_temp=24.0)
+
+    bins = match_bundle_darks(db, [sid])
+    assert len(bins) == 1
+    assert bins[0].master_id is None
+    assert bins[0].master_path is None
 
 
 def test_persisted_match_round_trips(db: sqlite3.Connection) -> None:

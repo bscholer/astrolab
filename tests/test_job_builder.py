@@ -173,7 +173,13 @@ def test_build_from_session_auto_uses_matched_master(db, tmp_path: Path) -> None
     assert job.inputs["convert.lights"].path == (tmp_path / "sess").resolve() or \
            job.inputs["convert.lights"].path == tmp_path / "sess"
     assert "calibrate.dark" in job.inputs
-    assert job.inputs["calibrate.dark"].path == tmp_path / "masters" / "dark.fit"
+    # calibrate.dark is a MASTER_FITS_LIST port; auto-matched bundles
+    # produce a list of matching darks (one per (exptime, gain, temp)
+    # bin). A single-session homogeneous bundle ends up with one entry.
+    dark_input = job.inputs["calibrate.dark"]
+    assert isinstance(dark_input, list)
+    assert len(dark_input) == 1
+    assert dark_input[0].path == tmp_path / "masters" / "dark.fit"
 
 
 def test_build_from_session_skips_unmatched_optional_master(db, tmp_path: Path) -> None:
@@ -210,7 +216,9 @@ def test_build_from_session_explicit_master_id(db, tmp_path: Path) -> None:
         db, 1, template,
         calibration=CalibrationSpec(mode="explicit", master_ids={"dark": 42}),
     )
-    assert job.inputs["calibrate.dark"].path == tmp_path / "masters" / "explicit.fit"
+    dark_input = job.inputs["calibrate.dark"]
+    assert isinstance(dark_input, list)
+    assert dark_input[0].path == tmp_path / "masters" / "explicit.fit"
 
 
 def test_build_rejects_single_frame_session(db, tmp_path: Path) -> None:
@@ -299,16 +307,21 @@ def test_build_from_sessions_rejects_mismatched_target(db, tmp_path: Path) -> No
 
 
 def test_build_from_sessions_uses_first_sessions_master(db, tmp_path: Path) -> None:
-    """Compat checks guarantee shared instrument/exptime/gain across the
-    bundle, so the matched master for any session matches all of them; we
-    pin to the first session's match to keep the read deterministic."""
+    """A bundle of two compatible sessions (same exptime/gain/binning)
+    produces a one-entry dark list when only one master in the library
+    matches that exposure/gain bucket. The bundle matcher consults the
+    masters table directly, so per-session calibration_matches rows are
+    not required."""
     _seed_session(db, session_id=1, folder=tmp_path / "s1")
     _seed_session(db, session_id=2, folder=tmp_path / "s2")
     _seed_master_dark(db, master_id=7, path=tmp_path / "masters" / "d.fit")
     _set_calibration_match(db, session_id=1, master_id=7)
     template = load_template("calibrate_register_stack")
     job = build_from_sessions(db, [2, 1], template)
-    assert job.inputs["calibrate.dark"].path == tmp_path / "masters" / "d.fit"
+    dark_input = job.inputs["calibrate.dark"]
+    assert isinstance(dark_input, list)
+    paths = [r.path for r in dark_input]
+    assert tmp_path / "masters" / "d.fit" in paths
 
 
 def test_build_from_sessions_rejects_too_few_total_frames(db, tmp_path: Path) -> None:

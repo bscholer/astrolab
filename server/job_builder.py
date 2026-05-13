@@ -32,6 +32,7 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+from .catalog.matching import match_bundle_darks
 from .models import CalibrationSpec, Job, Ref, Template
 from .paths import astrolab_home
 from .ports import PortType
@@ -73,12 +74,18 @@ MIN_FRAMES_FOR_STACK = 3
 
 # Fields a multi-session bundle must agree on before we will stack them.
 # Order matters only for stable error formatting.
+#
+# `exptime` is intentionally NOT in this list: the calibrate node now
+# accepts a list of master darks and selects the right one per-frame from
+# the bundle's per-bin matches, so a bundle that mixes 30s and 60s subs is
+# fine as long as a dark exists for each. Keep this list in sync with the
+# inline filter in api._suggestions_for_project (the "add frames to an
+# existing project" banner uses the same criteria).
 COMPAT_FIELDS: tuple[str, ...] = (
     "target_id",
     "instrument",
     "camera",
     "filter",
-    "exptime",
     "gain",
     "binning",
 )
@@ -213,7 +220,7 @@ def build_from_sessions(
     # already guaranteed to share gain/exptime/instrument by _assert_compatible.
     cal_session = session_ids[0]
 
-    inputs: dict[str, Ref] = {}
+    inputs: dict[str, Ref | list[Ref]] = {}
 
     for node in template.nodes:
         from .registry import lookup as registry_lookup
@@ -234,18 +241,74 @@ def build_from_sessions(
                 )
                 continue
 
-            # Convention 2: a MASTER_FITS port named after a calibration kind
-            # (dark, flat, bias) gets the catalog's match (or an explicit one).
+            # Convention 2: a MASTER_FITS_LIST port named 'dark' gets a per-
+            # bin match. Bundles that mix exposures or span a wide temp range
+            # produce more than one master in the list; homogeneous bundles
+            # produce one. The calibrate node consumes the list and routes
+            # each frame to its matching dark.
+            if port_type is PortType.MASTER_FITS_LIST and port_name == "dark":
+                if cal.mode == "none":
+                    if port_name in node_cls.optional_inputs:
+                        continue
+                    raise CalibrationMissing(
+                        f"template requires master {port_name} but "
+                        f"calibration mode is 'none'."
+                    )
+                if cal.mode == "explicit" and port_name in cal.master_ids:
+                    # Explicit override forces a single master across every
+                    # frame, regardless of bin. Useful for "stack this with
+                    # my-favorite-dark-no-matter-what" overrides.
+                    master_id = cal.master_ids[port_name]
+                    row = conn.execute(
+                        "SELECT path FROM masters WHERE id = ?", (master_id,)
+                    ).fetchone()
+                    if row is None:
+                        raise CalibrationMissing(
+                            f"explicit master {port_name}={master_id} not found"
+                        )
+                    dark_refs = [
+                        Ref(
+                            node_hash="ext",
+                            port=port_name,
+                            path=Path(row["path"]),
+                            type=PortType.MASTER_FITS,
+                        )
+                    ]
+                else:
+                    bins = match_bundle_darks(conn, session_ids)
+                    unique_paths: dict[Path, None] = {}
+                    for b in bins:
+                        if b.master_path is not None:
+                            unique_paths.setdefault(b.master_path, None)
+                    if not unique_paths:
+                        if port_name in node_cls.optional_inputs:
+                            continue
+                        raise CalibrationMissing(
+                            f"no matched master {port_name} for any bin in "
+                            f"bundle {session_ids}; explicit override or "
+                            "scoped scan needed"
+                        )
+                    dark_refs = [
+                        Ref(
+                            node_hash="ext",
+                            port=port_name,
+                            path=p,
+                            type=PortType.MASTER_FITS,
+                        )
+                        for p in unique_paths
+                    ]
+                inputs[external_key] = dark_refs
+                continue
+
+            # Convention 3: a MASTER_FITS port named after a calibration kind
+            # (flat, bias, or a legacy `dark` port pre-list-port migration)
+            # gets the catalog's per-session match.
             if port_type is PortType.MASTER_FITS and port_name in (
                 "dark",
                 "flat",
                 "bias",
             ):
                 if cal.mode == "none":
-                    # Skip ALL master wiring — nodes must declare these
-                    # ports as optional to opt into mode='none' support, and
-                    # they handle the absence gracefully (calibrate without
-                    # -dark just doesn't dark-subtract).
                     if port_name in node_cls.optional_inputs:
                         continue
                     raise CalibrationMissing(

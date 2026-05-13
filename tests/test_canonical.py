@@ -29,6 +29,71 @@ class FakeRef:
         self.path = path
 
 
+class P_X(BaseModel):
+    x: int = 1
+
+
+def test_list_ref_input_hashes_independent_of_order() -> None:
+    """A MASTER_FITS_LIST input is hashed as an order-insensitive set so
+    two job builders that discovered the same darks in different orders
+    hit the same cache entry."""
+    a = FakeRef("ext", "dark", "/lib/d28.fit")
+    b = FakeRef("ext", "dark", "/lib/d30.fit")
+    h_ab = node_hash(
+        node_id="calibrate",
+        node_version=2,
+        inputs={"dark": [a, b]},
+        params=P_X(),
+    )
+    h_ba = node_hash(
+        node_id="calibrate",
+        node_version=2,
+        inputs={"dark": [b, a]},
+        params=P_X(),
+    )
+    assert h_ab == h_ba
+
+
+def test_list_ref_distinct_from_scalar() -> None:
+    """A single-element list must not collide with the bare ref. Equating
+    them would let a single-dark job and a (somehow degenerate) list-of-
+    one-dark job share a cache entry; their hashes need to stay distinct."""
+    only = FakeRef("ext", "dark", "/lib/d28.fit")
+    h_scalar = node_hash(
+        node_id="calibrate",
+        node_version=2,
+        inputs={"dark": only},
+        params=P_X(),
+    )
+    h_list = node_hash(
+        node_id="calibrate",
+        node_version=2,
+        inputs={"dark": [only]},
+        params=P_X(),
+    )
+    assert h_scalar != h_list
+
+
+def test_list_ref_distinct_contents_produce_distinct_hashes() -> None:
+    """Two different dark pools must not collide."""
+    a = FakeRef("ext", "dark", "/lib/d28.fit")
+    b = FakeRef("ext", "dark", "/lib/d30.fit")
+    c = FakeRef("ext", "dark", "/lib/d22.fit")
+    h_ab = node_hash(
+        node_id="calibrate",
+        node_version=2,
+        inputs={"dark": [a, b]},
+        params=P_X(),
+    )
+    h_ac = node_hash(
+        node_id="calibrate",
+        node_version=2,
+        inputs={"dark": [a, c]},
+        params=P_X(),
+    )
+    assert h_ab != h_ac
+
+
 def test_external_refs_with_different_paths_hash_differently() -> None:
     """Regression: external Refs (node_hash='ext') used to collide on path,
     so submitting jobs against different sessions served the wrong cached

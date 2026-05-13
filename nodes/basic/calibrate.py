@@ -1,31 +1,59 @@
-"""calibrate: apply master_dark (and optional master_flat / master_bias) to a
-sequence via Siril 1.4's `calibrate` command.
+"""calibrate: apply per-frame-matched master darks (+ optional master flat /
+bias) to a sequence via Siril 1.4's `calibrate` command.
 
 Input ports
 - sequence (SEQUENCE_FITS, required)        prior step's sequence dir
-- dark     (MASTER_FITS,   optional)        master dark frame
+- dark     (MASTER_FITS_LIST, optional)     master darks for each (exptime,
+                                            temp) bin in the sequence; the
+                                            node reads each light's headers
+                                            and picks the closest dark from
+                                            the pool. A single-dark list is
+                                            equivalent to the old single-
+                                            master behavior.
 - flat     (MASTER_FITS,   optional)        master flat frame
 - bias     (MASTER_FITS,   optional)        master bias frame
 
-All three masters are optional. With none provided, `calibrate` becomes a
-prefix-rename pass with -cfa/-debayer applied; the resulting stack is
-noisier than a dark-calibrated one but the pipeline still completes. This
-unblocks sessions whose gain/temp/exptime don't match any indexed master.
+With an empty dark list, calibrate becomes a prefix-rename pass with
+-cfa/-debayer applied; the stack is noisier but the pipeline still
+completes. Same fallback the original single-dark node had.
 
 Output port
 - sequence (SEQUENCE_FITS): directory containing pp_<basename>_*.fit (or
-                            pp_<basename>.fit when the input was a FITSEQ).
+                            pp_<basename>.fit when the input was a FITSEQ
+                            AND only one dark was needed). When the bundle
+                            spans multiple darks, output is always per-
+                            frame because we run Siril once per dark group
+                            and concatenate the results into a single
+                            directory.
 
-Siril writes calibrated frames into the cwd with a `pp_` prefix. We cd into
-out_dir/sequence, symlink the input frames there so Siril sees them, run the
-command, and (after success) drop the input symlinks so the cache entry only
-contains this node's outputs.
+The node reads FITS headers (EXPTIME, GAIN, DET-TEMP / CCD-TEMP) from every
+light frame and every candidate dark, groups lights by their best-matching
+dark, and runs Siril calibrate once per group. Frame-count-weighted progress
+is reported across the group calls.
+
+When no dark in the pool has the right exptime/gain to serve a frame, that
+frame is "uncalibratable". By default uncalibratable frames pass through
+debayered-only (matching the no-dark fallback); enabling
+exclude_uncalibratable drops them from the output instead, which is the
+right call when the user has a mostly-complete dark library and would
+rather lose a few subs than mix calibrated and uncalibrated frames in the
+final stack.
+
+TODO: Add a dark-scaling fallback (Siril's -dark_scaling=<f> flag) for
+frames whose closest match is more than ~5C off. Scaling is cheap, but
+estimating the right factor robustly (across uncooled-sensor variability)
+adds complexity that isn't obviously worth the residual reduction; for
+now, dithering + sigma clipping absorbs the error.
 """
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
+from astropy.io import fits
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import drop_staged, quote, run_siril_on_sequence, seq_ref, stage_sequence
@@ -50,7 +78,8 @@ class CalibrateParams(BaseModel):
     fitseq: bool = Field(
         default=True,
         description="Operate on a FITSEQ container (single .fit) rather than per-frame "
-        "files. Must match the upstream convert_lights setting.",
+        "files. Must match the upstream convert_lights setting. Note that the output "
+        "is always per-frame when the bundle requires more than one dark.",
         json_schema_extra={"ui_hidden": True},
     )
     cfa: bool = Field(
@@ -105,19 +134,188 @@ class CalibrateParams(BaseModel):
             ),
         },
     )
+    exclude_uncalibratable: bool = Field(
+        default=False,
+        description="When true, drop frames that have no usable master dark in the "
+        "pool. Default false: uncalibratable frames pass through debayered-only "
+        "(matching the no-dark fallback), so the stack still includes them. Enable "
+        "this when your dark library covers most of your captures and you'd rather "
+        "lose a few subs than mix calibrated and uncalibrated frames.",
+        json_schema_extra={
+            "ui_section": "advanced",
+            "agent_hint": (
+                "Most users should leave this off; sigma-clip stacking handles"
+                " a few uncalibrated frames fine."
+            ),
+        },
+    )
+
+
+def _read_temp(hdr: fits.Header) -> float | None:
+    """Read sensor temperature, accepting Dwarf-3-style DET-TEMP or the more
+    conventional CCD-TEMP keys. None when neither is present."""
+    for key in ("DET-TEMP", "CCD-TEMP", "CCDTEMP"):
+        if key in hdr:
+            try:
+                return float(hdr[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _read_fits_meta(path: Path) -> dict[str, Any]:
+    """Pull (exptime, gain, ccd_temp) from a FITS primary header."""
+    with fits.open(str(path), memmap=False) as hdul:
+        hdr = hdul[0].header
+        return {
+            "path": path,
+            "exptime": float(hdr["EXPTIME"]) if "EXPTIME" in hdr else None,
+            "gain": int(hdr["GAIN"]) if "GAIN" in hdr else None,
+            "ccd_temp": _read_temp(hdr),
+        }
+
+
+def _pick_dark(
+    light: dict[str, Any], pool: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Choose the best dark for one light from the candidate pool.
+
+    Hard equality on exptime (within 0.001s) and gain. Within that, the
+    nearest temp wins; ties broken by first-seen so the result is stable.
+    Returns None when no candidate has matching exptime+gain — that frame
+    is "uncalibratable" and the caller decides whether to pass it through
+    or drop it.
+    """
+    same = [
+        d
+        for d in pool
+        if d["exptime"] is not None
+        and light["exptime"] is not None
+        and abs(d["exptime"] - light["exptime"]) < 0.001
+        and (d["gain"] is None or light["gain"] is None or d["gain"] == light["gain"])
+    ]
+    if not same:
+        return None
+    lt = light["ccd_temp"]
+    if lt is None:
+        return same[0]
+    return min(
+        same,
+        key=lambda d: (
+            abs((d["ccd_temp"] or 0.0) - lt)
+            if d["ccd_temp"] is not None
+            else float("inf")
+        ),
+    )
+
+
+def _extract_fitseq_frames(fitseq_path: Path, dest_dir: Path, basename: str) -> list[Path]:
+    """Split a FITSEQ container into per-frame files <basename>_NNNNN.fit
+    written into dest_dir. Returns the list of written frame paths.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    with fits.open(str(fitseq_path), memmap=False) as hdul:
+        idx = 0
+        for hdu in hdul:
+            if hdu.data is None:
+                continue
+            idx += 1
+            out = dest_dir / f"{basename}_{idx:05d}.fit"
+            fits.PrimaryHDU(data=hdu.data, header=hdu.header).writeto(
+                str(out), overwrite=True
+            )
+            written.append(out)
+    return written
+
+
+def _run_group_calibrate(
+    *,
+    group_dir: Path,
+    frames: list[Path],
+    dark_path: Path | None,
+    params: CalibrateParams,
+    ctx: RunContext,
+    runtime: SirilRuntime,
+    flat_ref: Ref | None,
+    bias_ref: Ref | None,
+) -> list[Path]:
+    """Run Siril calibrate on one group of frames sharing a dark.
+
+    Returns the list of output paths under group_dir (named pp_<basename>_NNNNN.fit).
+    """
+    group_dir.mkdir(parents=True, exist_ok=True)
+    basename = params.input_basename
+
+    staged: list[Path] = []
+    for i, src in enumerate(sorted(frames, key=lambda p: p.name), start=1):
+        link = group_dir / f"{basename}_{i:05d}.fit"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(src.resolve())
+        staged.append(link)
+
+    opts: list[str] = []
+    if dark_path is not None:
+        opts.append(f"-dark={quote(dark_path.resolve())}")
+    if flat_ref is not None:
+        opts.append(f"-flat={quote(flat_ref.path.resolve())}")
+    if bias_ref is not None:
+        opts.append(f"-bias={quote(bias_ref.path.resolve())}")
+    if params.cfa:
+        opts.append("-cfa")
+    if params.cosmetic and dark_path is not None:
+        opts.append("-cc=dark")
+    if params.equalize_cfa and params.cfa:
+        opts.append("-equalize_cfa")
+    if params.debayer:
+        opts.append("-debayer")
+
+    commands = [
+        f"cd {quote(group_dir.resolve())}",
+        f"calibrate {basename} {' '.join(opts)}",
+    ]
+    result = runtime.run(
+        commands,
+        working_dir=group_dir,
+        on_log=make_progress_handler(ctx),
+        cancel=ctx.cancel,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"calibrate: siril exited {result.returncode}\n"
+            f"--- ssf ---\n{result.ssf}\n"
+            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+            f"--- stderr ---\n{result.stderr}"
+        )
+
+    outputs = sorted(
+        p
+        for p in group_dir.iterdir()
+        if p.name.startswith(f"pp_{basename}_") and p.suffix in (".fit", ".fits")
+    )
+    if not outputs:
+        raise RuntimeError(
+            f"calibrate: siril returned 0 but no pp_{basename}_*.fit frames "
+            f"landed in {group_dir}.\n--- stdout (tail) ---\n"
+            f"{result.stdout[-2000:]}"
+        )
+
+    drop_staged(staged)
+    return outputs
 
 
 @register("calibrate")
 class CalibrateNode(Node[CalibrateParams]):
     id = "calibrate"
-    version = 1
+    version = 2
     cost = "medium"
     uses_siril = True
     preview_hidden = True
 
     inputs = {
         "sequence": PortType.SEQUENCE_FITS,
-        "dark": PortType.MASTER_FITS,
+        "dark": PortType.MASTER_FITS_LIST,
         "flat": PortType.MASTER_FITS,
         "bias": PortType.MASTER_FITS,
     }
@@ -132,22 +330,78 @@ class CalibrateNode(Node[CalibrateParams]):
         ctx: RunContext,
         out_dir: object,
     ) -> dict[str, Ref]:
+        # `dark` is declared MASTER_FITS_LIST, so the runtime hands us
+        # a list[Ref] there. Other ports stay scalar.
+        typed_inputs: dict[str, Ref | Sequence[Ref]] = inputs  # type: ignore[assignment]
         out_dir_path = Path(out_dir)  # type: ignore[arg-type]
-        seq_in = inputs["sequence"].path
+        seq_in_ref = typed_inputs["sequence"]
+        assert isinstance(seq_in_ref, Ref)
+        seq_in = seq_in_ref.path
         seq_out = out_dir_path / "sequence"
 
+        dark_value = typed_inputs.get("dark")
+        if isinstance(dark_value, Sequence) and not isinstance(dark_value, Ref):
+            dark_refs: list[Ref] = list(dark_value)
+        elif dark_value is None:
+            dark_refs = []
+        else:
+            # Backwards-compat: a scalar Ref also accepted (eg an explicit
+            # override producing a single master).
+            dark_refs = [dark_value]
+
+        flat_ref = typed_inputs.get("flat")
+        if not isinstance(flat_ref, Ref):
+            flat_ref = None
+        bias_ref = typed_inputs.get("bias")
+        if not isinstance(bias_ref, Ref):
+            bias_ref = None
+
+        # Fast path: 0 or 1 darks, no per-frame routing needed; delegate
+        # to the original single-master flow so existing cache entries
+        # remain valid for the common case.
+        if len(dark_refs) <= 1:
+            return self._run_single(
+                seq_in=seq_in,
+                seq_out=seq_out,
+                dark_ref=dark_refs[0] if dark_refs else None,
+                flat_ref=flat_ref,
+                bias_ref=bias_ref,
+                params=params,
+                ctx=ctx,
+            )
+
+        return self._run_multi(
+            seq_in=seq_in,
+            seq_out=seq_out,
+            dark_refs=dark_refs,
+            flat_ref=flat_ref,
+            bias_ref=bias_ref,
+            params=params,
+            ctx=ctx,
+            out_dir=out_dir_path,
+        )
+
+    def _run_single(
+        self,
+        *,
+        seq_in: Path,
+        seq_out: Path,
+        dark_ref: Ref | None,
+        flat_ref: Ref | None,
+        bias_ref: Ref | None,
+        params: CalibrateParams,
+        ctx: RunContext,
+    ) -> dict[str, Ref]:
         opts: list[str] = []
-        if "dark" in inputs:
-            opts.append(f"-dark={quote(inputs['dark'].path.resolve())}")
-        if "flat" in inputs:
-            opts.append(f"-flat={quote(inputs['flat'].path.resolve())}")
-        if "bias" in inputs:
-            opts.append(f"-bias={quote(inputs['bias'].path.resolve())}")
+        if dark_ref is not None:
+            opts.append(f"-dark={quote(dark_ref.path.resolve())}")
+        if flat_ref is not None:
+            opts.append(f"-flat={quote(flat_ref.path.resolve())}")
+        if bias_ref is not None:
+            opts.append(f"-bias={quote(bias_ref.path.resolve())}")
         if params.cfa:
             opts.append("-cfa")
-        if params.cosmetic and "dark" in inputs:
-            # -cc=dark needs a dark to detect hot/cold pixels; silently drop
-            # cosmetic correction when no dark is available.
+        if params.cosmetic and dark_ref is not None:
             opts.append("-cc=dark")
         if params.equalize_cfa and params.cfa:
             opts.append("-equalize_cfa")
@@ -160,13 +414,12 @@ class CalibrateNode(Node[CalibrateParams]):
         ctx.progress(0.2, "calibrate: running siril on sequence")
 
         if not params.fitseq:
-            # Per-frame path: stage manually so we can record the input count,
-            # then validate calibrate produced one output per input (calibrate
-            # never drops frames -- if counts diverge, something went wrong).
             seq_out.mkdir(parents=True, exist_ok=True)
             if not seq_in.exists():
                 raise RuntimeError(f"calibrate: input dir does not exist: {seq_in}")
-            staged = stage_sequence(seq_in, seq_out, params.input_basename, params.fitseq)
+            staged = stage_sequence(
+                seq_in, seq_out, params.input_basename, params.fitseq
+            )
             if not staged:
                 raise RuntimeError(
                     f"calibrate: no input frames matching basename "
@@ -227,4 +480,94 @@ class CalibrateNode(Node[CalibrateParams]):
             )
 
         ctx.progress(1.0, f"calibrate: wrote {wrote}")
+        return {"sequence": seq_ref(seq_out)}
+
+    def _run_multi(
+        self,
+        *,
+        seq_in: Path,
+        seq_out: Path,
+        dark_refs: list[Ref],
+        flat_ref: Ref | None,
+        bias_ref: Ref | None,
+        params: CalibrateParams,
+        ctx: RunContext,
+        out_dir: Path,
+    ) -> dict[str, Ref]:
+        seq_out.mkdir(parents=True, exist_ok=True)
+        basename = params.input_basename
+
+        ctx.progress(0.02, "calibrate: reading frame headers")
+
+        if params.fitseq:
+            fitseq_path = seq_in / f"{basename}.fit"
+            if not fitseq_path.exists():
+                raise RuntimeError(
+                    f"calibrate: FITSEQ container {fitseq_path} not found"
+                )
+            scratch = out_dir / "_extracted"
+            light_paths = _extract_fitseq_frames(fitseq_path, scratch, basename)
+        else:
+            light_paths = sorted(
+                p
+                for p in seq_in.iterdir()
+                if p.name.startswith(f"{basename}_")
+                and p.suffix in (".fit", ".fits")
+            )
+        if not light_paths:
+            raise RuntimeError(
+                f"calibrate: no input frames matching basename "
+                f"'{basename}' under {seq_in}"
+            )
+
+        light_meta = [_read_fits_meta(p) for p in light_paths]
+        dark_pool = [_read_fits_meta(r.path) for r in dark_refs]
+
+        # Assign each light to its best-matching dark; uncalibratable
+        # frames land under key=None.
+        groups: dict[Path | None, list[Path]] = {}
+        for lm in light_meta:
+            chosen = _pick_dark(lm, dark_pool)
+            key: Path | None = chosen["path"] if chosen is not None else None
+            groups.setdefault(key, []).append(lm["path"])
+
+        if None in groups and params.exclude_uncalibratable:
+            groups.pop(None)
+
+        if not groups:
+            raise RuntimeError(
+                "calibrate: every frame was uncalibratable and "
+                "exclude_uncalibratable=True; nothing left to process"
+            )
+
+        total = sum(len(v) for v in groups.values())
+        done = 0
+
+        for i, (dark_path, frames) in enumerate(groups.items(), start=1):
+            ctx.progress(
+                0.05 + 0.9 * (done / max(total, 1)),
+                f"calibrate: group {i}/{len(groups)} "
+                f"({len(frames)} frames, dark={dark_path.name if dark_path else 'none'})",
+            )
+            group_dir = out_dir / f"_group_{i:03d}"
+            outputs = _run_group_calibrate(
+                group_dir=group_dir,
+                frames=frames,
+                dark_path=dark_path,
+                params=params,
+                ctx=ctx,
+                runtime=SirilRuntime(),
+                flat_ref=flat_ref,
+                bias_ref=bias_ref,
+            )
+            for out_path in outputs:
+                renumbered = seq_out / f"pp_{basename}_{(done + 1):05d}.fit"
+                shutil.move(str(out_path), str(renumbered))
+                done += 1
+            shutil.rmtree(group_dir, ignore_errors=True)
+
+        if params.fitseq:
+            shutil.rmtree(out_dir / "_extracted", ignore_errors=True)
+
+        ctx.progress(1.0, f"calibrate: wrote {done} frames across {len(groups)} groups")
         return {"sequence": seq_ref(seq_out)}

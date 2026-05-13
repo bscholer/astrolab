@@ -175,16 +175,21 @@ def test_suggestions_endpoint_returns_orphans(client) -> None:
 
 
 def test_suggestions_skips_compat_incompatible_orphans(client) -> None:
-    """A same-target orphan whose exptime/gain/filter/binning would fail
-    the PATCH endpoint's compat gate must NOT show up in the suggestion
-    list. The user shouldn't get a banner that 400s on accept."""
+    """A same-target orphan whose gain/filter/binning would fail the
+    PATCH endpoint's compat gate must NOT show up in the suggestion
+    list. The user shouldn't get a banner that 400s on accept.
+
+    `exptime` is deliberately NOT in the compat tuple anymore: the
+    calibrate node picks the right dark per (exptime, temp) bin, so
+    mixed-exposure bundles are valid. This test pins gain instead.
+    """
     c, db_path, tmp_path = client
     with open_db(db_path) as conn:
-        _seed_session(conn, session_id=1, folder=tmp_path / "s1", exptime=15.0)
-        # Same target + canonical, but exptime differs -> would 400 on PATCH.
-        _seed_session(conn, session_id=2, folder=tmp_path / "s2", exptime=30.0)
-        # Same target + canonical AND exptime matches -> should appear.
-        _seed_session(conn, session_id=3, folder=tmp_path / "s3", exptime=15.0)
+        _seed_session(conn, session_id=1, folder=tmp_path / "s1", gain=60)
+        # Same target + canonical, but gain differs -> would 400 on PATCH.
+        _seed_session(conn, session_id=2, folder=tmp_path / "s2", gain=80)
+        # Same target + canonical AND gain matches -> should appear.
+        _seed_session(conn, session_id=3, folder=tmp_path / "s3", gain=60)
     r = c.post(
         "/api/projects/from_sessions",
         json={
