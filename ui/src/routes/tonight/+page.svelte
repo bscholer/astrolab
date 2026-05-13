@@ -238,20 +238,25 @@
           aria-label="Maximum magnitude (dimmer = larger)"
         />
       </label>
-      <label class="check">
-        <input type="checkbox" bind:checked={capturedOnly} />
-        <span>Captured only</span>
-      </label>
     </div>
-    {#if types.length > 0}
-      <div class="chips" role="tablist" aria-label="Filter by type">
+    <div class="chips" role="group" aria-label="Filters">
+      <button
+        type="button"
+        class="chip"
+        class:active={capturedOnly}
+        onclick={() => (capturedOnly = !capturedOnly)}
+      >
+        Captured only
+      </button>
+      {#if types.length > 0}
+        <span class="chip-divider" aria-hidden="true"></span>
         <button
           type="button"
           class="chip"
           class:active={typeFilter === null}
           onclick={() => (typeFilter = null)}
         >
-          All
+          All types
         </button>
         {#each types as t (t)}
           <button
@@ -263,8 +268,8 @@
             {t}
           </button>
         {/each}
-      </div>
-    {/if}
+      {/if}
+    </div>
   </section>
 
   {#if filteredEntries.length === 0}
@@ -275,27 +280,27 @@
         <thead>
           <tr>
             <th>Name</th>
-            <th>Common name</th>
-            <th>Type</th>
+            <th class="col-hide-mobile">Common name</th>
+            <th class="col-hide-mobile">Type</th>
             <th class="num">Mag</th>
             <th class="num">Alt now</th>
-            <th class="num">Transit</th>
+            <th class="num col-hide-mobile">Transit</th>
             <th class="num">Hours up</th>
-            <th>Tonight</th>
-            <th>Captured</th>
+            <th class="col-hide-mobile">Tonight</th>
+            <th class="col-hide-mobile">Captured</th>
           </tr>
         </thead>
         <tbody>
           {#each filteredEntries as entry (entry.name)}
             <tr class:captured={entry.session_count > 0}>
               <td class="name">{entry.name}</td>
-              <td>{entry.common_name ?? '—'}</td>
-              <td class="muted">{entry.object_type ?? '—'}</td>
+              <td class="col-hide-mobile">{entry.common_name ?? '—'}</td>
+              <td class="muted col-hide-mobile">{entry.object_type ?? '—'}</td>
               <td class="num">{fmtMag(entry.magnitude)}</td>
               <td class="num">{fmtAlt(entry.alt_now_deg)}</td>
-              <td class="num">{fmtLocalTime(entry.transit_utc)}</td>
+              <td class="num col-hide-mobile">{fmtLocalTime(entry.transit_utc)}</td>
               <td class="num">{fmtHours(entry.hours_above_min_alt)}</td>
-              <td class="spark-cell">
+              <td class="spark-cell col-hide-mobile">
                 {#if entry.alt_curve_deg && entry.alt_curve_deg.length >= 2 && data}
                   <svg
                     class="spark"
@@ -335,7 +340,7 @@
                   <span class="muted">—</span>
                 {/if}
               </td>
-              <td class="captured-cell">{fmtCaptured(entry)}</td>
+              <td class="captured-cell col-hide-mobile">{fmtCaptured(entry)}</td>
             </tr>
           {/each}
         </tbody>
@@ -416,21 +421,21 @@
     font-family: var(--font-mono);
     font-size: 0.8rem;
   }
-  .check {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--fg-mute);
-    font-size: 0.85rem;
-  }
-  .check input {
-    accent-color: var(--accent);
-  }
-
   .chips {
     display: flex;
     gap: 0.4rem;
     flex-wrap: wrap;
+    align-items: center;
+  }
+  /* Thin vertical rule to visually separate the captured-only chip from
+     the type filter chips within the same chip rail. */
+  .chip-divider {
+    display: inline-block;
+    width: 1px;
+    height: 1.1rem;
+    background: var(--border);
+    margin: 0 0.15rem;
+    flex-shrink: 0;
   }
   .chip {
     appearance: none;
@@ -544,5 +549,22 @@
      reads as part of the same row group instead of a separate accent. */
   tbody tr.captured .spark-line {
     stroke: var(--accent);
+  }
+
+  /* On narrow screens, hide secondary columns so the 4 essential columns
+     (Name, Mag, Alt now, Hours up) fit without horizontal scroll. The
+     sparkline and captured count are recoverable by switching to desktop
+     or landscape; they're nice-to-have, not the primary decision signal. */
+  @media (max-width: 768px) {
+    .col-hide-mobile {
+      display: none;
+    }
+
+    /* Tighten cell padding on small screens so the 4 visible columns
+       breathe without the table pushing outside the viewport. */
+    thead th,
+    tbody td {
+      padding: 0.5rem 0.5rem;
+    }
   }
 </style>
