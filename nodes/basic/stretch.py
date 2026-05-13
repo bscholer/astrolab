@@ -22,7 +22,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from nodes._seq_runner import _check_siril_single_image_result, image_ref, quote
+from nodes._seq_runner import image_ref, quote
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -226,7 +226,20 @@ class StretchNode(Node[StretchParams]):
             on_log=make_progress_handler(ctx),
             cancel=ctx.cancel,
         )
-        _check_siril_single_image_result(result, node_name="stretch", out_path=out_image)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"stretch: siril exited {result.returncode}\n"
+                f"--- ssf ---\n{result.ssf}\n"
+                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                f"--- stderr ---\n{result.stderr}"
+            )
+
+        if not out_image.exists():
+            raise RuntimeError(
+                f"stretch: siril returned 0 but {out_image} is missing.\n"
+                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
+            )
+
         ctx.progress(1.0, f"stretch: wrote {out_image.name}")
         return {"image": image_ref(out_image, display_ready=True)}
 

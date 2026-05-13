@@ -11,19 +11,16 @@ output can land later if file-size pressure shows up.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from nodes._seq_runner import _check_siril_single_image_result, quote
+from nodes._seq_runner import quote
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
 from server.siril import SirilRuntime, make_progress_handler
-
-_log = logging.getLogger(__name__)
 
 
 class SaveImageParams(BaseModel):
@@ -71,7 +68,19 @@ class SaveImageNode(Node[SaveImageParams]):
             on_log=make_progress_handler(ctx),
             cancel=ctx.cancel,
         )
-        _check_siril_single_image_result(result, node_name="save_image", out_path=out_png)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"save_image: siril exited {result.returncode}\n"
+                f"--- ssf ---\n{result.ssf}\n"
+                f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+                f"--- stderr ---\n{result.stderr}"
+            )
+
+        if not out_png.exists():
+            raise RuntimeError(
+                f"save_image: siril returned 0 but {out_png} is missing.\n"
+                f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
+            )
 
         ctx.progress(1.0, f"save_image: wrote {out_png.name}")
         return {
