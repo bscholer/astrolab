@@ -20,18 +20,29 @@
 
   // Filter state. Initial values mirror the server defaults so a fresh
   // page load and a no-filter API call land on the same row set.
-  let minAlt = $state(20);
-  let maxMag = $state(12);
+  // Typed as nullable: clearing a `type="number"` input gives null, and
+  // we'd rather pause refetching than ship a bad query and crash the
+  // page while the user is mid-edit.
+  let minAlt = $state<number | null>(20);
+  let maxMag = $state<number | null>(12);
   // Type chip: null = "all". Single-select keeps the chip rail simple.
   let typeFilter = $state<string | null>(null);
   // Captured-only toggle: when on, hide rows the user has never imaged.
   let capturedOnly = $state(false);
 
   async function load() {
+    const min = minAlt;
+    const max = maxMag;
+    // Skip the refetch while either input is empty / mid-edit. The
+    // effect that drives load() will fire again the moment the user
+    // types a valid number, so this is intentionally silent.
+    if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) {
+      return;
+    }
     loading = true;
     error = null;
     try {
-      const r = await api.getTonight({ min_alt: minAlt, max_mag: maxMag });
+      const r = await api.getTonight({ min_alt: min, max_mag: max });
       data = r;
     } catch (e) {
       const msg = (e as Error).message;
