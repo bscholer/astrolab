@@ -9,6 +9,8 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { tweened } from 'svelte/motion';
+  import { cubicOut } from 'svelte/easing';
   import { api, type SystemSnapshot } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
 
@@ -18,7 +20,7 @@
   // Suppress the second-and-Nth toast so a downed backend doesn't spam.
   let warnedOnce = false;
 
-  // Rolling history. ~120 samples at 1.5s = 3 min of sparkline.
+  // Rolling history. ~120 samples at 250ms = 30s of sparkline.
   const N = 120;
   // Buffers stay empty until the first successful poll, then we backfill
   // with that sample so the sparkline starts as a flat line rather than
@@ -33,6 +35,16 @@
   // small reads/writes still register; bursts above it expand the y-axis
   // so the line stays inside the card instead of shooting off the top.
   const DISK_FLOOR_BPS = 200 * 1024 ** 2;
+
+  // Tweened stores for smooth animated headline numbers.
+  const tCpu = tweened(0, { duration: 250, easing: cubicOut });
+  const tMem = tweened(0, { duration: 250, easing: cubicOut });
+  const tDisk = tweened(0, { duration: 250, easing: cubicOut });
+  const tGpu = tweened(0, { duration: 250, easing: cubicOut });
+
+  // EMA state for sparkline smoothing (~1s time constant at 250ms poll rate).
+  const SMOOTH_ALPHA = 0.2;
+  let emaCpu = 0, emaMem = 0, emaGpu = 0, emaDiskR = 0, emaDiskW = 0;
 
   // ---------- timers ----------
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -63,30 +75,49 @@
 
   function pushHistory(s: SystemSnapshot, firstSample: boolean) {
     const cpuPct = s.cpu.percent;
-    const memPct = s.mem.total > 0 ? (s.mem.used / s.mem.total) * 100 : 0;
+    const memPctVal = s.mem.total > 0 ? (s.mem.used / s.mem.total) * 100 : 0;
+    const diskPctVal = s.disk.total > 0 ? (s.disk.used / s.disk.total) * 100 : 0;
     const gpuUtil = s.gpu ? s.gpu.util : 0;
     const readBps = s.disk.read_bps;
     const writeBps = s.disk.write_bps;
 
     if (firstSample) {
-      // Backfill so the spark doesn't draw as a single dot.
+      // Seed EMA and tweened at the initial value with no animation.
+      emaCpu = cpuPct; emaMem = memPctVal; emaGpu = gpuUtil;
+      emaDiskR = readBps; emaDiskW = writeBps;
+      tCpu.set(cpuPct, { duration: 0 });
+      tMem.set(memPctVal, { duration: 0 });
+      tDisk.set(diskPctVal, { duration: 0 });
+      tGpu.set(gpuUtil, { duration: 0 });
       cpuHist = Array(N).fill(cpuPct);
-      memHist = Array(N).fill(memPct);
+      memHist = Array(N).fill(memPctVal);
       gpuHist = Array(N).fill(gpuUtil);
       diskReadHist = Array(N).fill(readBps);
       diskWriteHist = Array(N).fill(writeBps);
       return;
     }
-    cpuHist = [...cpuHist.slice(1), cpuPct];
-    memHist = [...memHist.slice(1), memPct];
-    gpuHist = [...gpuHist.slice(1), gpuUtil];
-    diskReadHist = [...diskReadHist.slice(1), readBps];
-    diskWriteHist = [...diskWriteHist.slice(1), writeBps];
+
+    emaCpu  = SMOOTH_ALPHA * cpuPct    + (1 - SMOOTH_ALPHA) * emaCpu;
+    emaMem  = SMOOTH_ALPHA * memPctVal + (1 - SMOOTH_ALPHA) * emaMem;
+    emaGpu  = SMOOTH_ALPHA * gpuUtil   + (1 - SMOOTH_ALPHA) * emaGpu;
+    emaDiskR = SMOOTH_ALPHA * readBps  + (1 - SMOOTH_ALPHA) * emaDiskR;
+    emaDiskW = SMOOTH_ALPHA * writeBps + (1 - SMOOTH_ALPHA) * emaDiskW;
+
+    tCpu.set(emaCpu);
+    tMem.set(emaMem);
+    tDisk.set(diskPctVal);
+    tGpu.set(emaGpu);
+
+    cpuHist      = [...cpuHist.slice(1),      emaCpu];
+    memHist      = [...memHist.slice(1),      emaMem];
+    gpuHist      = [...gpuHist.slice(1),      emaGpu];
+    diskReadHist  = [...diskReadHist.slice(1),  emaDiskR];
+    diskWriteHist = [...diskWriteHist.slice(1), emaDiskW];
   }
 
   onMount(() => {
     load();
-    pollHandle = setInterval(load, 1500);
+    pollHandle = setInterval(load, 250);
     // Separate clock so elapsed-time labels tick smoothly between polls.
     clockHandle = setInterval(() => (nowTick = Date.now()), 1000);
   });
@@ -171,11 +202,6 @@
   const diskPct = $derived(
     snap && snap.disk.total > 0 ? (snap.disk.used / snap.disk.total) * 100 : 0
   );
-  const gpuMemPct = $derived(
-    snap && snap.gpu && snap.gpu.vram_total > 0
-      ? (snap.gpu.vram_used / snap.gpu.vram_total) * 100
-      : 0
-  );
   const diskMaxBps = $derived(
     Math.max(DISK_FLOOR_BPS, ...diskReadHist, ...diskWriteHist)
   );
@@ -231,9 +257,8 @@
     <article class="card metric" data-tier={tier(snap.cpu.percent)}>
       <header class="m-head">
         <span class="m-label">CPU</span>
-        <span class="m-sub muted small mono">load {snap.cpu.load_avg[0].toFixed(2)} / {snap.cpu.load_avg[1].toFixed(2)} / {snap.cpu.load_avg[2].toFixed(2)}</span>
       </header>
-      <div class="m-value mono">{snap.cpu.percent.toFixed(0)}<span class="m-unit">%</span></div>
+      <div class="m-value mono">{$tCpu.toFixed(0)}<span class="m-unit">%</span></div>
       <svg class="spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true">
         <path class="spark-fill" d={sparkArea(cpuHist)} />
         <path class="spark-line" d={sparkPath(cpuHist)} />
@@ -248,7 +273,7 @@
         <span class="m-label">RAM</span>
         <span class="m-sub muted small mono">{fmtBytes(snap.mem.used)} / {fmtBytes(snap.mem.total)}</span>
       </header>
-      <div class="m-value mono">{memPct.toFixed(0)}<span class="m-unit">%</span></div>
+      <div class="m-value mono">{$tMem.toFixed(0)}<span class="m-unit">%</span></div>
       <svg class="spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true">
         <path class="spark-fill" d={sparkArea(memHist)} />
         <path class="spark-line" d={sparkPath(memHist)} />
@@ -261,8 +286,9 @@
     <article class="card metric" data-tier={tier(diskPct)}>
       <header class="m-head">
         <span class="m-label">Storage</span>
+        {#if snap.disk.temp_c != null}<span class="m-sub muted small mono">{snap.disk.temp_c.toFixed(0)}°C</span>{/if}
       </header>
-      <div class="m-value mono">{diskPct.toFixed(0)}<span class="m-unit">%</span></div>
+      <div class="m-value mono">{$tDisk.toFixed(0)}<span class="m-unit">%</span></div>
       <div class="io-row mono small">
         <span class="io io-r">R <span class="muted">{fmtRate(snap.disk.read_bps)}</span></span>
         <span class="io io-w">W <span class="muted">{fmtRate(snap.disk.write_bps)}</span></span>
@@ -272,7 +298,7 @@
         <path class="spark-line spark-w" d={sparkPath(diskWriteHist, 200, 40, 0, diskMaxBps)} />
       </svg>
       <footer class="m-foot muted small mono">
-        {#if snap.disk.temp_c != null}{snap.disk.temp_c.toFixed(0)}°C · {/if}{fmtBytes(snap.disk.used)} / {fmtBytes(snap.disk.total)}
+        {fmtBytes(snap.disk.used)} / {fmtBytes(snap.disk.total)}
       </footer>
     </article>
 
@@ -280,15 +306,15 @@
       <article class="card metric" data-tier={tier(snap.gpu.util)}>
         <header class="m-head">
           <span class="m-label">GPU</span>
-          <span class="m-sub muted small mono">VRAM {fmtBytes(snap.gpu.vram_used)} / {fmtBytes(snap.gpu.vram_total)}</span>
+          <span class="m-sub muted small mono">{snap.gpu.temp_c.toFixed(0)}°C</span>
         </header>
-        <div class="m-value mono">{snap.gpu.util.toFixed(0)}<span class="m-unit">%</span></div>
+        <div class="m-value mono">{$tGpu.toFixed(0)}<span class="m-unit">%</span></div>
         <svg class="spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true">
           <path class="spark-fill" d={sparkArea(gpuHist)} />
           <path class="spark-line" d={sparkPath(gpuHist)} />
         </svg>
         <footer class="m-foot muted small mono">
-          {snap.gpu.temp_c.toFixed(0)}°C · {gpuMemPct.toFixed(0)}% VRAM
+          VRAM {fmtBytes(snap.gpu.vram_used)} / {fmtBytes(snap.gpu.vram_total)}
         </footer>
       </article>
     {/if}
