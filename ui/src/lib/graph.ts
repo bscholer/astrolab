@@ -23,7 +23,6 @@ const NODE_DISPLAY_NAMES: Record<string, string> = {
   seq_stack: 'Stack',
   narrowband_extract: 'Narrowband Extract',
   narrowband_compose: 'Narrowband Compose',
-  auto_crop: 'Auto-trim',
   graxpert: 'GraXpert',
   stretch: 'Stretch',
   starnet_extract: 'Extract Stars',

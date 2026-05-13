@@ -1,20 +1,23 @@
 id: calibrate_register_stack
-version: 15
+version: 16
 # v13 added an rgb_equal node between auto_bp_shift and stretch; v14 removes
 # it after testing showed the extra equalization pass was not needed in practice.
 # v15 inserts a color_balance (SCNR green) step between crop and auto_bp_shift
 # because every OSC stack we shipped came out with a visible green wash that
 # the rejection stack's -rgb_equal alone couldn't kill.
+# v16 merges auto_crop into crop: crop now auto-detects the signal bbox when
+# no user box is set (width == 0 sentinel), so one node handles both trimming
+# and interactive composition cropping.
 description: |
   OSC smart-telescope pipeline mirrored on Naztronomy's Siril script
   (https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py):
     convert -> calibrate (CFA-aware, debayer) -> resample (default 1.0)
             -> pedestal offset -> background extract -> plate-solve
-            register -> rejection stack with rgb_equal -> auto_crop (trim
-            registration nodata) -> graxpert_bg (AI background, optional;
-            linear) -> graxpert_denoise (AI denoise, optional; linear)
-            -> crop (interactive composition crop, off by default) ->
-            color_balance (SCNR green, on by default for OSC) ->
+            register -> rejection stack with rgb_equal -> crop (auto-trims
+            registration nodata on first run; user can drag a composition
+            box in the UI to override) -> graxpert_bg (AI background,
+            optional; linear) -> graxpert_denoise (AI denoise, optional;
+            linear) -> color_balance (SCNR green, on by default for OSC) ->
             auto_bp_shift (linear black-point shift; on by default,
             1% clip) -> stretch (autostretch by default) ->
             starnet_extract (split, optional; needs stretched input)
@@ -115,11 +118,15 @@ nodes:
     inputs:
       sequence: register.sequence
 
-  - id: auto_crop
-    kind: auto_crop
-    # Trim the zero-fill border that registration leaves around the stack so
-    # stretch + save read a smaller, all-real-data frame. Threshold + padding
-    # live in advanced; the user toggles on/off if they want the full frame.
+  - id: crop
+    kind: crop
+    # Auto-trims the zero-fill registration border on first run (width == 0
+    # sentinel triggers the signal-bbox auto-detect). Once the user drags a
+    # rectangle in the project page UI the explicit coords take over.
+    # Threshold + padding live in advanced and control the auto-trim only.
+    # Sits right after the stack so all downstream linear ops (GraXpert,
+    # color_balance, auto_bp_shift) and the autostretch histogram only see
+    # real-data pixels.
     params:
       enabled: true
       threshold: 0.001
@@ -139,7 +146,7 @@ nodes:
       smoothing: 0.0
       correction: Subtraction
     inputs:
-      image: auto_crop.image
+      image: crop.image
 
   - id: graxpert_denoise
     kind: graxpert
@@ -154,19 +161,6 @@ nodes:
     inputs:
       image: graxpert_bg.image
 
-  - id: crop
-    kind: crop
-    # Interactive composition crop. Off by default; flips on once the user
-    # drags a rectangle in the project page UI. Coords are normalized [0,1]
-    # so the box stays valid across resample modes. Sits just before
-    # stretch so autostretch's histogram only sees the kept region;
-    # noisy borders / vignetting / dead edges the user crops out can't
-    # skew the tone curve.
-    params:
-      enabled: false
-    inputs:
-      image: graxpert_denoise.image
-
   - id: color_balance
     kind: color_balance
     # SCNR green (rmgreen) to kill the OSC Bayer-matrix green cast. Runs
@@ -178,7 +172,7 @@ nodes:
       enabled: true
       amount: 0.85
     inputs:
-      image: crop.image
+      image: graxpert_denoise.image
 
   - id: auto_bp_shift
     kind: auto_bp_shift
@@ -254,8 +248,7 @@ outputs:
   image: save.image
   stacked: stack.image
   stretched: stretch.image
-  auto_cropped: auto_crop.image
+  cropped: crop.image
   starless: starnet_extract.starless
   stars: starnet_replace.image
   recombined: starnet_recombine.image
-  cropped: crop.image
