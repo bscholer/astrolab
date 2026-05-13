@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 15
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -407,6 +407,21 @@ MIGRATIONS: dict[int, list[str]] = {
         "DROP TABLE sessions",
         "ALTER TABLE sessions_new RENAME TO sessions",
         "INSERT INTO schema_version (version) VALUES (14)",
+    ],
+    15: [
+        # Force re-ingest of every existing frame and master on the next
+        # scan. Earlier versions of filter_aliases canonicalized Dwarf 3's
+        # 'Astro' IR-cut to the literal string 'None', which surfaces in
+        # the UI as if the filter were missing. The new alias table
+        # preserves source filter names except for the one real synonym
+        # merge (Duo / Duo-Band / HaOIII), but the scanner's incremental
+        # skip-if-unchanged path won't refresh existing rows on its own.
+        # Nulling file_hash trips the "needs re-read" branch in scanner._
+        # ingest_frame and _ingest_master so the next scan re-parses each
+        # FITS header and writes the corrected filter value.
+        "UPDATE frames SET file_hash = NULL",
+        "UPDATE masters SET file_hash = NULL",
+        "INSERT INTO schema_version (version) VALUES (15)",
     ],
 }
 

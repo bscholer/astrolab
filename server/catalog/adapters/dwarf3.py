@@ -67,10 +67,16 @@ USER_DARK_FILENAME_RE = re.compile(
 )
 
 
-FLAT_IR_TO_FILTER: dict[int, str] = {0: "None", 1: "None", 2: "HaOIII"}
-"""``ir_N`` index on factory flats -> canonical filter name. Both ``VIS``
-(0) and ``Astro`` (1) collapse to ``None`` (no narrowband filter);
-``Duo-Band`` (2) is ``HaOIII``. See ``filter_aliases.py``."""
+FLAT_IR_TO_FILTER: dict[int, str] = {0: "VIS", 1: "Astro", 2: "Duo"}
+"""``ir_N`` index on factory flats -> filter name string.
+
+Values match what Dwarf 3 lights carry in their FITS ``FILTER`` header
+(``VIS`` / ``Astro`` / ``Duo``) so the matcher's string-equality join
+between a session's lights and the corresponding factory flat lights up
+without any rewriting. ``Duo-Band`` is the filename label Dwarf docs use
+for ``ir_2`` masters, but lights write ``Duo``; ``filter_aliases.py``
+collapses both to ``Duo`` regardless of which we put here, but keeping
+this map source-consistent is the obvious thing."""
 
 CAM_FROM_DIR: dict[str, str] = {"cam_0": "TELE", "cam_1": "WIDE"}
 """Per Dwarf docs: ``cam_0`` is the telephoto, ``cam_1`` is the wide."""
