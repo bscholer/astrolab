@@ -216,11 +216,13 @@
                 <span class="dot" aria-hidden="true">·</span>
                 <span>{r.capture.session_count} session{r.capture.session_count === 1 ? '' : 's'}</span>
               {/if}
-              {#if r.capture.exptime != null || r.capture.gain != null}
+              {#if r.capture.exptime != null}
                 <span class="dot" aria-hidden="true">·</span>
-                <span class="num">
-                  {#if r.capture.exptime != null}{r.capture.exptime}s{/if}{#if r.capture.exptime != null && r.capture.gain != null} · {/if}{#if r.capture.gain != null}gain {r.capture.gain}{/if}
-                </span>
+                <span class="num">{r.capture.exptime}s</span>
+              {/if}
+              {#if r.capture.gain != null}
+                <span class="dot" aria-hidden="true">·</span>
+                <span>gain {r.capture.gain}</span>
               {/if}
               {#if r.capture.integration_seconds && r.capture.integration_seconds > 0}
                 <span class="dot" aria-hidden="true">·</span>
