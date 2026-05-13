@@ -1,5 +1,8 @@
 id: calibrate_register_stack_narrowband
-version: 2
+version: 3
+# v3 merges auto_crop into crop: crop now auto-detects the signal bbox when
+# no user box is set (width == 0 sentinel), removing the separate auto_crop
+# node and putting crop right after narrowband_compose (same DAG position).
 description: |
   OSC narrowband (HOO/SHO/HSO etc.) pipeline for dual-band-filter smart
   telescope captures. Mirrors Naztronomy's Smart-Telescope-PP narrowband
@@ -25,11 +28,10 @@ description: |
     which is the cheap PixelMath + rgbcomp half. Splitting at that
     boundary means flipping the palette only re-runs the compose step.
   - Everything after narrowband_compose mirrors the OSC RGB template:
-    auto_crop trims the registration nodata border, GraXpert bg/denoise
-    operate on linear data, the optional composition crop sits just
-    before stretch so autostretch's histogram only sees kept pixels,
-    stretch transitions to non-linear, then StarNet++ extract ->
-    replace -> recombine, save 16-bit PNG.
+    crop auto-trims the registration nodata border on first run, then
+    the user can drag a composition box in the UI to override. GraXpert
+    bg/denoise operate on linear data, stretch transitions to non-linear,
+    then StarNet++ extract -> replace -> recombine, save 16-bit PNG.
 
   Inputs the Job must supply:
     convert.lights  -> a directory of raw .fits subs (typically a Dwarf 3
@@ -96,11 +98,12 @@ nodes:
       ha: narrowband_extract.ha
       oiii: narrowband_extract.oiii
 
-  - id: auto_crop
-    kind: auto_crop
-    # Trim the zero-fill border that the per-channel register passes leave
-    # around the composed RGB so stretch + save work on a smaller, all-real
-    # frame.
+  - id: crop
+    kind: crop
+    # Auto-trims the zero-fill registration border on first run (width == 0
+    # sentinel triggers the signal-bbox auto-detect). Once the user drags a
+    # rectangle in the project page UI the explicit coords take over.
+    # Threshold + padding live in advanced and control the auto-trim only.
     params:
       enabled: true
       threshold: 0.001
@@ -119,7 +122,7 @@ nodes:
       smoothing: 0.0
       correction: Subtraction
     inputs:
-      image: auto_crop.image
+      image: crop.image
 
   - id: graxpert_denoise
     kind: graxpert
@@ -133,25 +136,13 @@ nodes:
     inputs:
       image: graxpert_bg.image
 
-  - id: crop
-    kind: crop
-    # Interactive composition crop. Off by default; sits just before
-    # stretch so the autostretch histogram only sees the kept region
-    # (noisy borders / vignetting / nodata that gets cropped out can't
-    # skew the tone curve). Coords are normalized [0,1] so the box
-    # stays valid across resample modes.
-    params:
-      enabled: false
-    inputs:
-      image: graxpert_denoise.image
-
   - id: stretch
     kind: stretch
     # Linear-domain ops end here. StarNet++ wants stretched input.
     params:
       method: autostretch
     inputs:
-      image: crop.image
+      image: graxpert_denoise.image
 
   - id: starnet_extract
     kind: starnet_extract
@@ -189,8 +180,7 @@ outputs:
   image: save.image
   composed: narrowband_compose.image
   stretched: stretch.image
-  auto_cropped: auto_crop.image
+  cropped: crop.image
   starless: starnet_extract.starless
   stars: starnet_replace.image
   recombined: starnet_recombine.image
-  cropped: crop.image
