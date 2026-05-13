@@ -53,6 +53,10 @@ class GraxpertParams(BaseModel):
         "structure). 'denoise' applies the AI denoiser to a stretched "
         "image; safe to run after stretch.",
         json_schema_extra={
+            # Templates pin this per instance (graxpert_bg vs graxpert_denoise);
+            # surfacing it on the form just invites someone to flip the BG node
+            # into denoise mode and wonder why the chain stops making sense.
+            "ui_hidden": True,
             "agent_hint": (
                 "Use 'bg_extract' for a mottled or gradient background;"
                 " 'denoise' to quiet grain in a stretched image."
