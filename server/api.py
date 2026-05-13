@@ -3397,23 +3397,32 @@ def get_template_schema(template_id: str) -> dict:
 
 
 @app.get("/api/preview/{node_hash}/{port}")
-def get_preview(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
+def get_preview(
+    node_hash: str, port: str, neutral: int = 1, force_stretch: int = 0
+) -> FileResponse:
     """Render (or return cached) thumbnail PNG for a node's output.
 
     The preview is cached inside the node's cache entry so subsequent loads
     are a static file read. FITS artifacts get an autostretched render;
     PNG artifacts pass through.
 
-    `neutral=0` bypasses the per-channel rebalance (debug affordance —
+    `neutral=0` bypasses the per-channel rebalance (debug affordance --
     shows what Siril's linked autostretch produces, which is what you'd
     see opening the FITS in Siril directly). Default `neutral=1` runs an
     OSC-friendly per-channel stretch so pre-rgb_equal stages stop looking
     swampy green.
+
+    `force_stretch=1` ignores the output manifest's `display_ready` flag and
+    always runs autostretch. Used by the crop editor so it gets a visually
+    useful preview even when the upstream node (e.g. graxpert) marks its
+    output as display-ready linear data.
     """
     manifest = job_manager.cache.load_outputs(node_hash)
     display_ready = False
     if manifest is not None and port in manifest:
         display_ready = manifest[port].display_ready
+    if force_stretch:
+        display_ready = False
     try:
         path = render_preview(
             job_manager.cache, node_hash, port, neutral=bool(neutral), display_ready=display_ready

@@ -191,16 +191,6 @@
     onreset();
   }
 
-  function toggleEnabled() {
-    onchange({
-      enabled: !enabled,
-      x: box.x,
-      y: box.y,
-      width: box.w,
-      height: box.h
-    });
-  }
-
   // Display-only percentages (rounded to whole percent) for the legend.
   const pctX = $derived(Math.round(box.x * 100));
   const pctY = $derived(Math.round(box.y * 100));
@@ -218,9 +208,6 @@
     <span class="status-pill" class:on={enabled} class:off={!enabled}>
       {enabled ? 'on' : 'off'}
     </span>
-    <button type="button" class="hbtn" onclick={toggleEnabled}>
-      {enabled ? 'Disable' : 'Enable'}
-    </button>
     <button type="button" class="hbtn ghost" onclick={reset} disabled={!enabled && box.w >= 0.999 && box.h >= 0.999}>
       Reset
     </button>
