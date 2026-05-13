@@ -116,9 +116,10 @@ def test_tonight_returns_entries_with_known_site(client: TestClient) -> None:
     assert body["site_latitude"] == 40.7
     assert isinstance(body["entries"], list)
     assert len(body["entries"]) > 5
-    # Sorted by descending altitude:
-    alts = [e["alt_now_deg"] for e in body["entries"]]
-    assert alts == sorted(alts, reverse=True)
+    # Sorted by descending hours-up tonight, with current altitude as
+    # the tiebreaker so high-and-stays-up beats high-and-setting.
+    sort_keys = [(e["hours_above_min_alt"], e["alt_now_deg"]) for e in body["entries"]]
+    assert sort_keys == sorted(sort_keys, reverse=True)
     # Each entry obeys the filter contract.
     for entry in body["entries"]:
         assert entry["alt_now_deg"] >= body["min_alt_deg"]

@@ -3199,8 +3199,10 @@ def get_tonight(
 
     `at` defaults to now (UTC). Targets are filtered to those currently
     above `min_alt` degrees and brighter than `max_mag` V-band, then
-    sorted by descending altitude so the highest, easiest-to-frame
-    targets surface first.
+    sorted by descending hours-above-min-alt with current altitude as
+    the tiebreaker. The primary sort key matters most: a target that's
+    high right now but sets in twenty minutes is worth less than one
+    that's currently 25deg but stays up the whole night.
     """
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
@@ -3345,7 +3347,11 @@ def get_tonight(
             )
         )
 
-    out.sort(key=lambda e: e.alt_now_deg, reverse=True)
+    # Prefer "stays up tonight" over "is up right this second"; current
+    # altitude breaks ties so two equally-available targets list with the
+    # higher one first. Rows with zero hours up sink to the bottom on
+    # their own without needing a hard filter.
+    out.sort(key=lambda e: (e.hours_above_min_alt, e.alt_now_deg), reverse=True)
     return TonightResponse(
         at_utc=at_utc.isoformat(),
         site_latitude=float(site_lat),

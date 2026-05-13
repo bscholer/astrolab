@@ -19,12 +19,33 @@
     <a href="/" class="logo">astrolab</a>
     <nav class="nav">
       <a href="/" class:active={$page.url.pathname === '/'}>Library</a>
-      <a href="/tonight" class:active={$page.url.pathname.startsWith('/tonight')}>Tonight</a>
       <a href="/projects" class:active={$page.url.pathname.startsWith('/projects')}>Projects</a>
       <a href="/gallery" class:active={$page.url.pathname.startsWith('/gallery')}>Gallery</a>
-      <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')}>Settings</a>
+      <a href="/tonight" class:active={$page.url.pathname.startsWith('/tonight')}>Tonight</a>
       <a href="/system" class:active={$page.url.pathname.startsWith('/system')}>System</a>
     </nav>
+    <a
+      href="/settings"
+      class="settings-cog"
+      class:active={$page.url.pathname.startsWith('/settings')}
+      aria-label="Settings"
+      title="Settings"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.6"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21a2 2 0 1 1-4 0v-.08a1.7 1.7 0 0 0-1.1-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06A2 2 0 1 1 4.13 16.93l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 1 1 0-4h.08a1.7 1.7 0 0 0 1.56-1.1 1.7 1.7 0 0 0-.34-1.87l-.06-.06A2 2 0 1 1 7.07 4.13l.06.06a1.7 1.7 0 0 0 1.87.34h.07A1.7 1.7 0 0 0 10.07 3V3a2 2 0 1 1 4 0v.08a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.07A1.7 1.7 0 0 0 21 10.07H21a2 2 0 1 1 0 4h-.08a1.7 1.7 0 0 0-1.56 1.04Z" />
+      </svg>
+    </a>
   </header>
 
   <main class="container">
@@ -90,6 +111,27 @@
     height: 1px;
     background: linear-gradient(90deg, var(--accent), var(--bad));
     opacity: 0.7;
+  }
+
+  /* Settings cog: anchored to the right of the topbar so it reads as a
+     persistent affordance rather than another nav tab. Same muted->fg
+     hover treatment as the nav links so it still feels part of the
+     toolbar family. */
+  .settings-cog {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-mute);
+    padding: 0.25rem;
+    border-radius: var(--radius);
+    transition: color 160ms ease, background-color 160ms ease;
+  }
+  .settings-cog:hover {
+    color: var(--fg);
+    background: var(--bg-elev-2);
+  }
+  .settings-cog.active {
+    color: var(--accent);
   }
 
   .footer {
