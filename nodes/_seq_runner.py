@@ -37,11 +37,6 @@ run_siril_on_sequence(*, node_name, seq_in, seq_out, commands,
     Real failures (bad returncode + no success message, or missing outputs)
     still raise RuntimeError.
 
-_check_siril_single_image_result(result, node_name, out_path)
-    Validate a single-image Siril result (e.g. savepng). Success criterion
-    is purely file-based: the output must exist and be non-empty. Tolerates
-    returncode -11 (Siril 1.4 shutdown segfault) when the file is present.
-
 seq_ref(path) -> Ref
     Build a SEQUENCE_FITS Ref whose node_hash is the empty-string
     placeholder that the runner patches in after run() returns.
@@ -274,9 +269,8 @@ def _check_siril_stack_result(
 ) -> None:
     """Validate a Siril `stack` command result, tolerating the Siril 1.4 shutdown segfault.
 
-    Stack produces exactly ONE output file. Siril prints a stack-specific success
-    marker ("Stacked sequence successfully.") before the shutdown teardown that
-    sometimes segfaults.
+    Stack produces exactly ONE output file.  The success path is simpler than
+    _check_siril_seq_result (no fitseq/per-frame branching needed).
 
     Success criteria:
       1. returncode is 0, OR (returncode != 0 AND stdout contains the exact
@@ -317,43 +311,6 @@ def _check_siril_stack_result(
             f"{node_name}: siril returned 0 but output {out_image} is missing or empty.\n"
             f"--- stdout (tail) ---\n{result.stdout[-2000:]}"
         )
-
-
-def _check_siril_single_image_result(result, *, node_name: str, out_path: Path) -> None:
-    """Validate a Siril single-image result with no in-stdout success marker.
-
-    For operations like `savepng` that do not print a stack/sequence success
-    marker, the success criterion is purely file-based: the output file must
-    exist and be non-empty.
-
-    Siril 1.4.x sometimes exits -11 (SIGSEGV) during process teardown after the
-    image has already been written to disk. When the output is present and
-    non-zero the segfault is treated as success with a warning log entry.
-
-    Raises RuntimeError when the output file is absent or empty, regardless of
-    the returncode. Use _check_siril_stack_result for `stack` (it has a marker).
-    """
-    file_ok = out_path.exists() and out_path.stat().st_size > 0
-
-    if file_ok:
-        if result.returncode != 0:
-            _log.warning(
-                "%s: siril exited %d after writing %s; treating as success "
-                "(Siril 1.4 shutdown segfault)",
-                node_name,
-                result.returncode,
-                out_path.name,
-            )
-        return
-
-    # Output missing or zero-sized — real failure regardless of returncode.
-    raise RuntimeError(
-        f"{node_name}: siril exited {result.returncode} and "
-        f"{out_path} is missing or empty.\n"
-        f"--- ssf ---\n{result.ssf}\n"
-        f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
-        f"--- stderr ---\n{result.stderr}"
-    )
 
 
 def run_siril_on_sequence(

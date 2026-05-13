@@ -12,7 +12,6 @@ calibrated lights of varying transparency. The output filename is fixed at
 from __future__ import annotations
 
 import contextlib
-import logging
 from pathlib import Path
 from typing import Literal
 
@@ -24,11 +23,6 @@ from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
 from server.siril import SirilRuntime, make_progress_handler
-
-_log = logging.getLogger(__name__)
-
-# Rejection types that require all frames in RAM simultaneously.
-_MEMORY_HEAVY_REJECTION = frozenset({"w", "s"})
 
 
 class SeqStackParams(BaseModel):
@@ -172,7 +166,7 @@ class SeqStackParams(BaseModel):
 @register("seq_stack")
 class SeqStackNode(Node[SeqStackParams]):
     id = "seq_stack"
-    version = 2
+    version = 1
     cost = "expensive"
     uses_siril = True
 
@@ -241,72 +235,12 @@ class SeqStackNode(Node[SeqStackParams]):
             on_log=make_progress_handler(ctx),
             cancel=ctx.cancel,
         )
-        primary_error: RuntimeError | None = None
-        try:
-            _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
-        except RuntimeError as exc:
-            primary_error = exc
-
-        if primary_error is not None:
-            # Attempt OOM fallback: retry with percentile rejection if the
-            # configured rejection is memory-heavy and the output is absent.
-            can_retry = (
-                params.method == "rej"
-                and params.rejection_type in _MEMORY_HEAVY_REJECTION
-                and not out_image.exists()
-            )
-            if not can_retry:
-                raise primary_error
-
-            _log.warning(
-                "seq_stack: %s rejection ran out of memory at %s frames; "
-                "retrying with percentile rejection (0.1/0.1). "
-                "Consider increasing Docker memory if you want %s results.",
-                {"w": "winsor", "s": "sigma"}[params.rejection_type],
-                params.input_basename,
-                {"w": "winsor", "s": "sigma"}[params.rejection_type],
-            )
-
-            # Build percentile fallback command.
-            fallback_parts = [f"stack {params.input_basename} {params.method}"]
-            fallback_parts.append("p")
-            fallback_parts.append("0.1 0.1")
-            fallback_parts.append(f"-norm={params.norm}")
-            if params.output_norm:
-                fallback_parts.append("-output_norm")
-            if params.rgb_equal:
-                fallback_parts.append("-rgb_equal")
-            if params.maximize:
-                fallback_parts.append("-maximize")
-            if params.filter_included:
-                fallback_parts.append("-filter-included")
-            if params.weight_from_quality:
-                fallback_parts.append("-weight=wfwhm")
-            fallback_parts.append(f"-out={quote(out_image.resolve())}")
-
-            ctx.progress(0.5, "seq_stack: retrying with percentile rejection")
-            fallback_commands = [
-                f"cd {quote(work_dir.resolve())}",
-                " ".join(fallback_parts),
-            ]
-            fallback_result = runtime.run(
-                fallback_commands,
-                working_dir=work_dir,
-                on_log=make_progress_handler(ctx),
-                cancel=ctx.cancel,
-            )
-            try:
-                _check_siril_stack_result(
-                    fallback_result, node_name="seq_stack", out_image=out_image
-                )
-            except RuntimeError:
-                # Retry also failed: surface the original error.
-                raise primary_error from None
+        _check_siril_stack_result(result, node_name="seq_stack", out_image=out_image)
 
         # Toss the staging dir; the cache entry only needs image.fit.
         from nodes._seq_runner import drop_staged
         drop_staged(staged)
-        # Siril may have left an FWHM .reg or similar behind; rmdir is fine to skip.
+        # Siril may have left an FWHM .reg or similar behind; rmdir then is fine to skip.
         with contextlib.suppress(OSError):
             work_dir.rmdir()
 
