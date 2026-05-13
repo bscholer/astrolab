@@ -940,6 +940,21 @@ def get_session_reassign_candidates(session_id: int, conn: DBDep) -> ReassignCan
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     current_target_id = session_row["target_id"]
 
+    # Figure out what canonical (if any) the session is currently pinned to,
+    # so we can drop it from both candidate lists below. Listing the user's
+    # current pick as a "suggestion" looks like a bug.
+    current_canonical: str | None = None
+    if current_target_id is not None:
+        current_row = conn.execute(
+            "SELECT name, resolved_canonical FROM targets WHERE id = ?",
+            (current_target_id,),
+        ).fetchone()
+        if current_row is not None:
+            # resolved_canonical when set is the OpenNGC catalog id; fall
+            # back to the stored name (some user-named targets resolve via
+            # name lookup but were never resolved by the scanner).
+            current_canonical = current_row["resolved_canonical"] or current_row["name"]
+
     centroid_info = _session_centroid(conn, session_id)
     if centroid_info is None:
         return ReassignCandidatesResponse(targets=[], catalog=[])
@@ -956,6 +971,7 @@ def get_session_reassign_candidates(session_id: int, conn: DBDep) -> ReassignCan
             separation_arcmin=m.separation_deg * 60.0,
         )
         for m in catalog_matches
+        if m.canonical != current_canonical
     ]
 
     # Existing targets: walk every target with a resolved canonical

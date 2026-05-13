@@ -248,6 +248,37 @@ def test_rerun_keeps_session_id_stable(conn) -> None:
     assert first_id == second_id
 
 
+def test_rerun_preserves_user_target_reassignment(conn) -> None:
+    """A manual target reassignment (PATCH /api/sessions/{id} flipping
+    target_id) must survive a subsequent rescan. Re-deriving target_id
+    from frame OBJECT on every cluster pass would silently revert the
+    user's choice; the clusterer treats target_id as user-editable on
+    matched sessions."""
+    base = datetime(2025, 10, 21, 22, 0, 0)
+    # Frames whose OBJECT is "Unknown" — Dwarf 3 writes this when the
+    # device couldn't resolve a target, and a user typically reassigns
+    # these to a real catalog entry by hand.
+    for i in range(5):
+        _insert_light(
+            conn, target="Unknown", date_obs=_iso_minutes(base, i), path=f"/x/{i}.fits"
+        )
+    cluster_sessions(conn)
+    sid = conn.execute("SELECT id FROM sessions").fetchone()["id"]
+
+    # Simulate the user reassigning this session to a real target.
+    conn.execute("INSERT INTO targets (name) VALUES (?)", ("NGC 7000",))
+    ngc_id = conn.execute("SELECT id FROM targets WHERE name='NGC 7000'").fetchone()["id"]
+    conn.execute("UPDATE sessions SET target_id = ? WHERE id = ?", (ngc_id, sid))
+
+    # A rescan happens; the cluster's config tuple still has OBJECT='Unknown',
+    # but cluster_sessions must NOT clobber the user's NGC 7000 pick.
+    cluster_sessions(conn)
+    after = conn.execute("SELECT target_id FROM sessions WHERE id = ?", (sid,)).fetchone()
+    assert after["target_id"] == ngc_id, (
+        f"user override clobbered: expected {ngc_id}, got {after['target_id']}"
+    )
+
+
 def test_orphaned_session_cleaned_up(conn) -> None:
     """A session whose frames all vanish (re-classified, deleted, etc.) is
     removed on the next cluster pass."""
