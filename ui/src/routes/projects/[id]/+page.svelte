@@ -98,6 +98,14 @@
   let sessionNotesDraftById = $state<Map<number, string>>(new Map());
   let sessionNotesSavingId = $state<number | null>(null);
 
+  // Clock tick for "created Xm ago" and the live runtime counter. Both
+  // labels derive from Date.now(), which Svelte can't track on its own;
+  // bumping this $state on a setInterval gives them something to react
+  // to. Cadence swaps between 1s (live runtime visible) and 30s
+  // (created-ago granularity is only minutes) to avoid pointless work
+  // when no job is in flight.
+  let nowTick = $state(Date.now());
+
   // Derived ordering / lookups
   const schemaByNodeId = $derived.by(() => {
     const out: Record<string, TemplateSchema['nodes'][number]> = {};
@@ -216,6 +224,34 @@
   $effect(() => {
     document.body.classList.add('project-page');
     return () => document.body.classList.remove('project-page');
+  });
+
+  // Drive the nowTick clock. A live job (started, not finished) ticks
+  // every second so the "Xm Ys" runtime advances visibly; otherwise we
+  // fall back to a 30s tick that's just enough to keep "created Xm ago"
+  // honest without burning CPU on a static page.
+  $effect(() => {
+    const job = subscription.activeJob;
+    const live = !!job?.started_at && !job.finished_at;
+    const handle = setInterval(() => {
+      nowTick = Date.now();
+    }, live ? 1000 : 30_000);
+    return () => clearInterval(handle);
+  });
+
+  // Live-updating labels for the capture line. Reading nowTick inside
+  // the derived registers the timer as a dependency, so each tick
+  // re-renders these two spans without invalidating the rest of the
+  // page.
+  const createdLabel = $derived.by(() => {
+    void nowTick;
+    return project ? shortAgo(project.created_at) : '';
+  });
+  const runtimeLabel = $derived.by(() => {
+    void nowTick;
+    const job = subscription.activeJob;
+    if (!job?.started_at) return '';
+    return formatDuration(job.started_at, job.finished_at);
   });
 
   onDestroy(() => {
@@ -794,10 +830,10 @@
         <span title="Source-frame bytes on disk">{formatBytes(project.capture.bytes_on_disk)}</span>
       {/if}
       <span aria-hidden="true">·</span>
-      <span title={project.created_at}>created {shortAgo(project.created_at)}</span>
+      <span title={project.created_at}>created {createdLabel}</span>
       {#if subscription.activeJob?.started_at}
         <span aria-hidden="true">·</span>
-        <span>{formatDuration(subscription.activeJob.started_at, subscription.activeJob.finished_at)}</span>
+        <span>{runtimeLabel}</span>
       {/if}
       {#if subscription.activeJob}
         <span aria-hidden="true">·</span>
