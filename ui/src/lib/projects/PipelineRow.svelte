@@ -547,13 +547,19 @@
   /* ---------- Status pills ---------- */
 
   .status {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
     padding: 0.15rem 0.6rem;
     border-radius: 999px;
     font-family: var(--font-mono);
     font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    line-height: 1;
+  }
+  .dur {
+    display: inline-flex;
+    align-items: center;
   }
   .status-mini {
     font-size: 0.6rem;

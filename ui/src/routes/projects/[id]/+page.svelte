@@ -58,6 +58,8 @@
   // Notes draft
   let descriptionDraft = $state<string>('');
   let descriptionSaving = $state(false);
+  let descriptionSaved = $state(false);
+  let descriptionSavedTimer = $state<ReturnType<typeof setTimeout> | null>(null);
 
   // Accordion expansion
   let expandedNodes = $state<Set<string>>(new Set());
@@ -664,10 +666,20 @@
     const server = project.description ?? '';
     if (descriptionDraft === server) return;
     descriptionSaving = true;
+    descriptionSaved = false;
+    if (descriptionSavedTimer !== null) {
+      clearTimeout(descriptionSavedTimer);
+      descriptionSavedTimer = null;
+    }
     try {
       const next = await api.patchProject(project.id, { description: descriptionDraft });
       project = next;
       syncDescriptionFromProject(next);
+      descriptionSaved = true;
+      descriptionSavedTimer = setTimeout(() => {
+        descriptionSaved = false;
+        descriptionSavedTimer = null;
+      }, 1500);
     } catch (e) {
       toast.error(`Couldn't save notes: ${(e as Error).message}`);
     } finally {
@@ -765,18 +777,20 @@
       </span>
       <button
         type="button"
-        class="hbtn"
+        class="hbtn hbtn-icon"
         onclick={() => revertTo(project!.current_seq - 1)}
         disabled={undoDisabled}
         title="Undo (Cmd-Z)"
-      >&#x21B6; Undo</button>
+        aria-label="Undo"
+      >&#x21B6;</button>
       <button
         type="button"
-        class="hbtn"
+        class="hbtn hbtn-icon"
         onclick={() => revertTo(project!.current_seq + 1)}
         disabled={redoDisabled}
         title="Redo (Cmd-Shift-Z)"
-      >&#x21B7; Redo</button>
+        aria-label="Redo"
+      >&#x21B7;</button>
       {#if project && (project.latest_template_version ?? project.template_version) > project.template_version}
         <button
           type="button"
@@ -874,6 +888,8 @@
           <label class="notes-label" for="project-notes">Notes</label>
           {#if descriptionSaving}
             <span class="muted small">saving...</span>
+          {:else if descriptionSaved}
+            <span class="notes-saved small">saved</span>
           {/if}
         </div>
         <textarea
@@ -1139,6 +1155,10 @@
     margin: 0;
     font-size: 1.5rem;
     line-height: 1.15;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .title-block {
     display: flex;
@@ -1172,6 +1192,12 @@
   .hbtn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+  /* Icon-only variant: square-ish pill, no horizontal text padding. */
+  .hbtn-icon {
+    padding: 0.25rem 0.55rem;
+    font-size: 1rem;
+    line-height: 1;
   }
   .hbtn.warn {
     color: var(--warn, #fbbf24);
@@ -1260,6 +1286,9 @@
     font-weight: 500;
     color: var(--fg);
     cursor: pointer;
+  }
+  .notes-saved {
+    color: var(--good, #34d399);
   }
   .notes-area {
     width: 100%;
@@ -1542,5 +1571,20 @@
   }
   .err {
     color: var(--bad, #f87171);
+  }
+
+  /* On narrow viewports tighten header button padding and the gap so
+     the title + undo/redo + Reprocess all fit on one line. */
+  @media (max-width: 480px) {
+    .header {
+      gap: 0.4rem;
+    }
+    .hbtn {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+    }
+    .hbtn-icon {
+      padding: 0.25rem 0.45rem;
+    }
   }
 </style>
