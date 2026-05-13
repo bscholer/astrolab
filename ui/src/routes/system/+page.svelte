@@ -650,11 +650,27 @@
     overflow: hidden;
     align-self: center;
   }
+  @keyframes bar-shimmer {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
   .progress-fill {
     width: var(--pct);
     height: 100%;
     background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 60%, var(--bad)));
     transition: width 600ms ease-out;
+    position: relative;
+    overflow: hidden;
+  }
+  .progress-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.28) 50%, transparent 100%);
+    animation: bar-shimmer 2.4s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-fill::after { animation: none; }
   }
   .aj-pct { grid-column: 2 / 3; align-self: center; min-width: 2.6rem; text-align: right; }
 
