@@ -315,7 +315,6 @@
     <article class="card jobs-card">
       <header class="card-head">
         <h2>Now running</h2>
-        <a class="link mono small" href="/jobs">/jobs →</a>
       </header>
 
       <div class="counters">
@@ -464,9 +463,6 @@
     letter-spacing: 0.08em;
     color: var(--fg-mute);
   }
-  .link { color: var(--fg-mute); }
-  .link:hover { color: var(--accent); }
-
   /* ---------- top metrics grid ---------- */
   .grid { display: grid; gap: 0.85rem; }
   .metrics {
