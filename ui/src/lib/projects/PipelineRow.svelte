@@ -167,7 +167,7 @@
       <span class="status status-mini status-{togglable && !enabled ? 'off' : status}">
         {togglable && !enabled
           ? 'off'
-          : status}{#if status === 'running' && progress && nschema.preview_hidden}<span class="dur"> · {Math.round((progress.fraction ?? 0) * 100)}%</span>{:else if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"> · {formatStepDuration(durationMs)}</span>{/if}
+          : status}{#if status === 'running' && progress && nschema.preview_hidden}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{Math.round((progress.fraction ?? 0) * 100)}%</span>{:else if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{formatStepDuration(durationMs)}</span>{/if}
       </span>
       {#if isOutput}
         <span class="output-tag">final</span>
@@ -320,9 +320,13 @@
     overflow: hidden;
     transition: border-color 160ms ease, transform 160ms ease;
   }
-  .node-row:hover { border-color: var(--border-strong); }
+  .node-row:hover { border-color: rgba(94, 234, 212, 0.45); }
   .node-row:hover:not(.expanded) { transform: translateY(-1px); }
-  .node-row.expanded { border-color: var(--border-strong); }
+  .node-row.expanded { border-color: rgba(94, 234, 212, 0.45); }
+  /* Failed nodes get the red/pink border to signal an error state;
+     all other states stay on the teal track. */
+  .node-row.node-failed { border-color: rgba(236, 72, 153, 0.55); }
+  .node-row.node-failed:hover { border-color: rgba(236, 72, 153, 0.75); }
   .node-row.output { box-shadow: 0 0 0 1px var(--accent-soft); }
   .node-row.output.expanded {
     box-shadow: 0 0 0 1px var(--accent-soft), 0 0 24px rgba(94, 234, 212, 0.06);
@@ -563,6 +567,19 @@
   .dur {
     display: inline-flex;
     align-items: center;
+    gap: 0.3em;
+  }
+  /* CSS-rendered dot separator: a small circle that sits precisely
+     at the optical midpoint of the surrounding text, unaffected by
+     the font's baseline positioning of the Unicode middot character. */
+  .dur-sep {
+    display: inline-block;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+    flex-shrink: 0;
   }
   .status-mini {
     font-size: 0.6rem;
