@@ -19,6 +19,10 @@
   import SessionRow from '$lib/SessionRow.svelte';
 
   let targets = $state<TargetSummary[] | null>(null);
+  // Gates the cascading rise-in animation. The stagger looks great on
+  // first paint but is noisy when the list re-renders for any other
+  // reason (sort change, post-scan refresh), so we play it once.
+  let cascadeOnLoad = $state(true);
   let openTargetId = $state<number | null>(null);
   // Detail-per-target, populated in parallel after the targets list lands.
   // Keeping every target's sessions in hand makes expand/collapse feel
@@ -117,6 +121,15 @@
   async function load() {
     try {
       const list = await api.listTargets();
+      // Schedule the cascade flag to flip off once the staggered intro
+      // has had time to play. Length-aware so a big library still gets
+      // its full animation, then later refreshes render without it.
+      if (cascadeOnLoad && targets === null) {
+        const duration = 360 + list.length * 60 + 80 + 50;
+        setTimeout(() => {
+          cascadeOnLoad = false;
+        }, duration);
+      }
       targets = list;
       // Fan out detail fetches in parallel so the expand animation
       // never has to wait on the network. Settled-not-rejected so one
@@ -623,7 +636,11 @@
   </div>
   <ul class="target-list">
     {#each sortedTargets ?? [] as t, i (t.id)}
-      <li class="target" class:open={openTargetId === t.id} style="--stagger: {i}"
+      <li
+        class="target"
+        class:open={openTargetId === t.id}
+        class:cascade={cascadeOnLoad}
+        style={cascadeOnLoad ? `--stagger: ${i}` : ''}
         animate:flip={{ duration: 350, easing: cubicOut }}
       >
         <div
@@ -1045,9 +1062,11 @@
     border-radius: var(--radius-card);
     overflow: hidden;
     box-shadow: var(--shadow);
+    transition: border-color 160ms ease, transform 160ms ease;
+  }
+  .target.cascade {
     animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
     animation-delay: calc(var(--stagger, 0) * 60ms + 80ms);
-    transition: border-color 160ms ease, transform 160ms ease;
   }
 
   .target:hover {
