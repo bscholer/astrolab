@@ -149,6 +149,19 @@ class CalibrateParams(BaseModel):
             ),
         },
     )
+    dark_bins: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Per-dark metadata supplied by the job builder so the node can "
+        "match each light to the right dark without reading the dark's FITS headers. "
+        "Each entry: {path: str, exptime: float, gain: int|None, ccd_temp: float|"
+        "None}. Necessary because some capture programs (notably Dwarf 3 factory "
+        "masters) leave EXPTIME/GAIN/CCD-TEMP out of the FITS header and encode "
+        "them in the filename — the catalog parses those at ingest time, and this "
+        "param threads that authoritative metadata to the node. Empty list = fall "
+        "back to reading the dark's headers (works for capture programs that write "
+        "complete master-dark headers).",
+        json_schema_extra={"ui_hidden": True},
+    )
 
 
 def _read_temp(hdr: fits.Header) -> float | None:
@@ -173,6 +186,46 @@ def _read_fits_meta(path: Path) -> dict[str, Any]:
             "gain": int(hdr["GAIN"]) if "GAIN" in hdr else None,
             "ccd_temp": _read_temp(hdr),
         }
+
+
+def _build_dark_pool(
+    dark_refs: list[Ref], dark_bins: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Build the matching pool from `params.dark_bins` when populated;
+    otherwise fall back to reading FITS headers from the Ref paths.
+
+    The job builder populates `dark_bins` from the catalog (which has
+    authoritative parsed metadata from filename or header at ingest
+    time). The fallback path supports callers that hand a list of Refs
+    without metadata — e.g. tests that wire `calibrate.dark` manually
+    and a legacy single-master explicit override that hasn't been
+    re-emitted through the job builder.
+    """
+    if dark_bins:
+        # Trust the param when present. We still want the Ref order to
+        # be the source of truth for which masters are visible to this
+        # run, so we look each Ref up by path and skip metadata-only
+        # entries that don't correspond to a Ref.
+        by_path = {entry["path"]: entry for entry in dark_bins}
+        pool: list[dict[str, Any]] = []
+        for r in dark_refs:
+            entry = by_path.get(str(r.path))
+            if entry is None:
+                # Metadata missing for this Ref — last-resort read from
+                # the FITS header. Better to try than to silently drop
+                # the dark.
+                pool.append(_read_fits_meta(r.path))
+                continue
+            pool.append(
+                {
+                    "path": r.path,
+                    "exptime": entry.get("exptime"),
+                    "gain": entry.get("gain"),
+                    "ccd_temp": entry.get("ccd_temp"),
+                }
+            )
+        return pool
+    return [_read_fits_meta(r.path) for r in dark_refs]
 
 
 def _pick_dark(
@@ -521,7 +574,7 @@ class CalibrateNode(Node[CalibrateParams]):
             )
 
         light_meta = [_read_fits_meta(p) for p in light_paths]
-        dark_pool = [_read_fits_meta(r.path) for r in dark_refs]
+        dark_pool = _build_dark_pool(dark_refs, params.dark_bins)
 
         # Assign each light to its best-matching dark; uncalibratable
         # frames land under key=None.

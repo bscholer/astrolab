@@ -31,6 +31,7 @@ import contextlib
 import hashlib
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .catalog.matching import match_bundle_darks
 from .models import CalibrationSpec, Job, Ref, Template
@@ -221,6 +222,7 @@ def build_from_sessions(
     cal_session = session_ids[0]
 
     inputs: dict[str, Ref | list[Ref]] = {}
+    param_overrides: dict[str, dict[str, Any]] = {}
 
     for node in template.nodes:
         from .registry import lookup as registry_lookup
@@ -260,7 +262,9 @@ def build_from_sessions(
                     # my-favorite-dark-no-matter-what" overrides.
                     master_id = cal.master_ids[port_name]
                     row = conn.execute(
-                        "SELECT path FROM masters WHERE id = ?", (master_id,)
+                        "SELECT path, exptime, gain, ccd_temp "
+                        "FROM masters WHERE id = ?",
+                        (master_id,),
                     ).fetchone()
                     if row is None:
                         raise CalibrationMissing(
@@ -272,6 +276,14 @@ def build_from_sessions(
                             port=port_name,
                             path=Path(row["path"]),
                             type=PortType.MASTER_FITS,
+                        )
+                    ]
+                    dark_bins_meta = [
+                        _dark_bin_meta(
+                            path=row["path"],
+                            exptime=row["exptime"],
+                            gain=row["gain"],
+                            ccd_temp=row["ccd_temp"],
                         )
                     ]
                 else:
@@ -297,7 +309,19 @@ def build_from_sessions(
                         )
                         for p in unique_paths
                     ]
+                    # Pull the catalog's parsed metadata for every selected
+                    # master so the calibrate node doesn't have to re-derive
+                    # it from FITS headers (which is empty for Dwarf 3
+                    # factory darks — they encode it in the filename).
+                    dark_bins_meta = _fetch_dark_meta(conn, list(unique_paths))
                 inputs[external_key] = dark_refs
+                # Thread the dark metadata through the calibrate node's
+                # params so it appears in the cache key and is available
+                # at run() time without a DB round-trip.
+                if dark_bins_meta:
+                    param_overrides.setdefault(node.id, {})["dark_bins"] = (
+                        dark_bins_meta
+                    )
                 continue
 
             # Convention 3: a MASTER_FITS port named after a calibration kind
@@ -354,7 +378,66 @@ def build_from_sessions(
         session_ids=[str(sid) for sid in session_ids],
         calibration=cal,
         inputs=inputs,
+        param_overrides=param_overrides,
     )
+
+
+def _dark_bin_meta(
+    *,
+    path: str | Path,
+    exptime: float | None,
+    gain: int | None,
+    ccd_temp: float | None,
+) -> dict[str, Any]:
+    """One entry in the calibrate node's `dark_bins` param.
+
+    The catalog populates these fields at ingest time from whichever
+    source carries the truth (FITS headers for NINA/ASIAIR, filename
+    parsing for Dwarf 3 factory masters). The calibrate node trusts
+    this map; it never reads dark FITS headers itself.
+    """
+    return {
+        "path": str(path),
+        "exptime": float(exptime) if exptime is not None else None,
+        "gain": int(gain) if gain is not None else None,
+        "ccd_temp": float(ccd_temp) if ccd_temp is not None else None,
+    }
+
+
+def _fetch_dark_meta(
+    conn: sqlite3.Connection, paths: list[Path]
+) -> list[dict[str, Any]]:
+    """Look up (exptime, gain, ccd_temp) in the masters table for each
+    selected dark path. Preserves input order so the dark_bins list and
+    the calibrate.dark Ref list line up by index."""
+    if not paths:
+        return []
+    placeholders = ",".join("?" for _ in paths)
+    rows = conn.execute(
+        f"SELECT path, exptime, gain, ccd_temp "  # noqa: S608  (placeholders are str)
+        f"FROM masters WHERE path IN ({placeholders})",
+        [str(p) for p in paths],
+    ).fetchall()
+    by_path = {r["path"]: r for r in rows}
+    out: list[dict[str, Any]] = []
+    for p in paths:
+        row = by_path.get(str(p))
+        if row is None:
+            # Master was selected but isn't in the masters table any
+            # more (e.g. it was deleted between match and build); treat
+            # it as metadata-less. The node will fall through to
+            # uncalibratable for any frame that would have used it.
+            out.append(_dark_bin_meta(path=p, exptime=None, gain=None, ccd_temp=None))
+            continue
+        out.append(
+            _dark_bin_meta(
+                path=row["path"],
+                exptime=row["exptime"],
+                gain=row["gain"],
+                ccd_temp=row["ccd_temp"],
+            )
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
