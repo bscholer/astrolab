@@ -149,12 +149,26 @@
   // sliders feeling responsive without spawning a job per pixel of drag.
   let liveValues = $state<Record<string, number>>({});
 
+  // Raw-string drafts for `type=number` inputs. Keeping the user's typed
+  // text verbatim until commit avoids the classic round-trip bug where
+  // parseFloat("0.") -> 0 -> input re-renders as "0" and eats the
+  // trailing dot the user just typed. Empty / NaN drafts simply don't
+  // commit, so clearing a field mid-edit no longer crashes anything.
+  let draftStrings = $state<Record<string, string>>({});
+
   function liveOrEffective(name: string): unknown {
     return name in liveValues ? liveValues[name] : effective(name);
   }
 
   function setLive(name: string, value: number) {
     liveValues = { ...liveValues, [name]: value };
+    // Dragging the slider is an explicit "I'm taking over this field"
+    // signal, so drop any half-typed draft from the companion input.
+    if (name in draftStrings) {
+      const next = { ...draftStrings };
+      delete next[name];
+      draftStrings = next;
+    }
   }
 
   function commitLive(name: string, value: number) {
@@ -166,6 +180,31 @@
       liveValues = next;
     }
     emit(name, value);
+  }
+
+  function numberDraft(name: string): string {
+    if (name in draftStrings) return draftStrings[name];
+    const v = liveOrEffective(name);
+    return v === null || v === undefined ? '' : String(v);
+  }
+
+  function setDraft(name: string, value: string) {
+    draftStrings = { ...draftStrings, [name]: value };
+  }
+
+  function commitDraft(name: string, value: string) {
+    if (name in draftStrings) {
+      const next = { ...draftStrings };
+      delete next[name];
+      draftStrings = next;
+    }
+    const parsed = parseFloat(value);
+    // Garbage / empty input on blur snaps back to the prior effective
+    // value: we drop the draft, skip the emit, and let the re-render
+    // pull from `effective(name)`. Stops a stray clear from clobbering
+    // a real param.
+    if (!Number.isFinite(parsed)) return;
+    emit(name, parsed);
   }
 
   // Count of overridden params split by section so the badges + disclosure
@@ -240,19 +279,18 @@
             min={field.minimum ?? field.exclusiveMinimum}
             max={field.maximum ?? field.exclusiveMaximum}
             step={rangeStep(field)}
-            value={live}
-            oninput={(e) => setLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
-            onchange={(e) => commitLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+            value={numberDraft(name)}
+            oninput={(e) => setDraft(name, (e.currentTarget as HTMLInputElement).value)}
+            onchange={(e) => commitDraft(name, (e.currentTarget as HTMLInputElement).value)}
           />
         </div>
       {:else if ft === 'number'}
-        {@const live = liveOrEffective(name) as number}
         <input
           id="{nodeId}-{name}"
           type="number"
-          value={live}
-          oninput={(e) => setLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
-          onchange={(e) => commitLive(name, parseFloat((e.currentTarget as HTMLInputElement).value))}
+          value={numberDraft(name)}
+          oninput={(e) => setDraft(name, (e.currentTarget as HTMLInputElement).value)}
+          onchange={(e) => commitDraft(name, (e.currentTarget as HTMLInputElement).value)}
         />
       {:else if ft === 'boolean'}
         <label class="toggle">
