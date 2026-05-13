@@ -39,9 +39,7 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 import sqlite3
-import subprocess
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
@@ -50,7 +48,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -509,51 +507,6 @@ def _row_to_session_summary(
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.post("/api/_deploy", status_code=202)
-def trigger_deploy(request: Request) -> dict[str, str]:
-    """Internal webhook that kicks off astrolab-deploy.service on the box.
-
-    Auth lives at the edge: Cloudflare Access fronts this hostname and the
-    /api/_deploy path is gated by a service-token-only policy, so the only
-    callers that reach us are CI runs holding the service token. CF Access
-    consumes the CF-Access-Client-Id/Secret headers itself and strips them
-    before forwarding; what reaches origin is a `Cf-Access-Jwt-Assertion`
-    header containing CF's signed JWT for the authenticated request. We
-    require that header's presence as defense in depth against direct LAN
-    hits to 192.168.1.254:8000 bypassing the tunnel entirely.
-    (The JWT signature could be verified against
-    https://benscholer.cloudflareaccess.com/cdn-cgi/access/certs, but
-    presence is sufficient since CF Access wouldn't issue one without a
-    valid policy match.)
-
-    The handler shells out to `sudo systemctl start --no-block
-    astrolab-deploy.service` and returns 202. The deploy unit is a
-    separate cgroup, so the eventual `systemctl restart astrolab-api`
-    inside the deploy script doesn't kill the in-flight request before
-    the client sees the response (the response is already sent).
-    """
-    if not request.headers.get("Cf-Access-Jwt-Assertion"):
-        raise HTTPException(403, detail="missing CF Access JWT")
-    if not shutil.which("systemctl"):
-        # Local dev / Mac: pretend we did the thing so end-to-end tests
-        # of the route's contract pass without systemd being present.
-        log.warning("/api/_deploy called without systemctl on PATH; no-op")
-        return {"status": "noop", "reason": "systemctl not available"}
-    try:
-        subprocess.run(
-            ["sudo", "-n", "systemctl", "start", "--no-block", "astrolab-deploy.service"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.CalledProcessError as exc:
-        log.exception("systemctl start astrolab-deploy.service failed")
-        detail = f"deploy launch failed: {exc.stderr or exc.stdout}"
-        raise HTTPException(500, detail=detail) from exc
-    return {"status": "queued"}
 
 
 @app.get("/api/targets", response_model=list[TargetSummary])

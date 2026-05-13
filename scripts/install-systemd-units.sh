@@ -28,21 +28,11 @@ fi
 
 step "copying units into /etc/systemd/system/"
 sudo cp "$units_src"/astrolab-api.service /etc/systemd/system/
-sudo cp "$units_src"/astrolab-deploy.service /etc/systemd/system/
 sudo cp "$units_src"/astrolab-worker.service /etc/systemd/system/
-
-step "installing sudoers fragment for auto-deploy"
-# visudo -cf validates the syntax before /etc/sudoers.d/ picks it up. A
-# malformed fragment can lock everyone out of sudo, so the check stays.
-sudo install -m 0440 -o root -g root \
-  "$units_src/astrolab-deploy.sudoers" /etc/sudoers.d/astrolab-deploy
-sudo visudo -cf /etc/sudoers.d/astrolab-deploy >/dev/null
 
 step "preparing log files"
 sudo touch /var/log/astrolab-api.log
 sudo chown "$USER:$USER" /var/log/astrolab-api.log
-sudo touch /var/log/astrolab-deploy.log
-sudo chown "$USER:$USER" /var/log/astrolab-deploy.log
 sudo touch /var/log/astrolab-worker.log
 sudo chown "$USER:$USER" /var/log/astrolab-worker.log
 
@@ -58,7 +48,6 @@ step "daemon-reload + enable + start"
 sudo systemctl daemon-reload
 sudo systemctl enable --now astrolab-api
 sudo systemctl enable --now astrolab-worker
-# astrolab-deploy is oneshot, no enable/start. The webhook triggers it.
 
 sleep 3
 echo
@@ -70,5 +59,3 @@ step "ports:"
 ss -ltnp 2>/dev/null | grep -E ":8000 " || true
 
 ok "installed. astrolab: http://$(hostname -I | awk '{print $1}'):8000/"
-ok "auto-deploy unit ready; trigger via /api/_deploy or"
-ok "  sudo systemctl start astrolab-deploy.service"
