@@ -181,6 +181,21 @@ def test_build_from_session_auto_uses_matched_master(db, tmp_path: Path) -> None
     assert len(dark_input) == 1
     assert dark_input[0].path == tmp_path / "masters" / "dark.fit"
 
+    # The job builder must also thread the catalog's parsed dark
+    # metadata into calibrate.dark_bins so the node doesn't have to
+    # re-read it from the FITS headers (Dwarf 3 factory darks leave
+    # those empty — the metadata lives only in the filename, which
+    # the catalog already parsed at ingest).
+    cal_overrides = job.param_overrides.get("calibrate", {})
+    bins = cal_overrides.get("dark_bins")
+    assert bins, f"expected calibrate.dark_bins to be populated, got: {cal_overrides!r}"
+    assert isinstance(bins, list) and len(bins) == 1
+    bin0 = bins[0]
+    assert bin0["path"] == str(tmp_path / "masters" / "dark.fit")
+    assert bin0["exptime"] == 30.0
+    assert bin0["gain"] == 60
+    assert bin0["ccd_temp"] == 28.0
+
 
 def test_build_from_session_skips_unmatched_optional_master(db, tmp_path: Path) -> None:
     """With dark declared optional on calibrate, auto mode silently builds a

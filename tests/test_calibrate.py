@@ -260,6 +260,113 @@ def test_calibrate_missing_input_basename(tmp_path: Path, monkeypatch: pytest.Mo
     assert fake_rt.calls == []
 
 
+def _write_fits_light(path: Path, *, exptime: float, gain: int, ccd_temp: float) -> None:
+    """Write a minimal 4x4 OSC light FITS with the headers calibrate reads."""
+    import numpy as np
+    from astropy.io import fits
+
+    hdu = fits.PrimaryHDU(data=np.zeros((4, 4), dtype="uint16"))
+    hdu.header["EXPTIME"] = exptime
+    hdu.header["GAIN"] = gain
+    hdu.header["DET-TEMP"] = ccd_temp
+    hdu.writeto(str(path), overwrite=True)
+
+
+def test_calibrate_multi_dark_uses_dark_bins_param_for_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Dwarf 3 factory-darks bug.
+
+    Dwarf 3 master darks have NO EXPTIME/GAIN/CCD-TEMP in their FITS
+    headers — all that metadata is encoded only in the filename, which
+    the catalog parses at ingest time and stores in the masters row.
+
+    Before the dark_bins fix, the calibrate node tried to read each
+    dark's header itself, got None for everything, and concluded every
+    light was uncalibratable: all 2500+ frames landed in one None-keyed
+    group and Siril ran without -dark=. The whole point of the
+    multi-dark pipeline collapsed silently.
+
+    This test simulates that exact shape: per-frame lights at 15s and
+    30s with full headers, two darks (one per exptime) with EMPTY
+    FITS headers, and a dark_bins param providing the metadata the
+    catalog would have parsed from the filenames. We assert that Siril
+    is invoked once per (exptime, dark) group with the correct -dark=
+    flag, not once with no dark.
+    """
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    # 4 lights: two 15s at 28C, two 30s at 34C.
+    _write_fits_light(seq_in / "light_00001.fit", exptime=15.0, gain=60, ccd_temp=28.0)
+    _write_fits_light(seq_in / "light_00002.fit", exptime=15.0, gain=60, ccd_temp=28.0)
+    _write_fits_light(seq_in / "light_00003.fit", exptime=30.0, gain=60, ccd_temp=34.0)
+    _write_fits_light(seq_in / "light_00004.fit", exptime=30.0, gain=60, ccd_temp=34.0)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    # Header-less darks (mimics Dwarf 3 factory masters).
+    dark_15 = _make_master(tmp_path / "masters" / "dark_exp_15_27C.fits")
+    dark_30 = _make_master(tmp_path / "masters" / "dark_exp_30_34C.fits")
+
+    # Fake Siril emits pp_light_*.fit into each group dir for the
+    # frames it receives.
+    def fake(cmds, wd):
+        # The working dir is the per-group dir; count staged frames there.
+        n = sum(
+            1 for p in Path(wd).iterdir()
+            if p.name.startswith("light_") and p.suffix == ".fit"
+        )
+        for i in range(1, n + 1):
+            (Path(wd) / f"pp_light_{i:05d}.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.calibrate.SirilRuntime", lambda *a, **k: fake_rt)
+
+    refs = CalibrateNode().run(
+        inputs={
+            "sequence": Ref(
+                node_hash="ext", port="sequence", path=seq_in, type=PortType.SEQUENCE_FITS,
+            ),
+            "dark": [
+                Ref(node_hash="ext", port="dark", path=dark_15, type=PortType.MASTER_FITS),
+                Ref(node_hash="ext", port="dark", path=dark_30, type=PortType.MASTER_FITS),
+            ],
+        },
+        params=CalibrateParams(
+            fitseq=False,
+            dark_bins=[
+                {"path": str(dark_15), "exptime": 15.0, "gain": 60, "ccd_temp": 27.0},
+                {"path": str(dark_30), "exptime": 30.0, "gain": 60, "ccd_temp": 34.0},
+            ],
+        ),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    # Sequence Ref points at the merged output dir.
+    assert refs["sequence"].path == out_dir / "sequence"
+
+    # Two Siril invocations: one per dark group.
+    assert len(fake_rt.calls) == 2
+    cal_cmds = [
+        next(c for c in call["commands"] if c.startswith("calibrate "))
+        for call in fake_rt.calls
+    ]
+    darks_used = [
+        cmd.split("-dark=", 1)[1].split(" ", 1)[0] for cmd in cal_cmds
+    ]
+    assert sorted(darks_used) == sorted(
+        [str(dark_15.resolve()), str(dark_30.resolve())]
+    ), f"expected each dark to be applied exactly once, got: {darks_used}"
+
+    # All 4 frames make it into the merged output.
+    out_frames = sorted(
+        p.name for p in (out_dir / "sequence").iterdir()
+        if p.name.startswith("pp_light_")
+    )
+    assert len(out_frames) == 4
+
+
 def test_calibrate_drops_input_symlinks_after_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
