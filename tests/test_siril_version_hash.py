@@ -62,14 +62,12 @@ def test_siril_nodes_are_flagged() -> None:
 
 def test_non_siril_nodes_are_not_flagged() -> None:
     """Nodes that never touch Siril must keep uses_siril=False."""
-    from nodes.basic.auto_crop import AutoCropNode
     from nodes.basic.crop import CropNode
     from nodes.basic.downscale import DownscaleNode
     from nodes.basic.starnet_extract import StarnetExtractNode
     from nodes.basic.starnet_recombine import StarnetRecombineNode
 
     non_siril_nodes = [
-        AutoCropNode,
         CropNode,
         DownscaleNode,
         StarnetExtractNode,
