@@ -568,35 +568,6 @@
   </div>
 {/if}
 
-<details class="legend">
-  <summary>
-    <span class="legend-cluster" aria-hidden="true">
-      <span class="cal cal-exact legend-swatch">D</span>
-      <span class="cal cal-approx legend-swatch">F</span>
-      <span class="cal cal-none legend-swatch">B</span>
-    </span>
-    <span class="legend-summary-text">Calibration legend</span>
-  </summary>
-  <div class="legend-body">
-    <div class="legend-row">
-      <span class="cal cal-exact legend-swatch">D</span>
-      <span><strong>D</strong> dark, <strong>F</strong> flat, <strong>B</strong> bias</span>
-    </div>
-    <div class="legend-row">
-      <span class="cal cal-exact legend-swatch">·</span>
-      <span><strong>green</strong> exact match</span>
-    </div>
-    <div class="legend-row">
-      <span class="cal cal-approx legend-swatch">·</span>
-      <span><strong>amber</strong> approximate (within tolerance, e.g. &plusmn;3&deg;C for darks)</span>
-    </div>
-    <div class="legend-row">
-      <span class="cal cal-none legend-swatch">·</span>
-      <span><strong>red</strong> no match found</span>
-    </div>
-  </div>
-</details>
-
 {#if targets === null}
   <p class="muted">Loading targets…</p>
 {:else if targets.length === 0}
@@ -933,6 +904,34 @@
       </li>
     {/each}
   </ul>
+  <details class="legend">
+    <summary>
+      <span class="legend-cluster" aria-hidden="true">
+        <span class="cal cal-exact legend-swatch">D</span>
+        <span class="cal cal-approx legend-swatch">F</span>
+        <span class="cal cal-none legend-swatch">B</span>
+      </span>
+      <span class="legend-summary-text">Calibration legend</span>
+    </summary>
+    <div class="legend-body">
+      <div class="legend-row">
+        <span class="cal cal-exact legend-swatch">D</span>
+        <span><strong>D</strong> dark, <strong>F</strong> flat, <strong>B</strong> bias</span>
+      </div>
+      <div class="legend-row">
+        <span class="cal cal-exact legend-swatch">·</span>
+        <span><strong>green</strong> exact match</span>
+      </div>
+      <div class="legend-row">
+        <span class="cal cal-approx legend-swatch">·</span>
+        <span><strong>amber</strong> approximate (within tolerance, e.g. &plusmn;3&deg;C for darks)</span>
+      </div>
+      <div class="legend-row">
+        <span class="cal cal-none legend-swatch">·</span>
+        <span><strong>red</strong> no match found</span>
+      </div>
+    </div>
+  </details>
 {/if}
 
 <style>
@@ -1418,7 +1417,7 @@
   }
 
   .legend {
-    margin: 0 0 1rem;
+    margin: 1rem 0 0;
     padding: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius);
