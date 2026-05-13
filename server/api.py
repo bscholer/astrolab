@@ -3381,6 +3381,7 @@ def get_template_schema(template_id: str) -> dict:
                 "outputs": {p: str(t) for p, t in node_cls.outputs.items()},
                 "ui_depends_on": spec.ui_depends_on,
                 "preview_display_ready": node_cls.preview_display_ready,
+                "preview_hidden": node_cls.preview_hidden,
             }
         )
     return {

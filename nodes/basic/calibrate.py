@@ -121,6 +121,7 @@ class CalibrateNode(Node[CalibrateParams]):
     version = 1
     cost = "medium"
     uses_siril = True
+    preview_hidden = True
 
     inputs = {
         "sequence": PortType.SEQUENCE_FITS,

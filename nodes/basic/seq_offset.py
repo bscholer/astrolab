@@ -70,6 +70,7 @@ class SeqOffsetNode(Node[SeqOffsetParams]):
     id = "seq_offset"
     version = 1
     cost = "cheap"
+    preview_hidden = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}
