@@ -55,7 +55,6 @@ class AutoCropParams(BaseModel):
         "registration's zero-fill edge without trimming faint real data.",
         json_schema_extra={
             "hash_precision": 6,
-            "ui_section": "advanced",
             "agent_hint": (
                 "Lower keeps more edge pixels; higher trims more aggressively"
                 " and may clip faint stars at the frame boundary."
