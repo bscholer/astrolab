@@ -87,6 +87,7 @@
         class:active={h.seq === project.current_seq}
         class:slot-a={slot === 'A'}
         class:slot-b={slot === 'B'}
+        class:failed={h.failed}
       >
         <button type="button" onclick={() => onRevert(h.seq)} title={h.label ?? ''}>
           <span class="hist-seq muted">v{h.seq + 1}</span>
@@ -257,6 +258,15 @@
   .hist-entry.slot-b > button:first-child {
     border-color: var(--bad, #ef4444);
     box-shadow: inset 3px 0 0 var(--bad, #ef4444);
+  }
+  /* Matches the failed-node outline in PipelineRow so a failed version
+     reads as the same kind of error in both panes. Compare slots win
+     when set — they layer their inset stripe on top. */
+  .hist-entry.failed > button:first-child {
+    border-color: rgba(236, 72, 153, 0.55);
+  }
+  .hist-entry.failed > button:first-child:hover {
+    border-color: rgba(236, 72, 153, 0.75);
   }
 
   .publish-toggle {
