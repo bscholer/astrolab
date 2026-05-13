@@ -98,6 +98,14 @@
   let sessionNotesDraftById = $state<Map<number, string>>(new Map());
   let sessionNotesSavingId = $state<number | null>(null);
 
+  // Clock tick for "created Xm ago" and the live runtime counter. Both
+  // labels derive from Date.now(), which Svelte can't track on its own;
+  // bumping this $state on a setInterval gives them something to react
+  // to. Cadence swaps between 1s (live runtime visible) and 30s
+  // (created-ago granularity is only minutes) to avoid pointless work
+  // when no job is in flight.
+  let nowTick = $state(Date.now());
+
   // Derived ordering / lookups
   const schemaByNodeId = $derived.by(() => {
     const out: Record<string, TemplateSchema['nodes'][number]> = {};
@@ -216,6 +224,34 @@
   $effect(() => {
     document.body.classList.add('project-page');
     return () => document.body.classList.remove('project-page');
+  });
+
+  // Drive the nowTick clock. A live job (started, not finished) ticks
+  // every second so the "Xm Ys" runtime advances visibly; otherwise we
+  // fall back to a 30s tick that's just enough to keep "created Xm ago"
+  // honest without burning CPU on a static page.
+  $effect(() => {
+    const job = subscription.activeJob;
+    const live = !!job?.started_at && !job.finished_at;
+    const handle = setInterval(() => {
+      nowTick = Date.now();
+    }, live ? 1000 : 30_000);
+    return () => clearInterval(handle);
+  });
+
+  // Live-updating labels for the capture line. Reading nowTick inside
+  // the derived registers the timer as a dependency, so each tick
+  // re-renders these two spans without invalidating the rest of the
+  // page.
+  const createdLabel = $derived.by(() => {
+    void nowTick;
+    return project ? shortAgo(project.created_at) : '';
+  });
+  const runtimeLabel = $derived.by(() => {
+    void nowTick;
+    const job = subscription.activeJob;
+    if (!job?.started_at) return '';
+    return formatDuration(job.started_at, job.finished_at);
   });
 
   onDestroy(() => {
@@ -724,12 +760,6 @@
         disabled={redoDisabled}
         title="Redo (Cmd-Shift-Z)"
       >&#x21B7; Redo</button>
-      <button
-        type="button"
-        class="hbtn"
-        onclick={openManageSessions}
-        title="Add or remove sessions on this project"
-      >Manage sessions...</button>
       {#if project && (project.latest_template_version ?? project.template_version) > project.template_version}
         <button
           type="button"
@@ -800,10 +830,10 @@
         <span title="Source-frame bytes on disk">{formatBytes(project.capture.bytes_on_disk)}</span>
       {/if}
       <span aria-hidden="true">·</span>
-      <span title={project.created_at}>created {shortAgo(project.created_at)}</span>
+      <span title={project.created_at}>created {createdLabel}</span>
       {#if subscription.activeJob?.started_at}
         <span aria-hidden="true">·</span>
-        <span>{formatDuration(subscription.activeJob.started_at, subscription.activeJob.finished_at)}</span>
+        <span>{runtimeLabel}</span>
       {/if}
       {#if subscription.activeJob}
         <span aria-hidden="true">·</span>
@@ -817,13 +847,18 @@
 
     {@const sessionCount = project.source_session_ids.length}
     <div class="notes-sources">
+      <!-- Notes card: same border/header chrome as the Sessions used
+           card so the two columns line up on wide viewports. The
+           textarea itself drops its own border and rides flush inside
+           the card, with the NOTES label living in the matching
+           header row. -->
       <div class="notes-block">
-        <label class="notes-label" for="project-notes">
-          Notes
+        <div class="notes-head">
+          <label class="notes-label" for="project-notes">Notes</label>
           {#if descriptionSaving}
-            <span class="muted small">· saving...</span>
+            <span class="muted small">saving...</span>
           {/if}
-        </label>
+        </div>
         <textarea
           id="project-notes"
           class="notes-area"
@@ -840,7 +875,10 @@
            Run / reassign / multi-select are intentionally omitted
            (renders happen project-wide; reassigning would yank a
            session out of this project, which is a surprising side
-           effect to hide behind a pencil). -->
+           effect to hide behind a pencil). The Manage sessions
+           affordance lives in the summary so it's reachable even
+           when the section is collapsed; stopPropagation on its
+           click stops the details from toggling underneath. -->
       <details
         class="sources"
         ontoggle={onSourceSessionsToggle}
@@ -862,6 +900,16 @@
         </svg>
         <span class="sources-title">Sessions used</span>
         <span class="sources-count muted">({sessionCount})</span>
+        <button
+          type="button"
+          class="hbtn sources-manage"
+          onclick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openManageSessions();
+          }}
+          title="Add or remove sessions on this project"
+        >Manage sessions...</button>
       </summary>
       <div class="sources-body">
         {#if sourceSessionsLoading && sourceSessions === null}
@@ -1162,25 +1210,42 @@
     margin: 0;
   }
 
+  /* Notes card: matches .sources visually so the two columns share a
+     header row at the same y. Border + bg live on the wrapper; the
+     textarea is borderless and rides flush inside. */
   .notes-block {
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
-    margin: 0.25rem 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 8px);
+    background: var(--bg-elev);
+    overflow: hidden;
+  }
+  .notes-block:focus-within {
+    border-color: var(--accent, #5eead4);
+  }
+  .notes-head {
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    min-height: 2.1rem;
+    box-sizing: border-box;
   }
   .notes-label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--fg-mute, #888);
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--fg);
+    cursor: pointer;
   }
   .notes-area {
     width: 100%;
-    background: var(--bg-elev, #1a1a1a);
+    background: transparent;
     color: var(--fg, #e6e6e6);
-    border: 1px solid var(--border, #444);
-    border-radius: 6px;
-    padding: 0.4rem 0.5rem;
+    border: none;
+    border-radius: 0;
+    padding: 0.5rem 0.85rem;
     font-size: 0.9rem;
     line-height: 1.4;
     resize: vertical;
@@ -1188,7 +1253,6 @@
   }
   .notes-area:focus {
     outline: none;
-    border-color: var(--accent, #5eead4);
   }
 
   .node-list {
@@ -1284,6 +1348,17 @@
     align-items: center;
     gap: 0.5rem;
     user-select: none;
+    min-height: 2.1rem;
+    box-sizing: border-box;
+  }
+  /* Manage sessions sits at the right of the summary so it's
+     reachable whether the section is collapsed or open. The
+     auto-margin pushes everything after the count flush to the
+     right edge. */
+  .sources-manage {
+    margin-left: auto;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.78rem;
   }
   .sources-summary::-webkit-details-marker {
     display: none;
