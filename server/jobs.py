@@ -18,6 +18,7 @@ a PR merge restarted the API mid-job.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -93,6 +94,9 @@ class JobRecord:
     """Whether this submission should bypass the cache (set on Reprocess).
     Now persisted on the jobs row so the API can set it from submit() and
     the worker can read it back when it claims the job."""
+    quality: dict[str, Any] | None = None
+    """Persisted quality blob written by the worker at completion.
+    None for jobs that pre-date migration 16 or whose output isn't an image."""
     node_hashes: dict[str, str] = field(default_factory=dict)
     """Map of node_id -> cache hash for every node this job touched
     (committed or hit). Persisted on terminal events so the storage layer
@@ -123,6 +127,8 @@ class JobRecord:
                 else None
             ),
         }
+        if self.quality is not None:
+            d["quality"] = self.quality
         if include_template:
             # Pydantic model_dump gives the canonical Template JSON shape that
             # the UI can graph without further translation. We tack each
@@ -279,6 +285,11 @@ def _row_to_record(row: sqlite3.Row) -> JobRecord:
     # iterates values (not column names), so .keys() is the right probe;
     # SIM118 here would be wrong.
     force = bool(row["force"]) if "force" in row.keys() else False  # noqa: SIM118
+    # `quality_json` is migration 16; guard the same way.
+    quality: dict[str, Any] | None = None
+    if "quality_json" in row.keys() and row["quality_json"]:  # noqa: SIM118
+        with contextlib.suppress(ValueError, TypeError):
+            quality = json.loads(row["quality_json"])
     return JobRecord(
         id=row["id"],
         status=cast(JobStatus, row["status"]),
@@ -290,6 +301,7 @@ def _row_to_record(row: sqlite3.Row) -> JobRecord:
         outputs=outputs,
         error=row["error"],
         force=force,
+        quality=quality,
         node_hashes=node_hashes,
     )
 
@@ -689,6 +701,26 @@ class JobWorker:
             # type checker happy.
             terminal = JobEvent(type="job_failed", timestamp=finished, error=error)
 
+        # Compute quality metrics for completed image jobs. Failure must never
+        # tank the job row write, so we catch broadly and log.
+        quality_json: str | None = None
+        if status == "completed":
+            try:
+                from .quality import compute_quality_for_record
+                # Fetch events now so quality.py doesn't need to reach back
+                # into api.py (which would create a circular import).
+                conn_q = open_catalog_db(self._db_path)
+                try:
+                    job_events = _load_events(conn_q, record.id)
+                finally:
+                    conn_q.close()
+                quality = compute_quality_for_record(record, events=job_events)
+                if quality is not None:
+                    quality_json = json.dumps(quality)
+                    record.quality = quality
+            except Exception:
+                log.warning("quality computation failed for job %s", record.id, exc_info=True)
+
         conn = open_catalog_db(self._db_path)
         try:
             with conn:
@@ -699,7 +731,8 @@ class JobWorker:
                            outputs_json = ?,
                            error = ?,
                            finished_at = ?,
-                           node_hashes_json = ?
+                           node_hashes_json = ?,
+                           quality_json = ?
                      WHERE id = ?
                     """,
                     (
@@ -708,6 +741,7 @@ class JobWorker:
                         error,
                         finished,
                         json.dumps(record.node_hashes) if record.node_hashes else None,
+                        quality_json,
                         record.id,
                     ),
                 )

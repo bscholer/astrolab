@@ -302,6 +302,27 @@ export interface JobCaptureSummary {
   filter: string | null;
 }
 
+export interface JobQualityChannel {
+  name: string;
+  mean: number;
+  median: number;
+  stdev: number;
+  p01: number;
+  p50: number;
+  p99: number;
+  clipped_low_pct: number;
+  clipped_high_pct: number;
+}
+
+export interface JobQuality {
+  dimensions: { width: number; height: number; channels: number; dtype: string };
+  channels: JobQualityChannel[];
+  background: { estimated_level: number; pct_below_threshold: number; sigma: number };
+  color_balance: { r_g_ratio?: number; b_g_ratio?: number; warning?: string | null };
+  sharpness: { laplacian_variance: number; fwhm_px: number | null; roundness: number | null; star_count: number | null };
+  siril_warnings: string[];
+}
+
 export interface JobSummary {
   id: string;
   status: JobStatus;
@@ -316,6 +337,8 @@ export interface JobSummary {
   capture?: JobCaptureSummary;
   // Only populated by GET /api/jobs/{id}, not the list endpoint.
   template?: Template;
+  // Image quality metrics. Present only on completed jobs with image output.
+  quality?: JobQuality | null;
 }
 
 export type JobEventType =
@@ -358,6 +381,13 @@ export interface SubmitFromSessionRequest {
 
 // ----- projects ----------------------------------------------------------
 
+export interface HistoryQualitySummary {
+  noise: number;
+  sharpness: number;
+  fwhm_px: number | null;
+  integration_s: number | null;
+}
+
 export interface ProjectHistoryEntry {
   seq: number;
   job_id: string;
@@ -380,6 +410,9 @@ export interface ProjectHistoryEntry {
   // queued / running / completed entries; the strip uses it to outline
   // failed versions the same way the pipeline marks failed node cards.
   failed?: boolean;
+  // Quality snapshot for this history entry. Absent on older entries or
+  // jobs that have no image output.
+  quality_summary?: HistoryQualitySummary | null;
 }
 
 export interface SuggestedAdditions {

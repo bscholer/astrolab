@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -422,6 +422,17 @@ MIGRATIONS: dict[int, list[str]] = {
         "UPDATE frames SET file_hash = NULL",
         "UPDATE masters SET file_hash = NULL",
         "INSERT INTO schema_version (version) VALUES (15)",
+    ],
+    16: [
+        # Persisted quality metrics on the jobs row. The /api/jobs/{id}/quality
+        # endpoint used to recompute from disk on every call; that's fine for
+        # one-off inspection but breaks the History strip, which wants per-
+        # version Noise / Sharpness numbers ranked against the project's own
+        # median. The worker now computes the same blob at completion and
+        # stashes it here, so the project response can fan out N versions of
+        # quality data without N disk reads.
+        "ALTER TABLE jobs ADD COLUMN quality_json TEXT",
+        "INSERT INTO schema_version (version) VALUES (16)",
     ],
 }
 
