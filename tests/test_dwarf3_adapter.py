@@ -50,16 +50,18 @@ def test_walks_dark_master(tmp_path: Path) -> None:
     assert dark.instrument == "DWARFIII"
 
 
-def test_walks_flat_master_with_canonical_filter(tmp_path: Path) -> None:
-    """Factory flats encode ``ir_N`` in the filename; the canonical filter
-    string ("None"/"None"/"HaOIII") joins the matcher to light frames
-    whose FILTER='Astro'/'VIS'/'Duo' headers canonicalize the same way."""
+def test_walks_flat_master_with_filter_from_ir_index(tmp_path: Path) -> None:
+    """Factory flats encode ``ir_N`` in the filename and the adapter maps
+    it back to the same FILTER string that Dwarf 3 lights carry in their
+    FITS headers (``Astro`` / ``VIS`` / ``Duo``). The scanner runs the
+    final write through ``filter_aliases.canonicalize``; the adapter
+    itself just emits source-faithful strings."""
     f = tmp_path / "CALI_FRAME" / "flat" / "cam_0"
-    _touch(f / "flat_gain_2_bin_1_ir_1.fits")  # ir_1 = Astro (IR-cut) -> "None"
-    _touch(f / "flat_gain_2_bin_1_ir_2.fits")  # ir_2 = Duo-Band -> "HaOIII"
+    _touch(f / "flat_gain_2_bin_1_ir_1.fits")  # ir_1 -> "Astro"
+    _touch(f / "flat_gain_2_bin_1_ir_2.fits")  # ir_2 -> "Duo"
 
     found = sorted(walk_factory_masters(tmp_path), key=lambda d: d.filter or "")
-    assert [f.filter for f in found] == ["HaOIII", "None"]
+    assert [f.filter for f in found] == ["Astro", "Duo"]
     for m in found:
         # Factory flats carry no photographic gain, no exposure, no temp.
         assert m.gain is None

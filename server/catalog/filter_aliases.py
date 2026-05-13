@@ -1,21 +1,28 @@
 """Filter-name canonicalization.
 
-Different capture programs write the same physical filter under different
-strings. Dwarf 3 calls its IR-cut filter ``Astro``; Seestar writes ``IRCUT``
-or ``LP``. The Dwarf 3 dual-band slot reports ``Duo`` in shotsInfo but flat
-masters under ``CALI_FRAME/`` are filed as ``Duo-Band``. None of that
-matters to the matcher, which joins ``frames.filter`` to ``masters.filter``
-with a string equality - so we normalize both at scanner write time.
+The matcher joins ``frames.filter`` to ``masters.filter`` with a plain
+string equality, so any two strings that denote the same physical filter
+must be rewritten to the same canonical form on write. This module is
+the rewrite step.
 
-Canonical forms are chosen to match the most common written convention
-(``HaOIII``, ``L``, ``R``, ``Ha``, etc.). The ``None`` value is a literal
-string, not Python ``None``: it tags a frame that was captured with no
-narrowband filter in the optical path, including OSC captures behind an
-IR-cut element where the IR-cut is conceptually "the no-filter baseline".
+Scope: minimal. Only entries we've verified against real capture data
+live here. The single case that matters today:
 
-To add an alias, drop a new entry into ``ALIASES``. The lookup is
-case-insensitive and ignores whitespace/punctuation, so ``Ha-OIII`` and
-``HAOIII`` resolve identically without separate entries.
+- The Dwarf 3 Ha+OIII dual-band slot. Lights write ``FILTER=Duo`` (from
+  the device's own app vocabulary); factory flat masters under
+  ``CALI_FRAME/flat/cam_*/`` are labelled ``Duo-Band`` in the Dwarf
+  documentation. A NINA or ASIAIR user with the same physical filter
+  would label it ``HaOIII`` or ``HaO3``. All four refer to the same
+  dual-band Ha+OIII filter and must collapse so a captured-elsewhere
+  flat library could in principle match Dwarf 3 lights, and so the UI
+  shows one filter name rather than four.
+
+Case, embedded whitespace, hyphens, and underscores are all collapsed in
+the lookup key so callers don't need to enumerate every spelling
+(``HaOiii`` and ``Ha-OIII`` and ``ha oiii`` all hit the same entry).
+Unknown filter strings pass through with whitespace stripped but
+otherwise unchanged — the UI shows the user the label their FITS header
+produced.
 """
 
 from __future__ import annotations
@@ -29,28 +36,16 @@ def _key(name: str) -> str:
     return _NORMALIZE_RE.sub("", name).lower()
 
 
-# Canonical-name -> list of accepted aliases. The canonical name itself is
-# included in the alias list so the lookup table built below covers it too.
+# Canonical-name -> list of accepted source spellings. Add entries only
+# when two strings have been observed denoting the same physical filter
+# in real capture data; don't speculate.
 ALIASES: dict[str, list[str]] = {
-    # Clear / IR-cut / OSC-baseline.
-    "None": ["None", "Astro", "IRCUT", "IR-Cut", "LP", "VIS", "Clear", "Open", "L-Pro"],
-    # Mono LRGB.
-    "L": ["L", "Lum", "Luminance"],
-    "R": ["R", "Red"],
-    "G": ["G", "Green"],
-    "B": ["B", "Blue"],
-    # Single narrowband.
-    "Ha": ["Ha", "H-alpha", "Halpha", "HAlpha"],
-    "OIII": ["OIII", "O3"],
-    "SII": ["SII", "S2"],
-    "Hb": ["Hb", "H-beta", "Hbeta"],
-    # Dual narrowband (Ha + OIII). "Duo" is the Dwarf 3 name; "Duo-Band" is
-    # what their CALI_FRAME masters are filed under.
-    "HaOIII": ["HaOIII", "HaO3", "Ha-OIII", "Duo", "Duo-Band", "DuoBand", "DualBand"],
-    # Alt dual narrowband (SII + Hb).
-    "SIIHb": ["SIIHb", "S2Hb", "SII-Hb"],
-    # Alt dual narrowband (SII + OIII).
-    "SIIOIII": ["SIIOIII", "S2O3", "SII-OIII"],
+    # Ha + OIII dual-band. "Duo" is what Dwarf 3 lights write; "Duo-Band"
+    # is the Dwarf docs label used on factory flat masters under
+    # CALI_FRAME/. "HaO3" is the same filter in alternate astronomical
+    # notation. Confirmed against codegistics' Dwarf 3 sample data via
+    # starbash issue geeksville/starbash#1.
+    "HaOIII": ["HaOIII", "HaO3", "Duo", "Duo-Band"],
 }
 
 
@@ -63,10 +58,9 @@ for canonical, names in ALIASES.items():
 def canonicalize(name: str | None) -> str | None:
     """Map a filter string to its canonical form, or pass it through unchanged.
 
-    Returns ``None`` only when the input is ``None`` or empty. An unknown
-    filter string is returned unchanged so we never silently lose data; it
-    just won't match aliased entries in the masters table until someone
-    teaches ``ALIASES`` about it.
+    Returns Python ``None`` when the input is ``None`` or empty. Unknown
+    filter strings are returned with whitespace stripped but otherwise
+    untouched, so the UI shows the label the FITS header produced.
     """
     if name is None:
         return None
