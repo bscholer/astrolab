@@ -306,18 +306,18 @@
     flex-wrap: wrap;
   }
 
-  /* Filter badge: small uppercase pill, color-coded by broad family.
+  /* Filter badge: small pill, color-coded by broad family.
      Astro -> cool blue, Duo-Band -> green tint, anything else -> neutral
      grey. Renders only when the parent passes a non-empty filter
-     string (we short-circuit above). */
+     string (we short-circuit above). No uppercase: filter names like
+     "Ha", "OIII", "Sii" carry case as signal. */
   .filter-badge {
     display: inline-flex;
     align-items: center;
     padding: 0.15rem 0.5rem;
     border-radius: 999px;
     font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.03em;
     line-height: 1.2;
     font-weight: 600;
   }
