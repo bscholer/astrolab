@@ -489,6 +489,20 @@ def scan(
     scan_started_at = time.time()
     stats = ScanStats()
     frames_since_cluster = 0
+    # Unchanged-file path: batch the scanned_at bumps. One write per file
+    # is one fsync per file in WAL mode, which dominates the cost of a
+    # rescan when nothing actually changed.
+    skipped_paths: list[str] = []
+
+    def _flush_skipped() -> None:
+        if not skipped_paths:
+            return
+        with conn:
+            conn.executemany(
+                "UPDATE frames SET scanned_at = ? WHERE path = ?",
+                [(scan_started_at, p) for p in skipped_paths],
+            )
+        skipped_paths.clear()
 
     with open_db(db_path) as conn:
         for fits_path in _walk_fits(root):
@@ -508,11 +522,9 @@ def scan(
                 and existing["mtime"] == st.st_mtime
                 and existing["file_hash"] is not None
             ):
-                with conn:
-                    conn.execute(
-                        "UPDATE frames SET scanned_at = ? WHERE path = ?",
-                        (scan_started_at, str(fits_path)),
-                    )
+                skipped_paths.append(str(fits_path))
+                if len(skipped_paths) >= 1000:
+                    _flush_skipped()
                 stats.skipped_unchanged += 1
                 continue
 
@@ -546,6 +558,8 @@ def scan(
                     cluster_sessions(conn)
                     _resolve_targets(conn)
                 frames_since_cluster = 0
+
+        _flush_skipped()
 
         # Dwarf 3 factory masters live under CALI_FRAME/ with sparse
         # headers; the universal walker passes over them (classify()
