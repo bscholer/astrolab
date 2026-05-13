@@ -541,9 +541,13 @@ class ProjectManager:
         """Replace the project's source session set with a fresh Job.
 
         The caller is responsible for upstream validation (compat,
-        same-target gate, calibration) and for building `new_base_job`
-        with `param_overrides={}` so the swap inherits the project's
-        current overrides at history-entry creation time.
+        same-target gate, calibration). Any framework-level overrides
+        the rebuild attaches to `new_base_job.param_overrides` (e.g.
+        the calibrate node's `dark_bins` metadata sourced from the
+        catalog) are merged into the revision's overrides so they
+        actually reach the runtime; the stored base_job's
+        param_overrides are then cleared, mirroring the contract that
+        `create()` enforces.
 
         Cancels the project's currently-active job before swapping so an
         in-flight pipeline that's about to be superseded by the new
@@ -563,6 +567,20 @@ class ProjectManager:
         prev_overrides = project.current_overrides()
         prev_job_id = project.current_entry().job_id
         self._jobs.cancel(prev_job_id)
+
+        # If the rebuild attached framework-level overrides, merge them
+        # in (prev wins per-key so user-tuned sliders survive) and
+        # strip them from the stored base_job. Same lift-and-clear
+        # pattern `create()` uses; without it base_job.param_overrides
+        # gets silently dropped because _submit_with_overrides replaces
+        # rather than merges.
+        if new_base_job.param_overrides:
+            prev_overrides = _deep_merge_overrides(
+                new_base_job.param_overrides, prev_overrides
+            )
+            new_base_job = new_base_job.model_copy(
+                update={"param_overrides": {}}
+            )
 
         # Swap the underlying base_job + session id list before submitting
         # so the submitted job carries the new external inputs.

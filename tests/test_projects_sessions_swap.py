@@ -486,6 +486,66 @@ def test_patch_sessions_adds_session_and_appends_history(client) -> None:
     assert body["capture"]["integration_seconds"] == pytest.approx(180.0)
 
 
+def test_patch_sessions_lifts_framework_overrides_into_revision(client, tmp_path) -> None:
+    """Regression: rebuilding the base_job via PATCH /sessions attaches
+    framework-level overrides (calibrate.dark_bins from match_bundle_darks).
+    Those used to be silently dropped because swap_sessions stored the
+    new base_job without merging its param_overrides into the running
+    revision's overrides, and _submit_with_overrides replaces rather
+    than merges. After the lift, the rebuilt overrides are visible to
+    the next render and the stored base_job has an empty
+    param_overrides (matching the create() contract).
+
+    We seed a master that match_bundle_darks will pick up so the
+    rebuild actually has framework metadata to lift; without a
+    matched master, dark_bins would be empty either way and the test
+    would be a no-op.
+    """
+    c, db_path, tmp_path = client
+    masters_dir = tmp_path / "masters"
+    masters_dir.mkdir()
+    dark_path = masters_dir / "dark.fit"
+    dark_path.write_bytes(b"MASTER")
+    with open_db(db_path) as conn:
+        _seed_session(conn, session_id=1, folder=tmp_path / "s1")
+        _seed_session(conn, session_id=2, folder=tmp_path / "s2")
+        conn.execute(
+            "INSERT INTO masters (kind, source, instrument, exptime, gain, "
+            "binning, ccd_temp, stack_count, path) "
+            "VALUES ('dark','factory','DWARFIII',30.0,60,1,28.0,10,?)",
+            (str(dark_path),),
+        )
+        conn.commit()
+
+    r = c.post(
+        "/api/projects/from_sessions",
+        json={"session_ids": [1], "template_id": "calibrate_register_stack"},
+    )
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+    _drain_job(c, r.json()["current_job_id"])
+
+    swap = c.patch(
+        f"/api/projects/{pid}/sessions",
+        json={"session_ids": [1, 2], "auto_render": False},
+    )
+    assert swap.status_code == 200, swap.text
+    body = swap.json()
+
+    # Stored base_job carries no param_overrides (lift-and-clear).
+    assert body["base_job"]["param_overrides"] == {}
+    # Revision's overrides now carry the framework metadata.
+    last = body["history"][-1]
+    cal = last["overrides"].get("calibrate") or {}
+    assert "dark_bins" in cal, (
+        f"expected calibrate.dark_bins in revision overrides, "
+        f"got: {last['overrides']!r}"
+    )
+    assert any(
+        b.get("path") == str(dark_path) for b in cal["dark_bins"]
+    ), f"expected the matched dark in dark_bins, got: {cal['dark_bins']!r}"
+
+
 def test_patch_sessions_remove_all_but_one_works(client) -> None:
     c, db_path, tmp_path = client
     with open_db(db_path) as conn:
