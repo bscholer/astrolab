@@ -330,6 +330,62 @@ def test_patch_sessions_404_on_unknown_project(client) -> None:
     assert r.status_code == 404
 
 
+def test_from_sessions_rejects_cross_canonical_bundle(client) -> None:
+    """POST /from_sessions enforces canonical-group equality across the
+    bundle. Two sessions on truly different canonicals are rejected with
+    a 400 naming the offending session + both canonicals."""
+    c, db_path, tmp_path = client
+    with open_db(db_path) as conn:
+        _seed_session(
+            conn, session_id=1, folder=tmp_path / "s1",
+            target_id=1, target_name="M 33", resolved_canonical="NGC 598",
+        )
+        _seed_session(
+            conn, session_id=2, folder=tmp_path / "s2",
+            target_id=2, target_name="M 31", resolved_canonical="NGC 224",
+        )
+    r = c.post(
+        "/api/projects/from_sessions",
+        json={
+            "session_ids": [1, 2],
+            "template_id": "calibrate_register_stack",
+        },
+    )
+    assert r.status_code == 400, r.json()
+    detail = r.json()["detail"]
+    assert "NGC 598" in detail and "NGC 224" in detail
+
+
+def test_from_sessions_accepts_retargeted_sessions_with_same_canonical(client) -> None:
+    """Regression: when a user re-targets a session via the Library edit
+    affordance, the raw target_id row differs from the original session's
+    target_id, but both resolve to the same canonical group. The old
+    target_id equality check in build_from_sessions rejected this; the
+    new canonical-group check at the API layer accepts it correctly."""
+    c, db_path, tmp_path = client
+    with open_db(db_path) as conn:
+        # Two distinct target rows that BOTH resolve to canonical "NGC 598",
+        # mimicking the state after a manual re-target merges them onto the
+        # same astronomical object.
+        _seed_session(
+            conn, session_id=1, folder=tmp_path / "s1",
+            target_id=1, target_name="M 33", resolved_canonical="NGC 598",
+        )
+        _seed_session(
+            conn, session_id=2, folder=tmp_path / "s2",
+            target_id=2, target_name="Triangulum Galaxy",
+            resolved_canonical="NGC 598",
+        )
+    r = c.post(
+        "/api/projects/from_sessions",
+        json={
+            "session_ids": [1, 2],
+            "template_id": "calibrate_register_stack",
+        },
+    )
+    assert r.status_code == 200, r.json()
+
+
 def test_patch_sessions_400_on_cross_target(client) -> None:
     """A session whose canonical_group differs from the project's is
     rejected with a descriptive message naming the offending session,

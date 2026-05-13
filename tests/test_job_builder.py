@@ -292,7 +292,16 @@ def test_build_from_sessions_rejects_mismatched_gain(db, tmp_path: Path) -> None
         build_from_sessions(db, [1, 2], template)
 
 
-def test_build_from_sessions_rejects_mismatched_target(db, tmp_path: Path) -> None:
+def test_build_from_sessions_accepts_differing_target_ids(db, tmp_path: Path) -> None:
+    """build_from_sessions no longer rejects on raw target_id. Target
+    identity is enforced at the API layer via canonical-group matching
+    (api._assert_sessions_share_target) so manually-retargeted sessions
+    work; the builder's job is the stacker-relevant compat tuple only.
+
+    For coverage of the API-level same-target gate (which DOES still
+    reject two truly different targets), see tests under tests/test_api*
+    that exercise the POST /from_sessions and PATCH /sessions endpoints.
+    """
     _seed_session(
         db, session_id=1, folder=tmp_path / "s1",
         target_id=1, target_name="M 33",
@@ -302,8 +311,8 @@ def test_build_from_sessions_rejects_mismatched_target(db, tmp_path: Path) -> No
         target_id=2, target_name="M 31",
     )
     template = load_template("calibrate_register_stack")
-    with pytest.raises(IncompatibleSessions, match="target_id"):
-        build_from_sessions(db, [1, 2], template)
+    # Should not raise; differing target_ids no longer trip the builder.
+    build_from_sessions(db, [1, 2], template)
 
 
 def test_build_from_sessions_uses_first_sessions_master(db, tmp_path: Path) -> None:
