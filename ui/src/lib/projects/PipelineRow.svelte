@@ -227,6 +227,20 @@
       class:body-output={isOutput}
       transition:slide={{ duration: 220, easing: cubicOut }}
     >
+      {#if status !== 'pending'}
+        <div class="step-status-bar">
+          <span class="status status-mini status-{togglable && !enabled ? 'off' : status}">
+            {togglable && !enabled ? 'off' : status}{#if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{formatStepDuration(durationMs)}</span>{/if}
+          </span>
+          {#if status === 'running' && progress?.message}
+            <span class="step-status-msg muted small">{progress.message}</span>
+          {/if}
+          {#if status === 'failed' && !isOutput}
+            <span class="step-status-msg muted small">see error below</span>
+          {/if}
+        </div>
+      {/if}
+
       {#if isOutput && finalOutputRef && finalOutputPort}
         <div class="output-actions">
           <button
@@ -516,6 +530,21 @@
     gap: 0.55rem;
   }
   .stage-params { min-width: 0; }
+
+  .step-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .step-status-msg {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* ---------- Skeleton shimmer ---------- */
 
