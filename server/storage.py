@@ -315,15 +315,28 @@ def purge_project_cache(
             _terminal_output_hashes(conn, project_id) if keep_outputs else set()
         )
 
+    reason = "project-delete-keep-outputs" if keep_outputs else "project-delete"
+    candidates = [
+        h for h, e in entries.items()
+        if e.owners == {project_id} and h not in keep_hashes
+    ]
+    log.info(
+        "purge_project_cache start: project=%s keep_outputs=%s candidates=%d",
+        project_id,
+        keep_outputs,
+        len(candidates),
+    )
     evicted = 0
     freed = 0
-    for h, e in entries.items():
-        if e.owners != {project_id}:
-            continue
-        if h in keep_hashes:
-            continue
-        freed += cache.evict(h)
+    for h in candidates:
+        freed += cache.evict(h, reason=reason)
         evicted += 1
+    log.info(
+        "purge_project_cache done: project=%s evicted=%d freed=%d",
+        project_id,
+        evicted,
+        freed,
+    )
     return evicted, freed
 
 
@@ -454,6 +467,12 @@ def run_cleanup(
 
     total = sum(e.bytes for e in entries.values())
     if total <= max_bytes:
+        log.info(
+            "run_cleanup skipped: under budget (total=%d max=%d entries=%d)",
+            total,
+            max_bytes,
+            len(entries),
+        )
         return CleanupResult(
             evicted_count=0,
             bytes_freed=0,
@@ -462,16 +481,43 @@ def run_cleanup(
         )
 
     ordered = sorted(entries.values(), key=lambda e: (score_entry(e), -e.bytes))
+    log.info(
+        "run_cleanup start: total=%d max=%d over_by=%d entries=%d",
+        total,
+        max_bytes,
+        total - max_bytes,
+        len(entries),
+    )
 
     evicted_count = 0
     bytes_freed = 0
     for e in ordered:
         if total - bytes_freed <= max_bytes:
             break
-        bytes_freed += cache.evict(e.node_hash)
+        score = score_entry(e)
+        reason = "orphan" if not e.owners else "over-budget"
+        log.info(
+            "run_cleanup pick: hash=%s reason=%s score=%.2f bytes=%d "
+            "cost=%s owners=%d last_used=%s",
+            e.node_hash[:12],
+            reason,
+            score,
+            e.bytes,
+            e.cost,
+            len(e.owners),
+            e.last_used_at or "never",
+        )
+        bytes_freed += cache.evict(e.node_hash, reason=reason)
         evicted_count += 1
 
     over_budget = (total - bytes_freed) > max_bytes
+    log.info(
+        "run_cleanup done: evicted=%d freed=%d remaining=%d over_budget=%s",
+        evicted_count,
+        bytes_freed,
+        total - bytes_freed,
+        over_budget,
+    )
     return CleanupResult(
         evicted_count=evicted_count,
         bytes_freed=bytes_freed,
