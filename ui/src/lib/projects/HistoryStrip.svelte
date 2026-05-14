@@ -39,8 +39,6 @@
   }: Props = $props();
 
   let historyEl = $state<HTMLOListElement | null>(null);
-  // Per-entry popover open state for touch devices.
-  let dotPopoverOpen = $state<Record<number, boolean>>({});
 
   // Auto-scroll to right edge on mount and on each new entry.
   $effect(() => {
@@ -72,6 +70,20 @@
   function fmtFwhm(n: number | null): string {
     if (n === null) return '—';
     return n.toFixed(2) + ' px';
+  }
+  function tipIntegration(q: { integration_s: number | null } | null): string {
+    const v = q && q.integration_s !== null ? fmtIntegration(q.integration_s) : '—';
+    return `Integration: ${v}\nTotal useful exposure across sessions; longer = more depth`;
+  }
+  function tipNoise(q: { noise: number } | null): string {
+    const v = q ? fmtExp(q.noise) : '—';
+    return `Noise: ${v}\nBackground standard deviation; lower = cleaner`;
+  }
+  function tipSharpness(q: { sharpness: number; fwhm_px: number | null } | null): string {
+    if (!q) return 'Sharpness: —\nLaplacian variance + Siril findstar FWHM; higher = sharper';
+    const lap = fmtExp(q.sharpness);
+    const fwhm = q.fwhm_px !== null ? ` (FWHM ${fmtFwhm(q.fwhm_px)})` : '';
+    return `Sharpness: ${lap}${fwhm}\nLaplacian variance + Siril findstar FWHM; higher = sharper`;
   }
 
   // Compute per-metric medians from entries that have quality_summary.
@@ -128,9 +140,6 @@
     return 'bad';
   }
 
-  function toggleDotPopover(seq: number) {
-    dotPopoverOpen = { ...dotPopoverOpen, [seq]: !dotPopoverOpen[seq] };
-  }
 </script>
 
 <section class="history">
@@ -169,42 +178,10 @@
           <span class="hist-seq muted">v{h.seq + 1}</span>
           <span class="hist-label">{shortHistoryLabel(h.label)}</span>
           <span class="hist-time muted small">{shortAgo(h.created_at)}</span>
-          <span
-            class="dot-row"
-            role="button"
-            tabindex="0"
-            aria-label="Quality summary"
-            onclick={(e) => { e.stopPropagation(); toggleDotPopover(h.seq); }}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggleDotPopover(h.seq); } }}
-          >
-            <span class="qdot qdot-{iColor}" title="Integration"></span>
-            <span class="qdot qdot-{nColor}" title="Noise"></span>
-            <span class="qdot qdot-{sColor}" title="Sharpness"></span>
-            <span
-              class="dot-tooltip"
-              class:dot-tooltip-open={dotPopoverOpen[h.seq]}
-              aria-hidden="true"
-            >
-              {#if q}
-                <span class="dtt-row">
-                  <span class="dtt-label">Integration</span>
-                  <span class="dtt-val">{q.integration_s !== null ? fmtIntegration(q.integration_s) : '—'}</span>
-                </span>
-                <span class="dtt-def">Total useful exposure across sessions; longer = more depth</span>
-                <span class="dtt-row">
-                  <span class="dtt-label">Noise</span>
-                  <span class="dtt-val">{fmtExp(q.noise)}</span>
-                </span>
-                <span class="dtt-def">Background standard deviation; lower = cleaner</span>
-                <span class="dtt-row">
-                  <span class="dtt-label">Sharpness</span>
-                  <span class="dtt-val">{fmtExp(q.sharpness)}{q.fwhm_px !== null ? ' / ' + fmtFwhm(q.fwhm_px) : ''}</span>
-                </span>
-                <span class="dtt-def">Laplacian variance + Siril findstar FWHM; higher = sharper</span>
-              {:else}
-                <span class="dtt-def">No quality data for this version</span>
-              {/if}
-            </span>
+          <span class="dot-row" aria-label="Quality summary">
+            <span class="qdot qdot-{iColor}" title={tipIntegration(q)}></span>
+            <span class="qdot qdot-{nColor}" title={tipNoise(q)}></span>
+            <span class="qdot qdot-{sColor}" title={tipSharpness(q)}></span>
           </span>
         </button>
         <button
@@ -511,63 +488,4 @@
     border-color: var(--fg-mute, #666);
   }
 
-  /* Tooltip: CSS :hover driven; swaps to click-open on touch via .dot-tooltip-open. */
-  .dot-tooltip {
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 0;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.45rem 0.6rem;
-    white-space: nowrap;
-    z-index: 20;
-    pointer-events: none;
-    opacity: 0;
-    transform: translateY(3px);
-    transition: opacity 120ms ease, transform 120ms ease;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    min-width: 16rem;
-    font-size: 0;
-  }
-  /* Desktop: open on hover of the dot row. */
-  @media (hover: hover) {
-    .dot-row:hover .dot-tooltip {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-  /* Touch: open via state class. */
-  .dot-tooltip-open {
-    opacity: 1 !important;
-    transform: translateY(0) !important;
-    pointer-events: auto;
-  }
-  .dtt-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    font-size: 0.75rem;
-  }
-  .dtt-label {
-    color: var(--fg-mute);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-family: var(--font-mono);
-  }
-  .dtt-val {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 0.75rem;
-    color: var(--fg);
-  }
-  .dtt-def {
-    font-size: 0.68rem;
-    color: var(--fg-mute);
-    line-height: 1.3;
-    margin-bottom: 0.1rem;
-  }
 </style>

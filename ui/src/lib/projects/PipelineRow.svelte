@@ -78,14 +78,21 @@
 
   let qualityOpen = $state(false);
 
-  function fmtF(n: number): string {
+  function fmtF(n: number | null | undefined): string {
+    if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+    // Scientific notation for very small or very large values so we don't
+    // bottom out at 0.0000 (background sigma is typically 1e-5 to 1e-3 on
+    // stretched output) or push the column wide.
+    const abs = Math.abs(n);
+    if (abs !== 0 && (abs < 1e-3 || abs >= 1e6)) return n.toExponential(2);
     return n.toFixed(4);
   }
-  function fmtPct(n: number): string {
+  function fmtPct(n: number | null | undefined): string {
+    if (n === null || n === undefined || !Number.isFinite(n)) return '—';
     return (n * 100).toFixed(2) + '%';
   }
   function fmtFwhm(n: number | null): string {
-    if (n === null) return '';
+    if (n === null) return '—';
     return n.toFixed(2) + ' px';
   }
 
@@ -303,39 +310,47 @@
               <span class="qg-section">Background</span>
               <span class="qg-label">BG sigma</span>
               <span class="qg-val">{fmtF(jobQuality.background.sigma)}</span>
+
+              <span class="qg-section-cont"></span>
               <span class="qg-label">BG level</span>
               <span class="qg-val">{fmtF(jobQuality.background.estimated_level)}</span>
 
               <span class="qg-section">Stars</span>
-              <span class="qg-label" class:qg-unavail={jobQuality.sharpness.fwhm_px === null} title={jobQuality.sharpness.fwhm_px === null ? 'Siril findstar unavailable' : ''}>FWHM</span>
-              <span class="qg-val" class:qg-unavail={jobQuality.sharpness.fwhm_px === null}>{jobQuality.sharpness.fwhm_px !== null ? fmtFwhm(jobQuality.sharpness.fwhm_px) : '—'}</span>
-              <span class="qg-label" class:qg-unavail={jobQuality.sharpness.roundness === null} title={jobQuality.sharpness.roundness === null ? 'Siril findstar unavailable' : ''}>Roundness</span>
-              <span class="qg-val" class:qg-unavail={jobQuality.sharpness.roundness === null}>{jobQuality.sharpness.roundness !== null ? fmtF(jobQuality.sharpness.roundness) : '—'}</span>
+              <span class="qg-label" class:qg-unavail={jobQuality.sharpness.fwhm_px === null}
+                    title={jobQuality.sharpness.fwhm_px === null ? 'Siril findstar unavailable' : ''}>FWHM</span>
+              <span class="qg-val" class:qg-unavail={jobQuality.sharpness.fwhm_px === null}
+                    >{fmtFwhm(jobQuality.sharpness.fwhm_px)}</span>
 
-              <span class="qg-section"></span>
-              <span class="qg-label">Stars</span>
+              <span class="qg-section-cont"></span>
+              <span class="qg-label" class:qg-unavail={jobQuality.sharpness.roundness === null}
+                    title={jobQuality.sharpness.roundness === null ? 'Siril findstar unavailable' : ''}>Roundness</span>
+              <span class="qg-val" class:qg-unavail={jobQuality.sharpness.roundness === null}
+                    >{fmtF(jobQuality.sharpness.roundness)}</span>
+
+              <span class="qg-section-cont"></span>
+              <span class="qg-label">Star count</span>
               <span class="qg-val">{jobQuality.sharpness.star_count ?? '—'}</span>
-              <span class="qg-label"></span>
-              <span class="qg-val"></span>
 
               <span class="qg-section">Sharpness</span>
               <span class="qg-label">Lap. var</span>
               <span class="qg-val">{fmtF(jobQuality.sharpness.laplacian_variance)}</span>
-              <span class="qg-label"></span>
-              <span class="qg-val"></span>
 
               {#if jobQuality.color_balance.r_g_ratio !== undefined || jobQuality.color_balance.b_g_ratio !== undefined}
                 <span class="qg-section">Color</span>
                 <span class="qg-label">R/G</span>
-                <span class="qg-val">{jobQuality.color_balance.r_g_ratio !== undefined ? fmtF(jobQuality.color_balance.r_g_ratio) : '—'}</span>
+                <span class="qg-val">{fmtF(jobQuality.color_balance.r_g_ratio)}</span>
+
+                <span class="qg-section-cont"></span>
                 <span class="qg-label">B/G</span>
-                <span class="qg-val">{jobQuality.color_balance.b_g_ratio !== undefined ? fmtF(jobQuality.color_balance.b_g_ratio) : '—'}</span>
+                <span class="qg-val">{fmtF(jobQuality.color_balance.b_g_ratio)}</span>
               {/if}
 
               {#if jobQuality.channels.length > 0}
                 <span class="qg-section">Integrity</span>
                 <span class="qg-label">Sat. high</span>
                 <span class="qg-val">{fmtPct(jobQuality.channels[0].clipped_high_pct)}</span>
+
+                <span class="qg-section-cont"></span>
                 <span class="qg-label">Sat. low</span>
                 <span class="qg-val">{fmtPct(jobQuality.channels[0].clipped_low_pct)}</span>
               {/if}
@@ -844,14 +859,17 @@
   }
   .quality-grid {
     display: grid;
-    grid-template-columns: 5.5rem 4.5rem 1fr 4.5rem 1fr;
-    column-gap: 0.4rem;
-    row-gap: 0.25rem;
+    /* Three columns: section heading, label, value. Earlier 5-col layout
+       overflowed the drawer's overflow:hidden box when the label column
+       had to fit "Roundness", leaving the right-side values invisible. */
+    grid-template-columns: 5.5rem auto 1fr;
+    column-gap: 0.6rem;
+    row-gap: 0.2rem;
     align-items: baseline;
     padding: 0.5rem 0 0.2rem;
     font-size: 0.75rem;
   }
-  .qg-section {
+  .qg-section, .qg-section-cont {
     font-size: 0.62rem;
     font-family: var(--font-mono);
     text-transform: uppercase;
