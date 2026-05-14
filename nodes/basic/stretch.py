@@ -184,7 +184,7 @@ class StretchParams(BaseModel):
 class StretchNode(Node[StretchParams]):
     id = "stretch"
     version = 1
-    cost = "cheap"
+    tier = "keep"
     uses_siril = True
     preview_display_ready = True
 

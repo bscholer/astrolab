@@ -69,7 +69,6 @@ class ConvertLightsParams(BaseModel):
 class ConvertLightsNode(Node[ConvertLightsParams]):
     id = "convert_lights"
     version = 1
-    cost = "medium"
     uses_siril = True
     preview_hidden = True
 

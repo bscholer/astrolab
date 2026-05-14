@@ -398,7 +398,6 @@ def _run_group_calibrate(
 class CalibrateNode(Node[CalibrateParams]):
     id = "calibrate"
     version = 2
-    cost = "medium"
     uses_siril = True
     preview_hidden = True
 

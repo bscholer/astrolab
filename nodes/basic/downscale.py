@@ -36,7 +36,7 @@ class DownscaleParams(BaseModel):
 class DownscaleNode(Node[DownscaleParams]):
     id = "downscale"
     version = 1
-    cost = "cheap"
+    tier = "keep"
 
     inputs = {"image": PortType.IMAGE_PNG}
     outputs = {"image": PortType.IMAGE_PNG}

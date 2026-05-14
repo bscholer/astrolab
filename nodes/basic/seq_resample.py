@@ -86,7 +86,6 @@ class SeqResampleParams(BaseModel):
 class SeqResampleNode(Node[SeqResampleParams]):
     id = "seq_resample"
     version = 1
-    cost = "medium"
     uses_siril = True
     preview_hidden = True
 

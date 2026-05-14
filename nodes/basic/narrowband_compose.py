@@ -100,7 +100,7 @@ class NarrowbandComposeParams(BaseModel):
 class NarrowbandComposeNode(Node[NarrowbandComposeParams]):
     id = "narrowband_compose"
     version = 1
-    cost = "cheap"
+    tier = "keep"
     uses_siril = True
 
     inputs = {

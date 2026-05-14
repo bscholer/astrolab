@@ -230,7 +230,6 @@ class SeqRegisterParams(BaseModel):
 class SeqRegisterNode(Node[SeqRegisterParams]):
     id = "seq_register"
     version = 1
-    cost = "expensive"
     uses_siril = True
     preview_hidden = True
 

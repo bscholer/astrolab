@@ -64,7 +64,7 @@ class StarnetReplaceParams(BaseModel):
 class StarnetReplaceNode(Node[StarnetReplaceParams]):
     id = "starnet_replace"
     version = 1
-    cost = "medium"
+    tier = "keep"
     uses_siril = True
     preview_display_ready = True
 
