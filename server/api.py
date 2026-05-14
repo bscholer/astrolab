@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,6 +61,7 @@ import server.sky as sky
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.fits_reader import normalize_target
+from server.catalog.matching import match_bundle_darks
 from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.scanner import resolve_target as resolve_target_row
@@ -597,6 +598,114 @@ def get_target(target_id: int, conn: DBDep) -> TargetDetail:
         sky=sky,
         resolved_as=_resolved_as_from_row(target),
         sessions=[_row_to_session_summary(conn, s, target_name=target["name"]) for s in sessions],
+    )
+
+
+class DarkBinPreview(BaseModel):
+    """One row in the bundle dark-preview breakdown."""
+
+    exptime: float
+    gain: int | None = None
+    binning: int | None = None
+    temp_bin_c: float | None = None
+    frame_count: int
+    master_id: int | None = None
+    master_path: str | None = None
+    master_name: str | None = None
+    quality: str
+    delta_c: float | None = None
+    fallback: bool = False
+
+
+class DarkPreviewSummary(BaseModel):
+    total_frames: int
+    matched_frames: int
+    unmatched_frames: int
+    fallback_frames: int
+    darks_used: int
+
+
+class DarkPreviewResponse(BaseModel):
+    bins: list[DarkBinPreview]
+    summary: DarkPreviewSummary
+
+
+@app.get(
+    "/api/sessions/dark-preview",
+    response_model=DarkPreviewResponse,
+    # Static path before the dynamic `/{session_id}` route below so the
+    # literal segment 'dark-preview' isn't captured as an id.
+)
+def get_dark_preview(
+    session_id: list[int] = Query(default_factory=list),  # noqa: B008
+    conn: DBDep = None,  # type: ignore[assignment]
+) -> DarkPreviewResponse:
+    """Return the per-(exptime, gain, temp_bin) breakdown of a bundle's
+    light frames and the master dark each bin would receive at job-
+    build time.
+
+    Used by the project page's manage-sessions modal so the user sees
+    what calibration coverage they'll actually get BEFORE submitting a
+    render. Mirrors what build_from_sessions feeds the calibrate node
+    via dark_bins, just shaped for the UI.
+    """
+    if not session_id:
+        return DarkPreviewResponse(
+            bins=[],
+            summary=DarkPreviewSummary(
+                total_frames=0,
+                matched_frames=0,
+                unmatched_frames=0,
+                fallback_frames=0,
+                darks_used=0,
+            ),
+        )
+    assert conn is not None
+    bins = match_bundle_darks(conn, list(session_id))
+    out_bins: list[DarkBinPreview] = []
+    unique_masters: set[int] = set()
+    matched = 0
+    unmatched = 0
+    fallback = 0
+    total = 0
+    for b in bins:
+        total += b.frame_count
+        if b.master_id is None:
+            unmatched += b.frame_count
+        else:
+            matched += b.frame_count
+            unique_masters.add(b.master_id)
+            if b.fallback:
+                fallback += b.frame_count
+        out_bins.append(
+            DarkBinPreview(
+                exptime=b.exptime,
+                gain=b.gain,
+                binning=b.binning,
+                temp_bin_c=b.temp_bin_c,
+                frame_count=b.frame_count,
+                master_id=b.master_id,
+                master_path=str(b.master_path) if b.master_path else None,
+                master_name=b.master_path.name if b.master_path else None,
+                quality=b.quality,
+                delta_c=b.delta_c,
+                fallback=b.fallback,
+            )
+        )
+    # Group by (exptime asc, temp_bin asc) so the UI's row order is
+    # stable and reads left-to-right from coolest to warmest.
+    out_bins.sort(
+        key=lambda r: (r.exptime, r.gain or 0, r.temp_bin_c or 0.0)
+    )
+    return DarkPreviewResponse(
+        bins=out_bins,
+        summary=DarkPreviewSummary(
+            total_frames=total,
+            matched_frames=matched,
+            unmatched_frames=unmatched,
+            fallback_frames=fallback,
+            darks_used=len(unique_masters),
+        ),
     )
 
 
