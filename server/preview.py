@@ -46,21 +46,59 @@ def render_preview(
     neutral: bool = True,
     display_ready: bool = False,
 ) -> Path:
-    """Return the path to a cached PNG preview for `(node_hash, port)`.
+    """Cached 512px PNG thumbnail for the UI tile of `(node_hash, port)`.
 
-    Renders on first call and caches inside the entry dir as `_preview_<port>.png`
-    (or `_preview_<port>_raw.png` when neutral=False, so both lineages can
-    coexist).
+    See _render_artifact() for the dispatch. Cached as `_preview_<port>.png`
+    (with `_raw`/`_dr` lineage suffixes); call render_output() instead when
+    the caller wants the full-resolution artifact.
+    """
+    return _render_artifact(
+        cache, node_hash, port,
+        neutral=neutral, display_ready=display_ready,
+        max_dim=THUMB_LONG_EDGE, cache_tag="preview",
+    )
 
-    `neutral=True` (default) makes OSC stages stop looking like swampy green
-    rectangles. Pre-stack pipeline outputs (calibrate → register) carry the
-    Bayer 2x-green imbalance straight through; with neutral=True we stretch
-    each channel independently so the rendered preview balances on its own.
-    The actual cache data is untouched. Pass `neutral=False` to bypass the
-    rebalance — useful for debugging when you want to see what Siril sees.
 
-    Raises PreviewError if the cache entry is missing or the artifact isn't
-    something we know how to render.
+def render_output(
+    cache: ContentCache,
+    node_hash: str,
+    port: str,
+    *,
+    neutral: bool = True,
+    display_ready: bool = False,
+) -> Path:
+    """Full-resolution artifact for `(node_hash, port)`.
+
+    For PNG outputs this returns the original file path (no re-encode);
+    for FITS, an autostretched full-res PNG cached as `_output_<port>.png`.
+    Use this for the "Open full" / download affordance; use render_preview
+    for the tile thumbnails.
+    """
+    return _render_artifact(
+        cache, node_hash, port,
+        neutral=neutral, display_ready=display_ready,
+        max_dim=None, cache_tag="output",
+    )
+
+
+def _render_artifact(
+    cache: ContentCache,
+    node_hash: str,
+    port: str,
+    *,
+    neutral: bool,
+    display_ready: bool,
+    max_dim: int | None,
+    cache_tag: str,
+) -> Path:
+    """Shared dispatch for render_preview/render_output.
+
+    `max_dim` caps the long edge of the rendered PIL image; None means
+    full resolution. `cache_tag` namespaces the cached PNG inside the
+    entry so preview and output renders don't collide.
+
+    Raises PreviewError if the cache entry is missing or the artifact
+    isn't something we know how to render.
     """
     entry = cache.lookup(node_hash)
     if entry is None:
@@ -80,31 +118,35 @@ def render_preview(
     if target is None:
         raise PreviewError(f"port '{port}' not found in {entry}")
 
+    suffix = target.suffix.lower()
+    # PNG full-res pass-through: just hand back the original file. No
+    # caching duplicate, no re-encode. The committed artifact IS the
+    # full-resolution PNG the user wants to download.
+    if max_dim is None and target.is_file() and suffix == ".png":
+        return target
+
     # Neutral and raw lineages live side by side so flipping the toggle
     # doesn't trigger a re-render of the other. display_ready adds a third
     # lineage (_dr) so both can coexist in the same cache entry.
     suffix_tag = "" if neutral else "_raw"
     if display_ready:
         suffix_tag += "_dr"
-    out = entry / f"_preview_{port}{suffix_tag}.png"
-    # Only re-render if missing or stale relative to the source artifact.
+    out = entry / f"_{cache_tag}_{port}{suffix_tag}.png"
     if out.exists() and out.stat().st_mtime >= target.stat().st_mtime:
         return out
 
-    suffix = target.suffix.lower()
     if target.is_file() and suffix == ".png":
-        # Pass-through: just resize to thumbnail. We could symlink but a real
-        # copy keeps the cache entry self-contained.
         img = Image.open(target).convert("RGB")
-        img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
+        if max_dim is not None:
+            img.thumbnail((max_dim, max_dim))
         img.save(out, "PNG", optimize=True)
         return out
 
     if target.is_file() and suffix in (".fit", ".fits"):
         if display_ready:
-            _render_display_ready_fits_to_png(target, out)
+            _render_display_ready_fits_to_png(target, out, max_dim=max_dim)
         else:
-            _render_fits_to_png(target, out, neutral=neutral)
+            _render_fits_to_png(target, out, neutral=neutral, max_dim=max_dim)
         return out
 
     if target.is_dir():
@@ -120,9 +162,9 @@ def render_preview(
             raise PreviewError(f"no FITS frames under {target}")
         rep = fits_frames[len(fits_frames) // 2]
         if display_ready:
-            _render_display_ready_fits_to_png(rep, out)
+            _render_display_ready_fits_to_png(rep, out, max_dim=max_dim)
         else:
-            _render_fits_to_png(rep, out, neutral=neutral)
+            _render_fits_to_png(rep, out, neutral=neutral, max_dim=max_dim)
         return out
 
     raise PreviewError(f"don't know how to preview {target}")
@@ -168,12 +210,15 @@ def _locate_artifact(entry: Path, port: str) -> Path | None:
     return suffix[0] if suffix else None
 
 
-def _render_display_ready_fits_to_png(src: Path, dst: Path) -> None:
-    """Render a display-ready FITS (already in [0,1]) to a thumbnail PNG.
+def _render_display_ready_fits_to_png(
+    src: Path, dst: Path, *, max_dim: int | None = THUMB_LONG_EDGE,
+) -> None:
+    """Render a display-ready FITS (already in [0,1]) to PNG.
 
     Skips all autostretch logic. The data is already in display range
     (post-stretch node output), so we just clip to [0,1], scale to uint8,
-    and resize to thumbnail dimensions.
+    and resize to at-most-max_dim per side. Pass max_dim=None for full
+    resolution.
     """
     with fits.open(src, memmap=False) as hdul:
         data = hdul[0].data
@@ -209,11 +254,16 @@ def _render_display_ready_fits_to_png(src: Path, dst: Path) -> None:
         u8 = (scaled * 255.0 + 0.5).astype(np.uint8)
         img = Image.fromarray(u8, mode="L").convert("RGB")
 
-    img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
+    if max_dim is not None:
+        img.thumbnail((max_dim, max_dim))
     img.save(dst, "PNG", optimize=True)
 
 
-def _render_fits_to_png(src: Path, dst: Path, *, neutral: bool = True) -> None:
+def _render_fits_to_png(
+    src: Path, dst: Path, *,
+    neutral: bool = True,
+    max_dim: int | None = THUMB_LONG_EDGE,
+) -> None:
     """Read a FITS file, autostretch, downscale, write a PNG.
 
     Strategy: try Siril's autostretch first (gold standard, matches what the
@@ -231,12 +281,16 @@ def _render_fits_to_png(src: Path, dst: Path, *, neutral: bool = True) -> None:
     plane; in the numpy fallback we half-res debayer first because mono
     rendering of a Bayer mosaic looks like sparkly noise.
     """
-    if _render_via_siril(src, dst, neutral=neutral):
+    if _render_via_siril(src, dst, neutral=neutral, max_dim=max_dim):
         return
-    _render_fits_to_png_numpy(src, dst)
+    _render_fits_to_png_numpy(src, dst, max_dim=max_dim)
 
 
-def _render_via_siril(src: Path, dst: Path, *, neutral: bool = True) -> bool:
+def _render_via_siril(
+    src: Path, dst: Path, *,
+    neutral: bool = True,
+    max_dim: int | None = THUMB_LONG_EDGE,
+) -> bool:
     """Render `src` via Siril's autostretch and resize into `dst`. Returns
     False (no exception) when Siril isn't available or the run fails, so
     the caller can fall back to the numpy path.
@@ -300,7 +354,8 @@ def _render_via_siril(src: Path, dst: Path, *, neutral: bool = True) -> bool:
             arr = np.asarray(img, dtype=np.uint32)
             img = Image.fromarray(np.clip(arr // 256, 0, 255).astype(np.uint8), mode="L")
         img = img.convert("RGB")
-        img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
+        if max_dim is not None:
+            img.thumbnail((max_dim, max_dim))
         img.save(dst, "PNG", optimize=True)
     return True
 
@@ -356,7 +411,9 @@ def _siril_quote(path: Path) -> str:
     return s
 
 
-def _render_fits_to_png_numpy(src: Path, dst: Path) -> None:
+def _render_fits_to_png_numpy(
+    src: Path, dst: Path, *, max_dim: int | None = THUMB_LONG_EDGE,
+) -> None:
     """Numpy fallback path: percentile + MTF autostretch, half-res debayer
     when BAYERPAT is set. Used when Siril isn't on $PATH (Mac dev, CI)."""
     with fits.open(src, memmap=False) as hdul:
@@ -391,7 +448,8 @@ def _render_fits_to_png_numpy(src: Path, dst: Path) -> None:
     else:
         img = Image.fromarray(rgb, mode="RGB")
 
-    img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE))
+    if max_dim is not None:
+        img.thumbnail((max_dim, max_dim))
     img.save(dst, "PNG", optimize=True)
 
 

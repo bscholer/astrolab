@@ -342,7 +342,7 @@
           </button>
           <a
             class="cover-btn"
-            href={api.previewUrl(finalOutputRef.node_hash, finalOutputPort)}
+            href={api.outputUrl(finalOutputRef.node_hash, finalOutputPort)}
             target="_blank"
             rel="noopener"
             title="Open full-size in a new tab"
