@@ -63,20 +63,27 @@ def _channel_stats(arr: np.ndarray) -> dict[str, Any]:
 
 
 def _background_stats(arr: np.ndarray) -> dict[str, Any]:
-    """Rough background: sigma-clipped mean of the lowest 10th-percentile pixels.
+    """Rough background level + noise sigma.
 
-    Also returns sigma = std of the sigma-clipped low pool, used as the
-    "Noise" indicator in the UI.
+    Exclude pixels at exactly 0 first: stretched output PNGs often clip
+    25-40% of the frame to the floor, and the original p10-of-everything
+    threshold landed on that floor, leaving a "low pool" that was all
+    zeros — sigma collapsed to 0 and the UI's Noise dot lost all signal.
+    Working on the non-floor pixels gives the actual shot-noise distribution.
     """
     flat = arr.ravel().astype(np.float64)
-    threshold = float(np.percentile(flat, 10))
-    low = flat[flat <= threshold]
+    nonzero = flat[flat > 0]
+    if len(nonzero) < 100:
+        # Image is mostly clipped to zero; nothing meaningful to estimate.
+        return {"estimated_level": 0.0, "pct_below_threshold": 0.0, "sigma": 0.0}
+    threshold = float(np.percentile(nonzero, 30))
+    low = nonzero[nonzero <= threshold]
     for _ in range(3):
         m, s = np.mean(low), np.std(low)
         if s == 0:
             break
         low = low[np.abs(low - m) <= 3 * s]
-    level = float(np.mean(low)) if len(low) > 0 else float(np.mean(flat))
+    level = float(np.mean(low)) if len(low) > 0 else float(np.mean(nonzero))
     sigma = float(np.std(low)) if len(low) > 1 else 0.0
     pct_below = float(np.mean(flat < level))
     return {"estimated_level": level, "pct_below_threshold": pct_below, "sigma": sigma}
@@ -164,11 +171,13 @@ def _run_findstar(image_path: Path, log: logging.Logger) -> dict[str, Any] | Non
 
     with tempfile.TemporaryDirectory(prefix="astrolab-findstar-") as tmpdir_str:
         tmpdir = Path(tmpdir_str)
+        # findstar's -out= is resolved against Siril's own CWD (/root in our
+        # container), NOT the runtime's working_dir. Pass the absolute path
+        # so the file lands somewhere we can reliably read it.
         lst_path = tmpdir / "stars.lst"
         commands = [
-            f'cd "{tmpdir}"',
             f'load "{image_path.resolve()}"',
-            'findstar -out=stars.lst',
+            f'findstar -out="{lst_path}"',
         ]
         try:
             result = runtime.run(commands, working_dir=tmpdir, timeout=60.0)
@@ -184,6 +193,17 @@ def _run_findstar(image_path: Path, log: logging.Logger) -> dict[str, Any] | Non
             log.debug("findstar output file missing; skipping FWHM")
             return None
 
+        # Siril 1.4 findstar -out writes a TSV with a two-line "# ..." header
+        # followed by rows whose columns are:
+        #   0  star#       1  layer    2  B         3  A         4  beta
+        #   5  X           6  Y        7  FWHMx[px] 8  FWHMy[px]
+        #   9  FWHMx["]   10  FWHMy["] 11 angle    12 RMSE       13 mag
+        #  14  Sat        15  Profile 16 RA       17 Dec
+        # Earlier code parsed columns 3/4/7 (A / beta / FWHMx[px]) and produced
+        # the ~16000 px FWHM seen in the UI.
+        FWHM_X_COL = 7
+        FWHM_Y_COL = 8
+        SAT_COL = 14
         fwhm_vals: list[float] = []
         roundness_vals: list[float] = []
         try:
@@ -192,15 +212,29 @@ def _run_findstar(image_path: Path, log: logging.Logger) -> dict[str, Any] | Non
                 if not line or line.startswith("#"):
                     continue
                 parts = line.split()
+                if len(parts) <= FWHM_Y_COL:
+                    continue
                 try:
-                    # Common columns: index x y FWHMx FWHMy A B roundness ...
-                    fx = float(parts[3])
-                    fy = float(parts[4])
-                    rnd = float(parts[7])
-                except (IndexError, ValueError):
+                    fx = float(parts[FWHM_X_COL])
+                    fy = float(parts[FWHM_Y_COL])
+                except ValueError:
+                    continue
+                # Saturated detections (col 14 == 0) are bright stars whose
+                # cores blow out the Gaussian fit. Drop them so they don't
+                # bias the median FWHM upward.
+                if len(parts) > SAT_COL:
+                    try:
+                        if int(parts[SAT_COL]) == 0:
+                            continue
+                    except ValueError:
+                        pass
+                if fx <= 0 or fy <= 0:
                     continue
                 fwhm_vals.append((fx + fy) / 2.0)
-                roundness_vals.append(rnd)
+                # No "roundness" column; derive it as min/max so 1.0 = perfect
+                # circle and lower values indicate elongation (tracking error,
+                # tilt, registration slip).
+                roundness_vals.append(min(fx, fy) / max(fx, fy))
         except Exception as exc:
             log.debug("findstar parse error: %s", exc)
             return None
