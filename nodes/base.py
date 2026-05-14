@@ -83,3 +83,17 @@ class Node[ParamsT: BaseModel](ABC):
         will commit those Refs into the cache once `run` returns successfully.
         """
         raise NotImplementedError
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: ParamsT,
+    ) -> int | None:
+        """Estimated bytes this node will write to its output dir.
+
+        Return None to opt out (default for post-stack and other small nodes).
+        Bulk-tier nodes that produce a sequence override this so the runtime
+        can preflight disk headroom and either sweep the cache or fail with
+        a clear error before the operation starts.
+        """
+        return None

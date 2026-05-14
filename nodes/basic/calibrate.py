@@ -57,6 +57,7 @@ from astropy.io import fits
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import drop_staged, quote, run_siril_on_sequence, seq_ref, stage_sequence
+from nodes._storage_estimate import estimate_sequence_output_bytes
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -416,6 +417,19 @@ class CalibrateNode(Node[CalibrateParams]):
     optional_inputs = frozenset({"dark", "flat", "bias"})
     outputs = {"sequence": PortType.SEQUENCE_FITS}
     params_schema = CalibrateParams
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: CalibrateParams,
+    ) -> int | None:
+        del params
+        seq_in_ref = inputs.get("sequence")
+        if not isinstance(seq_in_ref, Ref):
+            return None
+        # Calibrate writes one pp_*.fit per input frame at the same dims;
+        # the uint16->float32 promotion is what bumps the byte count.
+        return estimate_sequence_output_bytes(seq_in_ref.path)
 
     def run(
         self,

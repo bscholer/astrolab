@@ -701,6 +701,17 @@ class JobWorker:
             )
             self._emit_event(record.id, ev)
 
+        # Look up the cache budget once per job so the runtime can preflight
+        # disk headroom on bulk-tier nodes. Passing it (and db_path) here is
+        # what activates the per-node estimator / InsufficientStorageError
+        # path; tests that bypass JobWorker get the legacy no-op behavior.
+        cache_max_bytes = int(
+            get_setting(
+                SETTING_CACHE_MAX_BYTES,
+                default_cache_max_bytes_for(self._cache.root),
+                db_path=self._db_path,
+            )
+        )
         try:
             outputs = run_job(
                 record.template,
@@ -710,6 +721,8 @@ class JobWorker:
                 force=record.force,
                 cancel=cancel_event,
                 job_id=record.id,
+                db_path=self._db_path,
+                cache_max_bytes=cache_max_bytes,
             )
             record.outputs = outputs
             self._terminate(record, status="completed")

@@ -26,6 +26,7 @@ from pathlib import Path
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
+from nodes._storage_estimate import estimate_sequence_output_bytes
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -75,6 +76,14 @@ class ConvertLightsNode(Node[ConvertLightsParams]):
     inputs = {"lights": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}
     params_schema = ConvertLightsParams
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: ConvertLightsParams,
+    ) -> int | None:
+        del params
+        return estimate_sequence_output_bytes(inputs["lights"].path)
 
     def run(
         self,

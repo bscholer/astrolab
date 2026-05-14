@@ -17,6 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import quote, run_siril_on_sequence, seq_ref
+from nodes._storage_estimate import estimate_sequence_output_bytes
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -78,6 +79,14 @@ class SeqBgExtractNode(Node[SeqBgExtractParams]):
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}
     params_schema = SeqBgExtractParams
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: SeqBgExtractParams,
+    ) -> int | None:
+        del params
+        return estimate_sequence_output_bytes(inputs["sequence"].path)
 
     def run(
         self,

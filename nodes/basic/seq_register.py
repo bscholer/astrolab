@@ -25,6 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import quote, run_siril_on_sequence, seq_ref
+from nodes._storage_estimate import estimate_sequence_output_bytes
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -236,6 +237,16 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}
     params_schema = SeqRegisterParams
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: SeqRegisterParams,
+    ) -> int | None:
+        # Drizzle quadruples (scale=2) or 9x's (scale=3) the output footprint
+        # because output dims are rx*scale by ry*scale per frame.
+        scale = float(params.drizzle_scale) if params.drizzle else 1.0
+        return estimate_sequence_output_bytes(inputs["sequence"].path, scale=scale)
 
     def run(
         self,

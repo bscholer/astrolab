@@ -29,6 +29,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import quote, run_siril_on_sequence, seq_ref
+from nodes._storage_estimate import estimate_sequence_output_bytes
 from nodes.base import Node
 from server.models import Ref, RunContext
 from server.ports import PortType
@@ -92,6 +93,18 @@ class SeqResampleNode(Node[SeqResampleParams]):
     inputs = {"sequence": PortType.SEQUENCE_FITS}
     outputs = {"sequence": PortType.SEQUENCE_FITS}
     params_schema = SeqResampleParams
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: SeqResampleParams,
+    ) -> int | None:
+        # Disabled path symlinks the input through (no new bytes). Enabled
+        # halves each axis, so output_bytes ~= input_bytes * 0.25 (plus the
+        # uint16->float32 promotion the helper already accounts for).
+        if not params.enabled:
+            return 0
+        return estimate_sequence_output_bytes(inputs["sequence"].path, scale=0.5)
 
     def run(
         self,
