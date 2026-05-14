@@ -10,7 +10,7 @@
 -->
 <script lang="ts">
   import { shortAgo } from '$lib/format';
-  import type { Project, HistoryQualitySummary } from '$lib/api';
+  import type { Project, ProjectHistoryEntry, HistoryQualitySummary } from '$lib/api';
 
   type Props = {
     project: Project;
@@ -40,6 +40,28 @@
 
   let historyEl = $state<HTMLOListElement | null>(null);
 
+  // Active popover: anchored to the dot row's viewport rect. Rendered as a
+  // section-level fixed-position panel so the strip's overflow-x:auto
+  // (which forces overflow-y clip per spec) can't crop it.
+  type DotPop = {
+    seq: number;
+    rect: DOMRect;
+    q: HistoryQualitySummary | null;
+  };
+  let activeDotPop = $state<DotPop | null>(null);
+  function openDotPop(e: MouseEvent | FocusEvent, h: ProjectHistoryEntry) {
+    const target = e.currentTarget as HTMLElement | null;
+    if (!target) return;
+    activeDotPop = {
+      seq: h.seq,
+      rect: target.getBoundingClientRect(),
+      q: h.quality_summary ?? null,
+    };
+  }
+  function closeDotPop() {
+    activeDotPop = null;
+  }
+
   // Auto-scroll to right edge on mount and on each new entry.
   $effect(() => {
     const len = project.history.length;
@@ -64,26 +86,18 @@
   function fmtIntegration(s: number): string {
     return s >= 3600 ? (s / 3600).toFixed(1) + 'h' : (s / 60).toFixed(0) + 'm';
   }
-  function fmtExp(n: number): string {
-    return n.toExponential(2);
+  function fmtSmall(n: number | null | undefined): string {
+    // Decimal with trimmed trailing zeros. Pipeline values live in [0, 1]
+    // (normalized) and tend to be very small; scientific notation reads
+    // poorly to most users, so stretch the precision to 6 decimals and
+    // strip the noise.
+    if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+    if (n === 0) return '0';
+    return n.toFixed(6).replace(/\.?0+$/, '');
   }
   function fmtFwhm(n: number | null): string {
     if (n === null) return '—';
     return n.toFixed(2) + ' px';
-  }
-  function tipIntegration(q: { integration_s: number | null } | null): string {
-    const v = q && q.integration_s !== null ? fmtIntegration(q.integration_s) : '—';
-    return `Integration: ${v}\nTotal useful exposure across sessions; longer = more depth`;
-  }
-  function tipNoise(q: { noise: number } | null): string {
-    const v = q ? fmtExp(q.noise) : '—';
-    return `Noise: ${v}\nBackground standard deviation; lower = cleaner`;
-  }
-  function tipSharpness(q: { sharpness: number; fwhm_px: number | null } | null): string {
-    if (!q) return 'Sharpness: —\nLaplacian variance + Siril findstar FWHM; higher = sharper';
-    const lap = fmtExp(q.sharpness);
-    const fwhm = q.fwhm_px !== null ? ` (FWHM ${fmtFwhm(q.fwhm_px)})` : '';
-    return `Sharpness: ${lap}${fwhm}\nLaplacian variance + Siril findstar FWHM; higher = sharper`;
   }
 
   // Compute per-metric medians from entries that have quality_summary.
@@ -178,10 +192,19 @@
           <span class="hist-seq muted">v{h.seq + 1}</span>
           <span class="hist-label">{shortHistoryLabel(h.label)}</span>
           <span class="hist-time muted small">{shortAgo(h.created_at)}</span>
-          <span class="dot-row" aria-label="Quality summary">
-            <span class="qdot qdot-{iColor}" title={tipIntegration(q)}></span>
-            <span class="qdot qdot-{nColor}" title={tipNoise(q)}></span>
-            <span class="qdot qdot-{sColor}" title={tipSharpness(q)}></span>
+          <span
+            class="dot-row"
+            aria-label="Quality summary"
+            onmouseenter={(e) => openDotPop(e, h)}
+            onmouseleave={closeDotPop}
+            onfocusin={(e) => openDotPop(e, h)}
+            onfocusout={closeDotPop}
+            tabindex="0"
+            role="button"
+          >
+            <span class="qdot qdot-{iColor}"></span>
+            <span class="qdot qdot-{nColor}"></span>
+            <span class="qdot qdot-{sColor}"></span>
           </span>
         </button>
         <button
@@ -246,6 +269,39 @@
       </li>
     {/each}
   </ol>
+
+  {#if activeDotPop}
+    <!-- Section-level so the strip's overflow-x:auto (which clips both
+         axes per spec) can't crop us. position:fixed anchors to the dot
+         row's viewport rect; on horizontal scroll mouseleave will close. -->
+    <div
+      class="dot-popover"
+      role="tooltip"
+      style:top="{activeDotPop.rect.bottom + 8}px"
+      style:left="{Math.max(8, activeDotPop.rect.left - 4)}px"
+    >
+      {#if activeDotPop.q}
+        {@const qp = activeDotPop.q}
+        <div class="dp-row">
+          <span class="dp-label">Integration</span>
+          <span class="dp-val">{qp.integration_s !== null ? fmtIntegration(qp.integration_s) : '—'}</span>
+        </div>
+        <div class="dp-def">Total useful exposure across sessions; longer = more depth</div>
+        <div class="dp-row">
+          <span class="dp-label">Noise</span>
+          <span class="dp-val">{fmtSmall(qp.noise)}</span>
+        </div>
+        <div class="dp-def">Background standard deviation; lower = cleaner</div>
+        <div class="dp-row">
+          <span class="dp-label">Sharpness</span>
+          <span class="dp-val">{fmtSmall(qp.sharpness)}{qp.fwhm_px !== null ? ' · ' + fmtFwhm(qp.fwhm_px) : ''}</span>
+        </div>
+        <div class="dp-def">Laplacian variance + Siril findstar FWHM; higher = sharper</div>
+      {:else}
+        <div class="dp-def">No quality data for this version</div>
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -486,6 +542,49 @@
   .qdot-none {
     background: transparent;
     border-color: var(--fg-mute, #666);
+  }
+
+  .dot-popover {
+    position: fixed;
+    z-index: 50;
+    min-width: 16rem;
+    max-width: 22rem;
+    padding: 0.55rem 0.7rem;
+    background: var(--bg-elev, #1a1d22);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .dp-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+  }
+  .dp-label {
+    color: var(--fg-mute, #888);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-family: var(--font-mono, monospace);
+  }
+  .dp-val {
+    font-family: var(--font-mono, monospace);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.78rem;
+    color: var(--fg, #ddd);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .dp-def {
+    font-size: 0.68rem;
+    color: var(--fg-mute, #888);
+    line-height: 1.3;
+    margin-bottom: 0.1rem;
   }
 
 </style>

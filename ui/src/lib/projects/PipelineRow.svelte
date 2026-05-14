@@ -80,12 +80,12 @@
 
   function fmtF(n: number | null | undefined): string {
     if (n === null || n === undefined || !Number.isFinite(n)) return '—';
-    // Scientific notation for very small or very large values so we don't
-    // bottom out at 0.0000 (background sigma is typically 1e-5 to 1e-3 on
-    // stretched output) or push the column wide.
-    const abs = Math.abs(n);
-    if (abs !== 0 && (abs < 1e-3 || abs >= 1e6)) return n.toExponential(2);
-    return n.toFixed(4);
+    if (n === 0) return '0';
+    // Decimal with trimmed trailing zeros. Scientific notation reads poorly;
+    // pipeline values live in [0, 1] (normalized) so 6 decimals is enough to
+    // not bottom out at 0.0000 for very small sigmas while keeping the
+    // number scannable.
+    return n.toFixed(6).replace(/\.?0+$/, '');
   }
   function fmtPct(n: number | null | undefined): string {
     if (n === null || n === undefined || !Number.isFinite(n)) return '—';
