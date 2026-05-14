@@ -140,7 +140,7 @@ def _gpu_available() -> bool:
 class GraxpertNode(Node[GraxpertParams]):
     id = "graxpert"
     version = 2
-    cost = "expensive"
+    tier = "keep"
     preview_display_ready = True
 
     inputs = {"image": PortType.IMAGE_FITS}

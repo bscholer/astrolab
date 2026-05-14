@@ -148,7 +148,7 @@ class CropParams(BaseModel):
 class CropNode(Node[CropParams]):
     id = "crop"
     version = 2
-    cost = "cheap"
+    tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
     outputs = {"image": PortType.IMAGE_FITS}

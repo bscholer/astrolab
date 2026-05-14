@@ -77,7 +77,7 @@ class ColorBalanceParams(BaseModel):
 class ColorBalanceNode(Node[ColorBalanceParams]):
     id = "color_balance"
     version = 1
-    cost = "cheap"
+    tier = "keep"
     uses_siril = True
 
     inputs = {"image": PortType.IMAGE_FITS}

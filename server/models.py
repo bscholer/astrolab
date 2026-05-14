@@ -16,9 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .ports import PortType
 
-CostClass = Literal["cheap", "medium", "expensive"]
-"""Drives UI affordances: cheap nodes auto-rerun, expensive nodes need confirmation."""
-
 
 class Ref(BaseModel):
     """Opaque handle to a cache entry produced by a node.

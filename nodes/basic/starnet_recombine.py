@@ -67,7 +67,7 @@ class StarnetRecombineParams(BaseModel):
 class StarnetRecombineNode(Node[StarnetRecombineParams]):
     id = "starnet_recombine"
     version = 1
-    cost = "cheap"
+    tier = "keep"
     preview_display_ready = True
 
     inputs = {

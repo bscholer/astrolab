@@ -5,8 +5,12 @@
   triggers POST /api/storage/cleanup which evicts entries until the cache
   fits under the budget. Eviction order:
     1. Unreachable entries (deleted projects, half-runs) always go first.
-    2. Reachable entries by ascending score (cost × recency); cheap
-       outputs from old projects evict before expensive recent stuff.
+    2. Bulk-tier entries (pre-stack sequence data — convert/calibrate/
+       register/etc.) by oldest owning project first.
+    3. Keep-tier entries (stack output and post-stack work) only when 1
+       and 2 didn't free enough.
+    Entries held by a running job are never evicted; see the in-use
+    lockfile protocol in server/cache.py.
 -->
 <script lang="ts">
   import { api, type StorageSnapshot } from '$lib/api';
@@ -475,10 +479,10 @@
   <section class="panel">
     <h2>Cache budget</h2>
     <p class="muted small">
-      Eviction sweeps will trim the cache to this size. Order: dead
-      entries first; reachable entries by ascending
-      <em>cost × recency</em> score (cheap outputs from old projects
-      first, expensive recent ones last).
+      Eviction sweeps trim the cache to this size. Orphans go first, then
+      pre-stack bulk data (oldest project first), and only as a last
+      resort the stack output and post-stack work. Anything a running
+      job is reading or writing is held back via the in-use lockfile.
     </p>
     <div class="slider-row">
       <input
