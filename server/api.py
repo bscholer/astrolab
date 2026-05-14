@@ -83,7 +83,7 @@ from server.job_builder import (
 )
 from server.jobs import JobManager
 from server.models import CalibrationSpec, Job, Template
-from server.preview import PreviewError, render_preview
+from server.preview import PreviewError, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
 from server.quality import (
     compute_quality_for_record,
@@ -3583,6 +3583,34 @@ def get_preview(
         # autostretch swap, MTF tweaks, etc.). max-age covers a normal session
         # and dropping `immutable` lets a hard refresh actually fetch the new
         # render after a code change.
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+
+
+@app.get("/api/output/{node_hash}/{port}")
+def get_output(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
+    """Full-resolution artifact for `(node_hash, port)`.
+
+    For PNG outputs, serves the committed file directly (no re-encode,
+    no thumbnailing). For FITS, autostretches at full resolution and
+    caches the result inside the entry as `_output_<port>.png`. Use this
+    for the "Open full" / download affordance; /api/preview returns a
+    512px thumbnail for the in-page tiles.
+    """
+    manifest = job_manager.cache.load_outputs(node_hash)
+    display_ready = False
+    if manifest is not None and port in manifest:
+        display_ready = manifest[port].display_ready
+    try:
+        path = render_output(
+            job_manager.cache, node_hash, port,
+            neutral=bool(neutral), display_ready=display_ready,
+        )
+    except PreviewError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="image/png",
         headers={"Cache-Control": "public, max-age=60"},
     )
 

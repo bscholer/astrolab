@@ -984,5 +984,12 @@ export const api = {
     // display-ready linear data), which the regular preview endpoint would
     // serve unmodified -- near-black for linear astrophoto data.
     return `/api/preview/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}&force_stretch=1`;
+  },
+  outputUrl(nodeHash: string, port: string): string {
+    // Full-resolution artifact. PNG outputs are served as-is from the cache
+    // (no thumbnail re-encode); FITS gets autostretched at full res and
+    // cached. Use this for the "Open full" affordance on terminal nodes;
+    // the in-page tiles still use previewUrl().
+    return `/api/output/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}`;
   }
 };
