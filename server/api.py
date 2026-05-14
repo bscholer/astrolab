@@ -2940,17 +2940,19 @@ def storage_cleanup(req: CleanupRequest | None = None) -> dict:
         )
     result = run_cleanup(job_manager.cache, max_bytes=max_bytes, db_path=job_manager.db_path)
     log.info(
-        "storage cleanup: evicted=%d freed=%d remaining=%d over_budget=%s",
+        "storage cleanup: evicted=%d freed=%d remaining=%d over_budget=%s skipped_in_use=%d",
         result.evicted_count,
         result.bytes_freed,
         result.bytes_remaining,
         result.over_budget,
+        result.skipped_in_use_count,
     )
     return {
         "evicted_count": result.evicted_count,
         "bytes_freed": result.bytes_freed,
         "bytes_remaining": result.bytes_remaining,
         "over_budget": result.over_budget,
+        "skipped_in_use_count": result.skipped_in_use_count,
         "max_bytes": max_bytes,
     }
 

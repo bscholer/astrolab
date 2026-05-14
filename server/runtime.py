@@ -44,6 +44,21 @@ def _noop_events(_event: dict) -> None:
     pass
 
 
+def _input_node_hashes(resolved: dict[str, Ref | list[Ref]]) -> set[str]:
+    """Collect the unique upstream entry hashes a node will read from.
+
+    Used by the in-use marker plumbing so eviction can't rmtree an input
+    dir while the consuming node is mid-stream.
+    """
+    out: set[str] = set()
+    for v in resolved.values():
+        if isinstance(v, list):
+            out.update(r.node_hash for r in v)
+        else:
+            out.add(v.node_hash)
+    return out
+
+
 def _locate_port_artifact(cached_dir: Path, port: str) -> Path | None:
     """Convention-based fallback for legacy cache entries with no manifest.
 
@@ -142,6 +157,7 @@ def run_job(
     events: EventFn | None = None,
     force: bool = False,
     cancel: threading.Event | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Ref]:
     """Execute a Job and return a map of declared template outputs to Refs.
 
@@ -162,6 +178,13 @@ def run_job(
     propagated into each node's RunContext so subprocess-wrapping nodes can
     abort mid-run. Set this when the job is superseded (eg the user tweaked
     a slider mid-pipeline) to free the worker for the new job.
+
+    `job_id`: when set, each node that runs (cache miss) stamps an in-use
+    marker on its output entry dir and every input entry dir for the
+    duration of the job. Cache eviction skips marked entries so a
+    concurrent cleanup can't rmtree the inputs while a node is mid-read.
+    Caller is responsible for clearing the marks at job termination via
+    `ContentCache.release_job_marks(job_id)`.
     """
     cache_obj: ContentCache = cache if cache is not None else ContentCache()
     on_progress: ProgressFn = progress if progress is not None else _noop_progress
@@ -279,6 +302,16 @@ def run_job(
         # Cache miss (or force): run the node, write outputs into the
         # reserved entry dir. force=True wipes any existing committed entry.
         out_dir = cache_obj.reserve(h, force=force)
+
+        # Stamp in-use markers on the output dir and every input we're
+        # about to read, so a concurrent storage cleanup can't rmtree
+        # them out from under this node. The markers are released in
+        # bulk when the job terminates; per-node release would be
+        # over-engineered for the cost (empty marker files).
+        if job_id is not None:
+            cache_obj.mark_in_use(h, job_id)
+            for input_hash in _input_node_hashes(resolved_inputs):
+                cache_obj.mark_in_use(input_hash, job_id)
 
         def _node_progress(f: float, m: str, _nid: str = nid) -> None:
             on_progress(f, f"{_nid}: {m}")
