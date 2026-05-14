@@ -1264,7 +1264,7 @@ def _describe_node(node_cls: type) -> dict[str, Any]:
 
     return {
         "version": node_cls.version,
-        "cost": node_cls.cost,
+        "tier": node_cls.tier,
         "uses_siril": node_cls.uses_siril,
         "inputs": inputs,
         "outputs": outputs,
@@ -3381,13 +3381,12 @@ def get_tonight(
 
 @app.get("/api/templates/{template_id}/schema")
 def get_template_schema(template_id: str) -> dict:
-    """Return per-node parameter JSON schemas + cost class for a template.
+    """Return per-node parameter JSON schemas for a template.
 
-    The UI uses this to auto-build param forms with cost-aware affordances.
-    Each entry mirrors the template's NodeSpec but adds the Pydantic
-    JSON-Schema (with descriptions, ge/le, enums, defaults) and the node
-    class's cost label. Downstream-closure cost is derived in the UI from
-    the template's edge graph.
+    The UI uses this to auto-build param forms. Each entry mirrors the
+    template's NodeSpec but adds the Pydantic JSON-Schema (descriptions,
+    ge/le, enums, defaults) so the UI doesn't need to read Python at
+    runtime.
     """
     try:
         template = load_template(template_id)

@@ -1,7 +1,7 @@
 """Node base class.
 
 A Node is a typed, cacheable unit of work. Subclasses fill in `id`, `version`,
-`cost`, `inputs`, `outputs`, `params_schema`, and `run()`. The runtime is
+`tier`, `inputs`, `outputs`, `params_schema`, and `run()`. The runtime is
 responsible for hashing, caching, and supplying the RunContext; nodes should
 focus on the actual work.
 """
@@ -9,12 +9,18 @@ focus on the actual work.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
-from server.models import CostClass, Ref, RunContext
+from server.models import Ref, RunContext
 from server.ports import PortType
+
+NodeTier = Literal["bulk", "keep"]
+"""Storage tier used by cache eviction. `bulk` (default) covers pre-stack
+sequence nodes whose outputs are large (hundreds of FITS frames). `keep`
+is for the stack output and everything downstream — small artifacts that
+represent the user's accumulated work, evicted only as a last resort."""
 
 
 class Node[ParamsT: BaseModel](ABC):
@@ -31,7 +37,10 @@ class Node[ParamsT: BaseModel](ABC):
     version: ClassVar[int] = 1
     """Bump when the node's behavior or output format changes."""
 
-    cost: ClassVar[CostClass] = "cheap"
+    tier: ClassVar[NodeTier] = "bulk"
+    """Storage tier for cache eviction. Pre-stack sequence nodes leave the
+    default `bulk` (large, regeneratable from raw frames). The stack node
+    and every post-stack consumer overrides to `keep`."""
 
     uses_siril: ClassVar[bool] = False
     """True when this node shells out to Siril. The runtime mixes the Siril

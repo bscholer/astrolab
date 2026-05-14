@@ -11,11 +11,13 @@ Three things live here:
    us answer "what does this project own vs share?" without re-walking
    the event log per request.
 
-3. **Eviction**: score every reachable cache entry by
-   `cost_weight * recency_weight`, sort ascending, evict from the front
-   until the cache fits under a configured budget. Dead (unreachable)
-   entries always go first regardless of score so a deleted project
-   frees its cache without a separate code path.
+3. **Eviction**: order entries by (orphan, tier, oldest-owner-updated-at)
+   and evict until the cache fits under the configured budget. Orphans
+   go first, then bulk-tier entries (pre-stack sequence data) oldest
+   project first, then keep-tier entries (stack output and post-stack
+   work) only if budget pressure is still on. Entries with a live
+   in-use marker from a running job are skipped — see ContentCache's
+   lockfile protocol.
 
 The module talks to the catalog DB and the ContentCache; it does NOT
 import any FastAPI shapes so it stays test-friendly.
@@ -54,15 +56,14 @@ class CacheEntryInfo:
     owners: set[str] = field(default_factory=set)
     """Project ids whose history references this entry. Empty = unreachable."""
 
-    # Heuristic metadata used by the scorer. Filled in best-effort: when
-    # multiple jobs across multiple renderings touched the same hash, we
-    # take the max recency (newest) and the min cost (cheapest to recompute).
-    cost: str = "expensive"
-    """Cost class of the producing node ("cheap" / "medium" / "expensive").
-    Defaults to expensive so we err on the side of keeping when uncertain."""
-    last_used_at: str | None = None
-    """ISO timestamp of the most recent history entry that references this
-    cache hash. Drives the recency weight."""
+    tier: str = "bulk"
+    """Storage tier of the producing node. `bulk` (pre-stack sequence data)
+    or `keep` (stack output and everything downstream). Bulk evicts before
+    keep. Defaults to bulk so an unknown tier doesn't accidentally protect
+    a huge entry from eviction."""
+    oldest_owner_updated_at: str | None = None
+    """ISO timestamp of the least-recently-updated project that owns this
+    entry. Used within a tier to evict oldest-project entries first."""
 
 
 @dataclass
@@ -159,7 +160,7 @@ def build_reachability(
         elif isinstance(raw, list):
             job_hashes_raw[j["id"]] = [h for h in raw if isinstance(h, str)]
 
-    def _node_cost_map(template_json: str) -> dict[str, str]:
+    def _node_tier_map(template_json: str) -> dict[str, str]:
         try:
             t = Template.model_validate(json.loads(template_json))
         except Exception:
@@ -168,27 +169,29 @@ def build_reachability(
         for spec in t.nodes:
             try:
                 cls: type[Node] = registry_lookup(spec.kind, spec.variant)
-                out[spec.id] = cls.cost
+                out[spec.id] = cls.tier
             except KeyError:
                 continue
         return out
 
     # We don't have a stored mapping from node_hash to its (kind, variant),
-    # so we approximate: walk each history entry, infer per-node cost from
-    # the template, and assign the project's per-node cost to each hash
-    # that node touched. Multiple visits to the same hash take the cheapest
-    # (most replaceable) cost so the eviction scorer doesn't over-protect
-    # a hash because some other project classed it as expensive.
-    cost_rank = {"cheap": 0, "medium": 1, "expensive": 2}
+    # so we approximate: walk each history entry, infer per-node tier from
+    # the template, and assign each hash the tier of any node that produced
+    # it. Multiple projects that touched the same hash always run the same
+    # node implementation, so tier is stable; if a tier mismatch ever shows
+    # up we promote to `keep` to avoid evicting something a downstream user
+    # is counting on.
+    tier_rank = {"bulk": 0, "keep": 1}
 
     for pid, p in projects.items():
-        cost_map = _node_cost_map(p["template_json"])
+        tier_map = _node_tier_map(p["template_json"])
         template = Template.model_validate(json.loads(p["template_json"]))
         # Look up specs by node_id rather than list position so YAML
         # declaration order can differ from topo execution order without
-        # mis-attributing cost class and last-used timestamps to the
-        # wrong node.
+        # mis-attributing tier and oldest-owner timestamps to the wrong
+        # node.
         spec_by_id = {spec.id: spec for spec in template.nodes}
+        project_updated = p["updated_at"]
         history = conn.execute(
             "SELECT seq, job_id, created_at FROM project_history "
             "WHERE project_id = ? ORDER BY seq ASC",
@@ -216,12 +219,13 @@ def build_reachability(
                 entry.owners.add(pid)
                 spec = spec_by_id.get(node_id)
                 if spec is not None:
-                    cost = cost_map.get(spec.id, "expensive")
-                    if cost_rank.get(cost, 2) < cost_rank.get(entry.cost, 2):
-                        entry.cost = cost
-                created = h["created_at"]
-                if entry.last_used_at is None or created > entry.last_used_at:
-                    entry.last_used_at = created
+                    tier = tier_map.get(spec.id, "bulk")
+                    if tier_rank.get(tier, 0) > tier_rank.get(entry.tier, 0):
+                        entry.tier = tier
+                if entry.oldest_owner_updated_at is None or (
+                    project_updated < entry.oldest_owner_updated_at
+                ):
+                    entry.oldest_owner_updated_at = project_updated
 
     return entries, projects
 
@@ -404,48 +408,33 @@ def _terminal_output_hashes(
 
 
 # ---------------------------------------------------------------------------
-# Eviction scorer
+# Eviction ordering
 # ---------------------------------------------------------------------------
 
 
-COST_WEIGHT = {"cheap": 1, "medium": 4, "expensive": 16}
-"""Multiplier on the score: more expensive = higher score = kept longer."""
+# Pre-stack bulk dwarfs everything downstream by orders of magnitude (think
+# 1 TB of registered FITS vs ~100 MB of post-stack edits). Eviction picks
+# tiers in this order: orphans (no owners) regardless of tier, then bulk
+# entries oldest-project-first, then keep entries only if budget is still
+# blown. Within each tier we evict the entry whose oldest-owning project
+# has the stalest updated_at first, so an iterative-stretch project doesn't
+# hand its register cache to an abandoned target's history.
+_TIER_ORDER = {"bulk": 0, "keep": 1}
 
 
-def _recency_weight(updated_at: str | None) -> float:
-    """Multiplier driven by how recently any history entry referenced an
-    entry. Recent = high weight (kept longer).
-        <1 day  -> 4×
-        <1 week -> 2×
-        <1 mo   -> 1×
-        else    -> 0.5×
-    Unknown timestamps are treated as ancient (0.5×) so we err on the side
-    of evicting orphans.
+def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
+    """Sort key: lower = evict sooner.
+
+    Position 0: orphan-flag (0 = no owners, 1 = has owners) so unreachable
+    entries always go first.
+    Position 1: tier rank (bulk=0, keep=1).
+    Position 2: oldest-owner timestamp ascending; unknown sorts after
+    populated values so we don't accidentally prioritize an undated entry.
     """
-    if not updated_at:
-        return 0.5
-    try:
-        ts = datetime.fromisoformat(updated_at)
-    except ValueError:
-        return 0.5
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
-    age_days = (datetime.now(UTC) - ts).total_seconds() / 86400
-    if age_days < 1:
-        return 4.0
-    if age_days < 7:
-        return 2.0
-    if age_days < 30:
-        return 1.0
-    return 0.5
-
-
-def score_entry(entry: CacheEntryInfo) -> float:
-    """Higher score = keep longer. Unreachable (no owners) -> 0 so they
-    always rank below anything reachable."""
-    if not entry.owners:
-        return 0.0
-    return COST_WEIGHT.get(entry.cost, 16) * _recency_weight(entry.last_used_at)
+    has_owners = 1 if entry.owners else 0
+    tier_rank = _TIER_ORDER.get(entry.tier, 0)
+    age_key = entry.oldest_owner_updated_at or "￿"
+    return (has_owners, tier_rank, age_key)
 
 
 @dataclass
@@ -486,10 +475,15 @@ def run_cleanup(
 ) -> CleanupResult:
     """Evict cache entries until total usage is <= max_bytes.
 
-    Order: dead entries first (score 0, regardless of size), then
-    reachable entries by ascending score. Within ties we don't currently
-    sub-sort by size — the scoring already biases away from cheap/old
-    pairs, so the ordering is stable enough for now.
+    Eviction order (lower = evict first):
+      1. Orphans (no project owns them) regardless of tier.
+      2. Bulk-tier entries (pre-stack sequence data), oldest project first.
+      3. Keep-tier entries (stack output and post-stack work). Only touched
+         when 1 and 2 didn't reclaim enough.
+
+    Entries with a live in-use marker are skipped regardless of position;
+    the lockfile protocol guarantees a running job's reads/writes survive
+    a concurrent cleanup.
     """
     with _conn(db_path) as conn:
         entries, _ = build_reachability(conn, cache)
@@ -510,7 +504,7 @@ def run_cleanup(
             over_budget=False,
         )
 
-    ordered = sorted(entries.values(), key=lambda e: (score_entry(e), -e.bytes))
+    ordered = sorted(entries.values(), key=_eviction_key)
     log.info(
         "run_cleanup start: total=%d max=%d over_by=%d entries=%d alive_jobs=%d",
         total,
@@ -535,18 +529,21 @@ def run_cleanup(
                 sorted(cache.in_use_by(e.node_hash) & alive),
             )
             continue
-        score = score_entry(e)
-        reason = "orphan" if not e.owners else "over-budget"
+        if not e.owners:
+            reason = "orphan"
+        elif e.tier == "keep":
+            reason = "over-budget-keep"
+        else:
+            reason = "over-budget-bulk"
         log.info(
-            "run_cleanup pick: hash=%s reason=%s score=%.2f bytes=%d "
-            "cost=%s owners=%d last_used=%s",
+            "run_cleanup pick: hash=%s reason=%s bytes=%d tier=%s owners=%d "
+            "oldest_owner=%s",
             e.node_hash[:12],
             reason,
-            score,
             e.bytes,
-            e.cost,
+            e.tier,
             len(e.owners),
-            e.last_used_at or "never",
+            e.oldest_owner_updated_at or "never",
         )
         bytes_freed += cache.evict(e.node_hash, reason=reason)
         evicted_count += 1

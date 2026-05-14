@@ -167,7 +167,7 @@ class SeqStackParams(BaseModel):
 class SeqStackNode(Node[SeqStackParams]):
     id = "seq_stack"
     version = 1
-    cost = "expensive"
+    tier = "keep"
     uses_siril = True
 
     inputs = {"sequence": PortType.SEQUENCE_FITS}

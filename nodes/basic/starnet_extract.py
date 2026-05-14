@@ -72,7 +72,7 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
     id = "starnet_extract"
     version = 2  # bumped: now does FITS<->TIFF + LD_LIBRARY_PATH
 
-    cost = "expensive"
+    tier = "keep"
     preview_display_ready = True
 
     inputs = {"image": PortType.IMAGE_FITS}

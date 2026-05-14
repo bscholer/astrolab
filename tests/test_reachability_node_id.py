@@ -19,7 +19,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-import nodes.basic  # noqa: F401  registers stretch (cheap) and seq_stack (expensive)
+import nodes.basic  # noqa: F401  registers seq_register (bulk) and seq_stack (keep)
 from server.catalog.db import connect as open_catalog_db
 from server.models import Job, NodeSpec, Ref, Template
 from server.ports import PortType
@@ -35,12 +35,13 @@ def _make_db(tmp_path: Path) -> Path:
 def _yaml_out_of_topo_template() -> Template:
     """Template whose YAML order disagrees with topological order.
 
-    YAML order:    [stretch, seq_stack]   (cheap, expensive)
-    Topo order:    [seq_stack, stretch]   (expensive feeds stretch)
+    YAML order:    [seq_stack, seq_register]   (keep, bulk)
+    Topo order:    [seq_register, seq_stack]   (bulk feeds keep)
 
-    If storage indexes hashes by YAML position, the expensive node's hash
-    gets the cheap cost class and vice versa, exactly the bug we're
-    fixing.
+    If storage indexes hashes by YAML position, the keep-tier node's
+    hash gets attributed to the bulk-tier node and vice versa — exactly
+    the bug we're fixing. Pairing a bulk node with a keep node gives the
+    assertion something to discriminate on.
     """
     return Template(
         id="ooo",
@@ -49,11 +50,11 @@ def _yaml_out_of_topo_template() -> Template:
         nodes=[
             NodeSpec(
                 id="downstream",
-                kind="stretch",
+                kind="seq_stack",
                 params={},
-                inputs={"image": "upstream.image"},
+                inputs={"sequence": "upstream.sequence"},
             ),
-            NodeSpec(id="upstream", kind="seq_stack", params={}),
+            NodeSpec(id="upstream", kind="seq_register", params={}),
         ],
         outputs={"final": "downstream.image"},
     )
@@ -74,11 +75,11 @@ def _seed_project(
         template_id=template.id,
         template_version=template.version,
         inputs={
-            "upstream.image": Ref(
+            "upstream.sequence": Ref(
                 node_hash="ext",
-                port="image",
+                port="sequence",
                 path=Path("/dev/null"),
-                type=PortType.IMAGE_FITS,
+                type=PortType.SEQUENCE_FITS,
             ),
         },
     )
@@ -175,9 +176,9 @@ def test_dict_payload_attributes_by_node_id(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    # The fix: cost class follows node identity, not YAML position.
-    assert entries["hash-upstream"].cost == "expensive"  # seq_stack
-    assert entries["hash-downstream"].cost == "cheap"  # stretch
+    # The fix: tier follows node identity, not YAML position.
+    assert entries["hash-upstream"].tier == "bulk"  # seq_register
+    assert entries["hash-downstream"].tier == "keep"  # seq_stack
     # Owners populated for both.
     assert entries["hash-upstream"].owners == {"proj-dict"}
     assert entries["hash-downstream"].owners == {"proj-dict"}
@@ -213,8 +214,8 @@ def test_legacy_list_payload_still_attributes(tmp_path: Path) -> None:
     # Both hashes get owned (no crash, no silent dropouts on the legacy path).
     assert entries["hash-a"].owners == {"proj-list"}
     assert entries["hash-b"].owners == {"proj-list"}
-    # Pre-fix attribution by list index: template.nodes[0]=downstream(stretch,
-    # cheap), template.nodes[1]=upstream(seq_stack, expensive). The legacy
+    # Pre-fix attribution by list index: template.nodes[0]=downstream(seq_stack,
+    # keep), template.nodes[1]=upstream(seq_register, bulk). The legacy
     # path keeps that pairing exactly so old records don't change meaning.
-    assert entries["hash-a"].cost == "cheap"
-    assert entries["hash-b"].cost == "expensive"
+    assert entries["hash-a"].tier == "keep"
+    assert entries["hash-b"].tier == "bulk"

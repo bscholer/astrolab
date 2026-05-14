@@ -80,7 +80,7 @@ class AutoBpShiftParams(BaseModel):
 class AutoBpShiftNode(Node[AutoBpShiftParams]):
     id = "auto_bp_shift"
     version = 1
-    cost = "cheap"
+    tier = "keep"
     uses_siril = True
 
     inputs = {"image": PortType.IMAGE_FITS}
