@@ -377,6 +377,42 @@ export interface NodeWarning {
   details?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Dark preview
+//
+// Per-bin breakdown returned by GET /api/sessions/dark-preview for a bundle
+// of session IDs. Mirrors what build_from_sessions feeds the calibrate node
+// at job-build time — surfaced in the manage-sessions modal so the user
+// sees the calibration plan BEFORE submitting a render.
+// ---------------------------------------------------------------------------
+
+export interface DarkBinPreview {
+  exptime: number;
+  gain: number | null;
+  binning: number | null;
+  temp_bin_c: number | null;
+  frame_count: number;
+  master_id: number | null;
+  master_path: string | null;
+  master_name: string | null;
+  quality: string;
+  delta_c: number | null;
+  fallback: boolean;
+}
+
+export interface DarkPreviewSummary {
+  total_frames: number;
+  matched_frames: number;
+  unmatched_frames: number;
+  fallback_frames: number;
+  darks_used: number;
+}
+
+export interface DarkPreviewResponse {
+  bins: DarkBinPreview[];
+  summary: DarkPreviewSummary;
+}
+
 export type CalibrationMode = 'auto' | 'explicit' | 'none';
 export interface CalibrationSpec {
   mode: CalibrationMode;
@@ -814,6 +850,10 @@ export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
   getSession: (id: number) => getJSON<SessionSummary>(`/api/sessions/${id}`),
+  getDarkPreview: (sessionIds: number[]) => {
+    const qs = sessionIds.map((id) => `session_id=${id}`).join('&');
+    return getJSON<DarkPreviewResponse>(`/api/sessions/dark-preview${qs ? `?${qs}` : ''}`);
+  },
   patchSession: (id: number, req: SessionPatchRequest) =>
     patchJSON<SessionPatchResponse>(`/api/sessions/${id}`, req),
   getSessionReassignCandidates: (id: number) =>

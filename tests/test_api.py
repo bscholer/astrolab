@@ -167,6 +167,47 @@ def test_scan_endpoint(tmp_path: Path, astrolab_home: Path) -> None:
     assert stats["masters_inserted"] >= 1
 
 
+def test_dark_preview_empty_when_no_session_ids(client: TestClient) -> None:
+    """Empty bundle = empty bins, empty summary. Useful sentinel so the UI
+    can render the modal even before the user has picked anything."""
+    r = client.get("/api/sessions/dark-preview")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bins"] == []
+    assert body["summary"] == {
+        "total_frames": 0,
+        "matched_frames": 0,
+        "unmatched_frames": 0,
+        "fallback_frames": 0,
+        "darks_used": 0,
+    }
+
+
+def test_dark_preview_matches_seeded_bundle(client: TestClient) -> None:
+    """The seeded tree has one 30s light at 24C and one factory dark
+    at exptime=30, ccd_temp=24 — they should match into a single bin
+    with the master picked from the catalog."""
+    # No /api/sessions list endpoint; reach a session id via the target.
+    targets = client.get("/api/targets").json()
+    assert targets, "fixture should seed at least one target"
+    detail = client.get(f"/api/targets/{targets[0]['id']}").json()
+    assert detail["sessions"], "target should have at least one session"
+    sid = detail["sessions"][0]["id"]
+    r = client.get(f"/api/sessions/dark-preview?session_id={sid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["bins"]) == 1, body
+    bin0 = body["bins"][0]
+    assert bin0["exptime"] == 30.0
+    assert bin0["frame_count"] >= 1
+    assert bin0["master_id"] is not None
+    assert bin0["master_name"]
+    assert bin0["master_name"].endswith(".fits")
+    assert bin0["fallback"] is False
+    assert body["summary"]["unmatched_frames"] == 0
+    assert body["summary"]["darks_used"] == 1
+
+
 def test_scan_endpoint_rejects_missing_root(astrolab_home: Path) -> None:
     client = TestClient(app)
     r = client.post(

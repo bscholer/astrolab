@@ -20,6 +20,7 @@
   import {
     api,
     type CalibrationStatus,
+    type DarkPreviewResponse,
     type Project,
     type SessionSummary,
     type SuggestedAdditions,
@@ -82,6 +83,13 @@
   let modalEvictionBytes = $state<number>(0);
   let modalSaving = $state(false);
   let modalError = $state<string | null>(null);
+  // Dark-preview state: refetched every time `modalSelected` changes so
+  // the per-(exptime, temp) bin breakdown stays in sync with the user's
+  // checkbox tweaks. Held alongside the eviction preview because they
+  // serve the same "what will happen if I save?" question.
+  let darkPreview = $state<DarkPreviewResponse | null>(null);
+  let darkPreviewLoading = $state(false);
+  let darkPreviewToken = 0;
 
   // ---- Source sessions (read-only collapsible) ---------------------
   // The "Sessions used" `<details>` lazily fans out api.getSession
@@ -451,6 +459,8 @@
     sessionRows = [];
     modalEvictionBytes = 0;
     modalError = null;
+    darkPreview = null;
+    darkPreviewLoading = false;
   }
 
   async function openManageSessions() {
@@ -473,7 +483,7 @@
         (a.started_at ?? '').localeCompare(b.started_at ?? '')
       );
       modalSelected = new Set(existingIds);
-      await refreshEvictionPreview();
+      await Promise.all([refreshEvictionPreview(), refreshDarkPreview()]);
     } catch (e) {
       modalError = (e as Error).message;
     } finally {
@@ -490,6 +500,29 @@
     if (next.has(sid)) next.delete(sid);
     else next.add(sid);
     modalSelected = next;
+    refreshDarkPreview();
+  }
+
+  async function refreshDarkPreview() {
+    // Token + last-write-wins guard: rapid checkbox toggles fire many
+    // overlapping requests and they may resolve out of order.
+    const myToken = ++darkPreviewToken;
+    if (modalSelected.size === 0) {
+      darkPreview = null;
+      darkPreviewLoading = false;
+      return;
+    }
+    darkPreviewLoading = true;
+    try {
+      const r = await api.getDarkPreview(Array.from(modalSelected));
+      if (myToken !== darkPreviewToken) return;
+      darkPreview = r;
+    } catch {
+      if (myToken !== darkPreviewToken) return;
+      darkPreview = null;
+    } finally {
+      if (myToken === darkPreviewToken) darkPreviewLoading = false;
+    }
   }
 
   async function refreshEvictionPreview() {
@@ -1107,6 +1140,64 @@
           {/if}
         </div>
 
+        <!-- Calibration plan: per-(exptime, temp) bin breakdown of what
+             calibrate will do at run time. Surfaces unmatched and
+             fallback bins up front so the user isn't surprised by a
+             warning chip on the calibrate node after the fact. -->
+        {#if darkPreview && darkPreview.summary.total_frames > 0}
+          {@const sum = darkPreview.summary}
+          <div class="dark-plan">
+            <div class="dark-plan-head">
+              <span class="dark-plan-title">Calibration plan</span>
+              <span class="muted small">
+                {sum.darks_used} dark{sum.darks_used === 1 ? '' : 's'} across
+                {darkPreview.bins.length} bin{darkPreview.bins.length === 1 ? '' : 's'}
+                {#if darkPreviewLoading}<span class="muted small"> · updating…</span>{/if}
+              </span>
+            </div>
+            {#if sum.unmatched_frames > 0}
+              <div class="dark-plan-warn">
+                {sum.unmatched_frames.toLocaleString()} frame{sum.unmatched_frames === 1 ? '' : 's'}
+                have no matching dark — they'll run debayer-only (no dark
+                subtraction). Capture darks for that exposure / gain, or
+                enable
+                <code>exclude_uncalibratable</code> on calibrate to drop them.
+              </div>
+            {/if}
+            {#if sum.fallback_frames > 0}
+              <div class="dark-plan-warn dark-plan-soft">
+                {sum.fallback_frames.toLocaleString()} frame{sum.fallback_frames === 1 ? '' : 's'}
+                will use a dark outside the ±5 °C tolerance window
+                — calibration is best-effort for those bins.
+              </div>
+            {/if}
+            <ul class="dark-plan-bins">
+              {#each darkPreview.bins as b (b.master_path ?? `none-${b.exptime}-${b.temp_bin_c}`)}
+                <li class="dark-plan-bin" class:bin-unmatched={!b.master_id} class:bin-fallback={b.fallback}>
+                  <span class="bin-key">
+                    {b.exptime}s
+                    {#if b.gain != null}· gain {b.gain}{/if}
+                    {#if b.temp_bin_c != null}· {b.temp_bin_c.toFixed(0)} °C{/if}
+                  </span>
+                  <span class="bin-count">{b.frame_count.toLocaleString()} frames</span>
+                  <span class="bin-master muted small">
+                    {#if b.master_name}
+                      → {b.master_name}{#if b.delta_c != null && Math.abs(b.delta_c) > 0.01}
+                        <span class="bin-delta" title="Master temp vs frame bin temp"
+                          >Δ{b.delta_c > 0 ? '+' : ''}{b.delta_c.toFixed(1)} °C</span>
+                      {/if}
+                    {:else}
+                      → no matching dark
+                    {/if}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {:else if darkPreviewLoading}
+          <p class="muted small">Loading calibration plan…</p>
+        {/if}
+
         <footer class="manage-dialog-foot">
           <button type="button" class="hbtn" onclick={closeManageSessions} disabled={modalSaving}>Cancel</button>
           <button
@@ -1538,6 +1629,81 @@
   .manage-diff {
     padding: 0.4rem 0.5rem;
     border-top: 1px solid var(--border, #444);
+  }
+  /* Dark calibration plan: shown between the diff line and the
+     save footer. Visually compact so it doesn't push the save
+     button below the fold for typical bundles, but readable
+     enough to be the deciding signal before clicking Save. */
+  .dark-plan {
+    padding: 0.5rem 0.6rem;
+    border-top: 1px solid var(--border, #444);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .dark-plan-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .dark-plan-title {
+    font-weight: 600;
+  }
+  .dark-plan-warn {
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: var(--bad, #f87171);
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 6px;
+    padding: 0.35rem 0.5rem;
+  }
+  .dark-plan-warn.dark-plan-soft {
+    color: var(--warn, #fbbf24);
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.35);
+  }
+  .dark-plan-warn code {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0 0.2rem;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+  }
+  .dark-plan-bins {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .dark-plan-bin {
+    display: grid;
+    grid-template-columns: minmax(8rem, max-content) minmax(5rem, max-content) 1fr;
+    gap: 0.5rem;
+    align-items: baseline;
+    font-size: 0.8rem;
+    padding: 0.15rem 0.3rem;
+    border-radius: 4px;
+  }
+  .dark-plan-bin .bin-master {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dark-plan-bin.bin-unmatched {
+    background: rgba(248, 113, 113, 0.06);
+    color: var(--bad, #f87171);
+  }
+  .dark-plan-bin.bin-fallback {
+    background: rgba(251, 191, 36, 0.06);
+  }
+  .bin-delta {
+    margin-left: 0.4rem;
+    color: var(--warn, #fbbf24);
+    font-variant-numeric: tabular-nums;
   }
   .manage-dialog-foot {
     display: flex;
