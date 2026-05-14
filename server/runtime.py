@@ -8,6 +8,17 @@ nodes land and we need a subprocess pool.
 Edge resolution is explicit: NodeSpec.inputs maps input_port to
 '<source_node_id>.<source_port>'. Implicit chaining sugar (each node's first
 input wires to the previous node's primary output) is deferred.
+
+Lazy upstream re-run: cache misses don't automatically force their producing
+node to execute. After computing the hash + cache state for every node, we
+walk the DAG backward and mark a miss as `must-run` only if some downstream
+consumer is itself a must-run miss, OR if it directly produces a declared
+template output. The rest of the misses are skipped — their files would
+never be read anyway (every downstream consumer is a cache hit and
+rehydrates from manifest without touching upstream files). This shows up
+when iterating post-stack: tweaking a stretch parameter no longer forces
+register/calibrate to re-execute just because their cached entries were
+evicted somewhere along the way.
 """
 
 from __future__ import annotations
@@ -17,7 +28,9 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from nodes.base import Node
 
@@ -42,21 +55,6 @@ def _noop_progress(_fraction: float, _message: str) -> None:
 
 def _noop_events(_event: dict) -> None:
     pass
-
-
-def _input_node_hashes(resolved: dict[str, Ref | list[Ref]]) -> set[str]:
-    """Collect the unique upstream entry hashes a node will read from.
-
-    Used by the in-use marker plumbing so eviction can't rmtree an input
-    dir while the consuming node is mid-stream.
-    """
-    out: set[str] = set()
-    for v in resolved.values():
-        if isinstance(v, list):
-            out.update(r.node_hash for r in v)
-        else:
-            out.add(v.node_hash)
-    return out
 
 
 def _locate_port_artifact(cached_dir: Path, port: str) -> Path | None:
@@ -147,6 +145,64 @@ def _topo_order(template: Template) -> list[str]:
     return order
 
 
+def _successors(template: Template) -> dict[str, set[str]]:
+    """Reverse adjacency: producer node id -> set of consumer node ids."""
+    out: dict[str, set[str]] = {n.id: set() for n in template.nodes}
+    for node in template.nodes:
+        for src_ref in node.inputs.values():
+            src_nid = src_ref.split(".", 1)[0]
+            if src_nid in out:
+                out[src_nid].add(node.id)
+    return out
+
+
+def _resolve_inputs(
+    nid: str,
+    spec: Any,
+    node_cls: type[Node],
+    refs: dict[str, Ref | list[Ref]],
+) -> dict[str, Ref | list[Ref]]:
+    """Build the inputs dict the node sees, pulling from the current `refs`.
+
+    Same rules as the original inline resolver: declared edges win; ports
+    without an edge fall back to job.inputs[<nid>.<port>]; optional inputs
+    may be absent. Used both for hashing in the planning pass and for
+    actual execution in the run pass.
+    """
+    resolved: dict[str, Ref | list[Ref]] = {}
+    for in_port in node_cls.inputs:
+        src = spec.inputs.get(in_port)
+        external_key = f"{nid}.{in_port}"
+        if src is None:
+            if external_key in refs:
+                resolved[in_port] = refs[external_key]
+            elif in_port in node_cls.optional_inputs:
+                continue
+            else:
+                raise RunError(
+                    nid,
+                    f"input port '{in_port}' has no edge and no external input "
+                    f"'{external_key}' in job.inputs",
+                )
+        else:
+            if src not in refs:
+                raise RunError(nid, f"unresolved input edge '{src}' for port '{in_port}'")
+            resolved[in_port] = refs[src]
+    return resolved
+
+
+@dataclass
+class _NodePlan:
+    """Planning-time facts about one node, computed before any execution."""
+
+    nid: str
+    spec: Any
+    node_cls: type[Node]
+    h: str
+    is_hit: bool
+    params: Any
+
+
 def run_job(
     template: Template,
     job: Job,
@@ -179,10 +235,10 @@ def run_job(
     abort mid-run. Set this when the job is superseded (eg the user tweaked
     a slider mid-pipeline) to free the worker for the new job.
 
-    `job_id`: when set, each node that runs (cache miss) stamps an in-use
-    marker on its output entry dir and every input entry dir for the
-    duration of the job. Cache eviction skips marked entries so a
-    concurrent cleanup can't rmtree the inputs while a node is mid-read.
+    `job_id`: when set, each node that actually runs (cache miss + must-run)
+    stamps an in-use marker on its output entry dir and every input entry
+    dir for the duration of the job. Cache eviction skips marked entries so
+    a concurrent cleanup can't rmtree the inputs while a node is mid-read.
     Caller is responsible for clearing the marks at job termination via
     `ContentCache.release_job_marks(job_id)`.
     """
@@ -193,55 +249,30 @@ def run_job(
 
     by_id = {n.id: n for n in template.nodes}
     order = _topo_order(template)
+    successors_of = _successors(template)
+    template_output_sources: set[str] = {
+        internal.split(".", 1)[0] for internal in template.outputs.values()
+    }
 
-    # Maps "<node_id>.<port>" -> Ref or list[Ref], growing as we run. List
-    # values are reserved for list-typed ports (ports.LIST_PORTS); scalar
+    # Maps "<node_id>.<port>" -> Ref or list[Ref], growing as we plan and run.
+    # List values are reserved for list-typed ports (ports.LIST_PORTS); scalar
     # outputs from nodes always produce a single Ref.
     refs: dict[str, Ref | list[Ref]] = dict(job.inputs)
 
+    # ---- Pass 1: plan. Compute each node's hash and cache state, and stuff
+    # a placeholder Ref into refs so downstream hashing finds something at the
+    # expected key. Placeholder paths are filler; for non-external Refs the
+    # path doesn't enter the canonical hash (see _encode_ref) and the
+    # placeholder gets overwritten by a real Ref in pass 3 for any node that
+    # is either a cache hit or a must-run miss.
+    plan: dict[str, _NodePlan] = {}
     for nid in order:
-        if cancel_event.is_set():
-            raise JobCancelled(nid)
         spec = by_id[nid]
         node_cls: type[Node] = registry_lookup(spec.kind, spec.variant)
-        node_inst: Node = node_cls()
-
-        # Resolve inputs from prior outputs (or from job.inputs for sources).
-        # Optional inputs may be omitted; required inputs must resolve.
-        # Values may be a single Ref or a list[Ref] for list-typed ports.
-        resolved_inputs: dict[str, Ref | list[Ref]] = {}
-        for in_port in node_cls.inputs:
-            src = spec.inputs.get(in_port)
-            external_key = f"{nid}.{in_port}"
-            if src is None:
-                if external_key in refs:
-                    resolved_inputs[in_port] = refs[external_key]
-                elif in_port in node_cls.optional_inputs:
-                    continue
-                else:
-                    raise RunError(
-                        nid,
-                        f"input port '{in_port}' has no edge and no external input "
-                        f"'{external_key}' in job.inputs",
-                    )
-            else:
-                if src not in refs:
-                    raise RunError(nid, f"unresolved input edge '{src}' for port '{in_port}'")
-                resolved_inputs[in_port] = refs[src]
-
+        resolved_inputs = _resolve_inputs(nid, spec, node_cls, refs)
         params = _resolved_params(
-            nid,
-            spec.kind,
-            spec.params,
-            profile,
-            job,
-            node_cls.params_schema,
+            nid, spec.kind, spec.params, profile, job, node_cls.params_schema,
         )
-
-        # Mix in the Siril version for nodes that shell out to Siril so that
-        # upgrading Siril invalidates their cached outputs without a manual
-        # cache wipe. Non-Siril nodes get no extra key so their hashes are
-        # unaffected by Siril installs or upgrades.
         extra: dict[str, str] | None = None
         if node_cls.uses_siril:
             extra = {"siril_version": get_siril_version()}
@@ -252,20 +283,59 @@ def run_job(
             params=params,
             extra_keys=extra,
         )
+        is_hit = (not force) and cache_obj.is_committed(h)
+        plan[nid] = _NodePlan(
+            nid=nid, spec=spec, node_cls=node_cls, h=h, is_hit=is_hit, params=params,
+        )
+        # Placeholder for downstream hash computation. Don't shadow real
+        # external inputs (those are keyed `<nid>.<input_port>` and pre-loaded
+        # from job.inputs; placeholders are keyed `<nid>.<output_port>`).
+        for port, port_type in node_cls.outputs.items():
+            key = f"{nid}.{port}"
+            if key in refs:
+                continue
+            refs[key] = Ref(
+                node_hash=h,
+                port=port,
+                path=cache_obj.entry_dir(h) / port,
+                type=port_type,
+            )
 
+    # ---- Pass 2: must-run set. A miss must run iff it directly produces a
+    # template output OR some downstream must-run consumer needs its files.
+    # Cache hits never need to run; they rehydrate from manifest.
+    must_run: set[str] = set()
+    for nid in reversed(order):
+        p = plan[nid]
+        if p.is_hit:
+            continue
+        if nid in template_output_sources:
+            must_run.add(nid)
+            continue
+        if any(succ in must_run for succ in successors_of[nid]):
+            must_run.add(nid)
+
+    # ---- Pass 3: execute. ----
+    for nid in order:
+        if cancel_event.is_set():
+            raise JobCancelled(nid)
+        p = plan[nid]
+        spec = p.spec
+        node_cls = p.node_cls
+        h = p.h
         on_event({"type": "node_started", "node_id": nid, "kind": spec.kind, "hash": h})
 
-        cached_dir = None if force else cache_obj.lookup(h)
-        if cached_dir is not None:
+        if p.is_hit:
             log.info("cache hit: %s -> %s", nid, h[:12])
             on_progress(0.0, f"{nid}: cached")
             on_event({"type": "node_cached", "node_id": nid, "hash": h})
+            cached_dir = cache_obj.entry_dir(h)
             # Preferred path: rehydrate Refs from the per-entry manifest so
             # nodes that don't follow the <port>.<ext> filename convention
-            # (eg narrowband_extract writes `r_results_ha.fit` for port
-            # `ha`) still cache-hit correctly. Falls back to the old
-            # convention-based probe for legacy entries committed before
-            # the manifest existed.
+            # (eg narrowband_extract writes `r_results_ha.fit` for port `ha`)
+            # still cache-hit correctly. Falls back to the old convention-
+            # based probe for legacy entries committed before the manifest
+            # existed.
             manifest = cache_obj.load_outputs(h)
             missing: list[str] = []
             for out_port, port_type in node_cls.outputs.items():
@@ -294,20 +364,32 @@ def run_job(
             if missing:
                 raise RunError(
                     nid,
-                    f"cached entry {h} missing output(s) "
-                    f"{sorted(missing)!r}",
+                    f"cached entry {h} missing output(s) {sorted(missing)!r}",
                 )
             continue
 
-        # Cache miss (or force): run the node, write outputs into the
-        # reserved entry dir. force=True wipes any existing committed entry.
+        if nid not in must_run:
+            # Lazy skip: this node is a cache miss but every downstream
+            # consumer is a cache hit, so its files would never actually
+            # be read. Leave the placeholder Ref in `refs`; the only thing
+            # downstream consumers needed from it was its node_hash, and
+            # that was correct in the placeholder.
+            log.info("lazy skip: %s -> %s (no must-run consumer)", nid, h[:12])
+            on_event({"type": "node_skipped", "node_id": nid, "hash": h})
+            continue
+
+        # Must-run miss: reserve, mark in-use, run, commit. Re-resolve
+        # inputs against the live `refs` so upstream must-run nodes that
+        # already executed in this pass contribute their committed paths,
+        # not the placeholder filler.
+        resolved_inputs = _resolve_inputs(nid, spec, node_cls, refs)
         out_dir = cache_obj.reserve(h, force=force)
 
         # Stamp in-use markers on the output dir and every input we're
-        # about to read, so a concurrent storage cleanup can't rmtree
-        # them out from under this node. The markers are released in
-        # bulk when the job terminates; per-node release would be
-        # over-engineered for the cost (empty marker files).
+        # about to read so a concurrent storage cleanup can't rmtree them
+        # out from under this node. Markers are released in bulk when the
+        # job terminates; per-node release would be over-engineered for
+        # the cost (empty marker files).
         if job_id is not None:
             cache_obj.mark_in_use(h, job_id)
             for input_hash in _input_node_hashes(resolved_inputs):
@@ -317,6 +399,7 @@ def run_job(
             on_progress(f, f"{_nid}: {m}")
             on_event({"type": "node_progress", "node_id": _nid, "fraction": f, "message": m})
 
+        node_inst: Node = node_cls()
         with tempfile.TemporaryDirectory(prefix=f"astrolab-{nid}-") as td:
             ctx = RunContext(
                 tmpdir=Path(td),
@@ -331,7 +414,7 @@ def run_job(
                 # list[Ref] at that key and must widen the type locally.
                 produced = node_inst.run(
                     resolved_inputs,  # type: ignore[arg-type]
-                    params,
+                    p.params,
                     ctx,
                     out_dir,
                 )
@@ -347,7 +430,6 @@ def run_job(
                 )
                 raise RunError(nid, f"{type(exc).__name__}: {exc}") from exc
 
-        # Validate produced ports match declared outputs and live under out_dir.
         if set(produced.keys()) != set(node_cls.outputs.keys()):
             raise RunError(
                 nid,
@@ -382,6 +464,18 @@ def run_job(
                 "<template>",
                 f"declared output '{public_name}' references unresolved '{internal}'",
             )
+        src_nid = internal.split(".", 1)[0]
+        p = plan.get(src_nid)
+        # Lazy-skip safety check: every template output source must be either
+        # a cache hit or a must-run miss (we forced that in pass 2). If we
+        # somehow returned a placeholder, the caller would get a Ref pointing
+        # at a non-existent file. Fail loudly instead.
+        if p is not None and not p.is_hit and src_nid not in must_run:
+            raise RunError(
+                src_nid,
+                f"template output '{public_name}' resolved to a skipped node "
+                f"(internal bug in lazy-rerun planner)",
+            )
         # Templates only expose scalar outputs as public; list-typed refs come
         # from job.inputs and never end up declared as template.outputs.
         ref = refs[internal]
@@ -393,3 +487,18 @@ def run_job(
             )
         public[public_name] = ref
     return public
+
+
+def _input_node_hashes(resolved: dict[str, Ref | list[Ref]]) -> set[str]:
+    """Collect the unique upstream entry hashes a node will read from.
+
+    Used by the in-use marker plumbing so eviction can't rmtree an input
+    dir while the consuming node is mid-stream.
+    """
+    out: set[str] = set()
+    for v in resolved.values():
+        if isinstance(v, list):
+            out.update(r.node_hash for r in v)
+        else:
+            out.add(v.node_hash)
+    return out
