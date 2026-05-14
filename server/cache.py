@@ -33,6 +33,13 @@ log = logging.getLogger("astrolab.cache")
 
 DONE_MARKER: str = "_done"
 OUTPUTS_MANIFEST: str = "_outputs.json"
+INUSE_PREFIX: str = "_inuse_"
+"""An empty file `_inuse_<job_id>` inside an entry dir means a live job is
+reading or writing that entry. Eviction must skip directories with any
+live in-use marker — see is_in_use() / release_job_marks(). Markers are
+left behind by jobs that crash without running their finally cleanup;
+the eviction path treats markers whose job_id is no longer in the
+queued/running set as stale and removes them opportunistically."""
 
 
 class ContentCache:
@@ -190,6 +197,79 @@ class ContentCache:
             if (child / DONE_MARKER).exists():
                 out.append(child.name)
         return out
+
+    def mark_in_use(self, node_hash: str, job_id: str) -> None:
+        """Stamp a cache entry as currently in-use by `job_id`.
+
+        Idempotent. No-op if the entry dir doesn't exist (e.g. the runtime
+        decided to mark a hash that hasn't been reserved yet — that's a
+        caller bug, not a crash condition).
+        """
+        d = self.entry_dir(node_hash)
+        if not d.exists():
+            return
+        with contextlib.suppress(OSError):
+            (d / f"{INUSE_PREFIX}{job_id}").touch()
+
+    def release_job_marks(self, job_id: str) -> int:
+        """Remove every `_inuse_<job_id>` marker under the cache root.
+
+        Returns the count removed. Called from JobWorker._terminate so a
+        job's locks evaporate the moment it stops running, regardless of
+        success/failure/cancel.
+        """
+        marker_name = f"{INUSE_PREFIX}{job_id}"
+        removed = 0
+        if not self.root.exists():
+            return 0
+        for child in self.root.iterdir():
+            if not child.is_dir():
+                continue
+            m = child / marker_name
+            if m.exists():
+                with contextlib.suppress(OSError):
+                    m.unlink()
+                    removed += 1
+        if removed:
+            log.info("cache release marks: job=%s removed=%d", job_id[:8], removed)
+        return removed
+
+    def in_use_by(self, node_hash: str) -> set[str]:
+        """Return job_ids currently holding an in-use marker on this entry.
+
+        Pure filesystem read — doesn't check whether the listed jobs are
+        actually alive. Callers that need to drop stale markers go through
+        is_in_use(alive_job_ids) instead.
+        """
+        d = self.entry_dir(node_hash)
+        if not d.exists():
+            return set()
+        return {
+            p.name[len(INUSE_PREFIX):]
+            for p in d.iterdir()
+            if p.is_file() and p.name.startswith(INUSE_PREFIX)
+        }
+
+    def is_in_use(self, node_hash: str, alive_job_ids: set[str]) -> bool:
+        """True if any in-use marker on this entry names a job in
+        `alive_job_ids`. Stale markers (job_id not in alive set) are
+        deleted opportunistically so the cache self-heals after a worker
+        crash.
+        """
+        d = self.entry_dir(node_hash)
+        if not d.exists():
+            return False
+        live = False
+        for p in d.iterdir():
+            if not p.is_file() or not p.name.startswith(INUSE_PREFIX):
+                continue
+            jid = p.name[len(INUSE_PREFIX):]
+            if jid in alive_job_ids:
+                live = True
+                continue
+            with contextlib.suppress(OSError):
+                p.unlink()
+        return live
 
     def entry_size(self, node_hash: str) -> int:
         """Return the total bytes occupied by a single cache entry. 0 if

@@ -314,6 +314,7 @@ def purge_project_cache(
         keep_hashes = (
             _terminal_output_hashes(conn, project_id) if keep_outputs else set()
         )
+        alive = _alive_job_ids(conn)
 
     reason = "project-delete-keep-outputs" if keep_outputs else "project-delete"
     candidates = [
@@ -321,21 +322,33 @@ def purge_project_cache(
         if e.owners == {project_id} and h not in keep_hashes
     ]
     log.info(
-        "purge_project_cache start: project=%s keep_outputs=%s candidates=%d",
+        "purge_project_cache start: project=%s keep_outputs=%s candidates=%d alive_jobs=%d",
         project_id,
         keep_outputs,
         len(candidates),
+        len(alive),
     )
     evicted = 0
     freed = 0
+    skipped_in_use = 0
     for h in candidates:
+        if cache.is_in_use(h, alive):
+            skipped_in_use += 1
+            log.warning(
+                "purge_project_cache skip in-use: project=%s hash=%s held_by=%s",
+                project_id,
+                h[:12],
+                sorted(cache.in_use_by(h) & alive),
+            )
+            continue
         freed += cache.evict(h, reason=reason)
         evicted += 1
     log.info(
-        "purge_project_cache done: project=%s evicted=%d freed=%d",
+        "purge_project_cache done: project=%s evicted=%d freed=%d skipped_in_use=%d",
         project_id,
         evicted,
         freed,
+        skipped_in_use,
     )
     return evicted, freed
 
@@ -447,6 +460,22 @@ class CleanupResult:
     """True if we couldn't get under the budget (every reachable entry was
     so high-scoring that we'd have to evict load-bearing data to free
     enough). Caller should warn the user."""
+    skipped_in_use_count: int = 0
+    """How many entries the sweep wanted to evict but couldn't because a
+    live job was reading or writing them. Surfaced so the UI can hint
+    'waiting on running jobs' when over_budget is True for that reason."""
+
+
+def _alive_job_ids(conn: sqlite3.Connection) -> set[str]:
+    """Return job_ids currently in queued/running state.
+
+    Eviction uses this to decide which `_inuse_*` markers in the cache
+    are still load-bearing vs stale (worker crashed without releasing).
+    """
+    rows = conn.execute(
+        "SELECT id FROM jobs WHERE status IN ('queued', 'running')"
+    ).fetchall()
+    return {r["id"] for r in rows}
 
 
 def run_cleanup(
@@ -464,6 +493,7 @@ def run_cleanup(
     """
     with _conn(db_path) as conn:
         entries, _ = build_reachability(conn, cache)
+        alive = _alive_job_ids(conn)
 
     total = sum(e.bytes for e in entries.values())
     if total <= max_bytes:
@@ -482,18 +512,29 @@ def run_cleanup(
 
     ordered = sorted(entries.values(), key=lambda e: (score_entry(e), -e.bytes))
     log.info(
-        "run_cleanup start: total=%d max=%d over_by=%d entries=%d",
+        "run_cleanup start: total=%d max=%d over_by=%d entries=%d alive_jobs=%d",
         total,
         max_bytes,
         total - max_bytes,
         len(entries),
+        len(alive),
     )
 
     evicted_count = 0
     bytes_freed = 0
+    skipped_in_use = 0
     for e in ordered:
         if total - bytes_freed <= max_bytes:
             break
+        if cache.is_in_use(e.node_hash, alive):
+            skipped_in_use += 1
+            log.warning(
+                "run_cleanup skip in-use: hash=%s bytes=%d held_by=%s",
+                e.node_hash[:12],
+                e.bytes,
+                sorted(cache.in_use_by(e.node_hash) & alive),
+            )
+            continue
         score = score_entry(e)
         reason = "orphan" if not e.owners else "over-budget"
         log.info(
@@ -512,17 +553,19 @@ def run_cleanup(
 
     over_budget = (total - bytes_freed) > max_bytes
     log.info(
-        "run_cleanup done: evicted=%d freed=%d remaining=%d over_budget=%s",
+        "run_cleanup done: evicted=%d freed=%d remaining=%d over_budget=%s skipped_in_use=%d",
         evicted_count,
         bytes_freed,
         total - bytes_freed,
         over_budget,
+        skipped_in_use,
     )
     return CleanupResult(
         evicted_count=evicted_count,
         bytes_freed=bytes_freed,
         bytes_remaining=total - bytes_freed,
         over_budget=over_budget,
+        skipped_in_use_count=skipped_in_use,
     )
 
 

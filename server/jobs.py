@@ -555,6 +555,12 @@ class JobWorker:
                         ),
                     )
                 reclaimed += 1
+                # Crashed worker never ran its release_job_marks finally,
+                # so its in-use markers would otherwise leak until an
+                # eviction sweep noticed they were stale. Clean them
+                # eagerly so the cache doesn't accumulate forever.
+                with contextlib.suppress(Exception):
+                    self._cache.release_job_marks(r["id"])
         finally:
             conn.close()
         return reclaimed
@@ -661,6 +667,7 @@ class JobWorker:
                 events=event_sink,
                 force=record.force,
                 cancel=cancel_event,
+                job_id=record.id,
             )
             record.outputs = outputs
             self._terminate(record, status="completed")
@@ -677,6 +684,14 @@ class JobWorker:
                 record, status="failed", error=f"{type(exc).__name__}: {exc}"
             )
         finally:
+            # Drop every in-use marker this job left in the cache so a
+            # subsequent storage cleanup isn't blocked by stale locks.
+            # Safe to call even if the job never reached the runtime;
+            # release_job_marks is a no-op when there's nothing to clear.
+            try:
+                self._cache.release_job_marks(record.id)
+            except Exception:  # pragma: no cover (defensive)
+                log.exception("failed to release in-use marks for job %s", record.id)
             monitor_stop.set()
             monitor_thread.join(timeout=5)
 
