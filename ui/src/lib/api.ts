@@ -347,6 +347,7 @@ export type JobEventType =
   | 'node_started'
   | 'node_progress'
   | 'node_cached'
+  | 'node_skipped'
   | 'node_completed'
   | 'node_failed'
   | 'node_warning'
