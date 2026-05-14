@@ -160,6 +160,19 @@ class RunContext(BaseModel):
     nodes should pass it to subprocess wrappers so they can terminate
     cleanly instead of finishing wasted work. Default is a fresh, never-set
     Event so unaware nodes Just Work.
+
+    `warn` is the structured-warning sink. Nodes call this to surface a
+    non-fatal condition the user should care about — typically a
+    fallback or partial-success path (e.g. calibrate using an out-of-
+    tolerance dark, or dropping frames with no matching master).
+    Warnings are persisted with the cache entry and re-emitted as
+    `node_warning` events on cache hit so the UI's per-node badge
+    survives a page reload. Default is a no-op so nodes that never
+    warn stay contract-clean.
+
+    Signature: `warn(kind: str, message: str, details: dict | None = None)`.
+    `kind` is short (`fallback`, `partial`, `info`...); the UI uses it
+    to choose an icon style.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
@@ -170,4 +183,8 @@ class RunContext(BaseModel):
     cancel: Annotated[
         threading.Event,
         Field(repr=False, default_factory=threading.Event),
+    ]
+    warn: Annotated[
+        Callable[..., None],
+        Field(repr=False, default=lambda *a, **k: None),
     ]

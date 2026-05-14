@@ -63,6 +63,12 @@ from server.ports import PortType
 from server.registry import register
 from server.siril import SirilRuntime, make_progress_handler
 
+# Mirrors server.catalog.matching.DARK_TEMP_TOLERANCE_C: the job builder
+# already picked the closest dark within tolerance for each bin, so if
+# the per-frame delta exceeds this we know we're on the fallback path
+# and should flag it on the node card.
+_FALLBACK_TEMP_C: float = 5.0
+
 
 class CalibrateParams(BaseModel):
     input_basename: str = Field(
@@ -614,13 +620,57 @@ class CalibrateNode(Node[CalibrateParams]):
         # Assign each light to its best-matching dark; uncalibratable
         # frames land under key=None.
         groups: dict[Path | None, list[Path]] = {}
+        per_dark_temp_deltas: dict[Path, list[float]] = {}
         for lm in light_meta:
             chosen = _pick_dark(lm, dark_pool)
             key: Path | None = chosen["path"] if chosen is not None else None
             groups.setdefault(key, []).append(lm["path"])
+            if (
+                chosen is not None
+                and chosen["ccd_temp"] is not None
+                and lm["ccd_temp"] is not None
+            ):
+                per_dark_temp_deltas.setdefault(chosen["path"], []).append(
+                    abs(chosen["ccd_temp"] - lm["ccd_temp"])
+                )
 
+        # Surface fallback warnings BEFORE we potentially drop the
+        # uncalibratable bucket: if a chosen dark is more than 5C from
+        # any of its frames, the matching is best-effort and the user
+        # should know. Picks the worst per-dark delta so a single
+        # warning per dark suffices regardless of group size.
+        for dark_path, deltas in per_dark_temp_deltas.items():
+            worst = max(deltas)
+            if worst > _FALLBACK_TEMP_C:
+                ctx.warn(
+                    "fallback",
+                    f"{dark_path.name}: nearest available dark is "
+                    f"{worst:.1f}C off some frames (>{_FALLBACK_TEMP_C:g}C "
+                    "tolerance); calibration is best-effort.",
+                    details={
+                        "dark": dark_path.name,
+                        "max_delta_c": round(worst, 2),
+                        "tolerance_c": _FALLBACK_TEMP_C,
+                    },
+                )
+
+        uncalibratable_count = len(groups.get(None, []))
         if None in groups and params.exclude_uncalibratable:
             groups.pop(None)
+            ctx.warn(
+                "partial",
+                f"dropped {uncalibratable_count} frames with no matching "
+                "dark (exclude_uncalibratable=true).",
+                details={"dropped": uncalibratable_count},
+            )
+        elif uncalibratable_count > 0:
+            ctx.warn(
+                "partial",
+                f"{uncalibratable_count} frames had no matching dark and "
+                "ran debayer-only (no dark subtraction). Enable "
+                "exclude_uncalibratable to drop them instead.",
+                details={"uncalibrated": uncalibratable_count},
+            )
 
         if not groups:
             raise RuntimeError(

@@ -349,6 +349,7 @@ export type JobEventType =
   | 'node_cached'
   | 'node_completed'
   | 'node_failed'
+  | 'node_warning'
   | 'job_completed'
   | 'job_failed';
 
@@ -360,7 +361,20 @@ export interface JobEvent {
   message?: string;
   error?: string;
   hash?: string;
+  // `kind` is reused: on `node_*` events it's the registry kind (calibrate /
+  // seq_stack / ...). On `node_warning` it's the warning category
+  // (`fallback` / `partial` / `info` / ...) — same field, two consumers.
   kind?: string;
+  // Optional structured details on `node_warning` events. Free-form so the
+  // backend can attach counts / paths / temp deltas without the UI needing
+  // a per-warning-type schema.
+  details?: Record<string, unknown>;
+}
+
+export interface NodeWarning {
+  kind: string;
+  message: string;
+  details?: Record<string, unknown>;
 }
 
 export type CalibrationMode = 'auto' | 'explicit' | 'none';

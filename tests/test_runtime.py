@@ -232,6 +232,98 @@ class _SplitWriterNode(Node[_SplitParams]):
         }
 
 
+class _WarnParams(BaseModel):
+    pass
+
+
+@register("__test_warn_emitter__")
+class _WarnEmitterNode(Node[_WarnParams]):
+    """Test node whose only job is to call ctx.warn so we can pin the
+    persistence + replay contract end to end.
+    """
+
+    id = "__test_warn_emitter__"
+    version = 1
+    cost = "cheap"
+    inputs = {"image": PortType.IMAGE_PNG}
+    outputs = {"image": PortType.IMAGE_PNG}
+    params_schema = _WarnParams
+
+    def run(
+        self,
+        inputs: dict[str, Ref],
+        params: _WarnParams,
+        ctx: RunContext,
+        out_dir: object,
+    ) -> dict[str, Ref]:
+        out_dir_path = Path(out_dir)  # type: ignore[arg-type]
+        out_path = out_dir_path / "image.png"
+        # Copy input through unchanged; we only care about the warning
+        # path, not the data.
+        out_path.write_bytes(inputs["image"].path.read_bytes())
+        ctx.warn("fallback", "thermal margin exceeded", details={"delta_c": 7.5})
+        ctx.warn("partial", "dropped 3 frames")
+        return {
+            "image": Ref(
+                node_hash="", port="image", path=out_path, type=PortType.IMAGE_PNG
+            )
+        }
+
+
+def _warn_template() -> Template:
+    return Template(
+        id="warn_only",
+        version=1,
+        nodes=[NodeSpec(id="warn", kind="__test_warn_emitter__")],
+        outputs={"image": "warn.image"},
+    )
+
+
+def _warn_job(src: Path) -> Job:
+    return Job(
+        template_id="warn_only",
+        template_version=1,
+        inputs={
+            "warn.image": Ref(
+                node_hash="external", port="image", path=src, type=PortType.IMAGE_PNG
+            )
+        },
+    )
+
+
+def test_runner_emits_and_persists_node_warnings(
+    tmp_path: Path, astrolab_home: Path
+) -> None:
+    """ctx.warn calls during run() must:
+
+      1. surface as node_warning events on the first pass, AND
+      2. land in the cache entry's _warnings.json sidecar, AND
+      3. replay as node_warning events on a cache hit so a fresh
+         consumer sees them without having to re-run the node.
+    """
+    src = tmp_path / "in.png"
+    _make_test_png(src)
+
+    events_first: list[dict] = []
+    run_job(_warn_template(), _warn_job(src), events=events_first.append)
+    warnings_first = [e for e in events_first if e["type"] == "node_warning"]
+    assert len(warnings_first) == 2
+    assert {w["kind"] for w in warnings_first} == {"fallback", "partial"}
+    fallback = next(w for w in warnings_first if w["kind"] == "fallback")
+    assert fallback["details"] == {"delta_c": 7.5}
+
+    # Replay on cache hit.
+    events_second: list[dict] = []
+    run_job(_warn_template(), _warn_job(src), events=events_second.append)
+    warnings_second = [e for e in events_second if e["type"] == "node_warning"]
+    assert len(warnings_second) == 2, (
+        f"expected warnings to replay on cache hit, got: {events_second!r}"
+    )
+    assert any(e["type"] == "node_cached" for e in events_second), (
+        "second run should have been a cache hit"
+    )
+
+
 def _split_template() -> Template:
     return Template(
         id="split_only",

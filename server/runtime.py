@@ -330,6 +330,11 @@ def run_job(
             on_progress(0.0, f"{nid}: cached")
             on_event({"type": "node_cached", "node_id": nid, "hash": h})
             cached_dir = cache_obj.entry_dir(h)
+            # Replay any warnings the node emitted on its committed run
+            # so the UI's per-node badge is correct on a cache-hit job
+            # too. No-op for legacy entries with no sidecar.
+            for w in cache_obj.load_warnings(h):
+                on_event({"type": "node_warning", "node_id": nid, **w})
             # Preferred path: rehydrate Refs from the per-entry manifest so
             # nodes that don't follow the <port>.<ext> filename convention
             # (eg narrowband_extract writes `r_results_ha.fit` for port `ha`)
@@ -399,6 +404,25 @@ def run_job(
             on_progress(f, f"{_nid}: {m}")
             on_event({"type": "node_progress", "node_id": _nid, "fraction": f, "message": m})
 
+        # Per-node warnings buffer. The node calls ctx.warn(...) during
+        # run(); we collect them so cache.commit can persist a sidecar
+        # and the UI can re-pick them up on cache hit without replaying
+        # the run.
+        node_warnings: list[dict[str, Any]] = []
+
+        def _node_warn(
+            kind: str,
+            message: str,
+            details: dict[str, Any] | None = None,
+            _nid: str = nid,
+            _buf: list[dict[str, Any]] = node_warnings,
+        ) -> None:
+            entry: dict[str, Any] = {"kind": kind, "message": message}
+            if details is not None:
+                entry["details"] = details
+            _buf.append(entry)
+            on_event({"type": "node_warning", "node_id": _nid, **entry})
+
         node_inst: Node = node_cls()
         with tempfile.TemporaryDirectory(prefix=f"astrolab-{nid}-") as td:
             ctx = RunContext(
@@ -406,6 +430,7 @@ def run_job(
                 progress=_node_progress,
                 log=log.getChild(nid),
                 cancel=cancel_event,
+                warn=_node_warn,
             )
             try:
                 # Node.run still types `inputs` as dict[str, Ref] because the
@@ -452,7 +477,7 @@ def run_job(
                 display_ready=ref.display_ready,
             )
 
-        cache_obj.commit(h, committed)
+        cache_obj.commit(h, committed, warnings=node_warnings)
         for port, ref in committed.items():
             refs[f"{nid}.{port}"] = ref
         on_event({"type": "node_completed", "node_id": nid, "hash": h})

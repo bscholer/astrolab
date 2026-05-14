@@ -9,7 +9,7 @@
 <script lang="ts">
   import { fade, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
-  import { api, type Project, type TemplateNodeSchema, type JobQuality } from '$lib/api';
+  import { api, type Project, type TemplateNodeSchema, type JobQuality, type NodeWarning } from '$lib/api';
   import { isTogglable, nodeDisplayName } from '$lib/graph';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
@@ -24,6 +24,10 @@
     hash: string | undefined;
     port: string;
     kind: string;
+    /** Structured warnings the node surfaced via ctx.warn during its run
+     * (or replayed from the cache on a cache-hit). Empty when the node
+     * ran cleanly. */
+    warnings: NodeWarning[];
     previewLoaded: boolean;
     isOutput: boolean;
     isExpanded: boolean;
@@ -57,6 +61,7 @@
     hash,
     port,
     kind,
+    warnings,
     previewLoaded,
     isOutput,
     isExpanded,
@@ -192,6 +197,19 @@
           ? 'off'
           : status}{#if status === 'running' && progress && nschema.preview_hidden}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{Math.round((progress.fraction ?? 0) * 100)}%</span>{:else if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{formatStepDuration(durationMs)}</span>{/if}
       </span>
+      {#if warnings && warnings.length > 0}
+        <!-- Warning chip: one badge per node, count when there's more
+             than one. Native title attribute carries the full message
+             list so users get the detail without a custom popover. -->
+        <span
+          class="warning-chip"
+          title={warnings.map((w) => `[${w.kind}] ${w.message}`).join('\n\n')}
+          aria-label="{warnings.length} warning{warnings.length === 1 ? '' : 's'}"
+        >
+          <span class="warning-icon" aria-hidden="true">!</span>
+          {#if warnings.length > 1}<span class="warning-count">{warnings.length}</span>{/if}
+        </span>
+      {/if}
       {#if isOutput}
         <span class="output-tag">final</span>
       {/if}
@@ -546,6 +564,7 @@
   .head-overlay > .status,
   .head-overlay > .badge-modified,
   .head-overlay > .output-tag,
+  .head-overlay > .warning-chip,
   .head-overlay > .chevron { flex-shrink: 0; }
   .output-tag {
     font-family: var(--font-mono);
@@ -558,6 +577,41 @@
     border: 1px solid var(--accent);
     padding: 0.05rem 0.45rem;
     border-radius: 999px;
+  }
+
+  /* Warning chip: signals a non-fatal partial-success path during the
+     node's run (e.g. calibrate used an out-of-tolerance dark or
+     dropped uncalibratable frames). Visually distinct enough from the
+     status pill that the eye picks it up without making the row feel
+     broken. */
+  .warning-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: #f5b300;
+    background: rgba(245, 179, 0, 0.12);
+    border: 1px solid rgba(245, 179, 0, 0.65);
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    cursor: help;
+  }
+  .warning-icon {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    line-height: 0.85em;
+    text-align: center;
+    border-radius: 999px;
+    background: #f5b300;
+    color: #1a1300;
+    font-weight: 800;
+    font-size: 0.55rem;
+  }
+  .warning-count {
+    font-variant-numeric: tabular-nums;
   }
   .chevron {
     color: var(--fg-mute);

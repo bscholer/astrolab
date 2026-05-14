@@ -970,6 +970,7 @@
           hash={pipeline.nodeHash[nid]}
           port={pipeline.nodePort[nid] ?? 'image'}
           kind={pipeline.nodeKind[nid] ?? nschema.kind ?? nid}
+          warnings={pipeline.nodeWarnings[nid] ?? []}
           previewLoaded={pipeline.previewLoaded[nid] ?? false}
           isOutput={nid === outputNodeId}
           isExpanded={expandedNodes.has(nid)}
