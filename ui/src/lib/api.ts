@@ -738,6 +738,10 @@ export interface SystemActiveJob {
   started_at: string | null;
   // Step-aware [0, 1]: (completed_nodes + current_node_fraction) / total.
   progress: number;
+  // The in-flight node, or null when nothing is currently running.
+  // `current_step_kind` feeds `nodeDisplayName` to render a human label.
+  current_step_id: string | null;
+  current_step_kind: string | null;
 }
 
 export interface SystemJobs {

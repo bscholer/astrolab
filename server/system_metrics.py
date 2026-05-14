@@ -292,14 +292,21 @@ def _resolve_target_name(target_id: str | None, db_path: Path | None) -> str | N
     return name
 
 
-def _job_progress(record: Any, job_manager: Any | None = None) -> float:
-    """Step-aware completed-plus-current fraction of total nodes.
+def _job_step_state(
+    record: Any, job_manager: Any | None = None
+) -> tuple[float, str | None, str | None]:
+    """Step-aware progress plus the currently in-flight node.
+
+    Returns `(progress, current_step_id, current_step_kind)`. Progress is the
+    completed-plus-current fraction of total nodes. The current step is the
+    most-recently-started node that hasn't completed yet, or None when the
+    job has no in-flight node (queued, between steps, or fully finished).
 
     Coarse term: count `node_completed` / `node_cached` events; that gives a
     monotone integer count of finished nodes. Fine-grained term: for the
-    most-recently-started node that hasn't completed yet, fold in the last
-    `node_progress` fraction we saw for it. The bar advances inside a single
-    node (e.g. Pedestal or Stack) instead of sitting flat for its duration.
+    in-flight node, fold in the last `node_progress` fraction we saw for it
+    so the bar advances inside a single node (e.g. Pedestal or Stack)
+    instead of sitting flat for its duration.
 
     Events are read from `record.events` if populated (legacy/test code
     that synthesises records inline) and otherwise pulled from the job
@@ -307,11 +314,13 @@ def _job_progress(record: Any, job_manager: Any | None = None) -> float:
     cross a process boundary.
     """
     try:
-        total = len(record.template.nodes)
+        nodes = list(record.template.nodes)
     except Exception:
-        return 0.0
+        return 0.0, None, None
+    total = len(nodes)
     if total <= 0:
-        return 0.0
+        return 0.0, None, None
+    kind_by_id = {n.id: n.kind for n in nodes}
     events = list(getattr(record, "events", []) or [])
     if not events and job_manager is not None:
         try:
@@ -346,9 +355,14 @@ def _job_progress(record: Any, job_manager: Any | None = None) -> float:
 
     completed = len(completed_nodes)
     current_fraction = 0.0
+    current_id: str | None = None
+    current_kind: str | None = None
     if last_started is not None and last_started not in completed_nodes:
         current_fraction = fractions.get(last_started, 0.0)
-    return min(1.0, (completed + current_fraction) / total)
+        current_id = last_started
+        current_kind = kind_by_id.get(last_started)
+    progress = min(1.0, (completed + current_fraction) / total)
+    return progress, current_id, current_kind
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -405,6 +419,10 @@ def _jobs_block(
                     # one-indexed everywhere else in the UI (the prow-thumb
                     # version badge renders `v{current_seq + 1}`).
                     project_version = int(project.current_seq) + 1
+            if r.status == "running":
+                progress, current_step_id, current_step_kind = _job_step_state(r, job_manager)
+            else:
+                progress, current_step_id, current_step_kind = 0.0, None, None
             active.append(
                 {
                     "id": r.id,
@@ -414,7 +432,9 @@ def _jobs_block(
                     "project_name": project_name,
                     "project_version": project_version,
                     "started_at": started_iso,
-                    "progress": _job_progress(r, job_manager) if r.status == "running" else 0.0,
+                    "progress": progress,
+                    "current_step_id": current_step_id,
+                    "current_step_kind": current_step_kind,
                 }
             )
 
