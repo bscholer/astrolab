@@ -46,6 +46,20 @@ def _ctx(tmp_path: Path) -> RunContext:
     )
 
 
+def _capturing_ctx(tmp_path: Path) -> tuple[RunContext, list[dict[str, Any]]]:
+    """RunContext whose `warn` records calls so tests can assert on them."""
+    warnings: list[dict[str, Any]] = []
+    ctx = RunContext(
+        tmpdir=tmp_path / "tmp",
+        progress=lambda f, m: None,
+        log=logging.getLogger("test"),
+        warn=lambda kind, message, details=None: warnings.append(
+            {"kind": kind, "message": message, "details": details}
+        ),
+    )
+    return ctx, warnings
+
+
 def _make_seq_dir(root: Path, basename: str = "light", n_frames: int = 3) -> Path:
     """Build a per-frame sequence dir like convert_lights produces."""
     root.mkdir(parents=True, exist_ok=True)
@@ -314,6 +328,122 @@ def test_scoped_progress_ctx_maps_group_fraction_into_overall_window(tmp_path: P
     # Mid-window probe: end of group 1 (30 done) maps to
     # 0.05 + 0.9 * 30/100 = 0.32
     assert seen[2] == pytest.approx(0.32, abs=1e-6)
+
+
+def test_calibrate_warns_when_frames_have_no_matching_dark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a light's exptime/gain has no matching dark in the pool the
+    frame goes uncalibrated. The node must surface that as a `partial`
+    warning so the UI's per-node badge lights up — silent uncalibrated
+    frames are exactly the kind of "ran fine but the output is bad"
+    failure the warning framework exists to prevent."""
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    # Two 15s frames — only dark in the pool is 30s, so they're
+    # uncalibratable. Forces _run_multi (>=2 darks) so the warning
+    # path runs.
+    _write_fits_light(seq_in / "light_00001.fit", exptime=15.0, gain=60, ccd_temp=28.0)
+    _write_fits_light(seq_in / "light_00002.fit", exptime=15.0, gain=60, ccd_temp=28.0)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    dark_a = _make_master(tmp_path / "masters" / "a.fit")
+    dark_b = _make_master(tmp_path / "masters" / "b.fit")
+
+    def fake(cmds, wd):
+        # Output one pp_ frame per staged frame so the node's count
+        # validation passes.
+        n = sum(1 for p in Path(wd).iterdir()
+                if p.name.startswith("light_") and p.suffix == ".fit")
+        for i in range(1, n + 1):
+            (Path(wd) / f"pp_light_{i:05d}.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.calibrate.SirilRuntime", lambda *a, **k: fake_rt)
+
+    ctx, warnings = _capturing_ctx(tmp_path)
+    CalibrateNode().run(
+        inputs={
+            "sequence": Ref(
+                node_hash="ext", port="sequence", path=seq_in, type=PortType.SEQUENCE_FITS,
+            ),
+            "dark": [
+                Ref(node_hash="ext", port="dark", path=dark_a, type=PortType.MASTER_FITS),
+                Ref(node_hash="ext", port="dark", path=dark_b, type=PortType.MASTER_FITS),
+            ],
+        },
+        params=CalibrateParams(
+            fitseq=False,
+            dark_bins=[
+                {"path": str(dark_a), "exptime": 30.0, "gain": 60, "ccd_temp": 28.0},
+                {"path": str(dark_b), "exptime": 30.0, "gain": 60, "ccd_temp": 30.0},
+            ],
+        ),
+        ctx=ctx,
+        out_dir=out_dir,
+    )
+    partial = [w for w in warnings if w["kind"] == "partial"]
+    assert len(partial) == 1, f"expected one partial warning, got: {warnings!r}"
+    assert "2 frames" in partial[0]["message"]
+    assert partial[0]["details"] == {"uncalibrated": 2}
+
+
+def test_calibrate_warns_when_dark_is_far_off_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The matcher's tolerance is 5C; when the only available dark for
+    a frame's exptime/gain is further away than that, the node calls
+    it a fallback and warns."""
+    seq_in = tmp_path / "in"
+    seq_in.mkdir()
+    # Light at 24C, only matching dark is at 32C — 8C off, beyond the
+    # 5C fallback threshold.
+    _write_fits_light(seq_in / "light_00001.fit", exptime=15.0, gain=60, ccd_temp=24.0)
+    _write_fits_light(seq_in / "light_00002.fit", exptime=15.0, gain=60, ccd_temp=24.0)
+    # Second 30s dark just to keep us on the multi-dark path.
+    _write_fits_light(seq_in / "light_00003.fit", exptime=30.0, gain=60, ccd_temp=24.0)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    dark_15_far = _make_master(tmp_path / "masters" / "d15_32C.fit")
+    dark_30_ok = _make_master(tmp_path / "masters" / "d30_24C.fit")
+
+    def fake(cmds, wd):
+        n = sum(1 for p in Path(wd).iterdir()
+                if p.name.startswith("light_") and p.suffix == ".fit")
+        for i in range(1, n + 1):
+            (Path(wd) / f"pp_light_{i:05d}.fit").write_bytes(b"")
+
+    fake_rt = FakeRuntime(on_run=fake)
+    monkeypatch.setattr("nodes.basic.calibrate.SirilRuntime", lambda *a, **k: fake_rt)
+
+    ctx, warnings = _capturing_ctx(tmp_path)
+    CalibrateNode().run(
+        inputs={
+            "sequence": Ref(
+                node_hash="ext", port="sequence", path=seq_in, type=PortType.SEQUENCE_FITS,
+            ),
+            "dark": [
+                Ref(node_hash="ext", port="dark", path=dark_15_far,
+                    type=PortType.MASTER_FITS),
+                Ref(node_hash="ext", port="dark", path=dark_30_ok,
+                    type=PortType.MASTER_FITS),
+            ],
+        },
+        params=CalibrateParams(
+            fitseq=False,
+            dark_bins=[
+                {"path": str(dark_15_far), "exptime": 15.0, "gain": 60, "ccd_temp": 32.0},
+                {"path": str(dark_30_ok), "exptime": 30.0, "gain": 60, "ccd_temp": 24.0},
+            ],
+        ),
+        ctx=ctx,
+        out_dir=out_dir,
+    )
+    fallbacks = [w for w in warnings if w["kind"] == "fallback"]
+    assert len(fallbacks) == 1, f"expected one fallback warning, got: {warnings!r}"
+    assert "d15_32C.fit" in fallbacks[0]["message"]
+    assert fallbacks[0]["details"]["max_delta_c"] == pytest.approx(8.0)
 
 
 def test_calibrate_multi_dark_uses_dark_bins_param_for_metadata(

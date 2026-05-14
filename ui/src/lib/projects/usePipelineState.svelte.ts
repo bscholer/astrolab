@@ -5,7 +5,7 @@
  * Extracted so it can be unit-tested without mounting the page.
  */
 
-import type { JobEvent, TemplateSchema } from '$lib/api';
+import type { JobEvent, NodeWarning, TemplateSchema } from '$lib/api';
 
 export type NodeStatus = 'pending' | 'running' | 'cached' | 'completed' | 'failed';
 
@@ -17,6 +17,12 @@ export interface PipelineState {
   nodePort: Record<string, string>;
   nodeStartedAt: Record<string, number>;
   nodeDurationMs: Record<string, number>;
+  // Structured warnings the backend surfaced via `node_warning` events.
+  // Stays empty for nodes that ran cleanly; populated for any node
+  // whose run hit a fallback / partial-success path (calibrate is the
+  // first consumer). Cache hits replay the persisted warnings so the
+  // badge survives a page reload.
+  nodeWarnings: Record<string, NodeWarning[]>;
   previewLoaded: Record<string, boolean>;
 }
 
@@ -30,6 +36,7 @@ export function createPipelineState() {
   // "completed (1.3s)" on the status badge.
   let nodeStartedAt = $state<Record<string, number>>({});
   let nodeDurationMs = $state<Record<string, number>>({});
+  let nodeWarnings = $state<Record<string, NodeWarning[]>>({});
   // Per-node preview-image load state for skeleton shimmer.
   let previewLoaded = $state<Record<string, boolean>>({});
 
@@ -65,6 +72,18 @@ export function createPipelineState() {
         case 'node_cached':
           nodeStatus = { ...nodeStatus, [ev.node_id]: 'cached' };
           break;
+        case 'node_warning': {
+          if (ev.kind && ev.message) {
+            const prior = nodeWarnings[ev.node_id] ?? [];
+            const entry: NodeWarning = { kind: ev.kind, message: ev.message };
+            if (ev.details) entry.details = ev.details;
+            nodeWarnings = {
+              ...nodeWarnings,
+              [ev.node_id]: [...prior, entry],
+            };
+          }
+          break;
+        }
         case 'node_completed':
         case 'node_failed': {
           nodeStatus = {
@@ -96,6 +115,7 @@ export function createPipelineState() {
     nodePort = {};
     nodeStartedAt = {};
     nodeDurationMs = {};
+    nodeWarnings = {};
     seenEventKey.clear();
   }
 
@@ -107,6 +127,7 @@ export function createPipelineState() {
     nodeProgress = {};
     nodeStartedAt = {};
     nodeDurationMs = {};
+    nodeWarnings = {};
     seenEventKey.clear();
   }
 
@@ -142,6 +163,7 @@ export function createPipelineState() {
     get nodePort() { return nodePort; },
     get nodeStartedAt() { return nodeStartedAt; },
     get nodeDurationMs() { return nodeDurationMs; },
+    get nodeWarnings() { return nodeWarnings; },
     get previewLoaded() { return previewLoaded; },
     applyEvent,
     reset,

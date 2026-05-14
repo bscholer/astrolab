@@ -24,6 +24,7 @@ import logging
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from .models import Ref
 from .paths import cache_root
@@ -33,6 +34,12 @@ log = logging.getLogger("astrolab.cache")
 
 DONE_MARKER: str = "_done"
 OUTPUTS_MANIFEST: str = "_outputs.json"
+WARNINGS_MANIFEST: str = "_warnings.json"
+"""Sidecar listing structured warnings the node emitted during its run
+(e.g. calibrate using an out-of-tolerance dark, or dropping
+uncalibratable frames). Replayed as `node_warning` events when the
+runtime serves a cache hit so the UI's per-node badge stays
+accurate without re-running the node."""
 INUSE_PREFIX: str = "_inuse_"
 """An empty file `_inuse_<job_id>` inside an entry dir means a live job is
 reading or writing that entry. Eviction must skip directories with any
@@ -81,7 +88,13 @@ class ContentCache:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def commit(self, node_hash: str, outputs: Mapping[str, Ref]) -> dict[str, Ref]:
+    def commit(
+        self,
+        node_hash: str,
+        outputs: Mapping[str, Ref],
+        *,
+        warnings: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Ref]:
         """Mark an entry as complete and return the committed Refs.
 
         Caller is responsible for having written each output file under the
@@ -90,6 +103,10 @@ class ContentCache:
         Refs without guessing at filenames: multi-output nodes can use
         whatever naming scheme they like (eg narrowband_extract writes
         `r_results_ha.fit` for port `ha`).
+
+        When `warnings` is non-empty, also writes `_warnings.json`. On
+        cache hit the runtime loads + re-emits these so the UI knows
+        the node had something to flag even though it didn't re-run.
         """
         d = self.entry_dir(node_hash)
         if not d.exists():
@@ -113,8 +130,30 @@ class ContentCache:
         # incomplete entry (no _done marker), not a committed one with a
         # missing manifest.
         (d / OUTPUTS_MANIFEST).write_text(json.dumps(manifest, indent=2))
+        if warnings:
+            (d / WARNINGS_MANIFEST).write_text(json.dumps(warnings, indent=2))
         (d / DONE_MARKER).touch()
         return dict(outputs)
+
+    def load_warnings(self, node_hash: str) -> list[dict[str, Any]]:
+        """Return the warnings the node emitted on its committed run.
+
+        Empty list when the entry is missing, uncommitted, or has no
+        sidecar (older entries, or runs that emitted no warnings).
+        Never raises on a missing or unreadable file — warnings are
+        cosmetic, not load-bearing.
+        """
+        d = self.entry_dir(node_hash)
+        path = d / WARNINGS_MANIFEST
+        if not self.is_committed(node_hash) or not path.exists():
+            return []
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [w for w in raw if isinstance(w, dict)]
 
     def load_outputs(self, node_hash: str) -> dict[str, Ref] | None:
         """Return the committed Refs for an entry from its manifest.
