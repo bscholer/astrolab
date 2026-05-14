@@ -12,6 +12,7 @@
   import { tweened } from 'svelte/motion';
   import { cubicOut } from 'svelte/easing';
   import { api, type SystemSnapshot } from '$lib/api';
+  import { nodeDisplayName } from '$lib/graph';
   import { toast } from '$lib/toast.svelte';
 
   // ---------- live state ----------
@@ -368,18 +369,21 @@
         <ul class="active-list">
           {#each snap.jobs.active as j (j.id)}
             {@const primaryLabel = j.project_name ?? j.target_name ?? j.template_name ?? j.id}
-            {@const subLabel = j.project_name
-              ? j.target_name && j.target_name !== j.project_name
+            {@const catalogLabel =
+              j.project_name && j.target_name && j.target_name !== j.project_name
                 ? j.target_name
-                : j.template_name
-              : j.target_name
-                ? j.template_name
                 : null}
+            {@const stepLabel = j.current_step_kind
+              ? nodeDisplayName(j.current_step_kind, j.current_step_id ?? undefined)
+              : j.template_name}
             <li class="active-job">
               <div class="aj-top">
                 {#if j.project_id}
                   <a class="aj-target" href="/projects/{j.project_id}" title={j.id}>
                     {primaryLabel}
+                    {#if catalogLabel}
+                      <span class="aj-catalog muted">{catalogLabel}</span>
+                    {/if}
                     {#if j.project_version != null}
                       <span class="aj-version mono">v{j.project_version}</span>
                     {/if}
@@ -387,12 +391,15 @@
                 {:else}
                   <span class="aj-target" title={j.id}>
                     {primaryLabel}
+                    {#if catalogLabel}
+                      <span class="aj-catalog muted">{catalogLabel}</span>
+                    {/if}
                   </span>
                 {/if}
                 <span class="muted small mono">{fmtElapsed(j.started_at)}</span>
               </div>
-              {#if subLabel}
-                <div class="aj-meta muted small mono">{subLabel}</div>
+              {#if stepLabel}
+                <div class="aj-meta muted small mono">{stepLabel}</div>
               {/if}
               <div class="progress" aria-label="progress">
                 <div class="progress-fill" style="--pct: {(j.progress * 100).toFixed(1)}%"></div>
@@ -653,6 +660,13 @@
     letter-spacing: -0.01em;
   }
   .aj-target:hover { color: var(--accent); }
+  .aj-catalog {
+    margin-left: 0.45rem;
+    font-family: var(--font-mono);
+    font-weight: 400;
+    font-size: 0.8rem;
+    letter-spacing: 0;
+  }
   .aj-version {
     margin-left: 0.4rem;
     padding: 0.05rem 0.4rem;
