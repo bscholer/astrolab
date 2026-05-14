@@ -198,16 +198,58 @@
           : status}{#if status === 'running' && progress && nschema.preview_hidden}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{Math.round((progress.fraction ?? 0) * 100)}%</span>{:else if (status === 'completed' || status === 'failed') && durationMs && enabled}<span class="dur"><span class="dur-sep" aria-hidden="true"></span>{formatStepDuration(durationMs)}</span>{/if}
       </span>
       {#if warnings && warnings.length > 0}
-        <!-- Warning chip: one badge per node, count when there's more
-             than one. Native title attribute carries the full message
-             list so users get the detail without a custom popover. -->
+        <!-- Warning chip: triangle icon with a hover/focus popover
+             listing every warning's kind + message. `tabindex=0` so
+             keyboard users can :focus it for the same reveal, and
+             `role=button` so screen readers announce it as
+             interactive. -->
         <span
           class="warning-chip"
-          title={warnings.map((w) => `[${w.kind}] ${w.message}`).join('\n\n')}
-          aria-label="{warnings.length} warning{warnings.length === 1 ? '' : 's'}"
+          tabindex="0"
+          role="button"
+          aria-label="{warnings.length} warning{warnings.length === 1 ? '' : 's'}: {warnings
+            .map((w) => w.message)
+            .join('; ')}"
         >
-          <span class="warning-icon" aria-hidden="true">!</span>
+          <svg
+            class="warning-icon"
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            aria-hidden="true"
+          >
+            <!-- Filled warning triangle with an exclamation
+                 inside. Stroke + fill use currentColor so the
+                 chip's amber palette drives the icon too. -->
+            <path
+              d="M12 3 L22 20 L2 20 Z"
+              fill="currentColor"
+              stroke="currentColor"
+              stroke-width="1"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M12 9 L12 14"
+              stroke="#1a1300"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
+            <circle cx="12" cy="17" r="1.1" fill="#1a1300" />
+          </svg>
           {#if warnings.length > 1}<span class="warning-count">{warnings.length}</span>{/if}
+          <span class="warning-pop" role="tooltip">
+            <span class="warning-pop-head">
+              {warnings.length} warning{warnings.length === 1 ? '' : 's'}
+            </span>
+            <ul class="warning-pop-list">
+              {#each warnings as w, i (i)}
+                <li class="warning-pop-item">
+                  <span class="warning-pop-kind">{w.kind}</span>
+                  <span class="warning-pop-msg">{w.message}</span>
+                </li>
+              {/each}
+            </ul>
+          </span>
         </span>
       {/if}
       {#if isOutput}
@@ -585,6 +627,7 @@
      status pill that the eye picks it up without making the row feel
      broken. */
   .warning-chip {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: 0.2rem;
@@ -597,21 +640,95 @@
     padding: 0.05rem 0.45rem;
     border-radius: 999px;
     cursor: help;
+    outline: none;
+  }
+  .warning-chip:focus-visible {
+    box-shadow: 0 0 0 2px rgba(245, 179, 0, 0.4);
   }
   .warning-icon {
     display: inline-block;
-    width: 0.85em;
-    height: 0.85em;
-    line-height: 0.85em;
-    text-align: center;
-    border-radius: 999px;
-    background: #f5b300;
-    color: #1a1300;
-    font-weight: 800;
-    font-size: 0.55rem;
+    width: 0.95rem;
+    height: 0.95rem;
+    /* color: currentColor flows from .warning-chip's amber into the
+       SVG's fill/stroke so the icon matches the chip without
+       hard-coding twice. */
   }
   .warning-count {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Hover/focus popover anchored to the chip. Hidden by default;
+     animated in on .warning-chip:hover / :focus / :focus-within. The
+     z-index has to clear the head-overlay's stacking context;
+     pointer-events:none on the closed state keeps it from blocking
+     clicks on the row underneath. */
+  .warning-pop {
+    position: absolute;
+    top: calc(100% + 0.35rem);
+    right: 0;
+    z-index: 50;
+    min-width: 18rem;
+    max-width: 26rem;
+    padding: 0.55rem 0.7rem;
+    background: rgba(20, 16, 4, 0.96);
+    color: #f5e9c5;
+    border: 1px solid rgba(245, 179, 0, 0.55);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    font-family: var(--font-sans, system-ui);
+    font-weight: 400;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    opacity: 0;
+    transform: translateY(-2px);
+    pointer-events: none;
+    transition: opacity 120ms ease, transform 120ms ease;
+    white-space: normal;
+  }
+  .warning-chip:hover .warning-pop,
+  .warning-chip:focus .warning-pop,
+  .warning-chip:focus-within .warning-pop {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  .warning-pop-head {
+    display: block;
+    margin-bottom: 0.3rem;
+    font-weight: 600;
+    color: #f5b300;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .warning-pop-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .warning-pop-item {
+    display: flex;
+    gap: 0.45rem;
+    align-items: baseline;
+  }
+  .warning-pop-kind {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #1a1300;
+    background: #f5b300;
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+  }
+  .warning-pop-msg {
+    flex: 1 1 auto;
+    word-break: break-word;
   }
   .chevron {
     color: var(--fg-mute);
