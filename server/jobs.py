@@ -37,6 +37,12 @@ from .catalog.db import retry_on_locked
 from .models import Job, Ref, Template
 from .ports import PortType
 from .runtime import JobCancelled, RunError, run_job
+from .storage import (
+    SETTING_CACHE_MAX_BYTES,
+    default_cache_max_bytes_for,
+    get_setting,
+    run_cleanup,
+)
 
 log = logging.getLogger("astrolab.jobs")
 
@@ -489,6 +495,12 @@ class JobWorker:
     STALE_HEARTBEAT_SECONDS = 120
     HEARTBEAT_SECONDS = 5
     CANCEL_POLL_SECONDS = 0.5
+    CACHE_SWEEP_SECONDS = 30
+    """How often the monitor thread re-runs the eviction sweep while a
+    job is active. Cheap when under budget (run_cleanup no-ops); when
+    over budget, bounds how long the cache can balloon mid-job before
+    we reclaim space. The in-use lockfile guarantees the running job's
+    own entries survive every sweep."""
 
     def __init__(
         self,
@@ -609,6 +621,26 @@ class JobWorker:
         self._run(record)
         return record.id
 
+    def sweep_cache(self) -> None:
+        """Run an eviction pass against the configured budget; swallow errors.
+
+        Called pre-job and periodically from the per-job monitor thread.
+        Never raises: a broken cleanup must not fail the job it's protecting.
+        run_cleanup itself no-ops when usage is under budget, so calling
+        this on every idle tick costs only a catalog read.
+        """
+        try:
+            max_bytes = int(
+                get_setting(
+                    SETTING_CACHE_MAX_BYTES,
+                    default_cache_max_bytes_for(self._cache.root),
+                    db_path=self._db_path,
+                )
+            )
+            run_cleanup(self._cache, max_bytes=max_bytes, db_path=self._db_path)
+        except Exception:  # pragma: no cover (defensive)
+            log.exception("auto cache sweep failed")
+
     # -- internals ---------------------------------------------------------
 
     def _run(self, record: JobRecord) -> None:
@@ -618,14 +650,21 @@ class JobWorker:
             self._terminate(record, status="interrupted", error="cancelled while queued")
             return
 
+        # Pre-job sweep: bound the cache before this job's writes pile on.
+        # The lockfile protocol means we can't nuke anything we're about to
+        # read; this is purely reclaiming old/orphaned/bulk entries.
+        self.sweep_cache()
+
         cancel_event = threading.Event()
         monitor_stop = threading.Event()
 
         def monitor() -> None:
-            # Two duties: heartbeat the row so reclaim_stale doesn't kick
-            # us, and poll cancel_requested so the API can ask us to stop.
-            # Heartbeat cadence is the coarser of the two.
+            # Three duties: heartbeat the row so reclaim_stale doesn't kick
+            # us, poll cancel_requested so the API can ask us to stop, and
+            # periodically re-sweep the cache so a long job doesn't blow
+            # past the storage budget mid-run. Each duty has its own cadence.
             heartbeat_at = 0.0
+            sweep_at = time.monotonic()  # pre-job sweep already ran; wait one cycle
             while not monitor_stop.is_set():
                 now = time.monotonic()
                 if now - heartbeat_at >= self.HEARTBEAT_SECONDS:
@@ -633,6 +672,9 @@ class JobWorker:
                     heartbeat_at = now
                 if not cancel_event.is_set() and self._read_cancel(record.id):
                     cancel_event.set()
+                if now - sweep_at >= self.CACHE_SWEEP_SECONDS:
+                    self.sweep_cache()
+                    sweep_at = now
                 monitor_stop.wait(self.CANCEL_POLL_SECONDS)
 
         monitor_thread = threading.Thread(
