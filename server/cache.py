@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -27,6 +28,8 @@ from pathlib import Path
 from .models import Ref
 from .paths import cache_root
 from .ports import PortType
+
+log = logging.getLogger("astrolab.cache")
 
 DONE_MARKER: str = "_done"
 OUTPUTS_MANIFEST: str = "_outputs.json"
@@ -60,6 +63,13 @@ class ContentCache:
         """
         d = self.entry_dir(node_hash)
         if d.exists() and (force or not self.is_committed(node_hash)):
+            reason = "force-rerun" if force and self.is_committed(node_hash) else "half-written"
+            log.info(
+                "cache reserve wipe: hash=%s reason=%s path=%s",
+                node_hash[:12],
+                reason,
+                d,
+            )
             shutil.rmtree(d)
         d.mkdir(parents=True, exist_ok=True)
         return d
@@ -134,22 +144,34 @@ class ContentCache:
             )
         return out
 
-    def evict(self, node_hash: str) -> int:
+    def evict(self, node_hash: str, *, reason: str = "unspecified") -> int:
         """Remove a committed cache entry. Returns bytes freed (best-effort
         rollup of file sizes within the entry dir before deletion).
 
         No-op if the entry doesn't exist. Used by storage cleanup; the
         runtime never calls this on a live entry because entries are only
         evicted when no live job references them.
+
+        `reason` is logged so a forensic trail exists when a job later
+        complains its inputs vanished. Pass e.g. "orphan", "over-budget",
+        "project-delete", "session-swap".
         """
         d = self.entry_dir(node_hash)
         if not d.exists():
+            log.debug("cache evict no-op: hash=%s reason=%s (path missing)", node_hash[:12], reason)
             return 0
         bytes_freed = 0
         for path in d.rglob("*"):
             if path.is_file() and not path.is_symlink():
                 with contextlib.suppress(OSError):
                     bytes_freed += path.stat().st_size
+        log.info(
+            "cache evict: hash=%s reason=%s bytes=%d path=%s",
+            node_hash[:12],
+            reason,
+            bytes_freed,
+            d,
+        )
         shutil.rmtree(d, ignore_errors=True)
         return bytes_freed
 
