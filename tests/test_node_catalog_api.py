@@ -39,7 +39,11 @@ def test_nodes_endpoint_shape(client: TestClient) -> None:
     """Each entry has the expected top-level keys."""
     r = client.get("/api/nodes")
     catalog = r.json()
-    required_keys = {"version", "cost", "uses_siril", "inputs", "outputs", "params"}
+    # `cost` was originally in this set but no node ever declared it as
+    # a class attribute and the API never returned it; it's a phantom
+    # from an earlier draft. `tier` is the real cache-eviction
+    # discriminator and IS reported by every node.
+    required_keys = {"version", "tier", "uses_siril", "inputs", "outputs", "params"}
     for key, entry in catalog.items():
         missing = required_keys - entry.keys()
         assert not missing, f"{key}: missing keys {missing}"

@@ -25,9 +25,9 @@ class _CountingParams(BaseModel):
     tag: str = "default"
 
 
-@register("test_lazy_passthrough")
+@register("__test_lazy_passthrough__")
 class _CountingPassthroughNode(Node):
-    id = "test_lazy_passthrough"
+    id = "__test_lazy_passthrough__"
     version = 1
     tier = "bulk"
     inputs = {"image": PortType.IMAGE_PNG}
@@ -66,16 +66,16 @@ def _chain_template() -> Template:
         version=1,
         description="3-step passthrough chain",
         nodes=[
-            NodeSpec(id="upstream", kind="test_lazy_passthrough", params={"tag": "u"}),
+            NodeSpec(id="upstream", kind="__test_lazy_passthrough__", params={"tag": "u"}),
             NodeSpec(
                 id="middle",
-                kind="test_lazy_passthrough",
+                kind="__test_lazy_passthrough__",
                 params={"tag": "m"},
                 inputs={"image": "upstream.image"},
             ),
             NodeSpec(
                 id="downstream",
-                kind="test_lazy_passthrough",
+                kind="__test_lazy_passthrough__",
                 params={"tag": "d"},
                 inputs={"image": "middle.image"},
             ),
