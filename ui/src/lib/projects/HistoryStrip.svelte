@@ -369,6 +369,7 @@
     display: flex;
     gap: 0.4rem;
     overflow-x: auto;
+    overflow-y: hidden;
     padding-bottom: 0.4rem;
   }
   .hist-entry {
