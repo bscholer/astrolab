@@ -567,6 +567,88 @@ def run_cleanup(
 
 
 # ---------------------------------------------------------------------------
+# Per-operation disk headroom
+# ---------------------------------------------------------------------------
+
+
+class InsufficientStorageError(RuntimeError):
+    """Raised when a node needs more bytes than we can possibly free up.
+
+    Carries structured fields so the UI can render a clean failure card
+    instead of dumping a traceback. The runtime wraps this in node_failed
+    with a human-readable message.
+    """
+
+    def __init__(self, *, need_bytes: int, free_bytes: int, evicted_bytes: int):
+        self.need_bytes = need_bytes
+        self.free_bytes = free_bytes
+        self.evicted_bytes = evicted_bytes
+        super().__init__(self._format())
+
+    def _format(self) -> str:
+        def _gb(n: int) -> str:
+            return f"{n / 1_000_000_000:.1f} GB"
+        return (
+            f"not enough disk space: need {_gb(self.need_bytes)}, "
+            f"only {_gb(self.free_bytes)} free after evicting "
+            f"{_gb(self.evicted_bytes)} from cache"
+        )
+
+
+def ensure_disk_headroom(
+    cache: ContentCache,
+    *,
+    need_bytes: int,
+    cache_max_bytes: int,
+    db_path: Path | None = None,
+) -> CleanupResult | None:
+    """Make sure `need_bytes` will fit before a node writes.
+
+    Headroom is bounded by both the physical disk free space AND the
+    configured cache budget: a 1 TB cache cap doesn't help if only 20 GB
+    are left on the partition. Both constraints apply:
+      - cache_used' must leave (cache_max_bytes - cache_used') >= need_bytes
+      - disk_free + (cache_used - cache_used') >= need_bytes
+
+    Returns the CleanupResult if a sweep ran, or None if we were already
+    under threshold. Raises InsufficientStorageError when even an
+    aggressive sweep can't get us there.
+    """
+    disk = _disk_usage(cache.root)
+    with _conn(db_path) as conn:
+        entries, _ = build_reachability(conn, cache)
+    cache_used = sum(e.bytes for e in entries.values())
+
+    budget_headroom = max(0, cache_max_bytes - cache_used)
+    headroom = min(disk.free_bytes, budget_headroom)
+    if headroom >= need_bytes:
+        return None
+
+    # Sweep enough to satisfy whichever constraint is binding.
+    disk_deficit = max(0, need_bytes - disk.free_bytes)
+    budget_deficit = max(0, need_bytes - budget_headroom)
+    target_max = max(0, min(
+        cache_max_bytes - need_bytes,
+        cache_used - max(disk_deficit, budget_deficit),
+    ))
+    log.info(
+        "ensure_disk_headroom sweep: need=%d disk_free=%d cache_used=%d "
+        "budget=%d target_max=%d",
+        need_bytes, disk.free_bytes, cache_used, cache_max_bytes, target_max,
+    )
+    result = run_cleanup(cache, max_bytes=target_max, db_path=db_path)
+
+    disk_after = _disk_usage(cache.root)
+    if disk_after.free_bytes < need_bytes:
+        raise InsufficientStorageError(
+            need_bytes=need_bytes,
+            free_bytes=disk_after.free_bytes,
+            evicted_bytes=result.bytes_freed,
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Settings: a thin key/value store for system-wide knobs.
 # ---------------------------------------------------------------------------
 

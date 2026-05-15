@@ -39,6 +39,7 @@ from .canonical import node_hash
 from .models import Job, Profile, Ref, RunContext, Template
 from .registry import lookup as registry_lookup
 from .siril import get_siril_version
+from .storage import InsufficientStorageError, ensure_disk_headroom
 
 ProgressFn = Callable[[float, str], None]
 EventFn = Callable[[dict], None]
@@ -214,6 +215,8 @@ def run_job(
     force: bool = False,
     cancel: threading.Event | None = None,
     job_id: str | None = None,
+    db_path: Path | None = None,
+    cache_max_bytes: int | None = None,
 ) -> dict[str, Ref]:
     """Execute a Job and return a map of declared template outputs to Refs.
 
@@ -388,6 +391,27 @@ def run_job(
         # already executed in this pass contribute their committed paths,
         # not the placeholder filler.
         resolved_inputs = _resolve_inputs(nid, spec, node_cls, refs)
+
+        # Preflight disk headroom for bulk-tier nodes. Each node estimates
+        # its own write size; the storage helper sweeps cache or raises
+        # InsufficientStorageError if even an aggressive sweep can't fit.
+        # Only runs when JobWorker passed cache_max_bytes (tests skip it).
+        node_inst: Node = node_cls()
+        estimate = node_inst.estimate_storage_bytes(resolved_inputs, p.params)  # type: ignore[arg-type]
+        if estimate is not None and estimate > 0 and cache_max_bytes is not None:
+            try:
+                ensure_disk_headroom(
+                    cache_obj,
+                    need_bytes=estimate,
+                    cache_max_bytes=cache_max_bytes,
+                    db_path=db_path,
+                )
+            except InsufficientStorageError as exc:
+                on_event(
+                    {"type": "node_failed", "node_id": nid, "error": str(exc)}
+                )
+                raise RunError(nid, str(exc)) from exc
+
         out_dir = cache_obj.reserve(h, force=force)
 
         # Stamp in-use markers on the output dir and every input we're
@@ -423,7 +447,6 @@ def run_job(
             _buf.append(entry)
             on_event({"type": "node_warning", "node_id": _nid, **entry})
 
-        node_inst: Node = node_cls()
         with tempfile.TemporaryDirectory(prefix=f"astrolab-{nid}-") as td:
             ctx = RunContext(
                 tmpdir=Path(td),
@@ -480,6 +503,16 @@ def run_job(
         cache_obj.commit(h, committed, warnings=node_warnings)
         for port, ref in committed.items():
             refs[f"{nid}.{port}"] = ref
+        # Estimate-vs-actual logging for nodes that opted in. Lets us tune
+        # the multiplier against real datasets instead of guessing.
+        if estimate is not None and estimate > 0:
+            from nodes._storage_estimate import measure_actual_bytes
+            actual = measure_actual_bytes(out_dir)
+            ratio = actual / estimate if estimate else 0.0
+            log.info(
+                "storage estimate: node=%s estimate=%d actual=%d ratio=%.2f",
+                nid, estimate, actual, ratio,
+            )
         on_event({"type": "node_completed", "node_id": nid, "hash": h})
 
     public: dict[str, Ref] = {}
