@@ -122,3 +122,42 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
           provenance: false
           sbom: false
+
+  build-bscholer-siril:
+    name: build bscholer-siril-cuda
+    runs-on: ubuntu-latest
+    # Only on main-branch pushes; skip PRs — building siril from source is slow.
+    if: github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (bscholer-siril-cuda)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.bscholer-siril
+          build-args: |
+            BASE_TAG=dev-cuda
+            SIRIL_GIT_REF=perf-stats-skip-redundant-minmax
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:dev-bscholer-siril-cuda
+          cache-from: type=gha,scope=docker-bscholer-siril
+          cache-to: type=gha,mode=max,scope=docker-bscholer-siril
+          provenance: false
+          sbom: false

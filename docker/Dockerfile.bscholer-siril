@@ -1,0 +1,96 @@
+# Dockerfile.bscholer-siril
+#
+# Extends an existing astrolab image and replaces its bundled Siril (the
+# extracted 1.4.x AppImage at /opt/siril) with a from-source build of
+# Ben Scholer's fork that carries unmerged perf work
+# (https://gitlab.com/bscholer/siril, branch perf-stats-skip-redundant-minmax).
+#
+# This is a dev image, not a release. The base it FROMs already has all the
+# astrolab runtime libs (cfitsio, opencv, gsl, fftw, etc.) installed, so we
+# just need the -dev counterparts to build siril. We keep them in the image
+# rather than slimming, because this tag's whole purpose is iterating on the
+# siril code.
+#
+# Build (run on a linux/amd64 host, e.g. the lambda box, to skip qemu):
+#
+#   docker build \
+#     -f docker/Dockerfile.bscholer-siril \
+#     --build-arg BASE_TAG=dev-cuda \
+#     --build-arg SIRIL_GIT_REF=perf-stats-skip-redundant-minmax \
+#     -t bscholer/astrolab:dev-bscholer-siril-cuda \
+#     .
+#
+# Override SIRIL_GIT_URL / SIRIL_GIT_REF to point at any siril branch you want
+# to A/B against the bundled AppImage.
+
+ARG BASE_TAG=dev-cuda
+FROM ghcr.io/bscholer/astrolab:${BASE_TAG}
+
+ARG SIRIL_GIT_URL=https://gitlab.com/bscholer/siril.git
+ARG SIRIL_GIT_REF=perf-stats-skip-redundant-minmax
+ARG SIRIL_PREFIX=/opt/siril-custom
+
+# Build deps. Ubuntu 22.04 jammy (the CUDA base) is missing libxisf-dev and
+# libjxl-dev in main; we disable those siril options below. jammy's lcms2 is
+# 2.12 but siril 1.5 wants >= 2.14, so we build it from source. wcslib in
+# jammy is 7.7 but siril wants 7.12 — meson's wcslib subproject fallback
+# (in-tree at subprojects/wcslib) handles that automatically.
+RUN set -eux; \
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+        build-essential cmake git intltool meson ninja-build pkg-config \
+        libexiv2-dev libgtk-3-dev libcfitsio-dev libfftw3-dev libgsl-dev \
+        libgtksourceview-4-dev libopencv-dev librsvg2-dev libraw-dev libffms2-dev \
+        libtiff-dev libjpeg-dev libheif-dev libhealpix-cxx-dev libpng-dev \
+        libavformat-dev libavutil-dev libavcodec-dev libswscale-dev libswresample-dev \
+        libcurl4-gnutls-dev libgit2-dev libjson-glib-dev \
+        libzstd-dev liblz4-dev libpugixml-dev libsqlite3-dev \
+        python3 ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+# lcms2 2.14 (jammy ships 2.12). Tarball from upstream sourceforge mirror.
+# Installs to /usr/local so siril's pkg-config picks it up before /usr.
+ARG LCMS2_VERSION=2.16
+RUN set -eux; \
+    cd /tmp; \
+    curl -fL --silent --show-error -o lcms2.tar.gz \
+        "https://github.com/mm2/Little-CMS/releases/download/lcms${LCMS2_VERSION}/lcms2-${LCMS2_VERSION}.tar.gz"; \
+    tar -xzf lcms2.tar.gz; \
+    cd "lcms2-${LCMS2_VERSION}"; \
+    ./configure --prefix=/usr/local --disable-static; \
+    make -j"$(nproc)"; \
+    make install; \
+    ldconfig; \
+    cd /; rm -rf /tmp/lcms2.tar.gz /tmp/lcms2-${LCMS2_VERSION}
+
+# Clone, init the two submodules siril actually needs at build time, and build.
+# arch_native=false because the build host CPU may not match the eventual run
+# host (M3 / Zen / Skylake). Keep it portable; the perf wins here aren't from
+# -march=native anyway.
+RUN set -eux; \
+    git clone --depth 1 --branch "${SIRIL_GIT_REF}" "${SIRIL_GIT_URL}" /tmp/siril-src; \
+    cd /tmp/siril-src; \
+    git submodule update --init --depth 1 subprojects/librtprocess subprojects/yyjson; \
+    meson setup _meson-build \
+        --buildtype=release \
+        --prefix="${SIRIL_PREFIX}" \
+        -Dlibgit2=false \
+        -DlibXISF=false \
+        -Dlibjxl=false \
+        -Darch_native=false \
+        -Drelocatable-bundle=no; \
+    ninja -C _meson-build -j"$(nproc)"; \
+    ninja -C _meson-build install; \
+    # Sanity: this must launch and print a version banner.
+    "${SIRIL_PREFIX}/bin/siril-cli" --version || true; \
+    rm -rf /tmp/siril-src
+
+# Repoint astrolab at the custom binary. The siril.py wrapper reads SIRIL_BIN
+# (see server/siril.py). Leaving the stock AppImage in /opt/siril untouched is
+# intentional: easy to fall back by exec'ing with SIRIL_BIN=/opt/siril/AppRun.
+ENV SIRIL_BIN=/opt/siril-custom/bin/siril-cli
+
+LABEL org.opencontainers.image.title="astrolab (bscholer-siril)" \
+      org.opencontainers.image.description="Astrolab dev image with Ben's perf-patched Siril from source instead of the upstream AppImage. Tracks branch perf-stats-skip-redundant-minmax." \
+      io.astrolab.siril.source="${SIRIL_GIT_URL}" \
+      io.astrolab.siril.ref="${SIRIL_GIT_REF}"
