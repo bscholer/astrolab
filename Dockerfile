@@ -172,6 +172,22 @@ COPY --from=tools-fetcher /opt/siril/usr/share/doc/siril/LICENSE.md /opt/license
 COPY --from=tools-fetcher /opt/graxpert-LICENSE /opt/licenses/graxpert/LICENSE
 COPY LICENSES/ /opt/licenses/astrolab/
 
+# Pre-download GraXpert AI models (bge + denoise) so containers don't stall on
+# a ~700 MB first-run download. We run GraXpert against a minimal synthetic FITS;
+# the Minio download finishes inside get_ai_version() before inference starts, so
+# inference errors (tiny image, no GPU during build) are expected and silenced.
+# The final 'ls' makes the build fail loudly if either model wasn't fetched.
+RUN /app/.venv/bin/python3 -c "\
+from astropy.io import fits; import numpy as np; \
+fits.PrimaryHDU(np.zeros((64,64),dtype='float32')).writeto('/tmp/graxpert_warmup.fit')" && \
+    /opt/graxpert/graxpert -cli -cmd background-extraction /tmp/graxpert_warmup.fit \
+        -output /tmp/graxpert_warmup_bge.fit -gpu false || true && \
+    /opt/graxpert/graxpert -cli -cmd denoising /tmp/graxpert_warmup.fit \
+        -output /tmp/graxpert_warmup_denoise.fit -gpu false || true && \
+    rm -f /tmp/graxpert_warmup*.fit && \
+    ls -lh /root/.local/share/GraXpert/bge-ai-models/*/model.onnx \
+           /root/.local/share/GraXpert/denoise-ai-models/*/model.onnx
+
 # Application sources
 COPY server/ ./server/
 COPY nodes/ ./nodes/
