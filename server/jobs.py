@@ -53,6 +53,8 @@ EventType = Literal[
     "node_started",
     "node_progress",
     "node_cached",
+    "node_skipped",
+    "node_warning",
     "node_completed",
     "node_failed",
     "job_completed",

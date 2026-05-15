@@ -7,7 +7,7 @@
 
 import type { JobEvent, NodeWarning, TemplateSchema } from '$lib/api';
 
-export type NodeStatus = 'pending' | 'running' | 'cached' | 'completed' | 'failed';
+export type NodeStatus = 'pending' | 'running' | 'cached' | 'skipped' | 'completed' | 'failed';
 
 export interface PipelineState {
   nodeStatus: Record<string, NodeStatus>;
@@ -71,6 +71,13 @@ export function createPipelineState() {
           break;
         case 'node_cached':
           nodeStatus = { ...nodeStatus, [ev.node_id]: 'cached' };
+          break;
+        case 'node_skipped':
+          // Lazy-skip from the runtime: upstream miss whose downstream
+          // consumers all cache-hit, so its outputs would never be read.
+          // Distinct from 'cached' because the files aren't on disk —
+          // the preview pane shouldn't try to load anything.
+          nodeStatus = { ...nodeStatus, [ev.node_id]: 'skipped' };
           break;
         case 'node_warning': {
           if (ev.kind && ev.message) {

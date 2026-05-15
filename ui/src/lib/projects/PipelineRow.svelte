@@ -14,7 +14,7 @@
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
 
-  type NodeStatus = 'pending' | 'running' | 'cached' | 'completed' | 'failed';
+  type NodeStatus = 'pending' | 'running' | 'cached' | 'skipped' | 'completed' | 'failed';
 
   type Props = {
     nschema: TemplateNodeSchema;
@@ -867,6 +867,10 @@
   .status-queued { background: rgba(255, 255, 255, 0.10); color: var(--fg); }
   .status-running { background: var(--accent-soft); color: var(--accent); }
   .status-cached { background: rgba(255, 255, 255, 0.10); color: var(--fg-mute); }
+  /* Lazy-skipped (no downstream consumer needed its outputs). Same muted
+     palette as cached; the label "skipped" carries the distinction so the
+     preview pane knows there's nothing to load. */
+  .status-skipped { background: rgba(255, 255, 255, 0.10); color: var(--fg-mute); }
   .status-completed { background: color-mix(in oklab, var(--good) 18%, transparent); color: var(--good); }
   .status-failed { background: color-mix(in oklab, var(--bad) 18%, transparent); color: var(--bad); }
   .status-off {
