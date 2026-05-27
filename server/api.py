@@ -59,7 +59,7 @@ import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
 from server.catalog.common_names import lookup as lookup_common_name
-from server.catalog.db import open_db
+from server.catalog.db import migrate, open_db
 from server.catalog.fits_reader import normalize_target
 from server.catalog.matching import match_bundle_darks
 from server.catalog.openngc import all_entries as openngc_all_entries
@@ -120,6 +120,19 @@ from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Run migrations once at startup instead of on every connect().
+    from server.catalog.db import default_db_path, retry_on_locked
+    from server.jobs import _get_persistence_connection
+
+    db_path = job_manager.db_path or default_db_path()
+    with open_db(db_path) as conn:
+        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        try:
+            retry_on_locked(migrate)(conn)
+        except Exception:
+            log.exception("startup migration failed; continuing anyway")
+
     # Pull persisted jobs and projects into memory so the UI lists them
     # and detail pages can replay events even after a server restart.
     try:
