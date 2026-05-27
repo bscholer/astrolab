@@ -109,6 +109,18 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+def _get_persistence_connection(pm: "ProjectManager") -> sqlite3.Connection:
+    """Get or initialize the persistent connection from a ProjectManager.
+
+    Returns the persistent connection if already initialized, otherwise
+    creates one via open_catalog_db(). This mirrors the pattern in
+    server.jobs._get_persistence_connection for consistency.
+    """
+    if pm._persistence_conn is not None:
+        return pm._persistence_conn
+    return open_catalog_db(pm._db_path)
+
+
 @dataclass
 class HistoryEntry:
     seq: int
@@ -206,16 +218,19 @@ class ProjectManager:
         self._db_path = db_path
         self._records: dict[str, Project] = {}
         self._lock = threading.Lock()
+        self._persistence_conn: sqlite3.Connection | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
+    def _init_persistence_db(self) -> None:
+        """Initialize the persistent connection once. Idempotent."""
+        if self._persistence_conn is None:
+            self._persistence_conn = open_catalog_db(self._db_path)
+
     def rehydrate(self) -> None:
         """Load persisted projects from the DB. Idempotent."""
-        try:
-            conn = self._conn()
-        except Exception:  # pragma: no cover  (defensive: DB might not exist yet)
-            log.exception("could not open catalog DB for project rehydration")
-            return
+        self._init_persistence_db()
+        conn = self._persistence_conn
         try:
             rows = conn.execute(
                 "SELECT * FROM projects ORDER BY updated_at DESC"
@@ -747,7 +762,7 @@ class ProjectManager:
         return self._jobs.submit(project.template, job, force=force)
 
     def _conn(self) -> sqlite3.Connection:
-        return open_catalog_db(self._db_path)
+        return _get_persistence_connection(self)
 
     def _persist_project(self, project: Project, *, kind: str) -> None:
         try:

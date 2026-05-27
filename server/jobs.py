@@ -282,6 +282,18 @@ def _persist_event(
     return seq
 
 
+def _get_persistence_connection(
+    job_or_project_manager: "JobManager | ProjectManager",  # type: ignore[name-defined]
+) -> sqlite3.Connection:
+    """Get or initialize the persistent connection from a JobManager or
+    ProjectManager. Returns a fresh connection if the persistent one isn't
+    set yet (e.g., read paths before _init_persistence_db has been called).
+    """
+    if job_or_project_manager._persistence_conn is not None:
+        return job_or_project_manager._persistence_conn
+    return open_catalog_db(job_or_project_manager._db_path)
+
+
 def _row_to_record(row: sqlite3.Row) -> JobRecord:
     template = Template.model_validate(json.loads(row["template_json"]))
     job = Job.model_validate(json.loads(row["job_json"]))
@@ -366,6 +378,7 @@ class JobManager:
     ) -> None:
         self._cache = cache if cache is not None else ContentCache()
         self._db_path = db_path
+        self._persistence_conn: sqlite3.Connection | None = None
 
     @property
     def cache(self) -> ContentCache:
@@ -374,6 +387,11 @@ class JobManager:
     @property
     def db_path(self) -> Path | None:
         return self._db_path
+
+    def _init_persistence_db(self) -> None:
+        """Initialize the persistent connection once. Idempotent."""
+        if self._persistence_conn is None:
+            self._persistence_conn = open_catalog_db(self._db_path)
 
     def rehydrate(self) -> None:
         """No-op on the API side.
@@ -396,7 +414,9 @@ class JobManager:
 
     def shutdown(self, wait: bool = True) -> None:
         """No-op on the API side; preserved for lifespan-hook compatibility."""
-        _ = wait
+        if self._persistence_conn is not None:
+            self._persistence_conn.close()
+            self._persistence_conn = None
 
     # -- public API --------------------------------------------------------
 
@@ -404,7 +424,7 @@ class JobManager:
     def submit(self, template: Template, job: Job, *, force: bool = False) -> str:
         job_id = str(uuid.uuid4())
         submitted_at = _now()
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             with conn:
                 conn.execute(
@@ -440,7 +460,7 @@ class JobManager:
         """Flip cancel_requested. The worker's monitor thread sees it and
         sets its threading.Event. Returns True when the row was live
         (queued or running) and the flag took effect."""
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             with conn:
                 cur = conn.execute(
@@ -453,7 +473,7 @@ class JobManager:
             conn.close()
 
     def get(self, job_id: str) -> JobRecord | None:
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             row = conn.execute(
                 "SELECT * FROM jobs WHERE id = ?", (job_id,)
@@ -465,14 +485,14 @@ class JobManager:
             conn.close()
 
     def get_events(self, job_id: str, *, after_seq: int = -1) -> list[JobEvent]:
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             return _load_events(conn, job_id, after_seq=after_seq)
         finally:
             conn.close()
 
     def list_jobs(self) -> list[JobRecord]:
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             rows = conn.execute(
                 "SELECT * FROM jobs ORDER BY submitted_at ASC"
@@ -532,7 +552,7 @@ class JobWorker:
         """
         cutoff = datetime.now(UTC) - timedelta(seconds=self.STALE_HEARTBEAT_SECONDS)
         reclaimed = 0
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             rows = conn.execute(
                 "SELECT id, worker_pid, heartbeat_at, started_at "
@@ -581,7 +601,7 @@ class JobWorker:
     def claim_next_queued(self) -> JobRecord | None:
         """Atomic claim of the oldest queued row. Returns the claimed
         record (with status='running') or None if the queue is empty."""
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             with conn:
                 row = conn.execute(
@@ -772,7 +792,7 @@ class JobWorker:
                 from .quality import compute_quality_for_record
                 # Fetch events now so quality.py doesn't need to reach back
                 # into api.py (which would create a circular import).
-                conn_q = open_catalog_db(self._db_path)
+                conn_q = _get_persistence_connection(self)
                 try:
                     job_events = _load_events(conn_q, record.id)
                 finally:
@@ -784,7 +804,7 @@ class JobWorker:
             except Exception:
                 log.warning("quality computation failed for job %s", record.id, exc_info=True)
 
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             with conn:
                 conn.execute(
@@ -814,7 +834,7 @@ class JobWorker:
 
     @retry_on_locked
     def _heartbeat(self, job_id: str) -> None:
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             with conn:
                 conn.execute(
@@ -825,7 +845,7 @@ class JobWorker:
             conn.close()
 
     def _read_cancel(self, job_id: str) -> bool:
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             row = conn.execute(
                 "SELECT cancel_requested FROM jobs WHERE id = ?", (job_id,)
@@ -836,7 +856,7 @@ class JobWorker:
 
     @retry_on_locked
     def _emit_event(self, job_id: str, event: JobEvent) -> None:
-        conn = open_catalog_db(self._db_path)
+        conn = _get_persistence_connection(self)
         try:
             with conn:
                 _persist_event(conn, job_id, event)
