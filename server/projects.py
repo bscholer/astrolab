@@ -109,7 +109,7 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
-def _get_persistence_connection(pm: "ProjectManager") -> sqlite3.Connection:
+def _get_persistence_connection(pm: ProjectManager) -> sqlite3.Connection:  # noqa: F821
     """Get or initialize the persistent connection from a ProjectManager.
 
     Returns the persistent connection if already initialized, otherwise

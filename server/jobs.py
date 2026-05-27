@@ -283,7 +283,7 @@ def _persist_event(
 
 
 def _get_persistence_connection(
-    job_or_project_manager: "JobManager | ProjectManager",  # type: ignore[name-defined]
+    job_or_project_manager: JobManager | ProjectManager,  # noqa: F821
 ) -> sqlite3.Connection:
     """Get or initialize the persistent connection from a JobManager or
     ProjectManager. Returns a fresh connection if the persistent one isn't
