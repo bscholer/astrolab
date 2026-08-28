@@ -129,13 +129,16 @@ class StarnetExtractNode(Node[StarnetExtractParams]):
         starnet_dir = binary.parent.resolve()
         env = os.environ.copy()
         prev_lib = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = f"{starnet_dir}:{prev_lib}" if prev_lib else str(starnet_dir)
+        starnet_lib = starnet_dir / "lib"
+        lib_dirs = ":".join(str(p) for p in [starnet_lib, starnet_dir] if p.exists())
+        env["LD_LIBRARY_PATH"] = f"{lib_dirs}:{prev_lib}" if prev_lib else lib_dirs
 
+        # StarNet++ v2.5+ uses named flags; older v2 used positional args.
         cmd = [
             str(binary),
-            str(in_tiff.resolve()),
-            str(out_tiff.resolve()),
-            str(params.stride),
+            "-i", str(in_tiff.resolve()),
+            "-o", str(out_tiff.resolve()),
+            "-s", str(params.stride),
         ]
 
         ctx.progress(0.2, "starnet_extract: running starnet++")
