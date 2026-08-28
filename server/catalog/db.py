@@ -501,7 +501,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     # processes both open the catalog on startup and their connect()
     # calls can race on the schema_version write inside migrate(). 10s
     # gives the loser plenty of room to wait for the winner to finish.
-    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
     # PRAGMA journal_mode is special: it can fail with SQLITE_BUSY even
     # when busy_timeout is set, because changing journal mode requires
