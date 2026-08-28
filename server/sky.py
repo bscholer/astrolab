@@ -40,6 +40,7 @@ from astropy.utils import iers
 # bundled IERS table, no network.
 iers.conf.auto_download = False
 iers.conf.iers_auto_url = ""
+iers.conf.auto_max_age = None
 
 
 # Solar altitude that defines astronomical twilight. The Tonight window
