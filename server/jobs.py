@@ -670,10 +670,17 @@ class JobWorker:
             while not monitor_stop.is_set():
                 now = time.monotonic()
                 if now - heartbeat_at >= self.HEARTBEAT_SECONDS:
-                    self._heartbeat(record.id)
+                    try:
+                        self._heartbeat(record.id)
+                    except Exception:
+                        log.warning("heartbeat failed for job %s", record.id, exc_info=True)
                     heartbeat_at = now
-                if not cancel_event.is_set() and self._read_cancel(record.id):
-                    cancel_event.set()
+                if not cancel_event.is_set():
+                    try:
+                        if self._read_cancel(record.id):
+                            cancel_event.set()
+                    except Exception:
+                        log.warning("cancel-poll failed for job %s", record.id, exc_info=True)
                 if now - sweep_at >= self.CACHE_SWEEP_SECONDS:
                     self.sweep_cache()
                     sweep_at = now
