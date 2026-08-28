@@ -2,14 +2,16 @@
 # Multi-stage Dockerfile for astrolab.
 #
 # Build args
-#   BASE  debian:bookworm-slim          → CPU image (published as :latest/:cpu on release, :dev on main)
-#         nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04  → CUDA image (published as :cuda on release, :dev-cuda on main)
+#   BASE  ubuntu:24.04                  → CPU image (default; StarNet++ compatible)
+#         debian:bookworm-slim          → CPU image (legacy, no StarNet++)
+#         nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04  → CUDA image
 #
 # Build examples
-#   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu .
+#   docker build -t astrolab:cpu .
+#   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu-bookworm .
 #   docker build --build-arg BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t astrolab:cuda .
 
-ARG BASE=debian:bookworm-slim
+ARG BASE=ubuntu:24.04
 
 
 # ---------------------------------------------------------------------------
@@ -120,18 +122,29 @@ LABEL org.opencontainers.image.title="astrolab" \
 RUN set -eu; \
     apt-get update -qq; \
     . /etc/os-release; \
-    # Shared across both bases.
-    common="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
-            libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
-            libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
-            libsm6 libcurl4 ca-certificates curl unzip"; \
     case "${ID}-${VERSION_CODENAME}" in \
-        debian-bookworm) extra="libcfitsio10 libopencv-core406" ;; \
-        ubuntu-jammy)    extra="libcfitsio9  libopencv-core4.5d" ;; \
+        debian-bookworm) \
+            pkgs="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
+                  libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
+                  libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
+                  libsm6 libcurl4 ca-certificates curl unzip \
+                  libcfitsio10 libopencv-core406" ;; \
+        ubuntu-jammy) \
+            pkgs="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
+                  libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
+                  libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
+                  libsm6 libcurl4 ca-certificates curl unzip \
+                  libcfitsio9 libopencv-core4.5d" ;; \
+        ubuntu-noble) \
+            pkgs="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
+                  libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw23t64 libwcs8 \
+                  libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
+                  libsm6 libcurl4t64 ca-certificates curl unzip \
+                  libcfitsio10t64 libopencv-core406t64" ;; \
         *) echo "unsupported base ${ID}-${VERSION_CODENAME}" >&2; exit 1 ;; \
     esac; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        ${common} ${extra}; \
+        ${pkgs}; \
     rm -rf /var/lib/apt/lists/*
 
 # CUDA-only: install cuDNN 8 from NVIDIA's archive. GraXpert and StarNet++
@@ -200,7 +213,7 @@ COPY --from=ui-builder /ui/build ./ui/build/
 
 # Entrypoint
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
 # Runtime environment
 # ASTROLAB_CAPTURE_ROOT_DEFAULT seeds the capture_root setting on first run
