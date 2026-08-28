@@ -159,7 +159,8 @@ RUN curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/
 # Python deps via uv (uv manages its own Python; frozen, no dev extras)
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --frozen --python 3.12
+RUN uv sync --no-dev --frozen --python 3.12 && \
+    uv pip install --python .venv/bin/python imagecodecs
 
 # Third-party tools from the fetcher stage
 COPY --from=tools-fetcher /opt/siril /opt/siril
