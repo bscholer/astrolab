@@ -15,8 +15,9 @@ from typing import Any
 
 SUPPORTED_MAJOR = "0"
 TIMEOUT_S = 20
+SLEW_TIMEOUT_S = 180
 
-Transport = Callable[[str, str, dict[str, str], bytes | None], tuple[int, bytes]]
+Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, bytes]]
 
 
 class ScopeServiceError(Exception):
@@ -29,11 +30,11 @@ class ScopeServiceError(Exception):
 
 
 def _http_transport(
-    method: str, url: str, headers: dict[str, str], body: bytes | None
+    method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float = TIMEOUT_S
 ) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -51,7 +52,14 @@ class ScopeServiceClient:
         self._routes: dict[str, tuple[str, str]] | None = None
         self._info: dict[str, Any] | None = None
 
-    def _request(self, method: str, path: str, query: dict | None = None, body: Any = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        query: dict | None = None,
+        body: Any = None,
+        timeout: float = TIMEOUT_S,
+    ) -> Any:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(
@@ -64,7 +72,7 @@ class ScopeServiceClient:
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        status, raw = self._transport(method, url, headers, data)
+        status, raw = self._transport(method, url, headers, data, timeout)
         try:
             parsed = json.loads(raw) if raw else None
         except ValueError:
@@ -109,8 +117,10 @@ class ScopeServiceClient:
     def has(self, capability: str) -> bool:
         return capability in self.info().get("capabilities", [])
 
-    def call(self, operation_id: str, payload: dict | None = None) -> Any:
+    def call(
+        self, operation_id: str, payload: dict | None = None, timeout: float = TIMEOUT_S
+    ) -> Any:
         method, path = self._route(operation_id)
         if method in ("GET", "DELETE"):
-            return self._request(method, path, query=payload)
-        return self._request(method, path, body=payload)
+            return self._request(method, path, query=payload, timeout=timeout)
+        return self._request(method, path, body=payload, timeout=timeout)

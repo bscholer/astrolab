@@ -52,7 +52,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
@@ -99,7 +99,7 @@ from server.quality import (
 )
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
-from server.scope_service import ScopeServiceClient, ScopeServiceError
+from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient, ScopeServiceError
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
@@ -3228,6 +3228,39 @@ def put_scope(req: ScopeConfigRequest) -> dict:
     if req.token is not None:
         set_setting(SETTING_SCOPE_TOKEN, req.token.strip() or None, db_path=job_manager.db_path)
     return _scope_state()
+
+
+class ObserveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    ra_deg: float = Field(ge=0, lt=360)
+    dec_deg: float = Field(ge=-90, le=90)
+    frames: int = Field(30, ge=1, le=500)
+    exposure_s: int = 15
+
+
+@app.post("/api/scope/observe", status_code=202)
+def observe(req: ObserveRequest) -> dict:
+    """Point the scope at a target, then start capturing."""
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        missing = [c for c in ("goto", "capture") if not client.has(c)]
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"service lacks capability: {', '.join(missing)}"
+            )
+        client.call(
+            "gotoTarget",
+            {"name": req.name, "ra_hours": req.ra_deg / 15, "dec_degrees": req.dec_deg},
+            timeout=SLEW_TIMEOUT_S,
+        )
+        job = client.call("startCapture", {"frames": req.frames, "exposure": str(req.exposure_s)})
+    except ScopeServiceError as exc:
+        status = {"sun_too_close": 422, "busy": 409, "invalid_request": 422}.get(exc.code, 502)
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return {"target": req.name, "job": job}
 
 
 class PatchSettingsRequest(BaseModel):

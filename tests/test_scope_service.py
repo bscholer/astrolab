@@ -47,7 +47,7 @@ def fake_service(spec_version: str = "0.1", token: str | None = None) -> FastAPI
 def client_for(app: FastAPI, **kwargs) -> ScopeServiceClient:
     http = TestClient(app)
 
-    def transport(method, url, headers, body):
+    def transport(method, url, headers, body, timeout=0):
         r = http.request(method, url.replace("http://svc", ""), headers=headers, content=body)
         return r.status_code, r.content
 

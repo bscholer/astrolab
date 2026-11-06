@@ -729,6 +729,46 @@
         "title": "NodeSpec",
         "type": "object"
       },
+      "ObserveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "dec_deg": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Dec Deg",
+            "type": "number"
+          },
+          "exposure_s": {
+            "default": 15,
+            "title": "Exposure S",
+            "type": "integer"
+          },
+          "frames": {
+            "default": 30,
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Frames",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ra_deg": {
+            "exclusiveMaximum": 360.0,
+            "minimum": 0.0,
+            "title": "Ra Deg",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "ra_deg",
+          "dec_deg"
+        ],
+        "title": "ObserveRequest",
+        "type": "object"
+      },
       "PatchProjectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3515,6 +3555,47 @@
           }
         },
         "summary": "Put Scope"
+      }
+    },
+    "/api/scope/observe": {
+      "post": {
+        "description": "Point the scope at a target, then start capturing.",
+        "operationId": "observe_api_scope_observe_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObserveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Observe Api Scope Observe Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Observe"
       }
     },
     "/api/sessions/dark-preview": {

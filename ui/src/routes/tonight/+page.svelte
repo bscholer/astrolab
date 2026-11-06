@@ -6,12 +6,12 @@
   table is sorted by descending altitude (highest in the sky first); a
   filter rail trims by object type, magnitude, and minimum altitude.
 
-  Tonight is read-only: it doesn't queue captures or jobs. The page is
+  Queue target slews the scope and starts a capture when a scope service is set. The page is
   for sitting on the couch with a coffee at 7pm and deciding what's
   worth taking the scope out for.
 -->
 <script lang="ts">
-  import { api, type TonightEntry, type TonightResponse } from '$lib/api';
+  import { api, type ScopeState, type TonightEntry, type TonightResponse } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
 
   let data = $state<TonightResponse | null>(null);
@@ -29,6 +29,28 @@
   let typeFilter = $state<string | null>(null);
   // Captured-only toggle: when on, hide rows the user has never imaged.
   let capturedOnly = $state(false);
+
+  let scope = $state<ScopeState | null>(null);
+  let queuing = $state<string | null>(null);
+  const canQueue = $derived(
+    !!scope?.reachable &&
+      !!scope.capabilities?.includes('goto') &&
+      !!scope.capabilities?.includes('capture'),
+  );
+
+  async function queueTarget(e: TonightEntry) {
+    queuing = e.name;
+    try {
+      const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg });
+      toast.success(`Capturing ${r.target}: ${r.job.frames ?? '?'} frames.`);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      queuing = null;
+    }
+  }
+
+  api.getScope().then((s) => (scope = s)).catch(() => {});
 
   async function load() {
     const min = minAlt;
@@ -288,6 +310,7 @@
             <th class="num">Hours up</th>
             <th class="col-hide-mobile">Tonight</th>
             <th class="col-hide-mobile">Captured</th>
+            {#if canQueue}<th></th>{/if}
           </tr>
         </thead>
         <tbody>
@@ -341,6 +364,18 @@
                 {/if}
               </td>
               <td class="captured-cell col-hide-mobile">{fmtCaptured(entry)}</td>
+              {#if canQueue}
+                <td>
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={queuing !== null}
+                    onclick={() => queueTarget(entry)}
+                  >
+                    {queuing === entry.name ? 'Pointing…' : 'Queue target'}
+                  </button>
+                </td>
+              {/if}
             </tr>
           {/each}
         </tbody>
