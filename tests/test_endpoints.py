@@ -87,6 +87,14 @@ def test_get_payload_comes_from_query_and_error_maps_to_status(client: TestClien
     assert r.json() == {"detail": "nobody home", "code": "name_missing"}
 
 
+def test_invalid_payload_uses_the_error_shape(client: TestClient) -> None:
+    r = client.get("/t/echo", params={"times": "x"})
+    assert r.status_code == 422
+    body = r.json()
+    assert body["code"] == "invalid_request"
+    assert "name" in body["detail"] and "times" in body["detail"]
+
+
 def test_openapi_lists_operation_id_and_documented_errors(client: TestClient) -> None:
     op = client.get("/openapi.json").json()["paths"]["/t/echo"]["get"]
     assert op["operationId"] == "echo"

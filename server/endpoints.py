@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Annotated, Any, get_type_hints
 
 from fastapi import Depends, FastAPI, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -245,6 +246,8 @@ def _error_responses(spec: HttpSpec) -> dict[int | str, dict[str, Any]]:
         by_status.setdefault(hint.status, []).append(hint.code)
     if spec.authentication is AuthMode.TOKEN:
         by_status.setdefault(401, []).append("unauthorized")
+    if spec.payload_model is not None:
+        by_status.setdefault(422, []).append("invalid_request")
     return {
         status: {"model": ErrorBody, "description": ", ".join(sorted(set(codes)))}
         for status, codes in by_status.items()
@@ -364,6 +367,14 @@ def mount_endpoints(app: FastAPI) -> None:
     @app.exception_handler(_EndpointError)
     async def _handle(_: Request, exc: _EndpointError) -> JSONResponse:
         return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_invalid(_: Request, exc: RequestValidationError) -> JSONResponse:
+        detail = "; ".join(
+            f"{'.'.join(str(p) for p in e['loc'][1:]) or 'request'}: {e['msg']}"
+            for e in exc.errors()
+        )
+        return JSONResponse({"detail": detail, "code": "invalid_request"}, status_code=422)
 
     _mount_http(app)
     app.add_api_route("/mcp", _mcp_endpoint, methods=["POST"], include_in_schema=False)
