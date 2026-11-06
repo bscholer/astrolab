@@ -13,7 +13,8 @@
     lockfile protocol in server/cache.py.
 -->
 <script lang="ts">
-  import { api, type StorageSnapshot } from '$lib/api';
+  import { api, type ScopeState, type StorageSnapshot } from '$lib/api';
+  import { onMount } from 'svelte';
   import { toast } from '$lib/toast.svelte';
   import { formatBytes } from '$lib/format';
 
@@ -56,6 +57,41 @@
   let persistedSiteElev = $state<number | null>(null);
   let savingSite = $state(false);
   let locating = $state(false);
+
+  let scope = $state<ScopeState | null>(null);
+  let scopeUrl = $state('');
+  let scopeToken = $state('');
+  let savingScope = $state(false);
+
+  async function loadScope() {
+    try {
+      scope = await api.getScope();
+      scopeUrl = scope.url ?? '';
+    } catch {
+      // The next poll retries.
+    }
+  }
+
+  async function saveScope() {
+    savingScope = true;
+    try {
+      scope = await api.putScope({
+        url: scopeUrl,
+        ...(scopeToken ? { token: scopeToken } : {}),
+      });
+      scopeToken = '';
+    } catch (e) {
+      toast.error(`Scope save failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      savingScope = false;
+    }
+  }
+
+  onMount(() => {
+    loadScope();
+    const timer = setInterval(loadScope, 10000);
+    return () => clearInterval(timer);
+  });
 
   async function saveCaptureRoot() {
     const next = captureRoot.trim();
@@ -303,6 +339,45 @@
 <div class="header">
   <h1>Settings</h1>
 </div>
+
+<section class="panel">
+  <h2>Scope service</h2>
+  <p class="muted small">
+    Any service that follows the scope service spec. Astrolab shows only the
+    features the service lists.
+  </p>
+  <div class="capture-row">
+    <input
+      type="text"
+      class="capture-input"
+      placeholder="http://192.168.5.15:9902"
+      bind:value={scopeUrl}
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <input
+      type="password"
+      class="capture-input"
+      placeholder={scope?.has_token ? 'Token saved (type to replace)' : 'Token (optional)'}
+      bind:value={scopeToken}
+      autocomplete="off"
+    />
+    <button type="button" class="btn" onclick={saveScope} disabled={savingScope}>
+      {savingScope ? 'Saving…' : 'Save'}
+    </button>
+  </div>
+  {#if scope?.configured}
+    {#if scope.reachable}
+      <p class="small note">
+        Connected to {scope.service?.name ?? 'service'} (spec {scope.spec_version}).
+        Scope {scope.status?.app_connected ? 'online' : 'offline'}.
+      </p>
+      <p class="muted small">Features: {(scope.capabilities ?? []).join(', ') || 'none'}</p>
+    {:else}
+      <p class="small note">Cannot reach the service: {scope.error}</p>
+    {/if}
+  {/if}
+</section>
 
 <section class="panel">
   <h2>Capture</h2>

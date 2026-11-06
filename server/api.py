@@ -99,11 +99,14 @@ from server.quality import (
 )
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
+from server.scope_service import ScopeServiceClient, ScopeServiceError
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_SCOPE_TOKEN,
+    SETTING_SCOPE_URL,
     SETTING_SITE_ELEVATION_M,
     SETTING_SITE_LATITUDE,
     SETTING_SITE_LONGITUDE,
@@ -3169,6 +3172,62 @@ def get_settings() -> dict:
         SETTING_SITE_LONGITUDE: (float(site_lon) if site_lon is not None else None),
         SETTING_SITE_ELEVATION_M: (float(site_elev) if site_elev is not None else None),
     }
+
+
+class ScopeConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+    token: str | None = None
+    """None keeps the stored token. '' clears it."""
+
+
+def _scope_client() -> ScopeServiceClient | None:
+    url = get_setting(SETTING_SCOPE_URL, None, db_path=job_manager.db_path)
+    if not url:
+        return None
+    token = get_setting(SETTING_SCOPE_TOKEN, None, db_path=job_manager.db_path)
+    return ScopeServiceClient(url, token or None)
+
+
+def _scope_state() -> dict:
+    client = _scope_client()
+    if client is None:
+        return {"configured": False, "reachable": False}
+    state = {
+        "configured": True,
+        "url": client.base_url,
+        "has_token": bool(client.token),
+        "reachable": False,
+    }
+    try:
+        info = client.info()
+        state.update(
+            reachable=True,
+            service=info.get("service"),
+            spec_version=info.get("spec_version"),
+            capabilities=info.get("capabilities", []),
+        )
+        if client.has("status"):
+            state["status"] = client.call("getStatus")
+    except ScopeServiceError as exc:
+        state.update(error=str(exc), error_code=exc.code)
+    return state
+
+
+@app.get("/api/scope")
+def get_scope() -> dict:
+    return _scope_state()
+
+
+@app.put("/api/scope")
+def put_scope(req: ScopeConfigRequest) -> dict:
+    url = req.url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url must start with http:// or https://")
+    set_setting(SETTING_SCOPE_URL, url or None, db_path=job_manager.db_path)
+    if req.token is not None:
+        set_setting(SETTING_SCOPE_TOKEN, req.token.strip() or None, db_path=job_manager.db_path)
+    return _scope_state()
 
 
 class PatchSettingsRequest(BaseModel):

@@ -661,6 +661,9 @@ Lives server-side rather than in browser localStorage so it survives a
 cache clear and works the same from any device pointed at the same
 astrolab instance — the scan target is server-local anyway."""
 
+SETTING_SCOPE_URL = "scope_service_url"
+SETTING_SCOPE_TOKEN = "scope_service_token"
+
 SETTING_SITE_LATITUDE = "site_latitude"
 SETTING_SITE_LONGITUDE = "site_longitude"
 SETTING_SITE_ELEVATION_M = "site_elevation_m"

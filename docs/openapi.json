@@ -1321,6 +1321,31 @@
         "title": "ScanStatusResponse",
         "type": "object"
       },
+      "ScopeConfigRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ScopeConfigRequest",
+        "type": "object"
+      },
       "SessionPatchRequest": {
         "additionalProperties": false,
         "description": "Body for PATCH /api/sessions/{id}.\n\nThree independent operations the user may pass:\n- reassign to an existing target via `target_id`\n- reassign to a (new or reused) target via `new_target_name`\n- update freeform `description`\n\nReassign uses exactly-one-of semantics across `target_id` and\n`new_target_name`. If both are unset, the request is a metadata-only\nupdate (description). If neither is set and description is also\nomitted, the call is a no-op; we return the current session row\nrather than 400 since \"no-op succeeds\" is cheaper for clients.\n\n`description=None` after model parse means \"field omitted\" if it\nwasn't in `model_fields_set`, or \"explicit clear\" if it was. The\nhandler discriminates via `model_fields_set`.",
@@ -3432,6 +3457,64 @@
         "tags": [
           "Scan"
         ]
+      }
+    },
+    "/api/scope": {
+      "get": {
+        "operationId": "get_scope_api_scope_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Api Scope Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope"
+      },
+      "put": {
+        "operationId": "put_scope_api_scope_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Scope Api Scope Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Scope"
       }
     },
     "/api/sessions/dark-preview": {

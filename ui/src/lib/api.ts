@@ -700,6 +700,19 @@ export interface CleanupResponse {
   max_bytes: number;
 }
 
+export interface ScopeState {
+  configured: boolean;
+  reachable: boolean;
+  url?: string;
+  has_token?: boolean;
+  service?: { name?: string; vendor?: string; model?: string };
+  spec_version?: string;
+  capabilities?: string[];
+  status?: { app_connected?: boolean; job?: unknown; pitch?: number | null };
+  error?: string;
+  error_code?: string;
+}
+
 export interface SettingsResponse {
   cache_max_bytes: number;
   // Persisted override (null when the server is using the default location).
@@ -941,6 +954,8 @@ export const api = {
     site_longitude?: number | null;
     site_elevation_m?: number | null;
   }) => patchJSON<SettingsResponse>('/api/settings', req),
+  getScope: () => getJSON<ScopeState>('/api/scope'),
+  putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),
   getSystem: () => getJSON<SystemSnapshot>('/api/system'),
   getTonight: (params?: {
     at?: string;
