@@ -50,7 +50,7 @@ from typing import Annotated, Any, Literal
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -82,6 +82,8 @@ from server.job_builder import (
     build_from_sessions,
 )
 from server.jobs import JobManager
+from server.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
 from server.preview import PreviewError, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
@@ -3019,6 +3021,12 @@ def get_storage() -> dict:
             for p in snap.per_project
         ],
     }
+
+
+@app.get("/metrics", include_in_schema=False)
+def get_metrics() -> Response:
+    """Prometheus scrape endpoint."""
+    return Response(render_metrics(job_manager), media_type=METRICS_CONTENT_TYPE)
 
 
 @app.get("/api/system")

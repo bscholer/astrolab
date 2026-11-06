@@ -36,3 +36,12 @@ def _isolate_astrolab_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         default_home = tmp_path / "_default-astrolab-home"
         default_home.mkdir(exist_ok=True)
         monkeypatch.setenv("ASTROLAB_HOME", str(default_home))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _tolerate_stale_iers() -> None:
+    """Bundled IERS predictions age out; tests must not need a download to pass."""
+    from astropy.utils import iers
+
+    iers.conf.auto_max_age = None
+    iers.conf.auto_download = False
