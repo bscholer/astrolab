@@ -37,9 +37,11 @@ from astropy.utils import iers
 # Astropy nags about out-of-date IERS tables and tries to download fresh
 # data. We don't need the precision (sub-arcsecond corrections), and
 # we don't want a dev-laptop offline to fail the whole import. Use the
-# bundled IERS table, no network.
+# bundled IERS table, no network. Without auto_max_age=None, astropy raises
+# once the bundled predictions are more than 30 days old.
 iers.conf.auto_download = False
 iers.conf.iers_auto_url = ""
+iers.conf.auto_max_age = None
 
 
 # Solar altitude that defines astronomical twilight. The Tonight window
