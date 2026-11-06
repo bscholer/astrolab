@@ -50,7 +50,7 @@ from typing import Annotated, Any, Literal
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -71,6 +71,13 @@ from server.catalog.sky_match import (
     suggest_tolerance_deg,
     target_centroid,
     target_envelope,
+)
+from server.endpoints import (
+    StatusHint,
+    ToolAnnotations,
+    http_endpoint,
+    mcp_tool,
+    mount_endpoints,
 )
 from server.job_builder import (
     CalibrationMissing,
@@ -1086,18 +1093,68 @@ def list_masters(conn: DBDep) -> list[MasterRow]:
     return [MasterRow(**dict(r)) for r in rows]
 
 
-@app.post("/api/scan")
-def trigger_scan(req: ScanRequest) -> JSONResponse:
-    """Start a scan in a background thread. Returns 202 immediately.
+class RootNotFoundError(Exception):
+    pass
 
-    Returns 409 if a scan is already in progress.
-    The caller should poll GET /api/scan/status to track progress.
-    """
+
+class ScanAlreadyRunningError(Exception):
+    pass
+
+
+class ScanStarted(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["started"]
+
+
+class ScanStatusResponse(BaseModel):
+    running: bool
+    started_at: float | None
+    finished_at: float | None
+    current_path: str | None
+    discovered: int
+    inserted: int
+    updated: int
+    skipped: int
+    removed: int
+    failed: int
+    error: str | None
+    last_stats: dict[str, Any] | None
+
+
+@mcp_tool(
+    name="trigger_scan",
+    title="Scan the capture folder for new frames",
+    description=(
+        "Start a background scan of a capture folder so new frames appear in the library. "
+        "Returns at once; poll scan_status for progress. Fails if a scan is already running."
+    ),
+    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, open_world_hint=False),
+    error_map={
+        RootNotFoundError: "The capture folder does not exist.",
+        ScanAlreadyRunningError: "A scan is already running. Check scan_status.",
+    },
+)
+@http_endpoint(
+    path="/api/scan",
+    operation_id="triggerScan",
+    method="POST",
+    status_code=202,
+    payload_model=ScanRequest,
+    response_model=ScanStarted,
+    description="Start a scan in a background thread. Poll /api/scan/status to track progress.",
+    tags=["Scan"],
+    error_map={
+        RootNotFoundError: StatusHint(400, "root_not_found"),
+        ScanAlreadyRunningError: StatusHint(409, "already_running"),
+    },
+)
+def trigger_scan(req: ScanRequest) -> ScanStarted:
     root = Path(req.root).expanduser()
     if not root.exists():
-        raise HTTPException(status_code=400, detail=f"root does not exist: {root}")
+        raise RootNotFoundError(f"root does not exist: {root}")
     if not scan_state.start():
-        raise HTTPException(status_code=409, detail="already_running")
+        raise ScanAlreadyRunningError("already_running")
 
     log.info("scan triggered: root=%s", root)
 
@@ -1111,13 +1168,25 @@ def trigger_scan(req: ScanRequest) -> JSONResponse:
             log.exception("scan failed")
 
     threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
-    return JSONResponse({"status": "started"}, status_code=202)
+    return ScanStarted(status="started")
 
 
-@app.get("/api/scan/status")
-def scan_status() -> dict[str, Any]:
-    """Return the current scan progress state."""
-    return scan_state.snapshot()
+@mcp_tool(
+    name="scan_status",
+    title="Check scan progress",
+    description="Return the state of the current or most recent capture folder scan.",
+    annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False),
+)
+@http_endpoint(
+    path="/api/scan/status",
+    operation_id="getScanStatus",
+    method="GET",
+    response_model=ScanStatusResponse,
+    description="Return the current scan progress state.",
+    tags=["Scan"],
+)
+def scan_status() -> ScanStatusResponse:
+    return ScanStatusResponse(**scan_state.snapshot())
 
 
 # ---------------------------------------------------------------------------
@@ -3631,6 +3700,8 @@ def get_output(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
 # skip the mount entirely and the user keeps using `npm run dev` on :5173.
 # Hosting layout on the Linux box: `npm run build` populates ui/build/, and
 # astrolab-api serves the whole app on :8000 (no separate vite-dev process).
+
+mount_endpoints(app)
 
 _UI_BUILD_DIR = Path(__file__).resolve().parent.parent / "ui" / "build"
 

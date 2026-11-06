@@ -1,0 +1,3949 @@
+{
+  "components": {
+    "schemas": {
+      "CalibrationSpec": {
+        "additionalProperties": false,
+        "description": "How a Job should resolve calibration frames.",
+        "properties": {
+          "master_ids": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Master Ids",
+            "type": "object"
+          },
+          "mode": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "explicit",
+              "none"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "CalibrationSpec",
+        "type": "object"
+      },
+      "CalibrationStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "master_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Master Id"
+          },
+          "quality": {
+            "title": "Quality",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "kind",
+          "quality"
+        ],
+        "title": "CalibrationStatus",
+        "type": "object"
+      },
+      "CleanupRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "max_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Bytes"
+          }
+        },
+        "title": "CleanupRequest",
+        "type": "object"
+      },
+      "CreateProjectFromSessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "calibration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CalibrationSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "template_id"
+        ],
+        "title": "CreateProjectFromSessionRequest",
+        "type": "object"
+      },
+      "CreateProjectFromSessionsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "calibration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CalibrationSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "session_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_ids",
+          "template_id"
+        ],
+        "title": "CreateProjectFromSessionsRequest",
+        "type": "object"
+      },
+      "CreateProjectRequest": {
+        "additionalProperties": false,
+        "description": "Generic 'project from an explicit Template + Job' creator.\n\nMirrors POST /api/jobs; used by smoke scripts and tests that don't want\nto go through the catalog. Production UI uses /api/projects/from_session.",
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "name": {
+            "default": "untitled",
+            "title": "Name",
+            "type": "string"
+          },
+          "source_session_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Session Ids",
+            "type": "array"
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          }
+        },
+        "required": [
+          "template",
+          "job"
+        ],
+        "title": "CreateProjectRequest",
+        "type": "object"
+      },
+      "DarkBinPreview": {
+        "description": "One row in the bundle dark-preview breakdown.",
+        "properties": {
+          "binning": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binning"
+          },
+          "delta_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta C"
+          },
+          "exptime": {
+            "title": "Exptime",
+            "type": "number"
+          },
+          "fallback": {
+            "default": false,
+            "title": "Fallback",
+            "type": "boolean"
+          },
+          "frame_count": {
+            "title": "Frame Count",
+            "type": "integer"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gain"
+          },
+          "master_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Master Id"
+          },
+          "master_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Master Name"
+          },
+          "master_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Master Path"
+          },
+          "quality": {
+            "title": "Quality",
+            "type": "string"
+          },
+          "temp_bin_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temp Bin C"
+          }
+        },
+        "required": [
+          "exptime",
+          "frame_count",
+          "quality"
+        ],
+        "title": "DarkBinPreview",
+        "type": "object"
+      },
+      "DarkPreviewResponse": {
+        "properties": {
+          "bins": {
+            "items": {
+              "$ref": "#/components/schemas/DarkBinPreview"
+            },
+            "title": "Bins",
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/DarkPreviewSummary"
+          }
+        },
+        "required": [
+          "bins",
+          "summary"
+        ],
+        "title": "DarkPreviewResponse",
+        "type": "object"
+      },
+      "DarkPreviewSummary": {
+        "properties": {
+          "darks_used": {
+            "title": "Darks Used",
+            "type": "integer"
+          },
+          "fallback_frames": {
+            "title": "Fallback Frames",
+            "type": "integer"
+          },
+          "matched_frames": {
+            "title": "Matched Frames",
+            "type": "integer"
+          },
+          "total_frames": {
+            "title": "Total Frames",
+            "type": "integer"
+          },
+          "unmatched_frames": {
+            "title": "Unmatched Frames",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_frames",
+          "matched_frames",
+          "unmatched_frames",
+          "fallback_frames",
+          "darks_used"
+        ],
+        "title": "DarkPreviewSummary",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "code"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "GalleryEntry": {
+        "additionalProperties": false,
+        "description": "One render in the gallery: a successful project history entry,\nsurfaced as a flat row so the UI doesn't have to fan out per\nproject.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "is_cover": {
+            "default": false,
+            "title": "Is Cover",
+            "type": "boolean"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "preview_hash": {
+            "title": "Preview Hash",
+            "type": "string"
+          },
+          "preview_port": {
+            "title": "Preview Port",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "target_common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Common Name"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "project_name",
+          "template_id",
+          "seq",
+          "created_at",
+          "preview_hash",
+          "preview_port"
+        ],
+        "title": "GalleryEntry",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Job": {
+        "additionalProperties": false,
+        "description": "A concrete request to run a template against specific inputs.",
+        "properties": {
+          "calibration": {
+            "$ref": "#/components/schemas/CalibrationSpec"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Ref"
+                },
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/Ref"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "title": "Inputs",
+            "type": "object"
+          },
+          "param_overrides": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Param Overrides",
+            "type": "object"
+          },
+          "preview_only": {
+            "default": false,
+            "title": "Preview Only",
+            "type": "boolean"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_version": {
+            "title": "Template Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "template_version"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "MasterRow": {
+        "additionalProperties": false,
+        "properties": {
+          "binning": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binning"
+          },
+          "camera": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera"
+          },
+          "ccd_temp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ccd Temp"
+          },
+          "exptime": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exptime"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gain"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "instrument": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "stack_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stack Count"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "instrument",
+          "camera",
+          "filter",
+          "exptime",
+          "gain",
+          "binning",
+          "ccd_temp",
+          "stack_count",
+          "source",
+          "path"
+        ],
+        "title": "MasterRow",
+        "type": "object"
+      },
+      "NodeSpec": {
+        "additionalProperties": false,
+        "description": "One node entry inside a Template (the YAML representation, not the runtime Node).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "object"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "ui_depends_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ui Depends On"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "title": "NodeSpec",
+        "type": "object"
+      },
+      "PatchProjectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "draft_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Mode"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "overrides": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overrides"
+          }
+        },
+        "title": "PatchProjectRequest",
+        "type": "object"
+      },
+      "PatchProjectSessionsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "auto_render": {
+            "default": true,
+            "title": "Auto Render",
+            "type": "boolean"
+          },
+          "session_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_ids"
+        ],
+        "title": "PatchProjectSessionsRequest",
+        "type": "object"
+      },
+      "PatchSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_max_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Max Bytes"
+          },
+          "cache_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Root"
+          },
+          "capture_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture Root"
+          },
+          "site_elevation_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Elevation M"
+          },
+          "site_latitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Latitude"
+          },
+          "site_longitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Longitude"
+          }
+        },
+        "title": "PatchSettingsRequest",
+        "type": "object"
+      },
+      "PortType": {
+        "enum": [
+          "image/png",
+          "image/fits",
+          "sequence/fits",
+          "master/fits",
+          "master/fits/list",
+          "channel_triple"
+        ],
+        "title": "PortType",
+        "type": "string"
+      },
+      "ReassignCandidateCatalog": {
+        "additionalProperties": false,
+        "description": "OpenNGC entry near the session's centroid; the UI offers these as\n\"create a new target named X and move\" options.",
+        "properties": {
+          "canonical": {
+            "title": "Canonical",
+            "type": "string"
+          },
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "separation_arcmin": {
+            "title": "Separation Arcmin",
+            "type": "number"
+          }
+        },
+        "required": [
+          "canonical",
+          "separation_arcmin"
+        ],
+        "title": "ReassignCandidateCatalog",
+        "type": "object"
+      },
+      "ReassignCandidateTarget": {
+        "additionalProperties": false,
+        "description": "Existing target near the session's centroid; the UI offers these\nas one-click \"move this session to <existing target>\" options.",
+        "properties": {
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "separation_arcmin": {
+            "title": "Separation Arcmin",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "separation_arcmin"
+        ],
+        "title": "ReassignCandidateTarget",
+        "type": "object"
+      },
+      "ReassignCandidatesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog": {
+            "items": {
+              "$ref": "#/components/schemas/ReassignCandidateCatalog"
+            },
+            "title": "Catalog",
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ReassignCandidateTarget"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets",
+          "catalog"
+        ],
+        "title": "ReassignCandidatesResponse",
+        "type": "object"
+      },
+      "Ref": {
+        "description": "Opaque handle to a cache entry produced by a node.\n\nA Ref points to a single output port's file under cache/<node_hash>/.\nNodes consume Refs as inputs and produce Refs as outputs; they do not see\nraw paths outside the cache.",
+        "properties": {
+          "display_ready": {
+            "default": false,
+            "title": "Display Ready",
+            "type": "boolean"
+          },
+          "node_hash": {
+            "title": "Node Hash",
+            "type": "string"
+          },
+          "path": {
+            "format": "path",
+            "title": "Path",
+            "type": "string"
+          },
+          "port": {
+            "title": "Port",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PortType"
+          }
+        },
+        "required": [
+          "node_hash",
+          "port",
+          "path",
+          "type"
+        ],
+        "title": "Ref",
+        "type": "object"
+      },
+      "RefInput": {
+        "additionalProperties": false,
+        "description": "Caller-supplied Ref pointing at an existing cache entry.",
+        "properties": {
+          "node_hash": {
+            "title": "Node Hash",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "port": {
+            "title": "Port",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_hash",
+          "port",
+          "path",
+          "type"
+        ],
+        "title": "RefInput",
+        "type": "object"
+      },
+      "ResolvedAs": {
+        "additionalProperties": false,
+        "description": "Catalog resolution for a target.\n\nOnly present on responses when the source is 'position'. Name-resolved\ntargets ('source' == 'name' internally) deliberately surface as\n`resolved_as = None` so the UI doesn't render a redundant caption\nnext to a name the user already typed in the obvious form\n(i.e. \"M 31\" -> \"NGC 224\" is implicit and the library should read\nquietly).",
+        "properties": {
+          "canonical": {
+            "title": "Canonical",
+            "type": "string"
+          },
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "separation_arcmin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Separation Arcmin"
+          },
+          "source": {
+            "const": "position",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical",
+          "source"
+        ],
+        "title": "ResolvedAs",
+        "type": "object"
+      },
+      "RunNodeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RefInput"
+            },
+            "default": {},
+            "title": "Inputs",
+            "type": "object"
+          },
+          "params": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "title": "RunNodeRequest",
+        "type": "object"
+      },
+      "RunNodeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_hit": {
+            "title": "Cache Hit",
+            "type": "boolean"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "node_hash": {
+            "title": "Node Hash",
+            "type": "string"
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputs"
+          }
+        },
+        "required": [
+          "job_id",
+          "node_hash",
+          "cache_hit"
+        ],
+        "title": "RunNodeResponse",
+        "type": "object"
+      },
+      "ScanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "root": {
+            "title": "Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "title": "ScanRequest",
+        "type": "object"
+      },
+      "ScanStarted": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "started",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ScanStarted",
+        "type": "object"
+      },
+      "ScanStatusResponse": {
+        "properties": {
+          "current_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Path"
+          },
+          "discovered": {
+            "title": "Discovered",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "inserted": {
+            "title": "Inserted",
+            "type": "integer"
+          },
+          "last_stats": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Stats"
+          },
+          "removed": {
+            "title": "Removed",
+            "type": "integer"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "running",
+          "started_at",
+          "finished_at",
+          "current_path",
+          "discovered",
+          "inserted",
+          "updated",
+          "skipped",
+          "removed",
+          "failed",
+          "error",
+          "last_stats"
+        ],
+        "title": "ScanStatusResponse",
+        "type": "object"
+      },
+      "SessionPatchRequest": {
+        "additionalProperties": false,
+        "description": "Body for PATCH /api/sessions/{id}.\n\nThree independent operations the user may pass:\n- reassign to an existing target via `target_id`\n- reassign to a (new or reused) target via `new_target_name`\n- update freeform `description`\n\nReassign uses exactly-one-of semantics across `target_id` and\n`new_target_name`. If both are unset, the request is a metadata-only\nupdate (description). If neither is set and description is also\nomitted, the call is a no-op; we return the current session row\nrather than 400 since \"no-op succeeds\" is cheaper for clients.\n\n`description=None` after model parse means \"field omitted\" if it\nwasn't in `model_fields_set`, or \"explicit clear\" if it was. The\nhandler discriminates via `model_fields_set`.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "new_target_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Target Name"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          }
+        },
+        "title": "SessionPatchRequest",
+        "type": "object"
+      },
+      "SessionPatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted_target_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Deleted Target Ids",
+            "type": "array"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "session",
+          "deleted_target_ids"
+        ],
+        "title": "SessionPatchResponse",
+        "type": "object"
+      },
+      "SessionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "binning": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binning"
+          },
+          "bytes_on_disk": {
+            "default": 0,
+            "title": "Bytes On Disk",
+            "type": "integer"
+          },
+          "calibration": {
+            "items": {
+              "$ref": "#/components/schemas/CalibrationStatus"
+            },
+            "title": "Calibration",
+            "type": "array"
+          },
+          "camera": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "exptime": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exptime"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "frame_count": {
+            "title": "Frame Count",
+            "type": "integer"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gain"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "instrument": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument"
+          },
+          "integration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Seconds"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "target_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Name"
+          }
+        },
+        "required": [
+          "id",
+          "frame_count",
+          "failed_count",
+          "calibration"
+        ],
+        "title": "SessionSummary",
+        "type": "object"
+      },
+      "SetCoverRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seq"
+          }
+        },
+        "title": "SetCoverRequest",
+        "type": "object"
+      },
+      "SetPublishedRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "published"
+        ],
+        "title": "SetPublishedRequest",
+        "type": "object"
+      },
+      "SkyInfo": {
+        "additionalProperties": false,
+        "description": "Sub-payload bundled into target responses when we recognize the\ncatalog id. Pulled from the OpenNGC vendored CSVs at boot time;\nunits are decimal degrees (J2000), V-band magnitude preferred.",
+        "properties": {
+          "constellation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Constellation"
+          },
+          "dec_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dec Deg"
+          },
+          "magnitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Magnitude"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "ra_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ra Deg"
+          }
+        },
+        "title": "SkyInfo",
+        "type": "object"
+      },
+      "SubmitFromSessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "calibration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CalibrationSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "template_id"
+        ],
+        "title": "SubmitFromSessionRequest",
+        "type": "object"
+      },
+      "SubmitJobRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          }
+        },
+        "required": [
+          "template",
+          "job"
+        ],
+        "title": "SubmitJobRequest",
+        "type": "object"
+      },
+      "SubmitJobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "SubmitJobResponse",
+        "type": "object"
+      },
+      "TargetDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "resolved_as": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedAs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "sky": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkyInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "sessions"
+        ],
+        "title": "TargetDetail",
+        "type": "object"
+      },
+      "TargetSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_on_disk": {
+            "default": 0,
+            "title": "Bytes On Disk",
+            "type": "integer"
+          },
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "frame_count": {
+            "title": "Frame Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "integration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Seconds"
+          },
+          "last_session_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Session At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "resolved_as": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedAs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_count": {
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "sky": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkyInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "session_count",
+          "frame_count",
+          "failed_count"
+        ],
+        "title": "TargetSummary",
+        "type": "object"
+      },
+      "Template": {
+        "additionalProperties": false,
+        "description": "A pipeline as a file. Hand-editable, version-controlled, fork = copy.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeSpec"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Outputs",
+            "type": "object"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "nodes"
+        ],
+        "title": "Template",
+        "type": "object"
+      },
+      "TonightEntry": {
+        "additionalProperties": false,
+        "description": "One row in the Tonight table.\n\nSky positions are J2000/ICRS-aligned; alt/az are evaluated at the\n`at` query timestamp. `transit_local_iso` is the target's upper\nculmination during the night window in the site's wall-clock time\n(we encode the offset implied by the longitude so the UI doesn't\nhave to redo the timezone math). `null` transit means the target\ndoesn't culminate inside dusk-to-dawn at this site, in which case\nthe UI just shows alt_now and lets the user decide.",
+        "properties": {
+          "alt_curve_deg": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Curve Deg"
+          },
+          "alt_now_deg": {
+            "title": "Alt Now Deg",
+            "type": "number"
+          },
+          "az_now_deg": {
+            "title": "Az Now Deg",
+            "type": "number"
+          },
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "constellation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Constellation"
+          },
+          "dec_deg": {
+            "title": "Dec Deg",
+            "type": "number"
+          },
+          "hours_above_min_alt": {
+            "title": "Hours Above Min Alt",
+            "type": "number"
+          },
+          "last_session_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Session At"
+          },
+          "magnitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Magnitude"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "ra_deg": {
+            "title": "Ra Deg",
+            "type": "number"
+          },
+          "session_count": {
+            "default": 0,
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "transit_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transit Utc"
+          }
+        },
+        "required": [
+          "name",
+          "ra_deg",
+          "dec_deg",
+          "alt_now_deg",
+          "az_now_deg",
+          "hours_above_min_alt"
+        ],
+        "title": "TonightEntry",
+        "type": "object"
+      },
+      "TonightResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "alt_curve_step_min": {
+            "title": "Alt Curve Step Min",
+            "type": "integer"
+          },
+          "at_utc": {
+            "title": "At Utc",
+            "type": "string"
+          },
+          "dawn_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dawn Utc"
+          },
+          "dusk_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dusk Utc"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/TonightEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "max_magnitude": {
+            "title": "Max Magnitude",
+            "type": "number"
+          },
+          "min_alt_deg": {
+            "title": "Min Alt Deg",
+            "type": "number"
+          },
+          "site_elevation_m": {
+            "title": "Site Elevation M",
+            "type": "number"
+          },
+          "site_latitude": {
+            "title": "Site Latitude",
+            "type": "number"
+          },
+          "site_longitude": {
+            "title": "Site Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "at_utc",
+          "site_latitude",
+          "site_longitude",
+          "site_elevation_m",
+          "min_alt_deg",
+          "max_magnitude",
+          "dusk_utc",
+          "dawn_utc",
+          "alt_curve_step_min",
+          "entries"
+        ],
+        "title": "TonightResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "astrolab",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/gallery": {
+      "get": {
+        "description": "Every successful history entry across all projects, newest\nfirst. Each entry has the bits a card needs (preview pointer +\ntarget/template names) so the UI doesn't have to JOIN per render.",
+        "operationId": "list_gallery_api_gallery_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GalleryEntry"
+                  },
+                  "title": "Response List Gallery Api Gallery Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Gallery"
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Api Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "operationId": "list_jobs_api_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Jobs Api Jobs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Jobs"
+      },
+      "post": {
+        "operationId": "submit_job_api_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Job"
+      }
+    },
+    "/api/jobs/from_session": {
+      "post": {
+        "description": "Build a Job from a catalog session and submit it.\n\nResolves the session's lights folder + matched master (per calibration\nspec) into the template's external inputs. Surfaces 404 when session or\ntemplate is unknown, 400 when calibration can't be resolved.",
+        "operationId": "submit_from_session_api_jobs_from_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitFromSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit From Session"
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "operationId": "get_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Job Api Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job"
+      }
+    },
+    "/api/jobs/{job_id}/events": {
+      "get": {
+        "description": "Return the persisted event history for a job (snapshot, not live).",
+        "operationId": "get_job_events_api_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Get Job Events Api Jobs  Job Id  Events Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Events"
+      }
+    },
+    "/api/jobs/{job_id}/quality": {
+      "get": {
+        "description": "Per-image quality metrics for a completed job whose primary output is an image.\n\nReturns the persisted quality blob when available (written by the worker\nat completion). Falls back to computing fresh from disk when the blob is\nmissing, which is useful on macOS dev boxes where Siril isn't installed\nand the worker ran without Siril.\n\n- 404 if the job doesn't exist\n- 409 if the job hasn't finished yet\n- 400 if the primary output isn't an image port",
+        "operationId": "get_job_quality_api_jobs__job_id__quality_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Job Quality Api Jobs  Job Id  Quality Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Quality"
+      }
+    },
+    "/api/jobs/{job_id}/rerun": {
+      "post": {
+        "description": "Reprocess: submit a fresh copy of an existing job with cache bypass.\n\nThe original job stays in the list as history; the new job runs every\nnode from scratch, then commits results back so subsequent non-force\nruns against the same inputs will hit the rebuilt cache.",
+        "operationId": "rerun_job_api_jobs__job_id__rerun_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rerun Job"
+      }
+    },
+    "/api/masters": {
+      "get": {
+        "operationId": "list_masters_api_masters_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MasterRow"
+                  },
+                  "title": "Response List Masters Api Masters Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Masters"
+      }
+    },
+    "/api/nodes": {
+      "get": {
+        "description": "Return a catalog of every registered node with its metadata and params schema.\n\nKeys are node kind strings (variant appended as '/variant' when set).\nParam entries include type, default, constraints (ge/le/gt/lt/Literal),\ndescription, agent_hint, ui_section, and ui_hidden from json_schema_extra.",
+        "operationId": "list_nodes_endpoint_api_nodes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Nodes Endpoint Api Nodes Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Nodes Endpoint"
+      }
+    },
+    "/api/nodes/{kind}/run": {
+      "post": {
+        "description": "Run a single registered node in isolation given explicit input Refs + params.\n\nDesigned for LLM QA agents doing tight parameter sweeps on one node\n(e.g. graxpert or stretch) without re-running the whole template's\nupstream chain.\n\nReturns 200 with cache_hit=true when the result is already cached.\nReturns 202 with job_id when a new job was submitted.",
+        "operationId": "run_single_node_api_nodes__kind__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "title": "Kind",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunNodeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Single Node"
+      }
+    },
+    "/api/output/{node_hash}/{port}": {
+      "get": {
+        "description": "Full-resolution artifact for `(node_hash, port)`.\n\nFor PNG outputs, serves the committed file directly (no re-encode,\nno thumbnailing). For FITS, autostretches at full resolution and\ncaches the result inside the entry as `_output_<port>.png`. Use this\nfor the \"Open full\" / download affordance; /api/preview returns a\n512px thumbnail for the in-page tiles.",
+        "operationId": "get_output_api_output__node_hash___port__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_hash",
+            "required": true,
+            "schema": {
+              "title": "Node Hash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "title": "Port",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "neutral",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "title": "Neutral",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Output"
+      }
+    },
+    "/api/preview/{node_hash}/{port}": {
+      "get": {
+        "description": "Render (or return cached) thumbnail PNG for a node's output.\n\nThe preview is cached inside the node's cache entry so subsequent loads\nare a static file read. FITS artifacts get an autostretched render;\nPNG artifacts pass through.\n\n`neutral=0` bypasses the per-channel rebalance (debug affordance --\nshows what Siril's linked autostretch produces, which is what you'd\nsee opening the FITS in Siril directly). Default `neutral=1` runs an\nOSC-friendly per-channel stretch so pre-rgb_equal stages stop looking\nswampy green.\n\n`force_stretch=1` ignores the output manifest's `display_ready` flag and\nalways runs autostretch. Used by the crop editor so it gets a visually\nuseful preview even when the upstream node (e.g. graxpert) marks its\noutput as display-ready linear data.",
+        "operationId": "get_preview_api_preview__node_hash___port__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_hash",
+            "required": true,
+            "schema": {
+              "title": "Node Hash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "title": "Port",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "neutral",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "title": "Neutral",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force_stretch",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Force Stretch",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Preview"
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "operationId": "list_projects_api_projects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Projects Api Projects Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Projects"
+      },
+      "post": {
+        "operationId": "create_project_api_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Project Api Projects Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Project"
+      }
+    },
+    "/api/projects/from_session": {
+      "post": {
+        "description": "Create a Project from a catalog session and submit its initial job.",
+        "operationId": "create_project_from_session_api_projects_from_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectFromSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Project From Session Api Projects From Session Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Project From Session"
+      }
+    },
+    "/api/projects/from_sessions": {
+      "post": {
+        "description": "Create a Project that stacks multiple compatible catalog sessions.\n\nCompatibility rule: every session must resolve to the same canonical\ntarget group (so manually-retargeted sessions match) AND share\ninstrument/camera/filter/gain/binning (the fields the stacker treats\nas identical). exptime is no longer required to match \u2014 the calibrate\nnode picks the right dark per-frame for mixed-exposure bundles.\nSessions are de-duplicated and order-normalized so [3,1] and [1,3]\nhit the same cache lineage.",
+        "operationId": "create_project_from_sessions_api_projects_from_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectFromSessionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Project From Sessions Api Projects From Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Project From Sessions"
+      }
+    },
+    "/api/projects/{project_id}": {
+      "delete": {
+        "description": "Remove a project and any cache entries it owns alone. Shared entries\nare left in place \u2014 purging them would invalidate other projects.",
+        "operationId": "delete_project_endpoint_api_projects__project_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Project Endpoint Api Projects  Project Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Project Endpoint"
+      },
+      "get": {
+        "operationId": "get_project_api_projects__project_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Project Api Projects  Project Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project"
+      },
+      "patch": {
+        "description": "Apply param overrides (and optionally toggle draft_mode), submit a new\njob, and append a history entry. Returns the updated project.\n\nDescription is metadata: it's persisted without submitting a new\njob. We honor \"description supplied\" vs \"omitted\" via the request's\n`model_fields_set` so descriptionless PATCHes are still idempotent.\n\nA description-only PATCH (no overrides, no draft_mode toggle) skips\nthe override-merge / job-submit path entirely so the autosave-on-blur\nUX doesn't kick the pipeline.",
+        "operationId": "patch_project_api_projects__project_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Project Api Projects  Project Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Project"
+      }
+    },
+    "/api/projects/{project_id}/cache": {
+      "delete": {
+        "description": "Evict the project's owned cache entries without deleting the\nproject itself. With keep_outputs=true, terminal-output hashes\nsurvive (the user keeps the saved final image, loses the\nintermediates).",
+        "operationId": "purge_project_cache_endpoint_api_projects__project_id__cache_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "keep_outputs",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Keep Outputs",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Purge Project Cache Endpoint Api Projects  Project Id  Cache Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purge Project Cache Endpoint"
+      },
+      "get": {
+        "description": "Preview the eviction the matching DELETE would perform, without\nactually evicting. Used by the Manage Sessions modal's live diff so\nthe user sees `~X GB will be evicted` while toggling sessions.\n\nReuses the same reachability scan as the real purge path; the only\ndifference is we tally bytes instead of calling cache.evict().",
+        "operationId": "project_cache_dry_run_api_projects__project_id__cache_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "keep_outputs",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Keep Outputs",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Project Cache Dry Run Api Projects  Project Id  Cache Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Project Cache Dry Run"
+      }
+    },
+    "/api/projects/{project_id}/cover": {
+      "put": {
+        "description": "Pin the history seq used as this project's cover image. Pass\nseq=null to clear (Projects list + Gallery fall back to the auto\npick: latest entry with outputs).",
+        "operationId": "set_project_cover_api_projects__project_id__cover_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Project Cover Api Projects  Project Id  Cover Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Project Cover"
+      }
+    },
+    "/api/projects/{project_id}/history/{seq}/published": {
+      "put": {
+        "description": "Toggle a single history entry's gallery-visible state. The gallery\nfeed filters to published-only; this is the user's opt-in surface.",
+        "operationId": "set_history_published_api_projects__project_id__history__seq__published_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "title": "Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPublishedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set History Published Api Projects  Project Id  History  Seq  Published Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set History Published"
+      }
+    },
+    "/api/projects/{project_id}/revert/{seq}": {
+      "post": {
+        "description": "Move the current pointer to history seq `seq`. No new job; the prior\nhistory entry's job_id is what the UI displays.",
+        "operationId": "revert_project_api_projects__project_id__revert__seq__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "title": "Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revert Project Api Projects  Project Id  Revert  Seq  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revert Project"
+      }
+    },
+    "/api/projects/{project_id}/sessions": {
+      "patch": {
+        "description": "Replace the project's source-session set.\n\nGates in order: same-target (every session shares the project's\ncanonical_group), calibration-compat (build_from_sessions enforces\nthis), non-empty.\n\nOn success: build a fresh Job pinned to the project's current\ntemplate_id+template_version (no silent template upgrade, that's\nissue #61's slice), evict the project's owned cache, append a\n`swap_sessions` history entry with the new id list + frame count +\nintegration time, optionally kick a render. Response carries the\nevicted bytes/count so the UI can confirm what happened.",
+        "operationId": "patch_project_sessions_api_projects__project_id__sessions_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchProjectSessionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Project Sessions Api Projects  Project Id  Sessions Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Project Sessions"
+      }
+    },
+    "/api/projects/{project_id}/suggestions": {
+      "get": {
+        "description": "Return sessions on the project's canonical_group that aren't yet\nbound to it. Empty when the project is multi-target / unresolved or\nhas no orphan sessions.\n\nMirrors the `suggested_additions` block carried on the main project\nDTO; exposed separately so the UI can re-fetch after a swap without\na full project reload.",
+        "operationId": "get_project_suggestions_api_projects__project_id__suggestions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Project Suggestions Api Projects  Project Id  Suggestions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project Suggestions"
+      }
+    },
+    "/api/projects/{project_id}/upgrade_template": {
+      "post": {
+        "description": "Move the project to the latest version of its current template.\n\nThe on-disk template YAML may have advanced past what's frozen on the\nproject row; this endpoint reloads the YAML, validates the version\nmoves forward, runs `migrate_param_overrides` to carry user overrides\nforward where possible, and submits a fresh render against the new\ntemplate.\n\nPer-node cache keys do not include `template_version`, so nodes whose\nidentity (id, kind, version, params, input edges) is unchanged will\ncache-hit on the next render. Only inserted, removed, or rewired\nnodes recompute.\n\nReturns the updated project plus a `dropped_overrides` field listing\nany overrides that didn't survive the migration (removed node /\nremoved param).",
+        "operationId": "upgrade_project_template_api_projects__project_id__upgrade_template_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upgrade Project Template Api Projects  Project Id  Upgrade Template Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upgrade Project Template"
+      }
+    },
+    "/api/scan": {
+      "post": {
+        "description": "Start a scan in a background thread. Poll /api/scan/status to track progress.",
+        "operationId": "triggerScan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "root_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "already_running"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Triggerscan",
+        "tags": [
+          "Scan"
+        ]
+      }
+    },
+    "/api/scan/status": {
+      "get": {
+        "description": "Return the current scan progress state.",
+        "operationId": "getScanStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Getscanstatus",
+        "tags": [
+          "Scan"
+        ]
+      }
+    },
+    "/api/sessions/dark-preview": {
+      "get": {
+        "description": "Return the per-(exptime, gain, temp_bin) breakdown of a bundle's\nlight frames and the master dark each bin would receive at job-\nbuild time.\n\nUsed by the project page's manage-sessions modal so the user sees\nwhat calibration coverage they'll actually get BEFORE submitting a\nrender. Mirrors what build_from_sessions feeds the calibrate node\nvia dark_bins, just shaped for the UI.",
+        "operationId": "get_dark_preview_api_sessions_dark_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "integer"
+              },
+              "title": "Session Id",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DarkPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Dark Preview"
+      }
+    },
+    "/api/sessions/{session_id}": {
+      "get": {
+        "operationId": "get_session_api_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session"
+      },
+      "patch": {
+        "description": "Update session metadata and / or reassign to a different target.\n\nThree independent fields the caller may set:\n  - `target_id` or `new_target_name`: reassign (mutually exclusive).\n  - `description`: free-text notes; empty string clears.\n\nReassign math: the session's `frames` rows are linked through\n`session_frames` (not target_id directly), so flipping\n`sessions.target_id` is all that's needed. Any source target left\nwithout sessions gets deleted; the response carries the deleted ids\nso the UI can drop them locally.\n\nFor `new_target_name` the input is normalized first; a normalized\nname that matches an existing target reuses that row rather than\ncreating a duplicate (the user asked for \"straight up change it\",\nso collisions merge instead of raising).",
+        "operationId": "patch_session_api_sessions__session_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPatchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Session"
+      }
+    },
+    "/api/sessions/{session_id}/reassign_candidates": {
+      "get": {
+        "description": "Suggest reassign targets for a session.\n\nReturns two parallel lists:\n- `targets`: existing target rows within the suggestion tolerance of\n  the session's centroid, sorted by ascending separation, capped at\n  10. Excludes the session's current target.\n- `catalog`: OpenNGC entries within the same tolerance, capped at 15.\n\nBoth lists are empty when the session has no usable centroid (no\nRA/Dec on its frames). The UI falls back to a free-text picker in\nthat case.",
+        "operationId": "get_session_reassign_candidates_api_sessions__session_id__reassign_candidates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReassignCandidatesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session Reassign Candidates"
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "operationId": "get_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Settings Api Settings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Settings"
+      },
+      "patch": {
+        "operationId": "patch_settings_api_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Settings Api Settings Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Settings"
+      }
+    },
+    "/api/storage": {
+      "get": {
+        "description": "System-wide storage snapshot: total cache bytes, dead bytes, and a\nper-project breakdown of owned vs shared bytes.",
+        "operationId": "get_storage_api_storage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Storage Api Storage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Storage"
+      }
+    },
+    "/api/storage/cleanup": {
+      "post": {
+        "description": "Run an eviction pass against the configured (or override) budget.",
+        "operationId": "storage_cleanup_api_storage_cleanup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CleanupRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Storage Cleanup Api Storage Cleanup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Storage Cleanup"
+      }
+    },
+    "/api/system": {
+      "get": {
+        "description": "Host telemetry for the dashboard: CPU/mem/disk/GPU and job stats.",
+        "operationId": "get_system_api_system_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get System Api System Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get System"
+      }
+    },
+    "/api/targets": {
+      "get": {
+        "operationId": "list_targets_api_targets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TargetSummary"
+                  },
+                  "title": "Response List Targets Api Targets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Targets"
+      }
+    },
+    "/api/targets/{target_id}": {
+      "get": {
+        "operationId": "get_target_api_targets__target_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Target"
+      }
+    },
+    "/api/templates": {
+      "get": {
+        "operationId": "list_templates_endpoint_api_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Templates Endpoint Api Templates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Templates Endpoint"
+      }
+    },
+    "/api/templates/{template_id}/schema": {
+      "get": {
+        "description": "Return per-node parameter JSON schemas for a template.\n\nThe UI uses this to auto-build param forms. Each entry mirrors the\ntemplate's NodeSpec but adds the Pydantic JSON-Schema (descriptions,\nge/le, enums, defaults) so the UI doesn't need to read Python at\nruntime.",
+        "operationId": "get_template_schema_api_templates__template_id__schema_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Template Schema Api Templates  Template Id  Schema Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Template Schema"
+      }
+    },
+    "/api/tonight": {
+      "get": {
+        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets are filtered to those currently\nabove `min_alt` degrees and brighter than `max_mag` V-band, then\nsorted by descending hours-above-min-alt with current altitude as\nthe tiebreaker. The primary sort key matters most: a target that's\nhigh right now but sets in twenty minutes is worth less than one\nthat's currently 25deg but stays up the whole night.",
+        "operationId": "get_tonight_api_tonight_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "At"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_alt",
+            "required": false,
+            "schema": {
+              "default": 20.0,
+              "title": "Min Alt",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_mag",
+            "required": false,
+            "schema": {
+              "default": 12.0,
+              "title": "Max Mag",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TonightResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Tonight"
+      }
+    }
+  }
+}

@@ -274,3 +274,9 @@ The code is MIT (see `LICENSE`). The vendored OpenNGC catalog under
 `catalogs/openngc/` is CC BY-SA 4.0 by Mattia Verga; that carve-out is
 preserved in `LICENSE`. By contributing you agree your contributions
 are MIT-licensed.
+
+## Adding an API endpoint or MCP tool
+
+Declare routes with `@http_endpoint` and tools with `@mcp_tool` from `server/endpoints.py`. Both take pydantic models and a per-exception `error_map`. Stack them to publish one function both ways (see `trigger_scan` in `server/api.py`).
+
+After any change, run `python -m scripts.export_spec` and commit `docs/openapi.json` and `docs/mcp-tools.json`. A test fails when they are stale. Live copies are at `/openapi.json` and `POST /mcp` (`tools/list`). Endpoints with `authentication=AuthMode.TOKEN` need `ASTROLAB_API_TOKEN` and a bearer header.

@@ -1,0 +1,159 @@
+[
+  {
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return the state of the current or most recent capture folder scan.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "scan_status",
+    "outputSchema": {
+      "properties": {
+        "current_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Path"
+        },
+        "discovered": {
+          "title": "Discovered",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "failed": {
+          "title": "Failed",
+          "type": "integer"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Finished At"
+        },
+        "inserted": {
+          "title": "Inserted",
+          "type": "integer"
+        },
+        "last_stats": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Stats"
+        },
+        "removed": {
+          "title": "Removed",
+          "type": "integer"
+        },
+        "running": {
+          "title": "Running",
+          "type": "boolean"
+        },
+        "skipped": {
+          "title": "Skipped",
+          "type": "integer"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Started At"
+        },
+        "updated": {
+          "title": "Updated",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "running",
+        "started_at",
+        "finished_at",
+        "current_path",
+        "discovered",
+        "inserted",
+        "updated",
+        "skipped",
+        "removed",
+        "failed",
+        "error",
+        "last_stats"
+      ],
+      "title": "ScanStatusResponse",
+      "type": "object"
+    },
+    "title": "Check scan progress"
+  },
+  {
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Start a background scan of a capture folder so new frames appear in the library. Returns at once; poll scan_status for progress. Fails if a scan is already running.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "root": {
+          "title": "Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "root"
+      ],
+      "title": "ScanRequest",
+      "type": "object"
+    },
+    "name": "trigger_scan",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "started",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "ScanStarted",
+      "type": "object"
+    },
+    "title": "Scan the capture folder for new frames"
+  }
+]
