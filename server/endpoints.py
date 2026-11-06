@@ -8,13 +8,14 @@ unchanged. ``mount_endpoints(app)`` installs everything on a FastAPI app.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import inspect
 import json
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, get_type_hints
 
@@ -79,11 +80,10 @@ class ToolSpec:
     title: str
     description: str
     annotations: ToolAnnotations | None
-    error_map: dict[type[Exception], str]
+    error_map: dict[type[Exception], str | Callable[[Exception], str]]
     authentication: AuthMode
     payload_model: type[BaseModel] | None = None
     response_model: type[BaseModel] | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
 
 
 _HTTP: list[HttpSpec] = []
@@ -151,7 +151,7 @@ def mcp_tool(
     title: str,
     description: str,
     annotations: ToolAnnotations | None = None,
-    error_map: dict[type[Exception], str] | None = None,
+    error_map: dict[type[Exception], str | Callable[[Exception], str]] | None = None,
     authentication: AuthMode = AuthMode.NONE,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def register(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -307,8 +307,11 @@ async def _call_tool(
         if spec.authentication is AuthMode.TOKEN:
             _check_token(bearer)
         payload = spec.payload_model.model_validate(arguments) if spec.payload_model else None
-        call = spec.func(payload) if spec.payload_model else spec.func()
-        value = await call if inspect.isawaitable(call) else call
+        args = (payload,) if spec.payload_model else ()
+        if inspect.iscoroutinefunction(spec.func):
+            value = await spec.func(*args)
+        else:
+            value = await asyncio.to_thread(spec.func, *args)
     except _EndpointError as exc:
         return _tool_result(str(exc), is_error=True)
     except ValidationError as exc:
@@ -318,7 +321,7 @@ async def _call_tool(
         if message is None:
             log.exception("mcp tool %s failed", spec.name)
             return _tool_result("Internal error.", is_error=True)
-        return _tool_result(message, is_error=True)
+        return _tool_result(message(exc) if callable(message) else message, is_error=True)
     data = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
     return _tool_result(
         json.dumps(data), is_error=False, structured=data if isinstance(data, dict) else None
