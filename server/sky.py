@@ -129,7 +129,18 @@ def _sun_alt(loc: EarthLocation, times: Time) -> np.ndarray:
 def twilight_window(
     loc: EarthLocation, at: datetime
 ) -> tuple[datetime, datetime] | None:
-    """Find the night window centered on the local night for `at`.
+    """Find the current night, or the coming night once dawn has passed."""
+    midnight = _local_midnight_utc(loc, at)
+    window = _window_around(loc, midnight)
+    if window is not None and _ensure_utc(at) > window[1]:
+        return _window_around(loc, midnight + timedelta(days=1))
+    return window
+
+
+def _window_around(
+    loc: EarthLocation, midnight: datetime
+) -> tuple[datetime, datetime] | None:
+    """Find the night window centered on a local midnight.
 
     Returns (dusk_utc, dawn_utc) where the sun crosses the deepest
     achievable twilight threshold. Falls back from astronomical to
@@ -140,7 +151,6 @@ def twilight_window(
 
     Sampled at 5-minute resolution then linearly interpolated for the
     crossing, accurate to ~30s, well under the planner's needs."""
-    midnight = _local_midnight_utc(loc, at)
     # 24h window centered on local midnight: search before for dusk and
     # after for dawn. 5-minute step keeps the linear interpolation honest.
     start = midnight - timedelta(hours=12)
@@ -407,3 +417,39 @@ def night_transits_and_hours(
                 dusk + timedelta(minutes=step_min) * (found_idx + float(frac))
             )
     return transits, hours, alt_curves
+
+
+# Object types that give no picture worth pointing a camera at.
+_UNFEATURED_TYPES = frozenset({"Star", "Double Star", "Duplicate Entry", "Non-existent", "Nova"})
+# Above this apparent size an object already fills a wide-field frame.
+_FULL_SIZE_ARCMIN = 30.0
+# Hours above the limit that give a full-length session on one target.
+_FULL_SESSION_HOURS = 6.0
+# Showpieces span 1.0 down to this appeal. Other targets stay below it.
+_LAST_SHOWPIECE_APPEAL = 0.6
+
+
+def target_score(
+    object_type: str | None,
+    showpiece: float | None,
+    messier: bool,
+    named: bool,
+    size_arcmin: float | None,
+    magnitude: float | None,
+    hours_up: float,
+    night_hours: float,
+) -> float:
+    """Rank a target for tonight, in 0..1. `showpiece` is its position in the
+    curated list, 0 at the top. A short time above the limit lowers the score."""
+    if hours_up <= 0 or night_hours <= 0:
+        return 0.0
+    if showpiece is not None:
+        appeal = 1.0 - showpiece * (1.0 - _LAST_SHOWPIECE_APPEAL)
+    elif object_type in _UNFEATURED_TYPES:
+        return 0.0
+    else:
+        size = min((size_arcmin or 0.0) / _FULL_SIZE_ARCMIN, 1.0)
+        brightness = 0.0 if magnitude is None else max(0.0, min((12.0 - magnitude) / 12.0, 1.0))
+        appeal = 0.2 * messier + 0.1 * named + 0.15 * size + 0.1 * brightness
+    session = min(hours_up / min(_FULL_SESSION_HOURS, night_hours), 1.0)
+    return appeal * (0.5 + 0.5 * session)

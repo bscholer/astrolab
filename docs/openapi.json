@@ -389,6 +389,11 @@
             "title": "Is Cover",
             "type": "boolean"
           },
+          "is_favorite": {
+            "default": false,
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "label": {
             "anyOf": [
               {
@@ -419,6 +424,17 @@
           "seq": {
             "title": "Seq",
             "type": "integer"
+          },
+          "target_canonical": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Canonical"
           },
           "target_common_name": {
             "anyOf": [
@@ -2099,6 +2115,17 @@
             "title": "Hours Above Min Alt",
             "type": "number"
           },
+          "image_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Version"
+          },
           "last_session_at": {
             "anyOf": [
               {
@@ -2121,6 +2148,17 @@
             ],
             "title": "Magnitude"
           },
+          "messier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messier"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2140,10 +2178,26 @@
             "title": "Ra Deg",
             "type": "number"
           },
+          "score": {
+            "default": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
           "session_count": {
             "default": 0,
             "title": "Session Count",
             "type": "integer"
+          },
+          "size_arcmin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Arcmin"
           },
           "transit_utc": {
             "anyOf": [
@@ -2313,6 +2367,112 @@
           }
         },
         "summary": "List Gallery"
+      }
+    },
+    "/api/gallery/{project_id}/{seq}/favorite": {
+      "delete": {
+        "description": "Drop the favorite. An image that a later upload replaced stays.",
+        "operationId": "unfavorite_gallery_entry_api_gallery__project_id___seq__favorite_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "title": "Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unfavorite Gallery Entry Api Gallery  Project Id   Seq  Favorite Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unfavorite Gallery Entry"
+      },
+      "put": {
+        "description": "Use a published render as the Tonight image of its target.",
+        "operationId": "favorite_gallery_entry_api_gallery__project_id___seq__favorite_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "title": "Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Favorite Gallery Entry Api Gallery  Project Id   Seq  Favorite Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "unknown gallery entry"
+          },
+          "409": {
+            "description": "project has no catalog target"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Favorite Gallery Entry"
       }
     },
     "/api/health": {
@@ -4381,7 +4541,7 @@
     },
     "/api/tonight": {
       "get": {
-        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets are filtered to those currently\nabove `min_alt` degrees and brighter than `max_mag` V-band, then\nsorted by descending hours-above-min-alt with current altitude as\nthe tiebreaker. The primary sort key matters most: a target that's\nhigh right now but sets in twenty minutes is worth less than one\nthat's currently 25deg but stays up the whole night.",
+        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets must clear `min_alt` degrees at\nsome point between dusk and dawn, or at `at` when the site has no\nnight window, so the list reads the same at noon as at midnight. They\nmust also be brighter than `max_mag` V-band. A named object with no\ncatalog magnitude stays in, because large nebulae often lack one.\nEntries are sorted by `sky.target_score`.",
         "operationId": "get_tonight_api_tonight_get",
         "parameters": [
           {
@@ -4444,6 +4604,156 @@
           }
         },
         "summary": "Get Tonight"
+      }
+    },
+    "/api/tonight/image": {
+      "delete": {
+        "description": "Go back to the survey image for a target.",
+        "operationId": "delete_tonight_image_api_tonight_image_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Tonight Image Api Tonight Image Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "unknown target"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Tonight Image"
+      },
+      "put": {
+        "description": "Store an uploaded image as the Tonight image of a target.",
+        "operationId": "put_tonight_image_api_tonight_image_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "title": "Data",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Tonight Image Api Tonight Image Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "not a readable image"
+          },
+          "404": {
+            "description": "unknown target"
+          },
+          "413": {
+            "description": "file too large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Tonight Image"
+      }
+    },
+    "/api/tonight/thumb": {
+      "get": {
+        "description": "JPEG thumbnail for a catalog target: the user's own image when one\nis set, or else a cutout of the DSS colour survey.",
+        "operationId": "get_tonight_thumb_api_tonight_thumb_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "unknown target"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "imagery unavailable"
+          }
+        },
+        "summary": "Get Tonight Thumb"
       }
     }
   }

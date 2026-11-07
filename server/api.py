@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -61,11 +61,13 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import weather
+from server import sky_thumbs, weather
+from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.fits_reader import normalize_target
 from server.catalog.matching import match_bundle_darks
+from server.catalog.openngc import CatalogEntry
 from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.scanner import resolve_target as resolve_target_row
@@ -2639,6 +2641,10 @@ class GalleryEntry(BaseModel):
     preview_hash: str
     preview_port: str
     is_cover: bool = False
+    target_canonical: str | None = None
+    """Catalog target of this project. Null blocks a Tonight favorite."""
+    is_favorite: bool = False
+    """This entry supplies the Tonight image of its target."""
 
 
 @app.get("/api/gallery", response_model=list[GalleryEntry])
@@ -2647,9 +2653,16 @@ def list_gallery(conn: DBDep) -> list[GalleryEntry]:
     first. Each entry has the bits a card needs (preview pointer +
     target/template names) so the UI doesn't have to JOIN per render."""
     out: list[GalleryEntry] = []
+    favorites = {
+        (r["project_id"], r["seq"])
+        for r in conn.execute(
+            "SELECT project_id, seq FROM target_images WHERE project_id IS NOT NULL"
+        ).fetchall()
+    }
     for project in project_manager.list():
         capture = _capture_for_project(conn, project.source_session_ids)
         target_common = capture.target_common_name
+        target_canonical = _project_canonical(conn, project.source_session_ids)
         for entry in project.history:
             # Opt-in: only entries the user explicitly published surface
             # in the gallery. Iterate-and-compare crumbs stay private.
@@ -2675,10 +2688,106 @@ def list_gallery(conn: DBDep) -> list[GalleryEntry]:
                     preview_hash=ref.node_hash,
                     preview_port=port,
                     is_cover=(project.cover_seq == entry.seq),
+                    target_canonical=target_canonical,
+                    is_favorite=(project.id, entry.seq) in favorites,
                 )
             )
     out.sort(key=lambda e: e.created_at, reverse=True)
     return out
+
+
+def _project_canonical(conn: sqlite3.Connection, session_ids: list[str]) -> str | None:
+    """OpenNGC canonical id of the target in the project's first session."""
+    if not session_ids or not all(s.isdigit() for s in session_ids):
+        return None
+    placeholders = ",".join("?" for _ in session_ids)
+    row = conn.execute(
+        f"""
+        SELECT t.name AS name, t.resolved_canonical AS resolved_canonical
+        FROM sessions s JOIN targets t ON t.id = s.target_id
+        WHERE s.id IN ({placeholders})
+        ORDER BY s.started_at
+        LIMIT 1
+        """,
+        [int(s) for s in session_ids],
+    ).fetchone()
+    if row is None:
+        return None
+    entry = openngc_enrich(row["resolved_canonical"] or row["name"])
+    return entry.canonical if entry is not None else None
+
+
+def _record_target_image(
+    conn: sqlite3.Connection, canonical: str, project_id: str | None, seq: int | None
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO target_images (canonical, project_id, seq, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (canonical) DO UPDATE SET
+            project_id = excluded.project_id,
+            seq = excluded.seq,
+            updated_at = excluded.updated_at
+        """,
+        (canonical, project_id, seq, datetime.now(UTC).isoformat()),
+    )
+    conn.commit()
+
+
+def _delete_target_image(conn: sqlite3.Connection, canonical: str) -> None:
+    _target_image_path(canonical).unlink(missing_ok=True)
+    conn.execute("DELETE FROM target_images WHERE canonical = ?", (canonical,))
+    conn.commit()
+
+
+def _target_image_root() -> Path:
+    return astrolab_home() / "target_images"
+
+
+def _target_image_path(canonical: str) -> Path:
+    return sky_thumbs.custom_image_path(_target_image_root(), canonical)
+
+
+@app.put(
+    "/api/gallery/{project_id}/{seq}/favorite",
+    responses={
+        404: {"description": "unknown gallery entry"},
+        409: {"description": "project has no catalog target"},
+    },
+)
+def favorite_gallery_entry(project_id: str, seq: int, conn: DBDep) -> dict:
+    """Use a published render as the Tonight image of its target."""
+    project = project_manager.get(project_id)
+    entry = next((h for h in project.history if h.seq == seq), None) if project else None
+    record = job_manager.get(entry.job_id) if entry else None
+    if project is None or record is None or not record.outputs:
+        raise HTTPException(status_code=404, detail="gallery entry not found")
+    canonical = _project_canonical(conn, project.source_session_ids)
+    if canonical is None:
+        raise HTTPException(status_code=409, detail="project has no catalog target")
+    key = "image" if "image" in record.outputs else next(iter(record.outputs))
+    ref = record.outputs[key]
+    try:
+        path = render_output(
+            job_manager.cache, ref.node_hash, ref.port, display_ready=ref.display_ready
+        )
+        sky_thumbs.save_custom_image(_target_image_root(), canonical, path.read_bytes())
+    except (PreviewError, sky_thumbs.InvalidImage) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _record_target_image(conn, canonical, project_id, seq)
+    return {"target": canonical}
+
+
+@app.delete("/api/gallery/{project_id}/{seq}/favorite")
+def unfavorite_gallery_entry(project_id: str, seq: int, conn: DBDep) -> dict:
+    """Drop the favorite. An image that a later upload replaced stays."""
+    row = conn.execute(
+        "SELECT canonical FROM target_images WHERE project_id = ? AND seq = ?",
+        (project_id, seq),
+    ).fetchone()
+    if row is not None:
+        _delete_target_image(conn, row["canonical"])
+    return {"removed": row is not None}
 
 
 @app.patch("/api/projects/{project_id}")
@@ -3725,6 +3834,14 @@ class TonightEntry(BaseModel):
     ra_deg: float
     dec_deg: float
     magnitude: float | None = None
+    messier: str | None = None
+    size_arcmin: float | None = None
+    """Major axis of the object, from OpenNGC."""
+    score: float = 0.0
+    """Rank in 0..1. Entries arrive sorted by this, highest first."""
+    image_version: str | None = None
+    """Set when the user chose an image for this target. It changes with
+    each new image, so the UI adds it to the thumbnail URL."""
     alt_now_deg: float
     az_now_deg: float
     transit_utc: str | None = None
@@ -3763,6 +3880,83 @@ class TonightResponse(BaseModel):
     entries: list[TonightEntry]
 
 
+# The UI puts image_version in the URL, so a changed image gets a new URL.
+_THUMB_HEADERS = {"Cache-Control": "public, max-age=2592000, immutable"}
+_MAX_IMAGE_BYTES = 64 * 1024 * 1024
+
+
+def _display_common_name(entry: CatalogEntry) -> str | None:
+    """Curated name first, because OpenNGC lists odd ones first on some
+    rows: 'Edward Young Star' for M 110."""
+    return lookup_common_name(entry.messier or entry.canonical) or entry.common_name
+
+
+@app.get(
+    "/api/tonight/thumb",
+    responses={
+        404: {"description": "unknown target"},
+        502: {"description": "imagery unavailable"},
+    },
+)
+def get_tonight_thumb(name: str) -> Response:
+    """JPEG thumbnail for a catalog target: the user's own image when one
+    is set, or else a cutout of the DSS colour survey."""
+    entry = openngc_enrich(name)
+    if entry is None or entry.ra_deg is None or entry.dec_deg is None:
+        raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
+    custom = _target_image_path(entry.canonical)
+    if custom.exists():
+        return FileResponse(custom, media_type="image/jpeg", headers=_THUMB_HEADERS)
+    try:
+        jpeg = sky_thumbs.get_thumb(
+            astrolab_home() / "sky_thumbs",
+            entry.canonical,
+            entry.ra_deg,
+            entry.dec_deg,
+            entry.size_arcmin,
+        )
+    except sky_thumbs.ThumbUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(jpeg, media_type="image/jpeg", headers=_THUMB_HEADERS)
+
+
+@app.put(
+    "/api/tonight/image",
+    responses={
+        400: {"description": "not a readable image"},
+        404: {"description": "unknown target"},
+        413: {"description": "file too large"},
+    },
+)
+def put_tonight_image(
+    name: str,
+    conn: DBDep,
+    data: Annotated[bytes, Body(media_type="application/octet-stream")],
+) -> dict:
+    """Store an uploaded image as the Tonight image of a target."""
+    entry = openngc_enrich(name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="image is larger than 64 MB")
+    try:
+        sky_thumbs.save_custom_image(_target_image_root(), entry.canonical, data)
+    except sky_thumbs.InvalidImage as exc:
+        raise HTTPException(status_code=400, detail="not a readable image") from exc
+    _record_target_image(conn, entry.canonical, None, None)
+    return {"target": entry.canonical}
+
+
+@app.delete("/api/tonight/image", responses={404: {"description": "unknown target"}})
+def delete_tonight_image(name: str, conn: DBDep) -> dict:
+    """Go back to the survey image for a target."""
+    entry = openngc_enrich(name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
+    _delete_target_image(conn, entry.canonical)
+    return {"target": entry.canonical}
+
+
 @app.get("/api/tonight", response_model=TonightResponse)
 def get_tonight(
     conn: DBDep,
@@ -3778,12 +3972,12 @@ def get_tonight(
     defaulting to (0,0,0) would mean the user sees a list that's wrong
     by tens of degrees and has no idea why.
 
-    `at` defaults to now (UTC). Targets are filtered to those currently
-    above `min_alt` degrees and brighter than `max_mag` V-band, then
-    sorted by descending hours-above-min-alt with current altitude as
-    the tiebreaker. The primary sort key matters most: a target that's
-    high right now but sets in twenty minutes is worth less than one
-    that's currently 25deg but stays up the whole night.
+    `at` defaults to now (UTC). Targets must clear `min_alt` degrees at
+    some point between dusk and dawn, or at `at` when the site has no
+    night window, so the list reads the same at noon as at midnight. They
+    must also be brighter than `max_mag` V-band. A named object with no
+    catalog magnitude stays in, because large nebulae often lack one.
+    Entries are sorted by `sky.target_score`.
     """
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
@@ -3850,6 +4044,11 @@ def get_tonight(
             "last_session_at": row["last_session_at"],
         }
 
+    image_versions = {
+        r["canonical"]: r["updated_at"]
+        for r in conn.execute("SELECT canonical, updated_at FROM target_images").fetchall()
+    }
+
     # Pre-filter the catalog to entries with usable RA/Dec/mag, then
     # batch the alt/az transform. astropy's vectorized AltAz call is
     # ~100x faster than per-entry calls on the full ~14k OpenNGC list.
@@ -3858,9 +4057,10 @@ def get_tonight(
     for entry in catalog_entries:
         if entry.ra_deg is None or entry.dec_deg is None:
             continue
-        # Treat unknown magnitude as "fail the cap" so we don't surface
-        # rows we can't tell the user how bright they are.
-        if entry.magnitude is None or entry.magnitude > max_mag:
+        if entry.magnitude is None:
+            if _display_common_name(entry) is None and entry.messier is None:
+                continue
+        elif entry.magnitude > max_mag:
             continue
         candidates.append(entry)
 
@@ -3882,25 +4082,22 @@ def get_tonight(
     dec_arr = np.asarray([e.dec_deg for e in candidates], dtype=float)
     alts, azs = sky.alt_az_batch(ra_arr, dec_arr, loc, at_utc)
 
-    # Drop targets below the alt cutoff before the (more expensive) night-
-    # window math. At a typical mid-latitude site this halves the
-    # candidate set.
-    visible_mask = alts >= min_alt
-    visible_indices = np.where(visible_mask)[0]
-    visible_ra = ra_arr[visible_mask]
-    visible_dec = dec_arr[visible_mask]
-
-    transits: list[datetime | None] = [None] * len(visible_indices)
-    hours_arr = np.zeros(len(visible_indices))
-    alt_curves = np.zeros((len(visible_indices), 0))
-    if dusk_utc is not None and dawn_utc is not None and len(visible_indices) > 0:
+    has_night = dusk_utc is not None and dawn_utc is not None
+    transits: list[datetime | None] = [None] * len(candidates)
+    hours_arr = np.zeros(len(candidates))
+    alt_curves = np.zeros((len(candidates), 0))
+    night_hours = 0.0
+    if has_night:
         transits, hours_arr, alt_curves = sky.night_transits_and_hours(
-            visible_ra, visible_dec, loc, dusk_utc, dawn_utc, min_alt
+            ra_arr, dec_arr, loc, dusk_utc, dawn_utc, min_alt
         )
+        night_hours = (dawn_utc - dusk_utc).total_seconds() / 3600
+    visible_indices = np.where(hours_arr > 0 if has_night else alts >= min_alt)[0]
 
     out: list[TonightEntry] = []
-    for k, idx in enumerate(visible_indices):
-        entry = candidates[int(idx)]
+    for idx in visible_indices:
+        k = int(idx)
+        entry = candidates[k]
         cap = captured.get(entry.canonical.strip().lower())
         transit = transits[k]
         transit_iso = transit.isoformat() if transit is not None else None
@@ -3912,9 +4109,21 @@ def get_tonight(
         out.append(
             TonightEntry(
                 name=entry.canonical,
-                common_name=entry.common_name,
+                common_name=_display_common_name(entry),
                 object_type=entry.object_type,
                 constellation=entry.constellation,
+                messier=entry.messier,
+                size_arcmin=entry.size_arcmin,
+                score=sky.target_score(
+                    entry.object_type,
+                    showpieces.fraction(entry.canonical),
+                    entry.messier is not None,
+                    _display_common_name(entry) is not None,
+                    entry.size_arcmin,
+                    entry.magnitude,
+                    float(hours_arr[k]),
+                    night_hours,
+                ),
                 ra_deg=float(entry.ra_deg),
                 dec_deg=float(entry.dec_deg),
                 magnitude=entry.magnitude,
@@ -3922,17 +4131,16 @@ def get_tonight(
                 az_now_deg=float(azs[idx]),
                 transit_utc=transit_iso,
                 hours_above_min_alt=float(hours_arr[k]),
+                image_version=image_versions.get(entry.canonical),
                 session_count=int(cap["session_count"]) if cap else 0,
                 last_session_at=cap["last_session_at"] if cap else None,
                 alt_curve_deg=curve,
             )
         )
 
-    # Prefer "stays up tonight" over "is up right this second"; current
-    # altitude breaks ties so two equally-available targets list with the
-    # higher one first. Rows with zero hours up sink to the bottom on
-    # their own without needing a hard filter.
-    out.sort(key=lambda e: (e.hours_above_min_alt, e.alt_now_deg), reverse=True)
+    # Current altitude breaks ties, which also orders the list when the
+    # site has no night window and every score is zero.
+    out.sort(key=lambda e: (e.score, e.hours_above_min_alt, e.alt_now_deg), reverse=True)
     return TonightResponse(
         at_utc=at_utc.isoformat(),
         site_latitude=float(site_lat),

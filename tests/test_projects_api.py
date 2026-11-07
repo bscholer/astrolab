@@ -299,6 +299,40 @@ def test_gallery_filters_to_published_only(client, tmp_path: Path) -> None:
     assert body[0]["seq"] == 0
 
 
+def _attach_target(client, pid: str, target: str) -> None:
+    """Give a project a source session on a catalog target."""
+    from server.catalog.db import open_db
+
+    with open_db() as conn, conn:
+        target_id = conn.execute("INSERT INTO targets (name) VALUES (?)", (target,)).lastrowid
+        session_id = conn.execute(
+            "INSERT INTO sessions (scope_id, target_id, started_at, frame_count, failed_count)"
+            " VALUES ('dwarf3', ?, '2024-10-01T20:00:00Z', 10, 0)",
+            (target_id,),
+        ).lastrowid
+    project_manager.get(pid).source_session_ids = [str(session_id)]
+
+
+def test_gallery_favorite_is_a_toggle_for_the_tonight_image(client, tmp_path: Path) -> None:
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+    client.put(f"/api/projects/{pid}/history/0/published", json={"published": True})
+
+    assert client.put(f"/api/gallery/{pid}/0/favorite").status_code == 409
+
+    _attach_target(client, pid, "M 31")
+    assert client.get("/api/gallery").json()[0]["target_canonical"] == "NGC 224"
+    assert client.put(f"/api/gallery/{pid}/0/favorite").json() == {"target": "NGC 224"}
+    assert client.get("/api/gallery").json()[0]["is_favorite"] is True
+    thumb = client.get("/api/tonight/thumb?name=M 31")
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"] == "image/jpeg"
+
+    assert client.delete(f"/api/gallery/{pid}/0/favorite").json() == {"removed": True}
+    assert client.get("/api/gallery").json()[0]["is_favorite"] is False
+
+
 def test_cancel_running_job_marks_interrupted(client, tmp_path: Path) -> None:
     """Set the cancel token on a record before the worker picks it up; the
     worker should see it on entry, mark the job interrupted, and never run

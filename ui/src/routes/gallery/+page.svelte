@@ -38,6 +38,16 @@
   // wipe (matches reading order — left → right, A → B).
   let picks = $state<string[]>([]);
 
+  async function toggleFavorite(e: GalleryEntry) {
+    try {
+      if (e.is_favorite) await api.unfavoriteGalleryEntry(e.project_id, e.seq);
+      else await api.favoriteGalleryEntry(e.project_id, e.seq);
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
   function entryKey(e: GalleryEntry): string {
     return `${e.project_id}:${e.seq}`;
   }
@@ -102,6 +112,19 @@
                   <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
                 </svg>
               </span>
+            {/if}
+            {#if e.target_canonical}
+              <button
+                type="button"
+                class="fav-btn"
+                class:active={e.is_favorite}
+                onclick={(ev) => { ev.preventDefault(); toggleFavorite(e); }}
+                aria-pressed={e.is_favorite}
+                aria-label="Use as the Tonight image for {e.target_canonical}"
+                title="Use as the Tonight image for {e.target_canonical}"
+              >
+                {e.is_favorite ? '♥' : '♡'}
+              </button>
             {/if}
             <!-- Compare toggle. Lives on the thumb so it's reachable
                  without leaving the card; the link wraps the whole
@@ -275,6 +298,24 @@
     background: linear-gradient(135deg, var(--accent), var(--good));
     color: var(--accent-ink);
     box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 0 12px var(--accent-soft);
+  }
+
+  .fav-btn {
+    position: absolute;
+    bottom: 6px;
+    left: 8px;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55);
+    color: var(--fg);
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  .fav-btn.active {
+    color: var(--bad);
   }
 
   .card-body {

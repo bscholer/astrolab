@@ -488,6 +488,8 @@ export interface GalleryEntry {
   preview_hash: string;
   preview_port: string;
   is_cover: boolean;
+  target_canonical: string | null;
+  is_favorite: boolean;
 }
 
 export interface ProjectCapture {
@@ -854,6 +856,10 @@ export interface TonightEntry {
   ra_deg: number;
   dec_deg: number;
   magnitude: number | null;
+  messier: string | null;
+  size_arcmin: number | null;
+  score: number;
+  image_version: string | null;
   alt_now_deg: number;
   az_now_deg: number;
   // ISO 8601 UTC; null when the target doesn't transit during the night.
@@ -1000,6 +1006,23 @@ export const api = {
   getScope: () => getJSON<ScopeState>('/api/scope'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),
   getSystem: () => getJSON<SystemSnapshot>('/api/system'),
+  tonightThumbUrl: (name: string, version: string | null) =>
+    `/api/tonight/thumb?name=${encodeURIComponent(name)}` +
+    (version ? `&v=${encodeURIComponent(version)}` : ''),
+  uploadTonightImage: async (name: string, file: File) => {
+    const r = await fetch(`/api/tonight/image?name=${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    if (!r.ok) throw new ApiError(r.status, await _readErrorDetail(r));
+  },
+  deleteTonightImage: (name: string) =>
+    deleteJSON<{ target: string }>(`/api/tonight/image?name=${encodeURIComponent(name)}`),
+  favoriteGalleryEntry: (projectId: string, seq: number) =>
+    putJSON<{ target: string }>(`/api/gallery/${projectId}/${seq}/favorite`, {}),
+  unfavoriteGalleryEntry: (projectId: string, seq: number) =>
+    deleteJSON<{ removed: boolean }>(`/api/gallery/${projectId}/${seq}/favorite`),
   getTonight: (params?: {
     at?: string;
     min_alt?: number;

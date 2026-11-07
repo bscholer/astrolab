@@ -9,15 +9,21 @@ is covered separately by `tests/test_sky.py`.
 
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import nodes.basic  # noqa: F401  registers downscale (fixture parity with other api tests)
+from server import sky, sky_thumbs
 from server.api import app, job_manager, project_manager
 from server.cache import ContentCache
+from server.catalog import showpieces
 from server.catalog.db import default_db_path, open_db
+from server.catalog.openngc import enrich
 
 
 @pytest.fixture
@@ -116,13 +122,11 @@ def test_tonight_returns_entries_with_known_site(client: TestClient) -> None:
     assert body["site_latitude"] == 40.7
     assert isinstance(body["entries"], list)
     assert len(body["entries"]) > 5
-    # Sorted by descending hours-up tonight, with current altitude as
-    # the tiebreaker so high-and-stays-up beats high-and-setting.
-    sort_keys = [(e["hours_above_min_alt"], e["alt_now_deg"]) for e in body["entries"]]
-    assert sort_keys == sorted(sort_keys, reverse=True)
+    scores = [e["score"] for e in body["entries"]]
+    assert scores == sorted(scores, reverse=True)
     # Each entry obeys the filter contract.
     for entry in body["entries"]:
-        assert entry["alt_now_deg"] >= body["min_alt_deg"]
+        assert entry["hours_above_min_alt"] > 0
         assert entry["magnitude"] is None or entry["magnitude"] <= body["max_magnitude"]
         assert "ra_deg" in entry and "dec_deg" in entry
 
@@ -148,7 +152,7 @@ def test_tonight_filter_chips_propagate(client: TestClient) -> None:
     # the params didn't bite at all.
     assert len(strict["entries"]) < len(base["entries"])
     for entry in strict["entries"]:
-        assert entry["alt_now_deg"] >= 70.0
+        assert entry["hours_above_min_alt"] > 0
         assert entry["magnitude"] is None or entry["magnitude"] <= 8.0
 
 
@@ -365,6 +369,10 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
             "ra_deg",
             "dec_deg",
             "magnitude",
+            "messier",
+            "size_arcmin",
+            "score",
+            "image_version",
             "alt_now_deg",
             "az_now_deg",
             "transit_utc",
@@ -382,3 +390,108 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
             assert isinstance(curve, list) and len(curve) >= 2
             for v in curve:
                 assert -90.0 <= v <= 90.0
+
+
+def test_tonight_list_does_not_depend_on_time_of_day(client: TestClient) -> None:
+    """Opening the page at noon lists the coming night, not the daytime sky."""
+    _set_site(client)
+    noon = client.get("/api/tonight?at=2024-10-15T16:00:00Z").json()
+    evening = client.get("/api/tonight?at=2024-10-15T23:00:00Z").json()
+    assert noon["dusk_utc"] == evening["dusk_utc"]
+    assert {e["name"] for e in noon["entries"]} == {e["name"] for e in evening["entries"]}
+    m31 = next(e for e in noon["entries"] if e["messier"] == "M 31")
+    assert m31["alt_now_deg"] < 20
+
+
+def test_tonight_ranks_showpieces_above_obscure_targets(client: TestClient) -> None:
+    _set_site(client)
+    body = client.get("/api/tonight?at=2024-11-08T03:00:00Z").json()
+    top = [e["name"] for e in body["entries"][:12]]
+    assert {"NGC 224", "NGC 7000", "IC 1805", "NGC 1499"} <= set(top)
+    plain_cluster = next(e for e in body["entries"] if e["messier"] == "M 52")
+    assert body["entries"].index(plain_cluster) > 40
+
+
+def test_short_session_loses_to_a_full_night_of_a_lesser_showpiece() -> None:
+    args = (False, True, 60.0, 6.0)
+    best_but_setting = sky.target_score("Nebula", 0.0, *args, 0.5, 10.0)
+    full_night = sky.target_score("Nebula", 0.3, *args, 10.0, 10.0)
+    assert full_night > best_but_setting > 0
+
+
+def test_star_on_the_curated_list_still_scores() -> None:
+    args = (False, False, None, 8.0, 8.0, 10.0)
+    assert sky.target_score("Star", None, *args) == 0.0
+    assert sky.target_score("Star", 0.5, *args) > 0.0
+
+
+def test_tonight_uses_curated_names_and_keeps_named_targets_without_magnitude(
+    client: TestClient,
+) -> None:
+    """IC 1805 has no name in OpenNGC, and NGC 2237 has no magnitude."""
+    _set_site(client)
+    body = client.get("/api/tonight?at=2025-01-15T04:00:00Z").json()
+    by_name = {e["name"]: e for e in body["entries"]}
+    assert by_name["IC 1805"]["common_name"] == "Heart Nebula"
+    assert by_name["NGC 2237"]["magnitude"] is None
+
+
+def test_showpiece_list_resolves_every_name_once() -> None:
+    """A typo or an alias of an earlier row silently drops a target."""
+    names = json.loads(showpieces.DATA_PATH.read_text(encoding="utf-8"))["targets"]
+    resolved = [enrich(n) for n in names]
+    assert [n for n, e in zip(names, resolved, strict=True) if e is None] == []
+    canonical = [e.canonical for e in resolved if e is not None]
+    assert len(set(canonical)) == len(canonical)
+
+
+def test_thumb_unknown_target_404(client: TestClient) -> None:
+    assert client.get("/api/tonight/thumb?name=NotAThing").status_code == 404
+
+
+def test_thumb_upstream_failure_is_502_and_not_cacheable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args, **kwargs):
+        raise sky_thumbs.ThumbUnavailable("down")
+
+    monkeypatch.setattr(sky_thumbs, "get_thumb", fail)
+    r = client.get("/api/tonight/thumb?name=M 31")
+    assert r.status_code == 502
+    assert "immutable" not in r.headers.get("cache-control", "")
+
+
+def _png() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (800, 400), (200, 40, 40)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_uploaded_image_replaces_survey_thumb_until_removed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_site(client)
+    monkeypatch.setattr(sky_thumbs, "get_thumb", lambda *a, **k: b"survey")
+    assert client.get("/api/tonight/thumb?name=M 31").content == b"survey"
+
+    assert client.put("/api/tonight/image?name=M 31", content=_png()).status_code == 200
+    custom = client.get("/api/tonight/thumb?name=M31")
+    assert Image.open(io.BytesIO(custom.content)).size == (384, 384)
+    entries = client.get("/api/tonight?at=2024-10-15T04:00:00Z").json()["entries"]
+    version = next(e for e in entries if e["name"] == "NGC 224")["image_version"]
+    assert version is not None
+
+    assert client.delete("/api/tonight/image?name=M 31").status_code == 200
+    assert client.get("/api/tonight/thumb?name=M 31").content == b"survey"
+    entries = client.get("/api/tonight?at=2024-10-15T04:00:00Z").json()["entries"]
+    assert next(e for e in entries if e["name"] == "NGC 224")["image_version"] is None
+
+
+def test_upload_rejects_a_file_that_is_not_an_image(client: TestClient) -> None:
+    r = client.put("/api/tonight/image?name=M 31", content=b"not an image")
+    assert r.status_code == 400
+    assert client.delete("/api/tonight/image?name=M 31").status_code == 200
+
+
+def test_upload_rejects_an_unknown_target(client: TestClient) -> None:
+    assert client.put("/api/tonight/image?name=Nope", content=_png()).status_code == 404

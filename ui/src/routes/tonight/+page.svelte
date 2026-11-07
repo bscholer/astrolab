@@ -1,34 +1,41 @@
 <!--
-  Tonight: what's worth pointing at right now from the configured site.
-
-  Combines the OpenNGC catalog with the user's existing library so each
-  visible target shows session count + last-captured date inline. The
-  table is sorted by descending altitude (highest in the sky first); a
-  filter rail trims by object type, magnitude, and minimum altitude.
-
-  Queue target slews the scope and starts a capture when a scope service is set. The page is
-  for sitting on the couch with a coffee at 7pm and deciding what's
-  worth taking the scope out for.
+  Tonight: what is worth pointing at from the configured site. The server
+  ranks the targets, and each row opens to show the altitude curve.
 -->
 <script lang="ts">
   import { api, type ScopeState, type TonightEntry, type TonightResponse } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import { displayName, matchesSearch, typeGroup, upWindow, type TypeGroup } from '$lib/tonight';
 
   let data = $state<TonightResponse | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
 
-  // Filter state. Initial values mirror the server defaults so a fresh
-  // page load and a no-filter API call land on the same row set.
-  // Typed as nullable: clearing a `type="number"` input gives null, and
-  // we'd rather pause refetching than ship a bad query and crash the
-  // page while the user is mid-edit.
+  // Clearing a number input gives null. load() skips the fetch until the
+  // value is valid again.
   let minAlt = $state<number | null>(20);
   let maxMag = $state<number | null>(12);
-  // Type chip: null = "all". Single-select keeps the chip rail simple.
-  let typeFilter = $state<string | null>(null);
-  // Captured-only toggle: when on, hide rows the user has never imaged.
-  let capturedOnly = $state(false);
+
+  type View = 'recommended' | 'auto' | 'captured';
+  const VIEWS: { id: View; label: string }[] = [
+    { id: 'recommended', label: 'Recommended' },
+    { id: 'auto', label: 'Auto list' },
+    { id: 'captured', label: 'Captured' },
+  ];
+  const GROUPS: { id: TypeGroup; label: string }[] = [
+    { id: 'nebulae', label: 'Nebulae' },
+    { id: 'galaxies', label: 'Galaxies' },
+    { id: 'clusters', label: 'Clusters' },
+  ];
+  const PAGE_SIZE = 40;
+
+  let view = $state<View>('recommended');
+  let group = $state<TypeGroup | null>(null);
+  let search = $state('');
+  let showFilters = $state(false);
+  let limit = $state(PAGE_SIZE);
+  let expanded = $state<string | null>(null);
+  let failedThumbs = $state<Record<string, true | undefined>>({});
 
   let scope = $state<ScopeState | null>(null);
   let queuing = $state<string | null>(null);
@@ -125,80 +132,95 @@
     }
   }
 
-  // Single effect: refetch whenever a server-affecting filter changes.
-  // The reactive reads of minAlt/maxMag inside this block register them
-  // as dependencies, so editing either input triggers the call. Type
-  // and captured-only filters are pure client-side (just re-derive
-  // filteredEntries) and don't need a roundtrip.
+  // Only the altitude and magnitude limits change the server result.
   $effect(() => {
     void minAlt;
     void maxMag;
     load();
   });
 
-  // Distinct object_type values across the current row set, for the
-  // chip rail. Sorted alphabetically, "(none)" rolled into "Other" so
-  // weird OpenNGC type-code escapees aren't a separate chip.
-  const types = $derived.by(() => {
-    if (!data) return [];
-    const set = new Set<string>();
-    for (const e of data.entries) {
-      set.add(e.object_type ?? 'Other');
+  function matchesView(e: TonightEntry): boolean {
+    if (view === 'captured') return e.session_count > 0;
+    if (view === 'auto') return isOnAutoList(e);
+    return true;
+  }
+
+  function isOnAutoList(e: TonightEntry): boolean {
+    return !!scope?.targets?.some((t) => t.name === e.name);
+  }
+
+  const filteredEntries = $derived(
+    (data?.entries ?? []).filter(
+      (e) =>
+        matchesView(e) &&
+        (group === null || typeGroup(e.object_type) === group) &&
+        matchesSearch(e, search),
+    ),
+  );
+  const visibleEntries = $derived(filteredEntries.slice(0, limit));
+
+  $effect(() => {
+    void view;
+    void group;
+    void search;
+    limit = PAGE_SIZE;
+  });
+
+  async function uploadImage(e: TonightEntry, input: HTMLInputElement) {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    try {
+      await api.uploadTonightImage(e.name, file);
+      failedThumbs[e.name] = undefined;
+      toast.success(`Saved your image for ${displayName(e)}.`);
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
     }
-    return Array.from(set).sort();
-  });
+  }
 
-  const filteredEntries = $derived.by(() => {
-    if (!data) return [] as TonightEntry[];
-    return data.entries.filter((e) => {
-      if (typeFilter !== null && (e.object_type ?? 'Other') !== typeFilter) {
-        return false;
-      }
-      if (capturedOnly && e.session_count === 0) return false;
-      return true;
-    });
-  });
+  async function clearImage(e: TonightEntry) {
+    try {
+      await api.deleteTonightImage(e.name);
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
 
-  // Local-time ISO formatting for the transit column. The server returns
-  // UTC and we render in the user's wall-clock; saves a per-target tz
-  // conversion server-side and is more honest about who owns "local".
+  function fmtTime(d: Date): string {
+    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+
   function fmtLocalTime(iso: string | null): string {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return iso ? fmtTime(new Date(iso)) : '—';
   }
 
-  function fmtMag(mag: number | null): string {
-    if (mag === null) return '—';
-    return mag.toFixed(1);
+  function fmtSummary(e: TonightEntry): string {
+    const parts = [e.object_type];
+    if (e.magnitude !== null) parts.push(`mag ${e.magnitude.toFixed(1)}`);
+    if (e.size_arcmin !== null) parts.push(`${Math.round(e.size_arcmin)}′`);
+    return parts.filter(Boolean).join(' · ');
   }
 
-  function fmtAlt(deg: number): string {
-    return `${deg.toFixed(0)}°`;
-  }
-
-  function fmtHours(h: number): string {
-    if (h === 0) return '—';
-    return `${h.toFixed(1)}h`;
+  function fmtUp(e: TonightEntry, d: TonightResponse): string {
+    const w = upWindow(e.alt_curve_deg, d.min_alt_deg, d.dusk_utc, d.alt_curve_step_min);
+    if (!w) return `${e.alt_now_deg.toFixed(0)}° now`;
+    const peak = Math.max(...(e.alt_curve_deg ?? [0]));
+    return `${fmtTime(w.start)} – ${fmtTime(w.end)} · peak ${peak.toFixed(0)}°`;
   }
 
   function fmtCaptured(entry: TonightEntry): string {
-    if (entry.session_count === 0) return '—';
+    if (entry.session_count === 0) return 'Not yet';
     const last = entry.last_session_at
       ? new Date(entry.last_session_at).toLocaleDateString()
       : '?';
     return `${entry.session_count} (last ${last})`;
   }
 
-  // Sparkline geometry. Kept module-local so the SVG path math stays out
-  // of the markup. Width is intentionally narrow because the column has
-  // to fit a 5-column-wide table without forcing horizontal scroll.
-  const SPARK_W = 110;
-  const SPARK_H = 28;
+  const SPARK_W = 240;
+  const SPARK_H = 44;
   const SPARK_PAD_Y = 2;
 
   /** Build SVG points for the altitude polyline (clipped to 0..90). */
@@ -247,15 +269,7 @@
 
   function fmtWindow(d: TonightResponse): string {
     if (!d.dusk_utc || !d.dawn_utc) return '24-hour daylight';
-    const dusk = new Date(d.dusk_utc).toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const dawn = new Date(d.dawn_utc).toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    return `${dusk} – ${dawn}`;
+    return `Dark ${fmtLocalTime(d.dusk_utc)} – ${fmtLocalTime(d.dawn_utc)}`;
   }
 </script>
 
@@ -275,7 +289,7 @@
   {/if}
   {#if data}
     <span class="meta muted small">
-      {data.entries.length} visible · night {fmtWindow(data)}
+      {fmtWindow(data)}
     </span>
   {/if}
 </div>
@@ -295,163 +309,219 @@
 {:else if loading && data === null}
   <p class="muted">Computing the sky…</p>
 {:else if data}
-  <section class="filters">
-    <div class="filter-row">
-      <label class="filter-num">
-        <span class="filter-label">Min altitude</span>
-        <input
-          type="number"
-          min={0}
-          max={89}
-          step={1}
-          bind:value={minAlt}
-          aria-label="Minimum altitude in degrees"
-        />
-        <span class="filter-unit">deg</span>
-      </label>
-      <label class="filter-num">
-        <span class="filter-label">Max magnitude</span>
-        <input
-          type="number"
-          min={-2}
-          max={20}
-          step={0.5}
-          bind:value={maxMag}
-          aria-label="Maximum magnitude (dimmer = larger)"
-        />
-      </label>
+  <input
+    class="search"
+    type="search"
+    placeholder="Search"
+    aria-label="Search targets"
+    bind:value={search}
+  />
+
+  <div class="toolbar">
+    <div class="tabs" role="tablist" aria-label="Target lists">
+      {#each VIEWS as v (v.id)}
+        <button
+          type="button"
+          role="tab"
+          class="tab"
+          class:active={view === v.id}
+          aria-selected={view === v.id}
+          onclick={() => (view = v.id)}
+        >
+          {v.label}
+        </button>
+      {/each}
     </div>
-    <div class="chips" role="group" aria-label="Filters">
-      <button
-        type="button"
-        class="chip"
-        class:active={capturedOnly}
-        onclick={() => (capturedOnly = !capturedOnly)}
-      >
-        Captured only
-      </button>
-      {#if types.length > 0}
-        <span class="chip-divider" aria-hidden="true"></span>
+    <button
+      type="button"
+      class="filter-toggle"
+      class:active={showFilters || group !== null}
+      aria-expanded={showFilters}
+      onclick={() => (showFilters = !showFilters)}
+    >
+      Filter
+    </button>
+  </div>
+
+  {#if showFilters}
+    <section class="filters">
+      <div class="filter-row">
+        <label class="filter-num">
+          <span class="filter-label">Min altitude</span>
+          <input
+            type="number"
+            min={0}
+            max={89}
+            step={1}
+            bind:value={minAlt}
+            aria-label="Minimum altitude in degrees"
+          />
+          <span class="filter-unit">deg</span>
+        </label>
+        <label class="filter-num">
+          <span class="filter-label">Max magnitude</span>
+          <input
+            type="number"
+            min={-2}
+            max={20}
+            step={0.5}
+            bind:value={maxMag}
+            aria-label="Maximum magnitude (dimmer = larger)"
+          />
+        </label>
+      </div>
+      <div class="chips" role="group" aria-label="Object type">
         <button
           type="button"
           class="chip"
-          class:active={typeFilter === null}
-          onclick={() => (typeFilter = null)}
+          class:active={group === null}
+          onclick={() => (group = null)}
         >
           All types
         </button>
-        {#each types as t (t)}
+        {#each GROUPS as g (g.id)}
           <button
             type="button"
             class="chip"
-            class:active={typeFilter === t}
-            onclick={() => (typeFilter = typeFilter === t ? null : t)}
+            class:active={group === g.id}
+            onclick={() => (group = group === g.id ? null : g.id)}
           >
-            {t}
+            {g.label}
           </button>
         {/each}
-      {/if}
-    </div>
-  </section>
+      </div>
+    </section>
+  {/if}
 
   {#if filteredEntries.length === 0}
-    <p class="muted">No targets match the current filters.</p>
+    <p class="muted empty">No targets match.</p>
   {:else}
-    <section class="panel table-panel">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th class="col-hide-mobile">Common name</th>
-            <th class="col-hide-mobile">Type</th>
-            <th class="num">Mag</th>
-            <th class="num">Alt now</th>
-            <th class="num col-hide-mobile">Transit</th>
-            <th class="num">Hours up</th>
-            <th class="col-hide-mobile">Tonight</th>
-            <th class="col-hide-mobile">Captured</th>
-            {#if canQueue}<th></th>{/if}
-          </tr>
-        </thead>
-        <tbody>
-          {#each filteredEntries as entry (entry.name)}
-            <tr class:captured={entry.session_count > 0}>
-              <td class="name">{entry.name}</td>
-              <td class="col-hide-mobile">{entry.common_name ?? '—'}</td>
-              <td class="muted col-hide-mobile">{entry.object_type ?? '—'}</td>
-              <td class="num">{fmtMag(entry.magnitude)}</td>
-              <td class="num">{fmtAlt(entry.alt_now_deg)}</td>
-              <td class="num col-hide-mobile">{fmtLocalTime(entry.transit_utc)}</td>
-              <td class="num">{fmtHours(entry.hours_above_min_alt)}</td>
-              <td class="spark-cell col-hide-mobile">
-                {#if entry.alt_curve_deg && entry.alt_curve_deg.length >= 2 && data}
-                  <svg
-                    class="spark"
-                    width={SPARK_W}
-                    height={SPARK_H}
-                    viewBox="0 0 {SPARK_W} {SPARK_H}"
-                    role="img"
-                    aria-label={sparkTooltip(entry.alt_curve_deg)}
-                  >
-                    <title>{sparkTooltip(entry.alt_curve_deg)}</title>
-                    <line
-                      class="spark-threshold"
-                      x1="0"
-                      x2={SPARK_W}
-                      y1={thresholdY(data.min_alt_deg)}
-                      y2={thresholdY(data.min_alt_deg)}
-                    />
-                    <polygon
-                      class="spark-fill"
-                      points={sparkArea(entry.alt_curve_deg)}
-                    />
-                    <polyline
-                      class="spark-line"
-                      points={sparkPoints(entry.alt_curve_deg)}
-                    />
-                    {#if nowFraction(data) !== null}
-                      <line
-                        class="spark-now"
-                        x1={(nowFraction(data) ?? 0) * SPARK_W}
-                        x2={(nowFraction(data) ?? 0) * SPARK_W}
-                        y1="0"
-                        y2={SPARK_H}
-                      />
-                    {/if}
-                  </svg>
-                {:else}
-                  <span class="muted">—</span>
+    <ul class="targets">
+      {#each visibleEntries as entry (entry.name)}
+        {@const open = expanded === entry.name}
+        <li class="target" class:open>
+          <div class="row">
+            <button
+              type="button"
+              class="row-main"
+              aria-expanded={open}
+              onclick={() => (expanded = open ? null : entry.name)}
+            >
+              <span class="thumb">
+                {#if !failedThumbs[entry.name]}
+                  <img
+                    src={api.tonightThumbUrl(entry.name, entry.image_version)}
+                    alt=""
+                    width="64"
+                    height="64"
+                    loading="lazy"
+                    decoding="async"
+                    onerror={() => (failedThumbs[entry.name] = true)}
+                  />
                 {/if}
-              </td>
-              <td class="captured-cell col-hide-mobile">{fmtCaptured(entry)}</td>
-              {#if canQueue}
-                <td class="actions">
-                  <button
-                    type="button"
-                    class="btn compact"
-                    disabled={queuing !== null || observing}
-                    onclick={() => queueTarget(entry)}
-                  >
-                    {queuing === entry.name ? 'Pointing…' : 'Point'}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn compact icon"
-                    class:on={scope?.targets?.some((t) => t.name === entry.name)}
-                    disabled={adding !== null}
-                    title="Add to the all-night auto list"
-                    aria-label="Add {entry.name} to the auto list"
-                    onclick={() => addToAuto(entry)}
-                  >
-                    {scope?.targets?.some((t) => t.name === entry.name) ? '✓' : '+'}
-                  </button>
-                </td>
+              </span>
+              <span class="text">
+                <span class="title">
+                  <span class="name" class:captured={entry.session_count > 0}>
+                    {displayName(entry)}
+                  </span>
+                  {#if entry.common_name}
+                    <span class="common">{entry.common_name}</span>
+                  {/if}
+                </span>
+                <span class="line muted">{fmtSummary(entry)}</span>
+                <span class="line muted">{fmtUp(entry, data)}</span>
+              </span>
+            </button>
+            {#if canQueue}
+              <div class="actions">
+                <button
+                  type="button"
+                  class="btn compact"
+                  disabled={queuing !== null || observing}
+                  onclick={() => queueTarget(entry)}
+                >
+                  {queuing === entry.name ? 'Pointing…' : 'Point'}
+                </button>
+                <button
+                  type="button"
+                  class="btn compact icon"
+                  class:on={isOnAutoList(entry)}
+                  disabled={adding !== null}
+                  title="Add to the all-night auto list"
+                  aria-label="Add {displayName(entry)} to the auto list"
+                  onclick={() => addToAuto(entry)}
+                >
+                  {isOnAutoList(entry) ? '✓' : '+'}
+                </button>
+              </div>
+            {/if}
+          </div>
+          {#if open}
+            <div class="details">
+              {#if entry.alt_curve_deg && entry.alt_curve_deg.length >= 2}
+                <svg
+                  class="spark"
+                  viewBox="0 0 {SPARK_W} {SPARK_H}"
+                  preserveAspectRatio="none"
+                  role="img"
+                  aria-label={sparkTooltip(entry.alt_curve_deg)}
+                >
+                  <line
+                    class="spark-threshold"
+                    x1="0"
+                    x2={SPARK_W}
+                    y1={thresholdY(data.min_alt_deg)}
+                    y2={thresholdY(data.min_alt_deg)}
+                  />
+                  <polygon class="spark-fill" points={sparkArea(entry.alt_curve_deg)} />
+                  <polyline class="spark-line" points={sparkPoints(entry.alt_curve_deg)} />
+                  {#if nowFraction(data) !== null}
+                    <line
+                      class="spark-now"
+                      x1={(nowFraction(data) ?? 0) * SPARK_W}
+                      x2={(nowFraction(data) ?? 0) * SPARK_W}
+                      y1="0"
+                      y2={SPARK_H}
+                    />
+                  {/if}
+                </svg>
               {/if}
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </section>
+              <dl>
+                {#if entry.messier}<div><dt>Catalog</dt><dd>{entry.name}</dd></div>{/if}
+                <div><dt>Alt now</dt><dd>{entry.alt_now_deg.toFixed(0)}°</dd></div>
+                <div><dt>Transit</dt><dd>{fmtLocalTime(entry.transit_utc)}</dd></div>
+                <div><dt>Hours up</dt><dd>{entry.hours_above_min_alt.toFixed(1)}h</dd></div>
+                <div><dt>Constellation</dt><dd>{entry.constellation ?? '—'}</dd></div>
+                <div><dt>Captured</dt><dd>{fmtCaptured(entry)}</dd></div>
+              </dl>
+              <div class="image-actions">
+                <label class="btn compact">
+                  Upload image
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    hidden
+                    onchange={(ev) => uploadImage(entry, ev.currentTarget)}
+                  />
+                </label>
+                {#if entry.image_version}
+                  <button type="button" class="btn compact" onclick={() => clearImage(entry)}>
+                    Use survey image
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+    {#if filteredEntries.length > limit}
+      <button type="button" class="btn more" onclick={() => (limit += PAGE_SIZE)}>
+        Show more ({filteredEntries.length - limit} left)
+      </button>
+    {/if}
+    <p class="credit muted">Survey images: Digitized Sky Survey, STScI/NASA. Colour by CDS, hosted by ESA.</p>
   {/if}
 {/if}
 
@@ -488,15 +558,6 @@
     border-radius: 50%;
     background: var(--good);
     box-shadow: 0 0 8px var(--good);
-  }
-  tbody td.num,
-  tbody td.name {
-    white-space: nowrap;
-  }
-  td.actions {
-    white-space: nowrap;
-    width: 1%;
-    text-align: right;
   }
   .btn.compact {
     min-height: 32px;
@@ -597,16 +658,6 @@
   .chips > * {
     flex-shrink: 0;
   }
-  /* Thin vertical rule to visually separate the captured-only chip from
-     the type filter chips within the same chip rail. */
-  .chip-divider {
-    display: inline-block;
-    width: 1px;
-    height: 1.1rem;
-    background: var(--border);
-    margin: 0 0.15rem;
-    flex-shrink: 0;
-  }
   .chip {
     appearance: none;
     background: transparent;
@@ -631,72 +682,170 @@
     font-weight: 600;
   }
 
-  .table-panel {
-    padding: 0;
-    overflow: hidden;
-  }
-  table {
+  .search {
     width: 100%;
-    border-collapse: collapse;
-    font-size: 0.88rem;
+    box-sizing: border-box;
+    margin-bottom: 0.9rem;
+    padding: 0.55rem 0.9rem;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font: inherit;
   }
-  thead th {
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.9rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 1.1rem;
+    min-width: 0;
+  }
+  .tab,
+  .filter-toggle {
+    appearance: none;
+    padding: 0.25rem 0;
+    background: none;
+    border: 0;
+    color: var(--fg-mute);
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab.active {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .filter-toggle {
+    font-size: 0.85rem;
+  }
+  .filter-toggle.active {
+    color: var(--accent);
+  }
+  .empty {
+    margin-top: 2rem;
+    text-align: center;
+  }
+
+  .targets {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .target {
+    border-bottom: 1px solid var(--border-soft, rgba(255, 255, 255, 0.06));
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .row-main {
+    appearance: none;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.65rem 0;
+    background: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
     text-align: left;
-    padding: 0.6rem 0.85rem;
+    cursor: pointer;
+  }
+  .thumb {
+    flex: none;
+    width: 64px;
+    height: 64px;
+    overflow: hidden;
+    border-radius: 10px;
+    background: radial-gradient(circle at 50% 45%, var(--bg-elev-2), var(--bg));
+  }
+  .thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .line {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .name {
+    font-weight: 600;
+  }
+  .name.captured {
+    color: var(--accent);
+  }
+  .common {
+    margin-left: 0.3rem;
+    color: var(--fg);
+  }
+  .line {
+    font-size: 0.8rem;
+  }
+  .actions {
+    flex: none;
+    display: flex;
+    align-items: center;
+  }
+  .details {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0 0 0.9rem;
+  }
+  .details dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+    gap: 0.6rem 1rem;
+    margin: 0;
+  }
+  .details dt {
     font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--fg-mute);
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-elev);
-    position: sticky;
-    top: 0;
   }
-  tbody td {
-    padding: 0.5rem 0.85rem;
-    border-top: 1px solid var(--border-soft, rgba(255, 255, 255, 0.04));
+  .details dd {
+    margin: 0.1rem 0 0;
+    font-size: 0.85rem;
   }
-  tbody tr:hover {
-    background: var(--bg-elev-2);
+  .image-actions {
+    display: flex;
+    gap: 0.5rem;
+    grid-column: 1 / -1;
   }
-  /* Captured rows pop just enough to read at a glance, without
-     overwhelming the rest of the table. */
-  tbody tr.captured td.name {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  tbody tr.captured .captured-cell {
-    color: var(--accent);
-  }
-  td.name {
-    font-family: var(--font-mono);
-  }
-  th.num,
-  td.num {
-    text-align: right;
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-  /* Sparkline cell: keep the cell tight and the SVG vertically aligned
-     with the numeric columns above. block display drops the inline-svg
-     baseline gap so the curve sits where the eye expects. */
-  .spark-cell {
-    width: 1%;
-    white-space: nowrap;
+  .image-actions label {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
   }
   .spark {
     display: block;
+    width: 100%;
+    height: 44px;
     overflow: visible;
   }
-  /* Threshold guide (min-alt): dim, dashed, behind the curve. Helps the
-     eye gauge how much of the night the target spends above the
-     filter cutoff without needing the Hours-up column to confirm. */
   .spark-threshold {
     stroke: var(--fg-mute);
     stroke-width: 0.5;
     stroke-dasharray: 2 2;
     opacity: 0.5;
+    vector-effect: non-scaling-stroke;
   }
   .spark-fill {
     fill: var(--accent-soft, rgba(94, 234, 212, 0.18));
@@ -708,44 +857,37 @@
     stroke-width: 1.25;
     stroke-linecap: round;
     stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
   }
-  /* Vertical "now" tick lets the user place the moment within the curve
-     at a glance: still rising, near peak, on the way down. */
   .spark-now {
     stroke: var(--fg);
     stroke-width: 1;
     opacity: 0.6;
+    vector-effect: non-scaling-stroke;
   }
-  /* Captured rows pull the curve toward the captured-row color so it
-     reads as part of the same row group instead of a separate accent. */
-  tbody tr.captured .spark-line {
-    stroke: var(--accent);
+  .more {
+    display: block;
+    margin: 1rem auto 0;
+  }
+  .credit {
+    margin-top: 1.25rem;
+    font-size: 0.7rem;
+    text-align: center;
   }
 
-  /* On narrow screens, hide secondary columns so the 4 essential columns
-     (Name, Mag, Alt now, Hours up) fit without horizontal scroll. The
-     sparkline and captured count are recoverable by switching to desktop
-     or landscape; they're nice-to-have, not the primary decision signal. */
-  @media (max-width: 768px) {
-    .col-hide-mobile {
-      display: none;
+  @media (min-width: 769px) {
+    .details {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: center;
     }
-
-    /* Tighten cell padding on small screens so the 4 visible columns
-       breathe without the table pushing outside the viewport. */
-    thead th,
-    tbody td {
-      padding: 0.5rem 0.3rem;
+  }
+  @media (max-width: 420px) {
+    .thumb {
+      width: 56px;
+      height: 56px;
     }
-    thead th:first-child,
-    tbody td:first-child {
-      padding-left: 0.7rem;
-    }
-    table {
-      font-size: 0.82rem;
-    }
-    td.actions {
-      padding-right: 0.5rem;
+    .row-main {
+      gap: 0.65rem;
     }
     .btn.compact {
       padding: 0 0.55rem;

@@ -125,6 +125,18 @@ def test_hours_above_majority_of_window_for_high_target() -> None:
     assert 8.0 < hours <= (dawn - dusk).total_seconds() / 3600 + 0.1
 
 
+def test_window_moves_to_the_coming_night_after_dawn() -> None:
+    """Late morning sits closer to the previous midnight, but the planner
+    must show the night ahead."""
+    loc = sky.observer_location(40.7, -74.0, 10.0)
+    before_dawn = sky.twilight_window(loc, datetime(2024, 10, 15, 8, 0, tzinfo=UTC))
+    morning = sky.twilight_window(loc, datetime(2024, 10, 15, 15, 0, tzinfo=UTC))
+    assert before_dawn is not None
+    assert morning is not None
+    assert morning[0] > before_dawn[1]
+    assert morning[0] > datetime(2024, 10, 15, 15, 0, tzinfo=UTC)
+
+
 def test_polar_day_returns_no_window() -> None:
     """North pole in summer: sun never sets, so there is no night window.
     Caller renders the page with no transit times."""

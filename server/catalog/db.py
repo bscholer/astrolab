@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -433,6 +433,20 @@ MIGRATIONS: dict[int, list[str]] = {
         # quality data without N disk reads.
         "ALTER TABLE jobs ADD COLUMN quality_json TEXT",
         "INSERT INTO schema_version (version) VALUES (16)",
+    ],
+    17: [
+        # The user's own image for a catalog target on the Tonight page.
+        # project_id and seq are set when a gallery favorite supplied it,
+        # and stay null for an uploaded file. The JPEG lives on disk.
+        """
+        CREATE TABLE target_images (
+            canonical TEXT PRIMARY KEY,
+            project_id TEXT,
+            seq INTEGER,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (17)",
     ],
 }
 
