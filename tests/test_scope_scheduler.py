@@ -259,3 +259,13 @@ def test_no_rain_alert_when_barrel_is_closed():
     s.enabled = True
     s.tick()
     assert not any("Bring" in m for m in msgs)
+
+
+def test_busy_error_is_not_mistaken_for_clouds():
+    client = FakeClient()
+    obs = FakeObserver(
+        {"state": "failed", "step": "calibrating", "target": "a", "error": "code -11501"}
+    )
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.tick()
+    assert obs.started == ["a"]
