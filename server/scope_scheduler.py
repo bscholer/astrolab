@@ -24,6 +24,8 @@ FAIL_RATIO = 0.5
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
+BUSY_CODE = "-11501"  # firmware: function busy
+BUSY_WAIT_S = 15 * 60
 STALL_S = 10 * 60
 WEATHER_EVERY_S = 30 * 60
 BARREL_OPEN_PITCH = 30.0
@@ -105,6 +107,9 @@ class Scheduler:
             status = client.call("getStatus") or {}
             job = status.get("job") or {}
             self._check_weather(status)
+            if status.get("busy_elsewhere"):
+                self._set(state="waiting", reason="scope is busy with another capture")
+                return
             capturing = job.get("state") == "running"
             if not scope_plan.in_window(loc, now):
                 if capturing:
@@ -148,7 +153,13 @@ class Scheduler:
     def _probe(self, client) -> bool:
         """Shoot a few frames at the current pointing. Clear sky stacks, cloud does not."""
         self._set(state="probing", reason="checking the sky")
-        client.call("startCapture", {"frames": PROBE_FRAMES, "exposure": str(EXPOSURE_S)})
+        try:
+            client.call("startCapture", {"frames": PROBE_FRAMES, "exposure": str(EXPOSURE_S)})
+        except ScopeServiceError as exc:
+            if BUSY_CODE not in str(exc):
+                raise
+            self._sky_wait_until = time.time() + BUSY_WAIT_S
+            return False
         end = time.time() + PROBE_TIMEOUT_S
         job: dict = {}
         while time.time() < end:
@@ -191,7 +202,7 @@ class Scheduler:
                 self._set(state="waiting", reason="sky not clear, probing again soon")
                 return
             if not self._probe(client):
-                self._sky_wait_until = time.time() + SKY_WAIT_S
+                self._sky_wait_until = max(self._sky_wait_until, time.time() + SKY_WAIT_S)
                 self._set(state="waiting", reason="sky not clear, probing again soon")
                 return
             self._sky_wait_until = 0.0

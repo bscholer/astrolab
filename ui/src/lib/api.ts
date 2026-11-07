@@ -726,6 +726,7 @@ export interface ScopeState {
   capabilities?: string[];
   status?: {
     app_connected?: boolean;
+    busy_elsewhere?: boolean;
     job?: ScopeJob | null;
     pitch?: number | null;
     rotation?: number | null;

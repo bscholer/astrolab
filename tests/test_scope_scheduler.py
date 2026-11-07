@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 from astropy.time import Time
@@ -9,6 +10,7 @@ from astropy.time import Time
 from server import sky
 from server.scope_plan import Candidate
 from server.scope_scheduler import Scheduler, failing
+from server.scope_service import ScopeServiceError
 
 LOC = sky.observer_location(37.0, -122.0, 100.0)
 NIGHT = datetime(2026, 11, 7, 6, 0, tzinfo=UTC)
@@ -259,3 +261,38 @@ def test_no_rain_alert_when_barrel_is_closed():
     s.enabled = True
     s.tick()
     assert not any("Bring" in m for m in msgs)
+
+
+class BusyClient(FakeClient):
+    def __init__(self, status, fail_capture=False):
+        super().__init__()
+        self.status = status
+        self.fail_capture = fail_capture
+
+    def call(self, op, payload=None, timeout=None):
+        self.calls.append(op)
+        if op == "getStatus":
+            return self.status
+        if op == "startCapture" and self.fail_capture:
+            raise ScopeServiceError("capture failed, code -11501")
+        return {}
+
+
+def test_scope_busy_elsewhere_means_no_motor_commands_and_no_park():
+    client = BusyClient({"busy_elsewhere": True, "pitch": 140.0})
+    obs = FakeObserver()
+    s = _sched(client, obs, DAY, [_target("a")])
+    s.tick()
+    assert client.calls == ["getStatus"]
+    assert not obs.started
+    assert "busy" in s.snapshot()["reason"]
+
+
+def test_busy_probe_backs_off_for_fifteen_minutes_not_five():
+    client = BusyClient({}, fail_capture=True)
+    obs = FakeObserver()
+    s = _waiting(client, obs)
+    s.tick()
+    wait = s._sky_wait_until - time.time()
+    assert 14 * 60 < wait <= 15 * 60
+    assert s.snapshot()["state"] == "waiting"

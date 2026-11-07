@@ -54,6 +54,9 @@
     if (sched?.enabled && sched.state === 'waiting') {
       const why = sched.reason ?? '';
       if (/night window/.test(why)) return { tone: 'warn', word: 'Waiting', line: 'Waiting for dark', frac: null };
+      if (/busy/.test(why)) {
+        return { tone: 'warn', word: 'Waiting', line: 'Scope is shooting something else', frac: null };
+      }
       return { tone: 'warn', word: 'Waiting', line: 'Waiting for a clear sky', frac: null };
     }
     if (sched?.enabled && sched.state === 'error') {
