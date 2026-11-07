@@ -91,13 +91,36 @@
   async function refreshPano() {
     try {
       pano = await api.getScopePano();
-      if (pano.state === 'done') panoTick = Date.now();
+      if (pano.state === 'done') {
+        panoTick = Date.now();
+        tiles = await api.getScopePanoTiles();
+      }
     } catch {
       pano = null;
     }
   }
 
   let teleCovered = $state(false);
+  let tiles = $state<{ pitches: number[]; rotations: number[]; excluded: string[] } | null>(null);
+
+  async function toggleTile(e: MouseEvent) {
+    if (!tiles || !tiles.pitches.length) return;
+    const img = e.currentTarget as HTMLImageElement;
+    const box = img.getBoundingClientRect();
+    const col = Math.floor(((e.clientX - box.left) / box.width) * tiles.rotations.length);
+    const row = Math.floor(((e.clientY - box.top) / box.height) * tiles.pitches.length);
+    const pitch = [...tiles.pitches].sort((a, b) => b - a)[row];
+    const rotation = tiles.rotations[col];
+    if (pitch === undefined || rotation === undefined) return;
+    const name = `p${pitch}_r${rotation}.jpg`;
+    try {
+      await api.setScopePanoTile({ pitch, rotation, excluded: !tiles.excluded.includes(name) });
+      tiles = await api.getScopePanoTiles();
+      panoTick = Date.now();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   async function startPano() {
     try {
@@ -354,7 +377,14 @@
       </label>
       {#if pano?.state === 'failed'}<p class="muted small">{pano.error}</p>{/if}
       {#if pano?.id && pano.state !== 'running'}
-        <img class="mosaic" src="/api/scope/pano/mosaic?t={panoTick}" alt="Wide camera mosaic" />
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <img
+          class="mosaic"
+          src="/api/scope/pano/overlay?t={panoTick}"
+          alt="Wide camera scan, sky in pink. Tap a tile to leave it out."
+          onclick={toggleTile}
+        />
+        <p class="muted small">Pink is sky. Tap a picture that is wrong to leave it out.</p>
       {/if}
     </section>
   {/if}

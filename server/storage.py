@@ -669,6 +669,7 @@ SETTING_SCOPE_AUTO = "scope_auto"
 SETTING_SCOPE_ALERT_URL = "scope_alert_url"
 SETTING_SCOPE_AUTO_STACK = "scope_auto_stack"
 SETTING_SCOPE_POINTING = "scope_pointing_pairs"
+SETTING_SCOPE_PANO_EXCLUDED = "scope_pano_excluded"
 
 SETTING_SITE_LATITUDE = "site_latitude"
 SETTING_SITE_LONGITUDE = "site_longitude"

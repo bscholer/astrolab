@@ -258,3 +258,27 @@ def test_pointing_pairs_are_stored_and_capped(client):
     pairs = client.get("/api/scope/pointing").json()
     assert len(pairs) == api_mod.POINTING_PAIRS_MAX
     assert pairs[-1]["target"] == f"t{api_mod.POINTING_PAIRS_MAX + 2}"
+
+
+def test_excluded_pano_tiles_persist_and_show_in_the_overlay(client, tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    folder = tmp_path / "pano" / "abc"
+    folder.mkdir(parents=True)
+    for name in ("p100_r0.jpg", "p100_r45.jpg"):
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 36), (110, 150, 215)).save(buf, "JPEG")
+        (folder / name).write_bytes(buf.getvalue())
+    monkeypatch.setattr(api.scope_pano, "state", {"state": "done", "id": "abc"})
+    monkeypatch.setattr(api.scope_pano, "root", tmp_path / "pano")
+
+    assert client.get("/api/scope/pano/tiles").json()["rotations"] == [0.0, 45.0]
+    r = client.put("/api/scope/pano/tile", json={"pitch": 100, "rotation": 45, "excluded": True})
+    assert r.json()["excluded"] == ["p100_r45.jpg"]
+    assert client.get("/api/scope/pano/tiles").json()["excluded"] == ["p100_r45.jpg"]
+    sheet = Image.open(io.BytesIO(client.get("/api/scope/pano/overlay").content))
+    assert sheet.getpixel((320 + 160, 20))[0] < 60
+    r = client.put("/api/scope/pano/tile", json={"pitch": 100, "rotation": 45, "excluded": False})
+    assert r.json()["excluded"] == []

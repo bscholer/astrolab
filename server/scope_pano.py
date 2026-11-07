@@ -10,16 +10,18 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 from astropy.coordinates import AltAz, EarthLocation, get_sun
 from astropy.time import Time
-from PIL import Image
+from PIL import Image, ImageDraw
 
+from server.scope_horizon import sky_mask
 from server.scope_service import ScopeServiceClient
 
 log = logging.getLogger(__name__)
 
 SUN_MAX_ALT_DEG = -6.0
-DEFAULT_PITCHES = (40.0, 70.0, 100.0, 130.0, 160.0)
+DEFAULT_PITCHES = (70.0, 100.0, 130.0, 160.0)
 DEFAULT_ROTATIONS = tuple(float(r) for r in range(0, 360, 45))
 SETTLE_S = 3.0
 RETRY_WAIT_S = 5.0
@@ -54,6 +56,43 @@ def build_mosaic(folder: Path, pitches, rotations) -> Path:
     return out
 
 
+def tile_grid(folder: Path) -> tuple[list[float], list[float]]:
+    """Pitches and rotations of the tiles in a scan folder, from the file names."""
+    pitches, rotations = set(), set()
+    for path in folder.glob("p*_r*.jpg"):
+        pitch, rot = path.stem[1:].split("_r")
+        pitches.add(float(pitch))
+        rotations.add(float(rot))
+    return sorted(pitches), sorted(rotations)
+
+
+def build_overlay(folder: Path, excluded: set[str]) -> Path:
+    """Mosaic with the sky in magenta. Excluded tiles are dimmed and crossed out."""
+    pitches, rotations = tile_grid(folder)
+    rows = sorted(pitches, reverse=True)
+    sheet = Image.new("RGB", (TILE_W * len(rotations), TILE_H * len(rows)))
+    for r, pitch in enumerate(rows):
+        for c, rot in enumerate(rotations):
+            name = tile_name(pitch, rot)
+            if not (folder / name).is_file():
+                continue
+            tile = Image.open(folder / name).convert("RGB").resize((TILE_W, TILE_H))
+            if name in excluded:
+                tile = Image.fromarray((np.asarray(tile) * 0.25).astype(np.uint8))
+                draw = ImageDraw.Draw(tile)
+                draw.line((0, 0, TILE_W, TILE_H), fill=(255, 255, 255), width=2)
+                draw.line((0, TILE_H, TILE_W, 0), fill=(255, 255, 255), width=2)
+            else:
+                a = np.asarray(tile).copy()
+                m = sky_mask(tile)
+                a[m] = (0.4 * a[m] + 0.6 * np.array([255, 0, 255])).astype(np.uint8)
+                tile = Image.fromarray(a)
+            sheet.paste(tile, (c * TILE_W, r * TILE_H))
+    out = folder / "overlay.jpg"
+    sheet.save(out, "JPEG", quality=85)
+    return out
+
+
 class PanoScanner:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -72,6 +111,11 @@ class PanoScanner:
         scan = self.snapshot().get("id")
         path = self.root / scan / "mosaic.jpg" if scan else None
         return path if path and path.is_file() else None
+
+    def folder(self) -> Path | None:
+        scan = self.snapshot().get("id")
+        path = self.root / scan if scan else None
+        return path if path and path.is_dir() else None
 
     def start(
         self,

@@ -998,6 +998,10 @@ export const api = {
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   startScopePano: (teleCovered = false) =>
     postJSON<{ id: string }>(`/api/scope/pano?tele_covered=${teleCovered}`, {}),
+  getScopePanoTiles: () =>
+    getJSON<{ pitches: number[]; rotations: number[]; excluded: string[] }>('/api/scope/pano/tiles'),
+  setScopePanoTile: (req: { pitch: number; rotation: number; excluded: boolean }) =>
+    putJSON<{ excluded: string[] }>('/api/scope/pano/tile', req),
   getScopePano: () =>
     getJSON<{ state: string; id?: string; done?: number; total?: number; failed?: number; error?: string }>(
       '/api/scope/pano',

@@ -110,7 +110,7 @@ from server.scope_alerts import make_notifier
 from server.scope_autostack import AutoStacker
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
-from server.scope_pano import PanoRefused, PanoScanner
+from server.scope_pano import PanoRefused, PanoScanner, build_overlay, tile_grid, tile_name
 from server.scope_plan import Candidate
 from server.scope_preview import stack_preview
 from server.scope_scheduler import Scheduler
@@ -124,6 +124,7 @@ from server.storage import (
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_AUTO_STACK,
     SETTING_SCOPE_MIRROR_BASELINE,
+    SETTING_SCOPE_PANO_EXCLUDED,
     SETTING_SCOPE_POINTING,
     SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
@@ -3638,6 +3639,45 @@ def get_scope_pano_mosaic() -> FileResponse:
     path = scope_pano.mosaic_path()
     if path is None:
         raise HTTPException(status_code=404, detail="no scan yet")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+class PanoTileIn(BaseModel):
+    pitch: float
+    rotation: float
+    excluded: bool
+
+
+def _pano_excluded() -> set[str]:
+    return set(get_setting(SETTING_SCOPE_PANO_EXCLUDED, [], db_path=job_manager.db_path) or [])
+
+
+@app.get("/api/scope/pano/tiles")
+def get_scope_pano_tiles() -> dict:
+    folder = scope_pano.folder()
+    pitches, rotations = tile_grid(folder) if folder else ([], [])
+    return {"pitches": pitches, "rotations": rotations, "excluded": sorted(_pano_excluded())}
+
+
+@app.put("/api/scope/pano/tile")
+def put_scope_pano_tile(req: PanoTileIn) -> dict:
+    """Mark a tile as not usable for the horizon, or usable again."""
+    excluded = _pano_excluded()
+    name = tile_name(req.pitch, req.rotation)
+    if req.excluded:
+        excluded.add(name)
+    else:
+        excluded.discard(name)
+    set_setting(SETTING_SCOPE_PANO_EXCLUDED, sorted(excluded), db_path=job_manager.db_path)
+    return {"excluded": sorted(excluded)}
+
+
+@app.get("/api/scope/pano/overlay")
+def get_scope_pano_overlay() -> FileResponse:
+    folder = scope_pano.folder()
+    if folder is None:
+        raise HTTPException(status_code=404, detail="no scan yet")
+    path = build_overlay(folder, _pano_excluded())
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 

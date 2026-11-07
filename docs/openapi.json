@@ -785,6 +785,29 @@
         "title": "ObserveRequest",
         "type": "object"
       },
+      "PanoTileIn": {
+        "properties": {
+          "excluded": {
+            "title": "Excluded",
+            "type": "boolean"
+          },
+          "pitch": {
+            "title": "Pitch",
+            "type": "number"
+          },
+          "rotation": {
+            "title": "Rotation",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pitch",
+          "rotation",
+          "excluded"
+        ],
+        "title": "PanoTileIn",
+        "type": "object"
+      },
       "PatchProjectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4036,6 +4059,83 @@
           }
         },
         "summary": "Get Scope Pano Mosaic"
+      }
+    },
+    "/api/scope/pano/overlay": {
+      "get": {
+        "operationId": "get_scope_pano_overlay_api_scope_pano_overlay_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Pano Overlay"
+      }
+    },
+    "/api/scope/pano/tile": {
+      "put": {
+        "description": "Mark a tile as not usable for the horizon, or usable again.",
+        "operationId": "put_scope_pano_tile_api_scope_pano_tile_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanoTileIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Scope Pano Tile Api Scope Pano Tile Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Scope Pano Tile"
+      }
+    },
+    "/api/scope/pano/tiles": {
+      "get": {
+        "operationId": "get_scope_pano_tiles_api_scope_pano_tiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Pano Tiles Api Scope Pano Tiles Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Pano Tiles"
       }
     },
     "/api/scope/pointing": {
