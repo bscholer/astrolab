@@ -168,3 +168,34 @@ def test_alert_url_is_validated_and_never_returned(client):
     r = client.put("/api/scope/alerts", json={"url": "https://ntfy.sh/secret-topic"})
     assert r.json() == {"alert_url_set": True}
     assert "secret-topic" not in client.get("/api/scope").text
+
+
+def test_frame_needs_the_preview_capability(client, monkeypatch):
+    import server.api as api_mod
+
+    class Svc:
+        def has(self, cap):
+            return False
+
+    monkeypatch.setattr(api_mod, "_scope_client", lambda: Svc())
+    r = client.get("/api/scope/frame?camera=wide")
+    assert r.status_code == 400 and "preview" in r.json()["detail"]
+    assert client.get("/api/scope/frame?camera=side").status_code == 422
+
+
+def test_frame_returns_the_decoded_jpeg(client, monkeypatch):
+    import base64 as b64
+
+    import server.api as api_mod
+
+    class Svc:
+        def has(self, cap):
+            return True
+
+        def call(self, op, payload=None, timeout=None):
+            assert op == "getFrame" and payload == {"camera": "tele"}
+            return {"camera": "tele", "data": b64.b64encode(b"\xff\xd8jpeg").decode()}
+
+    monkeypatch.setattr(api_mod, "_scope_client", lambda: Svc())
+    r = client.get("/api/scope/frame?camera=tele")
+    assert r.content == b"\xff\xd8jpeg" and r.headers["content-type"] == "image/jpeg"

@@ -46,6 +46,23 @@
     }
   }
 
+  let live = $state<'tele' | 'wide' | null>(null);
+  let liveTick = $state(0);
+  let liveFailed = $state(false);
+  let liveTimer: ReturnType<typeof setInterval> | undefined;
+
+  function toggleLive(camera: 'tele' | 'wide') {
+    clearInterval(liveTimer);
+    if (live === camera) {
+      live = null;
+      return;
+    }
+    live = camera;
+    liveFailed = false;
+    liveTick = Date.now();
+    liveTimer = setInterval(() => (liveTick = Date.now()), 10000);
+  }
+
   let savingAuto = $state(false);
   let alertUrl = $state('');
 
@@ -104,6 +121,7 @@
     clearInterval(pollTimer);
     clearInterval(previewTimer);
     clearInterval(weatherTimer);
+    clearInterval(liveTimer);
   });
 </script>
 
@@ -122,6 +140,16 @@
   </div>
 
   <div class="stats">
+    {#if scope?.capabilities?.includes('preview')}
+      <div class="live">
+        <button type="button" class="btn" onclick={() => toggleLive('wide')}>
+          {live === 'wide' ? 'Hide wide' : 'Wide view'}
+        </button>
+        <button type="button" class="btn" onclick={() => toggleLive('tele')}>
+          {live === 'tele' ? 'Hide tele' : 'Tele view'}
+        </button>
+      </div>
+    {/if}
     {#if fetchError}
       <p class="bad">Astrolab server unreachable: {fetchError}</p>
     {:else if !scope}
@@ -217,7 +245,41 @@
   </div>
 </div>
 
+{#if live}
+  <section class="livewrap">
+    {#if liveFailed}
+      <p class="muted">No frame from the {live} camera.</p>
+    {:else}
+      <img
+        class="liveimg"
+        src="/api/scope/frame?camera={live}&t={liveTick}"
+        alt="Live {live} view"
+        onerror={() => (liveFailed = true)}
+      />
+    {/if}
+  </section>
+{/if}
+
 <style>
+  .live {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+  }
+  .livewrap {
+    margin-top: 1rem;
+    padding: 0.4rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+  }
+  .liveimg {
+    display: block;
+    width: 100%;
+    max-height: 60vh;
+    object-fit: contain;
+    border-radius: var(--radius);
+  }
   .top {
     display: grid;
     grid-template-columns: minmax(0, 360px) minmax(0, 1fr);

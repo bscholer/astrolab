@@ -36,6 +36,7 @@ Phase 2 keeps job state in memory; persistence + worker scaling come later.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import dataclasses
 import logging
@@ -3428,6 +3429,21 @@ def scope_preview() -> Response:
         raise HTTPException(status_code=404, detail="no stack yet")
     session, jpeg = found
     return Response(jpeg, media_type="image/jpeg", headers={"X-Scope-Session": session})
+
+
+@app.get("/api/scope/frame")
+def scope_frame(camera: str = Query("wide", pattern="^(tele|wide)$")) -> Response:
+    """One live frame from the scope camera, for a quick look at the sky."""
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        if not client.has("preview"):
+            raise HTTPException(status_code=400, detail="service lacks capability: preview")
+        data = client.call("getFrame", {"camera": camera}, timeout=40)["data"]
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(base64.b64decode(data), media_type="image/jpeg")
 
 
 @app.post("/api/scope/stop")
