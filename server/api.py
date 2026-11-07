@@ -108,6 +108,7 @@ from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.scope_alerts import make_notifier
 from server.scope_autostack import AutoStacker
+from server.scope_compass import CompassRefused, CompassRun
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
 from server.scope_pano import PanoRefused, PanoScanner, build_overlay, tile_grid, tile_name
@@ -3640,6 +3641,40 @@ def get_scope_pano_mosaic() -> FileResponse:
     if path is None:
         raise HTTPException(status_code=404, detail="no scan yet")
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+scope_compass = CompassRun(_store_pointing)
+
+
+@app.post("/api/scope/compass", status_code=202)
+def start_scope_compass() -> dict:
+    """Slew to a few sky points to learn the motor-to-compass mapping. Needs full dark."""
+    client = _scope_client()
+    loc = _scope_site()
+    if client is None or loc is None:
+        raise HTTPException(status_code=400, detail="scope service and site location are needed")
+    try:
+        missing = [c for c in ("setup", "goto") if not client.has(c)]
+        status = client.call("getStatus") or {}
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if missing:
+        detail = f"service lacks capability: {', '.join(missing)}"
+        raise HTTPException(status_code=400, detail=detail)
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night first")
+    if status.get("busy_elsewhere"):
+        raise HTTPException(status_code=409, detail="the scope is busy with another capture")
+    try:
+        scope_compass.start(client, loc)
+    except CompassRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return scope_compass.snapshot()
+
+
+@app.get("/api/scope/compass")
+def get_scope_compass() -> dict:
+    return scope_compass.snapshot()
 
 
 class PanoTileIn(BaseModel):

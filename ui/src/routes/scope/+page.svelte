@@ -88,6 +88,24 @@
   let pano = $state<Awaited<ReturnType<typeof api.getScopePano>> | null>(null);
   let panoTick = $state(Date.now());
 
+  let compass = $state<Awaited<ReturnType<typeof api.getScopeCompass>> | null>(null);
+
+  async function refreshCompass() {
+    try {
+      compass = await api.getScopeCompass();
+    } catch {
+      compass = null;
+    }
+  }
+
+  async function startCompass() {
+    try {
+      compass = await api.startScopeCompass();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function refreshPano() {
     try {
       pano = await api.getScopePano();
@@ -199,9 +217,11 @@
     refresh();
     refreshWeather();
     refreshPano();
+    refreshCompass();
     pollTimer = setInterval(() => {
       refresh();
       if (pano?.state === 'running') refreshPano();
+      if (compass?.state === 'running') refreshCompass();
     }, 5000);
     stackTimer = setInterval(() => {
       stackTick = Date.now();
@@ -376,6 +396,30 @@
         Tele lens is covered
       </label>
       {#if pano?.state === 'failed'}<p class="muted small">{pano.error}</p>{/if}
+      <div class="sw-row">
+        <div class="sw-text">
+          <div class="sw-title">Learn the compass</div>
+          <div class="sw-sub">
+            {#if compass?.state === 'running'}
+              {compass.step}. {compass.done}/{compass.total} points.
+            {:else if compass?.state === 'done'}
+              Done. {(compass.total ?? 0) - (compass.failed ?? 0)} of {compass.total} points saved.
+            {:else}
+              Needs a clear sky after dark. Calibrates, then slews to 5 spots, about 15 minutes.
+              Run all night must be off.
+            {/if}
+          </div>
+        </div>
+        <button
+          type="button"
+          class="btn"
+          disabled={compass?.state === 'running' || !!sched?.enabled}
+          onclick={startCompass}
+        >
+          {compass?.state === 'running' ? 'Running…' : 'Start'}
+        </button>
+      </div>
+      {#if compass?.state === 'failed'}<p class="muted small">{compass.error}</p>{/if}
       {#if pano?.id && pano.state !== 'running'}
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <img

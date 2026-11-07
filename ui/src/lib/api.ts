@@ -900,6 +900,15 @@ async function deleteJSON<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
+export type ScopeCompass = {
+  state: string;
+  step?: string;
+  done?: number;
+  total?: number;
+  failed?: number;
+  error?: string | null;
+};
+
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
@@ -998,6 +1007,8 @@ export const api = {
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   startScopePano: (teleCovered = false) =>
     postJSON<{ id: string }>(`/api/scope/pano?tele_covered=${teleCovered}`, {}),
+  startScopeCompass: () => postJSON<ScopeCompass>('/api/scope/compass', {}),
+  getScopeCompass: () => getJSON<ScopeCompass>('/api/scope/compass'),
   getScopePanoTiles: () =>
     getJSON<{ pitches: number[]; rotations: number[]; excluded: string[] }>('/api/scope/pano/tiles'),
   setScopePanoTile: (req: { pitch: number; rotation: number; excluded: boolean }) =>
