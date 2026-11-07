@@ -99,12 +99,14 @@ from server.quality import (
 )
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
+from server.scope_mirror import Mirror
 from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient, ScopeServiceError
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_SCOPE_MIRROR_BASELINE,
     SETTING_SCOPE_TOKEN,
     SETTING_SCOPE_URL,
     SETTING_SITE_ELEVATION_M,
@@ -143,6 +145,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # pragma: no cover
         log.exception("project rehydrate failed; continuing with empty state")
     _bootstrap_capture_root()
+    if os.environ.get("ASTROLAB_SCOPE_MIRROR", "1") == "1":
+        scope_mirror.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -1125,6 +1129,19 @@ class ScanStatusResponse(BaseModel):
     last_stats: dict[str, Any] | None
 
 
+def _launch_scan(root: Path) -> None:
+    def _scan() -> None:
+        try:
+            stats = run_scan(root, progress=_make_progress_callback())
+            scan_state.finish(stats=stats)
+            log.info("scan done: %r", stats)
+        except Exception as exc:
+            scan_state.finish(error=str(exc))
+            log.exception("scan failed")
+
+    threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
+
+
 @mcp_tool(
     name="trigger_scan",
     title="Scan the capture folder for new frames",
@@ -1160,17 +1177,7 @@ def trigger_scan(req: ScanRequest) -> ScanStarted:
         raise ScanAlreadyRunningError("already_running")
 
     log.info("scan triggered: root=%s", root)
-
-    def _scan() -> None:
-        try:
-            stats = run_scan(root, progress=_make_progress_callback())
-            scan_state.finish(stats=stats)
-            log.info("scan done: %r", stats)
-        except Exception as exc:
-            scan_state.finish(error=str(exc))
-            log.exception("scan failed")
-
-    threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
+    _launch_scan(root)
     return ScanStarted(status="started")
 
 
@@ -3189,11 +3196,36 @@ def _scope_client() -> ScopeServiceClient | None:
     return ScopeServiceClient(url, token or None)
 
 
+def _mirror_root() -> Path | None:
+    root = get_setting(SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path)
+    return Path(root) if root else None
+
+
+def _scan_after_copy() -> None:
+    root = _mirror_root()
+    if root is not None and scan_state.start():
+        _launch_scan(root)
+
+
+scope_mirror = Mirror(
+    get_client=_scope_client,
+    get_root=_mirror_root,
+    load_baseline=lambda: get_setting(
+        SETTING_SCOPE_MIRROR_BASELINE, None, db_path=job_manager.db_path
+    ),
+    save_baseline=lambda names: set_setting(
+        SETTING_SCOPE_MIRROR_BASELINE, names, db_path=job_manager.db_path
+    ),
+    on_copied=_scan_after_copy,
+)
+
+
 def _scope_state() -> dict:
     client = _scope_client()
     if client is None:
         return {"configured": False, "reachable": False}
     state = {
+        "mirror": scope_mirror.snapshot(),
         "configured": True,
         "url": client.base_url,
         "has_token": bool(client.token),
@@ -3261,6 +3293,17 @@ def observe(req: ObserveRequest) -> dict:
         status = {"sun_too_close": 422, "busy": 409, "invalid_request": 422}.get(exc.code, 502)
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     return {"target": req.name, "job": job}
+
+
+@app.post("/api/scope/stop")
+def stop_scope_capture() -> dict:
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        return client.call("stopCapture")
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 class PatchSettingsRequest(BaseModel):

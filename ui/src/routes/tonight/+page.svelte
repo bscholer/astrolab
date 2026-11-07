@@ -43,6 +43,7 @@
     try {
       const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg });
       toast.success(`Capturing ${r.target}: ${r.job.frames ?? '?'} frames.`);
+      await refreshScope();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -50,7 +51,31 @@
     }
   }
 
-  api.getScope().then((s) => (scope = s)).catch(() => {});
+  async function refreshScope() {
+    try {
+      scope = await api.getScope();
+    } catch {
+      // The next poll retries.
+    }
+  }
+  refreshScope();
+
+  const job = $derived(scope?.status?.job ?? null);
+
+  async function stopCapture() {
+    try {
+      await api.stopScope();
+      toast.success('Stop sent.');
+      await refreshScope();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
+  $effect(() => {
+    const timer = setInterval(refreshScope, 5000);
+    return () => clearInterval(timer);
+  });
 
   async function load() {
     const min = minAlt;
@@ -210,6 +235,18 @@
     return `${dusk} – ${dawn}`;
   }
 </script>
+
+{#if job}
+  <div class="panel scope-job">
+    <strong>Scope</strong>
+    {job.state}
+    {#if job.frames}: {job.captured ?? 0} of {job.frames} frames{/if}
+    {#if job.error}<span class="muted">({job.error})</span>{/if}
+    {#if job.state === 'running'}
+      <button type="button" class="btn warn" onclick={stopCapture}>Stop</button>
+    {/if}
+  </div>
+{/if}
 
 <div class="header">
   <h1>Tonight</h1>
@@ -385,6 +422,12 @@
 {/if}
 
 <style>
+  .scope-job {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
   .header {
     display: flex;
     align-items: baseline;

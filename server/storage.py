@@ -663,6 +663,7 @@ astrolab instance — the scan target is server-local anyway."""
 
 SETTING_SCOPE_URL = "scope_service_url"
 SETTING_SCOPE_TOKEN = "scope_service_token"
+SETTING_SCOPE_MIRROR_BASELINE = "scope_mirror_baseline"
 
 SETTING_SITE_LATITUDE = "site_latitude"
 SETTING_SITE_LONGITUDE = "site_longitude"

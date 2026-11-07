@@ -700,6 +700,15 @@ export interface CleanupResponse {
   max_bytes: number;
 }
 
+export interface ScopeJob {
+  id?: string;
+  state: string;
+  frames?: number;
+  captured?: number;
+  session?: string | null;
+  error?: string | null;
+}
+
 export interface ScopeState {
   configured: boolean;
   reachable: boolean;
@@ -708,9 +717,10 @@ export interface ScopeState {
   service?: { name?: string; vendor?: string; model?: string };
   spec_version?: string;
   capabilities?: string[];
-  status?: { app_connected?: boolean; job?: unknown; pitch?: number | null };
+  status?: { app_connected?: boolean; job?: ScopeJob | null; pitch?: number | null };
   error?: string;
   error_code?: string;
+  mirror?: { state: string; files_copied: number; last_ok: number | null; current?: string | null; error?: string | null };
 }
 
 export interface SettingsResponse {
@@ -956,6 +966,7 @@ export const api = {
   }) => patchJSON<SettingsResponse>('/api/settings', req),
   observe: (req: { name: string; ra_deg: number; dec_deg: number; frames?: number }) =>
     postJSON<{ target: string; job: { id?: string; frames?: number } }>('/api/scope/observe', req),
+  stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   getScope: () => getJSON<ScopeState>('/api/scope'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),
   getSystem: () => getJSON<SystemSnapshot>('/api/system'),

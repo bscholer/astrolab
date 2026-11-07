@@ -36,3 +36,8 @@ def _isolate_astrolab_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         default_home = tmp_path / "_default-astrolab-home"
         default_home.mkdir(exist_ok=True)
         monkeypatch.setenv("ASTROLAB_HOME", str(default_home))
+
+
+@pytest.fixture(autouse=True)
+def _no_scope_mirror_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASTROLAB_SCOPE_MIRROR", "0")

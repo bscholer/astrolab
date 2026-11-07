@@ -3598,6 +3598,26 @@
         "summary": "Observe"
       }
     },
+    "/api/scope/stop": {
+      "post": {
+        "operationId": "stop_scope_capture_api_scope_stop_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stop Scope Capture Api Scope Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stop Scope Capture"
+      }
+    },
     "/api/sessions/dark-preview": {
       "get": {
         "description": "Return the per-(exptime, gain, temp_bin) breakdown of a bundle's\nlight frames and the master dark each bin would receive at job-\nbuild time.\n\nUsed by the project page's manage-sessions modal so the user sees\nwhat calibration coverage they'll actually get BEFORE submitting a\nrender. Mirrors what build_from_sessions feeds the calibrate node\nvia dark_bins, just shaped for the UI.",

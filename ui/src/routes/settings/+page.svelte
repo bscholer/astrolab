@@ -373,6 +373,14 @@
         Scope {scope.status?.app_connected ? 'online' : 'offline'}.
       </p>
       <p class="muted small">Features: {(scope.capabilities ?? []).join(', ') || 'none'}</p>
+      {#if scope.capabilities?.includes('files') && scope.mirror}
+        <p class="muted small">
+          Frame copy: {scope.mirror.state}
+          {#if scope.mirror.current}({scope.mirror.current}){/if}
+          · {scope.mirror.files_copied} files copied
+          {#if scope.mirror.error}· {scope.mirror.error}{/if}
+        </p>
+      {/if}
     {:else}
       <p class="small note">Cannot reach the service: {scope.error}</p>
     {/if}
