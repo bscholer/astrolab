@@ -96,6 +96,7 @@ from server.jobs import JobManager
 from server.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
 from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
+from server.paths import astrolab_home
 from server.preview import PreviewError, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
 from server.quality import (
@@ -107,6 +108,7 @@ from server.scope_alerts import make_notifier
 from server.scope_autostack import AutoStacker
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
+from server.scope_pano import PanoRefused, PanoScanner
 from server.scope_plan import Candidate
 from server.scope_preview import stack_preview
 from server.scope_scheduler import Scheduler
@@ -3472,6 +3474,44 @@ def scope_preview() -> Response:
         raise HTTPException(status_code=404, detail="no stack yet")
     session, jpeg = found
     return Response(jpeg, media_type="image/jpeg", headers={"X-Scope-Session": session})
+
+
+scope_pano = PanoScanner(astrolab_home() / "pano")
+
+
+@app.post("/api/scope/pano", status_code=202)
+def start_scope_pano() -> dict:
+    """Scan the surroundings with the wide camera. Needs the Sun well below the horizon."""
+    client = _scope_client()
+    loc = _scope_site()
+    if client is None or loc is None:
+        raise HTTPException(status_code=400, detail="scope service and site location are needed")
+    try:
+        missing = [c for c in ("pointing", "preview") if not client.has(c)]
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if missing:
+        detail = f"service lacks capability: {', '.join(missing)}"
+        raise HTTPException(status_code=400, detail=detail)
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night before a scan")
+    try:
+        return {"id": scope_pano.start(client, loc)}
+    except PanoRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/scope/pano")
+def get_scope_pano() -> dict:
+    return scope_pano.snapshot()
+
+
+@app.get("/api/scope/pano/mosaic")
+def get_scope_pano_mosaic() -> FileResponse:
+    path = scope_pano.mosaic_path()
+    if path is None:
+        raise HTTPException(status_code=404, detail="no scan yet")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/scope/frame")

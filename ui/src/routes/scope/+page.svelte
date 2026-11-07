@@ -85,6 +85,27 @@
     }
   }
 
+  let pano = $state<Awaited<ReturnType<typeof api.getScopePano>> | null>(null);
+  let panoTick = $state(Date.now());
+
+  async function refreshPano() {
+    try {
+      pano = await api.getScopePano();
+      if (pano.state === 'done') panoTick = Date.now();
+    } catch {
+      pano = null;
+    }
+  }
+
+  async function startPano() {
+    try {
+      await api.startScopePano();
+      await refreshPano();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function refreshWeather() {
     try {
       weather = await api.getScopeWeather();
@@ -152,7 +173,11 @@
   onMount(() => {
     refresh();
     refreshWeather();
-    pollTimer = setInterval(refresh, 5000);
+    refreshPano();
+    pollTimer = setInterval(() => {
+      refresh();
+      if (pano?.state === 'running') refreshPano();
+    }, 5000);
     stackTimer = setInterval(() => {
       stackTick = Date.now();
       stackFailed = false;
@@ -297,6 +322,36 @@
       <p class="muted small">No targets yet. Add some from Tonight.</p>
     {/if}
   </section>
+
+  {#if scope.capabilities?.includes('pointing')}
+    <section class="panel">
+      <h2>Surroundings</h2>
+      <div class="sw-row">
+        <div class="sw-text">
+          <div class="sw-title">Scan with the wide camera</div>
+          <div class="sw-sub">
+            {#if pano?.state === 'running'}
+              Scanning {pano.done}/{pano.total}. The scope turns on its own.
+            {:else}
+              Moves the scope through 40 positions, about 10 minutes. Only after dark, and with Run all night off.
+            {/if}
+          </div>
+        </div>
+        <button
+          type="button"
+          class="btn"
+          disabled={pano?.state === 'running' || !!sched?.enabled}
+          onclick={startPano}
+        >
+          {pano?.state === 'running' ? 'Scanning…' : 'Scan'}
+        </button>
+      </div>
+      {#if pano?.state === 'failed'}<p class="muted small">{pano.error}</p>{/if}
+      {#if pano?.id && pano.state !== 'running'}
+        <img class="mosaic" src="/api/scope/pano/mosaic?t={panoTick}" alt="Wide camera mosaic" />
+      {/if}
+    </section>
+  {/if}
 
   <details class="panel details">
     <summary>Details</summary>
@@ -577,6 +632,13 @@
   }
   .x:hover {
     color: var(--bad);
+  }
+  .mosaic {
+    display: block;
+    width: 100%;
+    margin-top: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
   }
   .details summary {
     cursor: pointer;

@@ -3801,6 +3801,61 @@
         "summary": "Observe"
       }
     },
+    "/api/scope/pano": {
+      "get": {
+        "operationId": "get_scope_pano_api_scope_pano_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Pano Api Scope Pano Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Pano"
+      },
+      "post": {
+        "description": "Scan the surroundings with the wide camera. Needs the Sun well below the horizon.",
+        "operationId": "start_scope_pano_api_scope_pano_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Scope Pano Api Scope Pano Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Start Scope Pano"
+      }
+    },
+    "/api/scope/pano/mosaic": {
+      "get": {
+        "operationId": "get_scope_pano_mosaic_api_scope_pano_mosaic_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Pano Mosaic"
+      }
+    },
     "/api/scope/preview": {
       "get": {
         "operationId": "scope_preview_api_scope_preview_get",

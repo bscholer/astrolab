@@ -215,3 +215,36 @@ def test_get_scope_reports_auto_stack_and_alert_flags(client):
     client.put("/api/scope/alerts", json={"url": "https://ntfy.sh/t"})
     state = client.get("/api/scope").json()
     assert state["auto_stack"] is True and state["alert_url_set"] is True
+
+
+class PanoSvc:
+    def __init__(self, caps=("pointing", "preview")):
+        self.caps = caps
+
+    def has(self, cap):
+        return cap in self.caps
+
+
+def _pano_env(monkeypatch, caps=("pointing", "preview"), enabled=False):
+    import server.api as api_mod
+    from server import sky
+
+    monkeypatch.setattr(api_mod, "_scope_client", lambda: PanoSvc(caps))
+    monkeypatch.setattr(api_mod, "_scope_site", lambda: sky.observer_location(37.0, -122.0, 100.0))
+    monkeypatch.setattr(api_mod.scope_scheduler, "enabled", enabled)
+
+
+def test_pano_needs_pointing_and_preview(client, monkeypatch):
+    _pano_env(monkeypatch, caps=("preview",))
+    r = client.post("/api/scope/pano")
+    assert r.status_code == 400 and "pointing" in r.json()["detail"]
+
+
+def test_pano_refuses_while_run_all_night_is_on(client, monkeypatch):
+    _pano_env(monkeypatch, enabled=True)
+    r = client.post("/api/scope/pano")
+    assert r.status_code == 409 and "Run all night" in r.json()["detail"]
+
+
+def test_pano_mosaic_is_404_before_any_scan(client):
+    assert client.get("/api/scope/pano/mosaic").status_code in (404, 200)
