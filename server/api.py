@@ -3608,7 +3608,7 @@ scope_pano = PanoScanner(astrolab_home() / "pano")
 
 @app.post("/api/scope/pano", status_code=202)
 def start_scope_pano(tele_covered: bool = False) -> dict:
-    """Scan the surroundings with the wide camera. Needs the Sun below the horizon or the tele lens covered."""
+    """Scan with the wide camera. Needs the Sun down or the tele lens covered."""
     client = _scope_client()
     loc = _scope_site()
     if client is None or loc is None:
