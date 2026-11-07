@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
+from collections.abc import Callable
 
 from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient, ScopeServiceError
+
+log = logging.getLogger(__name__)
 
 PREPARE_TIMEOUT_S = 90
 CALIBRATE_TIMEOUT_S = 330
@@ -15,7 +20,9 @@ class ObserveBusy(Exception):
 
 
 class Observer:
-    def __init__(self) -> None:
+    def __init__(self, on_pointed: Callable[[dict], None] | None = None) -> None:
+        """on_pointed gets the motor angles and target after each successful slew."""
+        self._on_pointed = on_pointed or (lambda _pair: None)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.state: dict = {"state": "idle"}
@@ -48,6 +55,24 @@ class Observer:
         if self._thread:
             self._thread.join(timeout)
 
+    def _record_pointing(self, client, name, ra_deg, dec_deg) -> None:
+        try:
+            status = client.call("getStatus") or {}
+            pitch, rotation = status.get("pitch"), status.get("rotation")
+            if pitch is not None and rotation is not None:
+                self._on_pointed(
+                    {
+                        "target": name,
+                        "ra_deg": ra_deg,
+                        "dec_deg": dec_deg,
+                        "pitch": pitch,
+                        "rotation": rotation,
+                        "t": time.time(),
+                    }
+                )
+        except Exception:
+            log.warning("could not record the pointing of %s", name, exc_info=True)
+
     def _run(self, client, name, ra_deg, dec_deg, frames, exposure_s) -> None:
         try:
             if client.has("setup"):
@@ -61,6 +86,7 @@ class Observer:
                 {"name": name, "ra_hours": ra_deg / 15, "dec_degrees": dec_deg},
                 timeout=SLEW_TIMEOUT_S,
             )
+            self._record_pointing(client, name, ra_deg, dec_deg)
             self._set(step="starting capture")
             client.call("startCapture", {"frames": frames, "exposure": str(exposure_s)})
             self._set(state="done", step="capturing")

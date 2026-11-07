@@ -3856,6 +3856,29 @@
         "summary": "Get Scope Pano Mosaic"
       }
     },
+    "/api/scope/pointing": {
+      "get": {
+        "operationId": "get_scope_pointing_api_scope_pointing_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Get Scope Pointing Api Scope Pointing Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Pointing"
+      }
+    },
     "/api/scope/preview": {
       "get": {
         "operationId": "scope_preview_api_scope_preview_get",

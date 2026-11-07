@@ -93,3 +93,43 @@ def test_token_is_sent_as_a_bearer_header() -> None:
         client_for(app).info()
     assert err.value.status == 401
     assert client_for(app, token="s3").info()["capabilities"] == ["goto"]
+
+
+def test_observer_records_motor_angles_after_the_slew():
+    from server.scope_observe import Observer
+
+    class Svc:
+        def has(self, cap):
+            return True
+
+        def call(self, op, payload=None, timeout=None):
+            if op == "getStatus":
+                return {"pitch": 140.76, "rotation": 158.0}
+            return {}
+
+    seen = []
+    obs = Observer(on_pointed=seen.append)
+    obs.start(Svc(), "IC 1396", 324.5, 57.5, 30, 15)
+    obs.join(5)
+    assert obs.snapshot()["state"] == "done"
+    assert seen[0]["target"] == "IC 1396" and seen[0]["pitch"] == 140.76
+    assert seen[0]["rotation"] == 158.0 and seen[0]["dec_deg"] == 57.5
+
+
+def test_observer_still_captures_when_angles_cannot_be_read():
+    from server.scope_observe import Observer
+
+    class Svc:
+        def has(self, cap):
+            return False
+
+        def call(self, op, payload=None, timeout=None):
+            if op == "getStatus":
+                raise RuntimeError("scope busy")
+            return {}
+
+    seen = []
+    obs = Observer(on_pointed=seen.append)
+    obs.start(Svc(), "M31", 10.7, 41.3, 30, 15)
+    obs.join(5)
+    assert obs.snapshot()["state"] == "done" and seen == []

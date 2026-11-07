@@ -122,6 +122,7 @@ from server.storage import (
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_AUTO_STACK,
     SETTING_SCOPE_MIRROR_BASELINE,
+    SETTING_SCOPE_POINTING,
     SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
     SETTING_SCOPE_URL,
@@ -3228,7 +3229,24 @@ def _scan_after_copy() -> None:
         _launch_scan(root)
 
 
-scope_observer = Observer()
+POINTING_PAIRS_MAX = 500
+
+
+def _store_pointing(pair: dict) -> None:
+    """Keep each slew's motor angles with its target, to learn the scope's compass mapping."""
+    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+    pairs.append(pair)
+    set_setting(SETTING_SCOPE_POINTING, pairs[-POINTING_PAIRS_MAX:], db_path=job_manager.db_path)
+
+
+scope_observer = Observer(on_pointed=_store_pointing)
+
+
+@app.get("/api/scope/pointing")
+def get_scope_pointing() -> list[dict]:
+    return get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+
+
 def _find_scope_session(folder: str) -> tuple[int, int] | None:
     """Return (session_id, light count) for the catalog session that holds a mirrored folder."""
     with _db() as conn:

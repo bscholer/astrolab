@@ -248,3 +248,13 @@ def test_pano_refuses_while_run_all_night_is_on(client, monkeypatch):
 
 def test_pano_mosaic_is_404_before_any_scan(client):
     assert client.get("/api/scope/pano/mosaic").status_code in (404, 200)
+
+
+def test_pointing_pairs_are_stored_and_capped(client):
+    import server.api as api_mod
+
+    for i in range(api_mod.POINTING_PAIRS_MAX + 3):
+        api_mod._store_pointing({"target": f"t{i}", "pitch": 1.0, "rotation": 2.0})
+    pairs = client.get("/api/scope/pointing").json()
+    assert len(pairs) == api_mod.POINTING_PAIRS_MAX
+    assert pairs[-1]["target"] == f"t{api_mod.POINTING_PAIRS_MAX + 2}"
