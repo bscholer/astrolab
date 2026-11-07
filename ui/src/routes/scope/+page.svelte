@@ -9,6 +9,7 @@
 
   let scope = $state<ScopeState | null>(null);
   let fetchError = $state<string | null>(null);
+  let angles = $state<{ pitch: number | null; rotation: number | null } | null>(null);
   let stopping = $state(false);
   let savingAuto = $state(false);
   let weather = $state<Awaited<ReturnType<typeof api.getScopeWeather>> | null>(null);
@@ -72,6 +73,10 @@
     try {
       scope = await api.getScope();
       fetchError = null;
+      const st = scope.status;
+      if (st && (st.pitch != null || st.rotation != null)) {
+        angles = { pitch: st.pitch ?? null, rotation: st.rotation ?? null };
+      }
     } catch (e) {
       fetchError = e instanceof Error ? e.message : String(e);
     }
@@ -168,6 +173,12 @@
   <div class="status-text">
     <div class="word">{verdict.word}</div>
     <div class="line">{verdict.line}</div>
+    {#if scope?.reachable && angles}
+      <div class="angles" title="Pitch and rotation. The last known values show while the scope moves.">
+        <span>pitch {fmtDeg(angles.pitch)}</span>
+        <span>rot {fmtDeg(angles.rotation)}</span>
+      </div>
+    {/if}
     {#if verdict.frac !== null}
       <div class="bar"><div class="fill" style="width: {verdict.frac * 100}%"></div></div>
     {/if}
@@ -287,10 +298,6 @@
   <details class="panel details">
     <summary>Details</summary>
     <dl class="kv">
-      <dt>Pitch</dt>
-      <dd>{fmtDeg(scope.status?.pitch)}</dd>
-      <dt>Rotation</dt>
-      <dd>{fmtDeg(scope.status?.rotation)}</dd>
       <dt>Phone app</dt>
       <dd>{scope.status?.app_connected ? 'connected, scope control is blocked' : 'not connected'}</dd>
       {#if sched?.enabled}
@@ -380,6 +387,15 @@
   .line {
     margin-top: 0.2rem;
     font-size: 0.9rem;
+    color: var(--fg-mute);
+  }
+  .angles {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.35rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
     color: var(--fg-mute);
   }
   .bar {
