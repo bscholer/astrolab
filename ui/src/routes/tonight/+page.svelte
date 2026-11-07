@@ -263,8 +263,7 @@
   <a class="strip" href="/scope">
     <strong>{obs?.state === 'running' ? obs.target : 'Scope'}</strong>
     <span class="muted">
-      {#if obs?.state === 'running'}{obs.step}…{:else if job}{job.state}{#if job.frames}
-          · {job.captured ?? 0}/{job.frames}{/if}{/if}
+      {#if obs?.state === 'running'}{obs.step}…{:else if job}{job.state}{#if job.frames}{' · '}{job.captured ?? 0}/{job.frames}{/if}{/if}
     </span>
     {#if job?.state === 'running'}
       <button
