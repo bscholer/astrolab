@@ -37,10 +37,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -58,6 +60,7 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
+from server import weather
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
 from server.catalog.fits_reader import normalize_target
@@ -3248,11 +3251,44 @@ def _scope_targets() -> list[Candidate]:
     return [Candidate(r["name"], r["ra_deg"], r["dec_deg"]) for r in rows]
 
 
+_weather_cache: dict = {"at": 0.0, "outlook": None}
+
+
+def _scope_outlook() -> weather.Outlook | None:
+    loc = _scope_site()
+    if loc is None:
+        return None
+    if time.time() - _weather_cache["at"] > 900 or _weather_cache["outlook"] is None:
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+        _weather_cache["outlook"] = weather.outlook(
+            float(loc.lat.deg), float(loc.lon.deg), now_iso
+        )
+        _weather_cache["at"] = time.time()
+    return _weather_cache["outlook"]
+
+
+def _scope_warning() -> str | None:
+    o = _scope_outlook()
+    return o.reason if o and o.warn else None
+
+
+@app.get("/api/scope/weather")
+def scope_weather() -> dict:
+    try:
+        o = _scope_outlook()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"forecast failed: {exc}") from exc
+    if o is None:
+        raise HTTPException(status_code=400, detail="site location not set")
+    return dataclasses.asdict(o)
+
+
 scope_scheduler = Scheduler(
     _scope_client,
     _scope_site,
     _scope_targets,
     scope_observer,
+    get_warning=_scope_warning,
     notify=make_notifier(
         lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
     ),

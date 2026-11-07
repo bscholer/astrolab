@@ -988,6 +988,8 @@ export const api = {
     putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/auto', req),
   setScopeAlerts: (url: string) => putJSON<{ alert_url_set: boolean }>('/api/scope/alerts', { url }),
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
+  getScopeWeather: () =>
+    getJSON<{ max_cloud_pct: number; mean_cloud_pct: number; precip_mm: number; snow_cm: number; warn: boolean; reason: string | null }>('/api/scope/weather'),
   getScope: () => getJSON<ScopeState>('/api/scope'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),
   getSystem: () => getJSON<SystemSnapshot>('/api/system'),

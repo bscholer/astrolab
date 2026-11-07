@@ -35,6 +35,17 @@
     previewFailed = false;
   }
 
+  let weather = $state<Awaited<ReturnType<typeof api.getScopeWeather>> | null>(null);
+  let weatherTimer: ReturnType<typeof setInterval> | undefined;
+
+  async function refreshWeather() {
+    try {
+      weather = await api.getScopeWeather();
+    } catch {
+      weather = null;
+    }
+  }
+
   let savingAuto = $state(false);
   let alertUrl = $state('');
 
@@ -85,11 +96,14 @@
     refresh();
     pollTimer = setInterval(refresh, 5000);
     previewTimer = setInterval(bumpPreview, 30000);
+    refreshWeather();
+    weatherTimer = setInterval(refreshWeather, 900000);
   });
 
   onDestroy(() => {
     clearInterval(pollTimer);
     clearInterval(previewTimer);
+    clearInterval(weatherTimer);
   });
 </script>
 
@@ -138,6 +152,13 @@
         {#if sched?.enabled}
           <dt>Auto</dt>
           <dd>{sched.state}{sched.target ? ` · ${sched.target}` : ''}</dd>
+        {/if}
+        {#if weather}
+          <dt>Next 12 h</dt>
+          <dd class:bad-text={weather.warn}>
+            cloud {Math.round(weather.mean_cloud_pct)}% · precip {weather.precip_mm} mm
+            {#if weather.reason}· {weather.reason}. Bring the scope in.{/if}
+          </dd>
         {/if}
         {#if mirror}
           <dt>Mirror</dt>
@@ -253,6 +274,9 @@
   .muted {
     color: var(--fg-mute);
     margin: 0;
+  }
+  .bad-text {
+    color: var(--bad);
   }
   .small {
     font-size: 0.85em;

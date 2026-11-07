@@ -212,3 +212,50 @@ def test_alerts_fire_on_new_target_and_failing_target_only_once_per_change():
     client.job = {"state": "running", "captured": 10, "failed": 8}
     s.tick()
     assert any(m.startswith("Leaving") for m in msgs)
+
+
+def test_rain_alert_fires_once_while_open_and_never_closes_the_barrel():
+    msgs = []
+    client = FakeClient()
+    client.call = lambda op, payload=None, timeout=None: (
+        client.calls.append(op) or ({"pitch": 140.0} if op == "getStatus" else {})
+    )
+    clock = {"t": 0.0}
+    s = Scheduler(
+        lambda: client,
+        lambda: LOC,
+        lambda: [],
+        FakeObserver(),
+        clock=lambda: NIGHT,
+        notify=lambda t, m: msgs.append(m),
+        get_warning=lambda: "rain forecast (3.0 mm)",
+    )
+    s.mono = lambda: clock["t"]
+    s.enabled = True
+    s.tick()
+    clock["t"] = 3600
+    s.tick()
+    assert [m for m in msgs if "Bring the scope in" in m] == [
+        "rain forecast (3.0 mm). Bring the scope in."
+    ]
+    assert "closeBarrel" not in client.calls
+
+
+def test_no_rain_alert_when_barrel_is_closed():
+    msgs = []
+    client = FakeClient()
+    client.call = lambda op, payload=None, timeout=None: (
+        client.calls.append(op) or ({"pitch": 12.5} if op == "getStatus" else {})
+    )
+    s = Scheduler(
+        lambda: client,
+        lambda: LOC,
+        lambda: [],
+        FakeObserver(),
+        clock=lambda: NIGHT,
+        notify=lambda t, m: msgs.append(m),
+        get_warning=lambda: "snow forecast (1.0 cm)",
+    )
+    s.enabled = True
+    s.tick()
+    assert not any("Bring" in m for m in msgs)

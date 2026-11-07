@@ -25,6 +25,8 @@ SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
 STALL_S = 10 * 60
+WEATHER_EVERY_S = 30 * 60
+BARREL_OPEN_PITCH = 30.0
 PROBE_FRAMES = 4
 PROBE_MAX_FAILED = 1
 PROBE_TIMEOUT_S = 150
@@ -46,6 +48,7 @@ class Scheduler:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         interval_s: float = 60.0,
         notify: Callable[[str, str], None] | None = None,
+        get_warning: Callable[[], str | None] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_site = get_site
@@ -54,6 +57,9 @@ class Scheduler:
         self._clock = clock
         self.interval_s = interval_s
         self._notify = notify or (lambda *_: None)
+        self._get_warning = get_warning or (lambda: None)
+        self._weather_checked = -WEATHER_EVERY_S
+        self._weather_alerted = False
         self._last_target: str | None = None
         self.probe_poll_s = 10.0
         self.mono: Callable[[], float] = time.monotonic
@@ -96,7 +102,9 @@ class Scheduler:
             self._set(state="observing", target=obs.get("target"), reason=obs.get("step"))
             return
         try:
-            job = (client.call("getStatus") or {}).get("job") or {}
+            status = client.call("getStatus") or {}
+            job = status.get("job") or {}
+            self._check_weather(status)
             capturing = job.get("state") == "running"
             if not scope_plan.in_window(loc, now):
                 if capturing:
@@ -111,6 +119,22 @@ class Scheduler:
             if self.state.get("state") != "error":
                 self._notify("Scope error", str(exc))
             self._set(state="error", reason=str(exc))
+
+    def _check_weather(self, status: dict) -> None:
+        """Alert once per warning when rain is forecast and the barrel is open. Never closes it."""
+        if self.mono() - self._weather_checked < WEATHER_EVERY_S:
+            return
+        self._weather_checked = self.mono()
+        try:
+            warning = self._get_warning()
+        except Exception:
+            log.warning("weather check failed", exc_info=True)
+            return
+        if warning is None:
+            self._weather_alerted = False
+        elif not self._weather_alerted and (status.get("pitch") or 0) > BARREL_OPEN_PITCH:
+            self._weather_alerted = True
+            self._notify("Scope weather", f"{warning}. Bring the scope in.")
 
     def _stalled(self, target: str | None, job: dict) -> bool:
         """True when the frame count has not moved for STALL_S."""
@@ -176,10 +200,7 @@ class Scheduler:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             stalled = self._stalled(current, job)
             bad = (
-                stalled
-                or failing(job)
-                or cand is None
-                or scope_plan.usable(cand, loc, now) is None
+                stalled or failing(job) or cand is None or scope_plan.usable(cand, loc, now) is None
             )
             if not bad:
                 self._set(state="observing", target=current, reason="capturing")
