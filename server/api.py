@@ -4064,7 +4064,8 @@ if _UI_BUILD_DIR.is_dir():
         # No long cache on index.html — the served HTML is what changes
         # when we rebuild; assets it references are content-hashed and
         # caching them is handled by the StaticFiles mount above.
-        headers = {"Cache-Control": "no-cache"} if target.name == "index.html" else None
+        revalidate = {"index.html", "service-worker.js", "manifest.webmanifest"}
+        headers = {"Cache-Control": "no-cache"} if target.name in revalidate else None
         return FileResponse(target, headers=headers)
 
 

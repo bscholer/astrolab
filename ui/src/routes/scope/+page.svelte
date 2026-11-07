@@ -197,6 +197,7 @@
         {#if err}<p class="bad small">{err}</p>{/if}
       {/each}
       <div class="auto">
+        <div class="auto-row">
         <button
           type="button"
           class="btn"
@@ -223,6 +224,7 @@
         >
           Auto-stack {scope.auto_stack ? 'on' : 'off'}
         </button>
+        </div>
         {#if scope.targets?.length}
           <ul class="targets">
             {#each scope.targets as t (t.name)}
@@ -246,16 +248,19 @@
           <p class="muted small">No auto targets. Add some from Tonight.</p>
         {/if}
       </div>
-      <form class="alerts" onsubmit={(e) => { e.preventDefault(); saveAlerts(); }}>
-        <input
-          type="url"
-          placeholder={scope.alert_url_set ? 'Alerts on. Paste a new webhook URL to change' : 'Alert webhook URL (ntfy)'}
-          bind:value={alertUrl}
-        />
-        <button type="submit" class="btn">{alertUrl.trim() ? 'Save' : scope.alert_url_set ? 'Turn off' : 'Save'}</button>
-      </form>
+      <details class="alerts-box">
+        <summary>Alerts {scope.alert_url_set ? '(on)' : '(off)'}</summary>
+        <form class="alerts" onsubmit={(e) => { e.preventDefault(); saveAlerts(); }}>
+          <input
+            type="url"
+            placeholder="https://ntfy.sh/your-topic"
+            bind:value={alertUrl}
+          />
+          <button type="submit" class="btn">{alertUrl.trim() ? 'Save' : scope.alert_url_set ? 'Turn off' : 'Save'}</button>
+        </form>
+      </details>
       {#if job?.state === 'running'}
-        <button type="button" class="btn warn" onclick={stopCapture} disabled={stopping}>
+        <button type="button" class="btn warn stop" onclick={stopCapture} disabled={stopping}>
           {stopping ? 'Stopping…' : 'Stop capture'}
         </button>
       {/if}
@@ -365,19 +370,40 @@
     color: var(--bad);
     margin: 0.5rem 0 0;
   }
+  .auto-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
   .auto {
     margin-top: 0.75rem;
     padding-top: 0.75rem;
     border-top: 1px solid var(--border);
   }
+  .alerts-box {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+  }
+  .alerts-box summary {
+    cursor: pointer;
+  }
   .alerts {
     display: flex;
+    align-items: center;
     gap: 0.4rem;
-    margin-top: 0.75rem;
+    margin-top: 0.5rem;
   }
   .alerts input {
     flex: 1;
     min-width: 0;
+    height: 36px;
+    padding: 0 0.6rem;
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
   }
   .targets {
     list-style: none;
@@ -406,8 +432,14 @@
     font-size: 1.1rem;
   }
   .btn {
+    min-height: 36px;
+    padding: 0 0.9rem;
+    font-size: 0.85rem;
+    width: auto;
+  }
+  .stop {
     margin-top: 0.75rem;
-    min-height: 44px;
     width: 100%;
+    min-height: 44px;
   }
 </style>
