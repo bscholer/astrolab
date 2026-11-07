@@ -77,6 +77,10 @@ class Scheduler:
             self._set(state="waiting", reason="scope service or site not configured")
             return
         now = self._clock()
+        obs = self._observer.snapshot()
+        if obs.get("state") == "running" and obs.get("step") != "capturing":
+            self._set(state="observing", target=obs.get("target"), reason=obs.get("step"))
+            return
         try:
             job = (client.call("getStatus") or {}).get("job") or {}
             capturing = job.get("state") == "running"

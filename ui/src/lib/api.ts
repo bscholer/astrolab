@@ -729,6 +729,7 @@ export interface ScopeState {
   error?: string;
   error_code?: string;
   observe?: { state: string; step?: string; target?: string; error?: string | null };
+  scheduler?: { enabled: boolean; state: string; target?: string; reason?: string };
   mirror?: { state: string; files_copied: number; last_ok: number | null; current?: string | null; error?: string | null };
 }
 
