@@ -3981,8 +3981,20 @@
         "summary": "Get Scope Pano"
       },
       "post": {
-        "description": "Scan the surroundings with the wide camera. Needs the Sun well below the horizon.",
+        "description": "Scan with the wide camera. Needs the Sun down or the tele lens covered.",
         "operationId": "start_scope_pano_api_scope_pano_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tele_covered",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Tele Covered",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "content": {
@@ -3995,6 +4007,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Start Scope Pano"
