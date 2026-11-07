@@ -3440,7 +3440,7 @@ def scope_frame(camera: str = Query("wide", pattern="^(tele|wide)$")) -> Respons
     try:
         if not client.has("preview"):
             raise HTTPException(status_code=400, detail="service lacks capability: preview")
-        data = client.call("getFrame", {"camera": camera}, timeout=40)["data"]
+        data = client.call("getFrame", {"camera": camera}, timeout=80)["data"]
     except ScopeServiceError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return Response(base64.b64decode(data), media_type="image/jpeg")

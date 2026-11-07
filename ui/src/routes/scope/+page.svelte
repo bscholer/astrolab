@@ -60,7 +60,7 @@
     live = camera;
     liveFailed = false;
     liveTick = Date.now();
-    liveTimer = setInterval(() => (liveTick = Date.now()), 10000);
+    liveTimer = setInterval(() => (liveTick = Date.now()), camera === 'tele' ? 60000 : 10000);
   }
 
   let savingAuto = $state(false);
