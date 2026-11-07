@@ -123,3 +123,42 @@ def test_barrel_closes_again_after_the_next_night():
     now["t"] = DAY
     s.tick()
     assert client.calls.count("closeBarrel") == 2
+
+
+class ProbeClient(FakeClient):
+    def __init__(self, final):
+        super().__init__()
+        self.final = final
+
+    def call(self, op, payload=None, timeout=None):
+        self.calls.append(op)
+        if op == "getStatus":
+            return {"job": self.final}
+        return {}
+
+
+def _waiting(client, obs):
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.probe_poll_s = 0
+    s._sky_wait_until = 1.0
+    return s
+
+
+def test_clear_probe_ends_the_wait_and_starts_a_target():
+    client = ProbeClient({"state": "done", "captured": 4, "failed": 0})
+    obs = FakeObserver()
+    s = _waiting(client, obs)
+    s.tick()
+    assert "startCapture" in client.calls
+    assert obs.started == ["a"]
+
+
+def test_cloudy_probe_keeps_waiting():
+    client = ProbeClient({"state": "done", "captured": 4, "failed": 3})
+    obs = FakeObserver()
+    s = _waiting(client, obs)
+    s.tick()
+    assert not obs.started
+    assert s.snapshot()["state"] == "waiting"
+    s.tick()
+    assert client.calls.count("startCapture") == 1

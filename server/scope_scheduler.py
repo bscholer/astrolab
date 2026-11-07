@@ -23,7 +23,10 @@ FAIL_MIN_FRAMES = 6
 FAIL_RATIO = 0.5
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
-SKY_WAIT_S = 10 * 60
+SKY_WAIT_S = 5 * 60
+PROBE_FRAMES = 4
+PROBE_MAX_FAILED = 1
+PROBE_TIMEOUT_S = 150
 
 
 def failing(job: dict) -> bool:
@@ -48,6 +51,7 @@ class Scheduler:
         self._observer = observer
         self._clock = clock
         self.interval_s = interval_s
+        self.probe_poll_s = 10.0
         self.enabled = False
         self._lock = threading.Lock()
         self._skip: dict[str, float] = {}
@@ -100,6 +104,23 @@ class Scheduler:
         except ScopeServiceError as exc:
             self._set(state="error", reason=str(exc))
 
+    def _probe(self, client) -> bool:
+        """Shoot a few frames at the current pointing. Clear sky stacks, cloud does not."""
+        self._set(state="probing", reason="checking the sky")
+        client.call("startCapture", {"frames": PROBE_FRAMES, "exposure": str(EXPOSURE_S)})
+        end = time.time() + PROBE_TIMEOUT_S
+        job: dict = {}
+        while time.time() < end:
+            time.sleep(self.probe_poll_s)
+            job = (client.call("getStatus") or {}).get("job") or {}
+            if job.get("state") != "running":
+                break
+        else:
+            client.call("stopCapture")
+        captured = job.get("captured") or 0
+        failed = job.get("failed") or 0
+        return captured >= PROBE_FRAMES and failed <= PROBE_MAX_FAILED
+
     def _park(self, client) -> None:
         """Close the barrel once per day. A service without the operation stays as it is."""
         try:
@@ -123,9 +144,15 @@ class Scheduler:
                 self._sky_wait_until = time.time() + SKY_WAIT_S
             else:
                 self._skip_target(current, SKIP_AFTER_ERROR_S)
-        if not capturing and time.time() < self._sky_wait_until:
-            self._set(state="waiting", reason="sky not clear, retrying later")
-            return
+        if not capturing and self._sky_wait_until:
+            if time.time() < self._sky_wait_until:
+                self._set(state="waiting", reason="sky not clear, probing again soon")
+                return
+            if not self._probe(client):
+                self._sky_wait_until = time.time() + SKY_WAIT_S
+                self._set(state="waiting", reason="sky not clear, probing again soon")
+                return
+            self._sky_wait_until = 0.0
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             bad = failing(job) or cand is None or scope_plan.usable(cand, loc, now) is None
