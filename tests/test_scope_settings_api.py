@@ -205,3 +205,13 @@ def test_auto_stack_flag_is_kept_when_the_toggle_omits_it(client):
     assert client.put("/api/scope/auto", json={"enabled": False, "auto_stack": True}).json()["auto_stack"]
     r = client.put("/api/scope/auto", json={"enabled": True})
     assert r.json()["auto_stack"] is True
+
+
+def test_get_scope_reports_auto_stack_and_alert_flags(client):
+    client.put("/api/scope", json={"url": "http://127.0.0.1:9"})
+    state = client.get("/api/scope").json()
+    assert state["auto_stack"] is False and state["alert_url_set"] is False
+    client.put("/api/scope/auto", json={"enabled": False, "auto_stack": True})
+    client.put("/api/scope/alerts", json={"url": "https://ntfy.sh/t"})
+    state = client.get("/api/scope").json()
+    assert state["auto_stack"] is True and state["alert_url_set"] is True

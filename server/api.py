@@ -3388,6 +3388,12 @@ def _scope_state() -> dict:
         "observe": scope_observer.snapshot(),
         "scheduler": scope_scheduler.snapshot(),
         "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
+        "auto_stack": bool(
+            get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)
+        ),
+        "alert_url_set": bool(
+            get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+        ),
         "configured": True,
         "url": client.base_url,
         "has_token": bool(client.token),
