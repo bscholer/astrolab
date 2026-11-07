@@ -42,7 +42,7 @@
     queuing = e.name;
     try {
       const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg });
-      toast.success(`Capturing ${r.target}: ${r.job.frames ?? '?'} frames.`);
+      toast.success(`Started ${r.target}. Watch the banner for each step.`);
       await refreshScope();
     } catch (err) {
       toast.error((err as Error).message);
@@ -61,6 +61,8 @@
   refreshScope();
 
   const job = $derived(scope?.status?.job ?? null);
+  const obs = $derived(scope?.observe ?? null);
+  const observing = $derived(obs?.state === 'running');
 
   async function stopCapture() {
     try {
@@ -236,6 +238,12 @@
   }
 </script>
 
+{#if obs && (obs.state === 'running' || obs.state === 'failed')}
+  <div class="panel scope-job">
+    <strong>{obs.target}</strong>
+    {#if obs.state === 'running'}{obs.step}…{:else}failed: {obs.error}{/if}
+  </div>
+{/if}
 {#if job}
   <div class="panel scope-job">
     <strong>Scope</strong>
@@ -406,7 +414,7 @@
                   <button
                     type="button"
                     class="btn"
-                    disabled={queuing !== null}
+                    disabled={queuing !== null || observing}
                     onclick={() => queueTarget(entry)}
                   >
                     {queuing === entry.name ? 'Pointing…' : 'Queue target'}

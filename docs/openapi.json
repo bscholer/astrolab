@@ -3559,7 +3559,7 @@
     },
     "/api/scope/observe": {
       "post": {
-        "description": "Point the scope at a target, then start capturing.",
+        "description": "Start prepare, calibrate, slew, and capture in the background.",
         "operationId": "observe_api_scope_observe_post",
         "requestBody": {
           "content": {

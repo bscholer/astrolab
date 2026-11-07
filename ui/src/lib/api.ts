@@ -720,6 +720,7 @@ export interface ScopeState {
   status?: { app_connected?: boolean; job?: ScopeJob | null; pitch?: number | null };
   error?: string;
   error_code?: string;
+  observe?: { state: string; step?: string; target?: string; error?: string | null };
   mirror?: { state: string; files_copied: number; last_ok: number | null; current?: string | null; error?: string | null };
 }
 
@@ -965,7 +966,7 @@ export const api = {
     site_elevation_m?: number | null;
   }) => patchJSON<SettingsResponse>('/api/settings', req),
   observe: (req: { name: string; ra_deg: number; dec_deg: number; frames?: number }) =>
-    postJSON<{ target: string; job: { id?: string; frames?: number } }>('/api/scope/observe', req),
+    postJSON<{ target: string }>('/api/scope/observe', req),
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   getScope: () => getJSON<ScopeState>('/api/scope'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),

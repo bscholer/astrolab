@@ -100,7 +100,8 @@ from server.quality import (
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.scope_mirror import Mirror
-from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient, ScopeServiceError
+from server.scope_observe import ObserveBusy, Observer
+from server.scope_service import ScopeServiceClient, ScopeServiceError
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
@@ -3207,6 +3208,7 @@ def _scan_after_copy() -> None:
         _launch_scan(root)
 
 
+scope_observer = Observer()
 scope_mirror = Mirror(
     get_client=_scope_client,
     get_root=_mirror_root,
@@ -3226,6 +3228,7 @@ def _scope_state() -> dict:
         return {"configured": False, "reachable": False}
     state = {
         "mirror": scope_mirror.snapshot(),
+        "observe": scope_observer.snapshot(),
         "configured": True,
         "url": client.base_url,
         "has_token": bool(client.token),
@@ -3273,26 +3276,22 @@ class ObserveRequest(BaseModel):
 
 @app.post("/api/scope/observe", status_code=202)
 def observe(req: ObserveRequest) -> dict:
-    """Point the scope at a target, then start capturing."""
+    """Start prepare, calibrate, slew, and capture in the background."""
     client = _scope_client()
     if client is None:
         raise HTTPException(status_code=400, detail="no scope service configured")
     try:
         missing = [c for c in ("goto", "capture") if not client.has(c)]
-        if missing:
-            raise HTTPException(
-                status_code=400, detail=f"service lacks capability: {', '.join(missing)}"
-            )
-        client.call(
-            "gotoTarget",
-            {"name": req.name, "ra_hours": req.ra_deg / 15, "dec_degrees": req.dec_deg},
-            timeout=SLEW_TIMEOUT_S,
-        )
-        job = client.call("startCapture", {"frames": req.frames, "exposure": str(req.exposure_s)})
     except ScopeServiceError as exc:
-        status = {"sun_too_close": 422, "busy": 409, "invalid_request": 422}.get(exc.code, 502)
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-    return {"target": req.name, "job": job}
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if missing:
+        detail = f"service lacks capability: {', '.join(missing)}"
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        scope_observer.start(client, req.name, req.ra_deg, req.dec_deg, req.frames, req.exposure_s)
+    except ObserveBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"target": req.name}
 
 
 @app.post("/api/scope/stop")

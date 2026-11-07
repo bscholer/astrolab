@@ -14,16 +14,18 @@ from server.scope_service import ScopeServiceClient
 CAPS = {
     "spec_version": "0.1",
     "service": {"name": "fake"},
-    "capabilities": ["status", "goto", "capture"],
+    "capabilities": ["status", "setup", "goto", "capture"],
 }
 
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "catalog.sqlite"
+    api.scope_observer.state = {"state": "idle"}
     api.job_manager.reset_for_tests(db_path=db_path)
     monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path))
     seen: list[dict] = []
+    state: dict = {}
 
     def transport(method, url, headers, body, timeout=0):
         seen.append({"url": url, "auth": headers.get("Authorization"), "body": body})
@@ -37,11 +39,19 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             spec = {
                 "paths": {
                     "/api/status": {"get": {"operationId": "getStatus"}},
+                    "/api/prepare": {"post": {"operationId": "prepareScope"}},
+                    "/api/calibrate": {"post": {"operationId": "calibrateScope"}},
                     "/api/goto": {"post": {"operationId": "gotoTarget"}},
                     "/api/capture": {"post": {"operationId": "startCapture"}},
                 }
             }
             return 200, json.dumps(spec).encode()
+        if url.endswith("/api/prepare"):
+            return 200, b'{"message": "ready"}'
+        if url.endswith("/api/calibrate"):
+            if state.get("clouds"):
+                return 502, b'{"detail": "plate solve failed", "code": "scope_error"}'
+            return 200, b'{"message": "calibrated"}'
         if url.endswith("/api/goto"):
             sent = json.loads(body)
             if sent["name"] == "Sun":
@@ -58,6 +68,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     with TestClient(api.app) as c:
         c.seen = seen
+        c.state = state
         yield c
 
 
@@ -91,22 +102,45 @@ def test_rejects_non_http_url(client):
 OBSERVE = {"name": "M31", "ra_deg": 10.6847, "dec_deg": 41.27, "frames": 20}
 
 
-def test_observe_slews_in_hours_then_captures(client):
-    client.put("/api/scope", json={"url": "http://svc"})
-    client.seen.clear()
-    r = client.post("/api/scope/observe", json=OBSERVE)
-    assert r.status_code == 202 and r.json()["job"]["frames"] == 20
-    calls = [s for s in client.seen if s["body"]]
-    assert [c["url"].rsplit("/", 1)[1] for c in calls] == ["goto", "capture"]
-    assert json.loads(calls[0]["body"])["ra_hours"] == pytest.approx(10.6847 / 15)
+def steps(client) -> list[str]:
+    names = [s["url"].rsplit("/", 1)[1] for s in client.seen]
+    return [n for n in names if n in ("prepare", "calibrate", "goto", "capture")]
 
 
-def test_observe_does_not_capture_when_goto_is_refused(client):
+def observe(client, **over):
     client.put("/api/scope", json={"url": "http://svc"})
     client.seen.clear()
-    r = client.post("/api/scope/observe", json={**OBSERVE, "name": "Sun"})
-    assert r.status_code == 422 and "sun" in r.json()["detail"]
-    assert not any(s["url"].endswith("/api/capture") for s in client.seen)
+    r = client.post("/api/scope/observe", json={**OBSERVE, **over})
+    api.scope_observer.join(5)
+    return r, client.get("/api/scope").json()["observe"]
+
+
+def test_observe_runs_every_step_in_order_and_slews_in_hours(client):
+    r, state = observe(client)
+    assert r.status_code == 202 and state["state"] == "done"
+    assert steps(client) == ["prepare", "calibrate", "goto", "capture"]
+    goto = next(s for s in client.seen if s["url"].endswith("/api/goto"))
+    assert json.loads(goto["body"])["ra_hours"] == pytest.approx(10.6847 / 15)
+
+
+def test_failed_calibration_stops_before_the_scope_moves_or_captures(client):
+    client.state["clouds"] = True
+    _, state = observe(client)
+    assert state["state"] == "failed" and "calibrating" in state["error"]
+    assert steps(client) == ["prepare", "calibrate"]
+
+
+def test_sun_refusal_surfaces_and_no_capture_starts(client):
+    _, state = observe(client, name="Sun")
+    assert state["state"] == "failed" and "sun" in state["error"]
+    assert "capture" not in steps(client)
+
+
+def test_second_observe_while_running_is_refused(client):
+    client.put("/api/scope", json={"url": "http://svc"})
+    api.scope_observer.state = {"state": "running", "target": "M31"}
+    assert client.post("/api/scope/observe", json=OBSERVE).status_code == 409
+    api.scope_observer.state = {"state": "idle"}
 
 
 def test_observe_without_a_configured_service_is_a_clear_error(client):
