@@ -259,22 +259,24 @@
   }
 </script>
 
-{#if obs && (obs.state === 'running' || obs.state === 'failed')}
-  <div class="panel scope-job">
-    <strong>{obs.target}</strong>
-    {#if obs.state === 'running'}{obs.step}…{:else}failed: {obs.error}{/if}
-  </div>
-{/if}
-{#if job}
-  <div class="panel scope-job">
-    <strong>Scope</strong>
-    {job.state}
-    {#if job.frames}: {job.captured ?? 0} of {job.frames} frames{/if}
-    {#if job.error}<span class="muted">({job.error})</span>{/if}
-    {#if job.state === 'running'}
-      <button type="button" class="btn warn" onclick={stopCapture}>Stop</button>
+{#if (obs && obs.state === 'running') || job?.state === 'running'}
+  <a class="strip" href="/scope">
+    <strong>{obs?.state === 'running' ? obs.target : 'Scope'}</strong>
+    <span class="muted">
+      {#if obs?.state === 'running'}{obs.step}…{:else if job}{job.state}{#if job.frames}
+          · {job.captured ?? 0}/{job.frames}{/if}{/if}
+    </span>
+    {#if job?.state === 'running'}
+      <button
+        type="button"
+        class="btn warn"
+        onclick={(e) => {
+          e.preventDefault();
+          stopCapture();
+        }}>Stop</button
+      >
     {/if}
-  </div>
+  </a>
 {/if}
 
 <div class="header">
@@ -431,22 +433,25 @@
               </td>
               <td class="captured-cell col-hide-mobile">{fmtCaptured(entry)}</td>
               {#if canQueue}
-                <td>
+                <td class="actions">
                   <button
                     type="button"
-                    class="btn"
+                    class="btn compact"
                     disabled={queuing !== null || observing}
                     onclick={() => queueTarget(entry)}
                   >
-                    {queuing === entry.name ? 'Pointing…' : 'Queue target'}
+                    {queuing === entry.name ? 'Pointing…' : 'Point'}
                   </button>
                   <button
                     type="button"
-                    class="btn"
+                    class="btn compact icon"
+                    class:on={scope?.targets?.some((t) => t.name === entry.name)}
                     disabled={adding !== null}
+                    title="Add to the all-night auto list"
+                    aria-label="Add {entry.name} to the auto list"
                     onclick={() => addToAuto(entry)}
                   >
-                    {scope?.targets?.some((t) => t.name === entry.name) ? 'On auto list' : 'Add to auto'}
+                    {scope?.targets?.some((t) => t.name === entry.name) ? '✓' : '+'}
                   </button>
                 </td>
               {/if}
@@ -459,11 +464,43 @@
 {/if}
 
 <style>
-  .scope-job {
+  .strip {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
+    gap: 0.6rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.82rem;
+    color: inherit;
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--bg-elev);
+  }
+  .strip .btn {
+    margin-left: auto;
+  }
+  td.actions {
+    white-space: nowrap;
+    width: 1%;
+    text-align: right;
+  }
+  .btn.compact {
+    min-height: 32px;
+    padding: 0 0.7rem;
+    font-size: 0.8rem;
+  }
+  .btn.icon {
+    width: 32px;
+    padding: 0;
+    margin-left: 0.3rem;
+    border-radius: 50%;
+    font-size: 1rem;
+  }
+  .btn.icon.on {
+    color: var(--accent);
+    border-color: var(--accent);
   }
   .header {
     display: flex;
@@ -539,8 +576,14 @@
   .chips {
     display: flex;
     gap: 0.4rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
     align-items: center;
+    padding-bottom: 2px;
+  }
+  .chips > * {
+    flex-shrink: 0;
   }
   /* Thin vertical rule to visually separate the captured-only chip from
      the type filter chips within the same chip rail. */
@@ -557,7 +600,8 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--fg-mute);
-    padding: 0.25rem 0.7rem;
+    min-height: 34px;
+    padding: 0 0.8rem;
     border-radius: 999px;
     font: inherit;
     font-size: 0.78rem;
