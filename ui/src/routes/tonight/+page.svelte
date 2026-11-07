@@ -51,6 +51,27 @@
     }
   }
 
+  let adding = $state<string | null>(null);
+
+  async function addToAuto(e: TonightEntry) {
+    adding = e.name;
+    try {
+      const current = (await api.getScope()).targets ?? [];
+      if (current.some((t) => t.name === e.name)) {
+        toast.success(`${e.name} is already on the auto list.`);
+        return;
+      }
+      const targets = [...current, { name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg }];
+      await api.setScopeAuto({ enabled: !!scope?.scheduler?.enabled, targets });
+      toast.success(`Added ${e.name} to the auto list.`);
+      await refreshScope();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      adding = null;
+    }
+  }
+
   async function refreshScope() {
     try {
       scope = await api.getScope();
@@ -418,6 +439,14 @@
                     onclick={() => queueTarget(entry)}
                   >
                     {queuing === entry.name ? 'Pointing…' : 'Queue target'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={adding !== null}
+                    onclick={() => addToAuto(entry)}
+                  >
+                    {scope?.targets?.some((t) => t.name === entry.name) ? 'On auto list' : 'Add to auto'}
                   </button>
                 </td>
               {/if}

@@ -700,6 +700,12 @@ export interface CleanupResponse {
   max_bytes: number;
 }
 
+export interface ScopeAutoTarget {
+  name: string;
+  ra_deg: number;
+  dec_deg: number;
+}
+
 export interface ScopeJob {
   id?: string;
   state: string;
@@ -730,6 +736,7 @@ export interface ScopeState {
   error_code?: string;
   observe?: { state: string; step?: string; target?: string; error?: string | null };
   scheduler?: { enabled: boolean; state: string; target?: string; reason?: string };
+  targets?: ScopeAutoTarget[];
   mirror?: { state: string; files_copied: number; last_ok: number | null; current?: string | null; error?: string | null };
 }
 
@@ -976,6 +983,8 @@ export const api = {
   }) => patchJSON<SettingsResponse>('/api/settings', req),
   observe: (req: { name: string; ra_deg: number; dec_deg: number; frames?: number }) =>
     postJSON<{ target: string }>('/api/scope/observe', req),
+  setScopeAuto: (req: { enabled: boolean; targets?: ScopeAutoTarget[] }) =>
+    putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/auto', req),
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   getScope: () => getJSON<ScopeState>('/api/scope'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),

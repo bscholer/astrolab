@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, type ScopeState } from '$lib/api';
+  import { api, type ScopeAutoTarget, type ScopeState } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
 
   let scope = $state<ScopeState | null>(null);
@@ -33,6 +33,20 @@
   function bumpPreview() {
     tick = Date.now();
     previewFailed = false;
+  }
+
+  let savingAuto = $state(false);
+
+  async function setAuto(enabled: boolean, targets?: ScopeAutoTarget[]) {
+    savingAuto = true;
+    try {
+      await api.setScopeAuto({ enabled, targets });
+      await refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      savingAuto = false;
+    }
   }
 
   async function stopCapture() {
@@ -121,6 +135,38 @@
       {#each [job?.error, obs?.error, mirror?.error, sched?.reason && sched.state === 'error' ? sched.reason : null] as err}
         {#if err}<p class="bad small">{err}</p>{/if}
       {/each}
+      <div class="auto">
+        <button
+          type="button"
+          class="btn"
+          disabled={savingAuto}
+          onclick={() => setAuto(!sched?.enabled)}
+        >
+          {sched?.enabled ? 'Stop auto' : 'Start auto'}
+        </button>
+        {#if scope.targets?.length}
+          <ul class="targets">
+            {#each scope.targets as t (t.name)}
+              <li>
+                <span>{t.name}</span>
+                <button
+                  type="button"
+                  class="x"
+                  aria-label="Remove {t.name}"
+                  disabled={savingAuto}
+                  onclick={() =>
+                    setAuto(
+                      !!sched?.enabled,
+                      scope?.targets?.filter((o) => o.name !== t.name),
+                    )}>×</button
+                >
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="muted small">No auto targets. Add some from Tonight.</p>
+        {/if}
+      </div>
       {#if job?.state === 'running'}
         <button type="button" class="btn warn" onclick={stopCapture} disabled={stopping}>
           {stopping ? 'Stopping…' : 'Stop capture'}
@@ -194,6 +240,37 @@
   .bad {
     color: var(--bad);
     margin: 0.5rem 0 0;
+  }
+  .auto {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+  }
+  .targets {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .targets li {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.15rem 0.2rem 0.15rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.85rem;
+  }
+  .x {
+    background: none;
+    border: 0;
+    color: var(--fg-mute);
+    min-width: 28px;
+    min-height: 28px;
+    cursor: pointer;
+    font-size: 1.1rem;
   }
   .btn {
     margin-top: 0.75rem;
