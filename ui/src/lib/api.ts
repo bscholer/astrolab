@@ -996,7 +996,8 @@ export const api = {
     putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/auto', req),
   setScopeAlerts: (url: string) => putJSON<{ alert_url_set: boolean }>('/api/scope/alerts', { url }),
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
-  startScopePano: () => postJSON<{ id: string }>('/api/scope/pano', {}),
+  startScopePano: (teleCovered = false) =>
+    postJSON<{ id: string }>(`/api/scope/pano?tele_covered=${teleCovered}`, {}),
   getScopePano: () =>
     getJSON<{ state: string; id?: string; done?: number; total?: number; failed?: number; error?: string }>(
       '/api/scope/pano',

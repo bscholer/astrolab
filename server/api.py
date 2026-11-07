@@ -3607,8 +3607,8 @@ scope_pano = PanoScanner(astrolab_home() / "pano")
 
 
 @app.post("/api/scope/pano", status_code=202)
-def start_scope_pano() -> dict:
-    """Scan the surroundings with the wide camera. Needs the Sun well below the horizon."""
+def start_scope_pano(tele_covered: bool = False) -> dict:
+    """Scan the surroundings with the wide camera. Needs the Sun below the horizon or the tele lens covered."""
     client = _scope_client()
     loc = _scope_site()
     if client is None or loc is None:
@@ -3623,7 +3623,7 @@ def start_scope_pano() -> dict:
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night before a scan")
     try:
-        return {"id": scope_pano.start(client, loc)}
+        return {"id": scope_pano.start(client, loc, tele_covered=tele_covered)}
     except PanoRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

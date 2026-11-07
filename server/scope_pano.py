@@ -80,9 +80,10 @@ class PanoScanner:
         rotations=DEFAULT_ROTATIONS,
         settle_s: float = SETTLE_S,
         when: datetime | None = None,
+        tele_covered: bool = False,
     ) -> str:
         alt = sun_altitude_deg(loc, when)
-        if alt > SUN_MAX_ALT_DEG:
+        if alt > SUN_MAX_ALT_DEG and not tele_covered:
             raise PanoRefused(
                 f"the Sun is {alt:.0f} degrees up, the limit is {SUN_MAX_ALT_DEG:.0f}"
             )

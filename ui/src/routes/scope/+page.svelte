@@ -97,9 +97,11 @@
     }
   }
 
+  let teleCovered = $state(false);
+
   async function startPano() {
     try {
-      await api.startScopePano();
+      await api.startScopePano(teleCovered);
       await refreshPano();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -333,7 +335,7 @@
             {#if pano?.state === 'running'}
               Scanning {pano.done}/{pano.total}. The scope turns on its own.
             {:else}
-              Moves the scope through 40 positions, about 10 minutes. Only after dark, and with Run all night off.
+              Moves the scope through 40 positions, about 10 minutes. After dark, or with the tele lens covered. Run all night must be off.
             {/if}
           </div>
         </div>
@@ -346,6 +348,10 @@
           {pano?.state === 'running' ? 'Scanning…' : 'Scan'}
         </button>
       </div>
+      <label class="check">
+        <input type="checkbox" bind:checked={teleCovered} />
+        Tele lens is covered
+      </label>
       {#if pano?.state === 'failed'}<p class="muted small">{pano.error}</p>{/if}
       {#if pano?.id && pano.state !== 'running'}
         <img class="mosaic" src="/api/scope/pano/mosaic?t={panoTick}" alt="Wide camera mosaic" />
