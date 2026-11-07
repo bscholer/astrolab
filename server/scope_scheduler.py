@@ -23,6 +23,7 @@ FAIL_MIN_FRAMES = 6
 FAIL_RATIO = 0.5
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
+SKY_WAIT_S = 10 * 60
 
 
 def failing(job: dict) -> bool:
@@ -50,6 +51,8 @@ class Scheduler:
         self.enabled = False
         self._lock = threading.Lock()
         self._skip: dict[str, float] = {}
+        self._sky_wait_until = 0.0
+        self._handled_failure: str | None = None
         self.state: dict = {"state": "off"}
 
     def snapshot(self) -> dict:
@@ -99,8 +102,15 @@ class Scheduler:
         if obs.get("state") == "running" and obs.get("step") != "capturing":
             self._set(state="observing", target=current, reason=obs.get("step"))
             return
-        if obs.get("state") == "failed":
-            self._skip_target(current, SKIP_AFTER_ERROR_S)
+        if obs.get("state") == "failed" and self._handled_failure != obs.get("error"):
+            self._handled_failure = obs.get("error")
+            if obs.get("step") == "calibrating":
+                self._sky_wait_until = time.time() + SKY_WAIT_S
+            else:
+                self._skip_target(current, SKIP_AFTER_ERROR_S)
+        if not capturing and time.time() < self._sky_wait_until:
+            self._set(state="waiting", reason="sky not clear, retrying later")
+            return
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             bad = failing(job) or cand is None or scope_plan.usable(cand, loc, now) is None

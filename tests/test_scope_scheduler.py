@@ -90,3 +90,15 @@ def test_off_by_default_does_nothing():
     s.enabled = False
     s.tick()
     assert not client.calls
+
+
+def test_calibration_failure_waits_for_the_sky_instead_of_trying_every_target():
+    client = FakeClient()
+    obs = FakeObserver(
+        {"state": "failed", "step": "calibrating", "target": "a", "error": "code -11504"}
+    )
+    s = _sched(client, obs, NIGHT, [_target("a"), _target("b")])
+    s.tick()
+    s.tick()
+    assert not obs.started
+    assert s.snapshot()["state"] == "waiting"
