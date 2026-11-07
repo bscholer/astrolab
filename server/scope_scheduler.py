@@ -53,6 +53,7 @@ class Scheduler:
         self._skip: dict[str, float] = {}
         self._sky_wait_until = 0.0
         self._handled_failure: str | None = None
+        self._parked = False
         self.state: dict = {"state": "off"}
 
     def snapshot(self) -> dict:
@@ -90,11 +91,25 @@ class Scheduler:
             if not scope_plan.in_window(loc, now):
                 if capturing:
                     client.call("stopCapture")
+                elif not self._parked:
+                    self._park(client)
                 self._set(state="waiting", reason="outside the night window")
                 return
+            self._parked = False
             self._step(client, loc, now, job, capturing)
         except ScopeServiceError as exc:
             self._set(state="error", reason=str(exc))
+
+    def _park(self, client) -> None:
+        """Close the barrel once per day. A service without the operation stays as it is."""
+        try:
+            client.call("closeBarrel", timeout=90)
+            self._parked = True
+        except ScopeServiceError as exc:
+            if exc.code == "unsupported":
+                self._parked = True
+            else:
+                raise
 
     def _step(self, client, loc, now, job, capturing) -> None:
         obs = self._observer.snapshot()

@@ -102,3 +102,24 @@ def test_calibration_failure_waits_for_the_sky_instead_of_trying_every_target():
     s.tick()
     assert not obs.started
     assert s.snapshot()["state"] == "waiting"
+
+
+def test_barrel_closes_once_when_the_night_ends():
+    client, obs = FakeClient(), FakeObserver()
+    s = _sched(client, obs, DAY, [_target("a")])
+    s.tick()
+    s.tick()
+    assert client.calls.count("closeBarrel") == 1
+
+
+def test_barrel_closes_again_after_the_next_night():
+    client, obs = FakeClient(), FakeObserver()
+    now = {"t": DAY}
+    s = Scheduler(lambda: client, lambda: LOC, lambda: [_target("a")], obs, clock=lambda: now["t"])
+    s.enabled = True
+    s.tick()
+    now["t"] = NIGHT
+    s.tick()
+    now["t"] = DAY
+    s.tick()
+    assert client.calls.count("closeBarrel") == 2
