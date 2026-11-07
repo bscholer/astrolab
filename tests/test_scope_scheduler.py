@@ -191,3 +191,24 @@ def test_progress_resets_the_stall_timer():
     clock["t"] = 18 * 60
     s.tick()
     assert "stopCapture" not in client.calls
+
+
+def test_alerts_fire_on_new_target_and_failing_target_only_once_per_change():
+    msgs = []
+    client = FakeClient()
+    obs = FakeObserver()
+    s = Scheduler(
+        lambda: client,
+        lambda: LOC,
+        lambda: [_target("a"), _target("b")],
+        obs,
+        clock=lambda: NIGHT,
+        notify=lambda t, m: msgs.append(m),
+    )
+    s.enabled = True
+    s.tick()
+    assert len(msgs) == 1 and msgs[0].startswith("Now shooting")
+    obs.state = {"state": "done", "step": "capturing", "target": msgs[0].split()[-1]}
+    client.job = {"state": "running", "captured": 10, "failed": 8}
+    s.tick()
+    assert any(m.startswith("Leaving") for m in msgs)

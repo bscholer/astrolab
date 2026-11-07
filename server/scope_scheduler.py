@@ -45,6 +45,7 @@ class Scheduler:
         observer: Observer,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         interval_s: float = 60.0,
+        notify: Callable[[str, str], None] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_site = get_site
@@ -52,6 +53,8 @@ class Scheduler:
         self._observer = observer
         self._clock = clock
         self.interval_s = interval_s
+        self._notify = notify or (lambda *_: None)
+        self._last_target: str | None = None
         self.probe_poll_s = 10.0
         self.mono: Callable[[], float] = time.monotonic
         self._progress: tuple[str | None, int, float] = (None, -1, 0.0)
@@ -105,6 +108,8 @@ class Scheduler:
             self._parked = False
             self._step(client, loc, now, job, capturing)
         except ScopeServiceError as exc:
+            if self.state.get("state") != "error":
+                self._notify("Scope error", str(exc))
             self._set(state="error", reason=str(exc))
 
     def _stalled(self, target: str | None, job: dict) -> bool:
@@ -154,6 +159,7 @@ class Scheduler:
             self._handled_failure = obs.get("error")
             if obs.get("step") == "calibrating":
                 self._sky_wait_until = time.time() + SKY_WAIT_S
+                self._notify("Scope", "Sky not clear: calibration failed. Waiting and probing.")
             else:
                 self._skip_target(current, SKIP_AFTER_ERROR_S)
         if not capturing and self._sky_wait_until:
@@ -165,6 +171,7 @@ class Scheduler:
                 self._set(state="waiting", reason="sky not clear, probing again soon")
                 return
             self._sky_wait_until = 0.0
+            self._notify("Scope", "Sky is clear again")
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             stalled = self._stalled(current, job)
@@ -179,6 +186,8 @@ class Scheduler:
                 return
             if failing(job) or stalled:
                 self._skip_target(current, SKIP_AFTER_FAIL_S)
+                why = "stalled" if stalled else "most frames rejected"
+                self._notify("Scope", f"Leaving {current}: {why}")
             client.call("stopCapture")
             self._set(state="switching", reason=f"leaving {current}")
             return
@@ -190,6 +199,9 @@ class Scheduler:
             return
         c = pick.target
         self._observer.start(client, c.name, c.ra_deg, c.dec_deg, FRAMES_PER_RUN, EXPOSURE_S)
+        if c.name != self._last_target:
+            self._notify("Scope", f"Now shooting {c.name}")
+            self._last_target = c.name
         self._set(state="observing", target=c.name, reason="starting")
 
     def start(self) -> None:

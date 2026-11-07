@@ -99,6 +99,7 @@ from server.quality import (
 )
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
+from server.scope_alerts import make_notifier
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
 from server.scope_plan import Candidate
@@ -110,6 +111,7 @@ from server.storage import (
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_SCOPE_ALERT_URL,
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_MIRROR_BASELINE,
     SETTING_SCOPE_TARGETS,
@@ -3246,7 +3248,31 @@ def _scope_targets() -> list[Candidate]:
     return [Candidate(r["name"], r["ra_deg"], r["dec_deg"]) for r in rows]
 
 
-scope_scheduler = Scheduler(_scope_client, _scope_site, _scope_targets, scope_observer)
+scope_scheduler = Scheduler(
+    _scope_client,
+    _scope_site,
+    _scope_targets,
+    scope_observer,
+    notify=make_notifier(
+        lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+    ),
+)
+
+
+class ScopeAlertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+
+
+@app.put("/api/scope/alerts")
+def put_scope_alerts(req: ScopeAlertRequest) -> dict:
+    """Set the webhook for scheduler alerts. An empty url turns alerts off."""
+    url = req.url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url must start with http:// or https://")
+    set_setting(SETTING_SCOPE_ALERT_URL, url or None, db_path=job_manager.db_path)
+    return {"alert_url_set": bool(url)}
+
 
 
 class ScopeTarget(BaseModel):
@@ -3272,6 +3298,9 @@ def put_scope_auto(req: ScopeAutoRequest) -> dict:
     scope_scheduler.enabled = req.enabled
     return {
         "scheduler": scope_scheduler.snapshot(),
+        "alert_url_set": bool(
+            get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+        ),
         "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
     }
 

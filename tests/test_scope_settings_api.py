@@ -161,3 +161,10 @@ def test_auto_toggle_stores_targets_and_state(client):
 def test_auto_rejects_bad_coordinates(client):
     body = {"enabled": True, "targets": [{"name": "x", "ra_deg": 400, "dec_deg": 0}]}
     assert client.put("/api/scope/auto", json=body).status_code == 422
+
+
+def test_alert_url_is_validated_and_never_returned(client):
+    assert client.put("/api/scope/alerts", json={"url": "ftp://x"}).status_code == 400
+    r = client.put("/api/scope/alerts", json={"url": "https://ntfy.sh/secret-topic"})
+    assert r.json() == {"alert_url_set": True}
+    assert "secret-topic" not in client.get("/api/scope").text

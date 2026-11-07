@@ -36,6 +36,18 @@
   }
 
   let savingAuto = $state(false);
+  let alertUrl = $state('');
+
+  async function saveAlerts() {
+    try {
+      await api.setScopeAlerts(alertUrl.trim());
+      toast.success(alertUrl.trim() ? 'Alerts on.' : 'Alerts off.');
+      alertUrl = '';
+      await refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function setAuto(enabled: boolean, targets?: ScopeAutoTarget[]) {
     savingAuto = true;
@@ -167,6 +179,14 @@
           <p class="muted small">No auto targets. Add some from Tonight.</p>
         {/if}
       </div>
+      <form class="alerts" onsubmit={(e) => { e.preventDefault(); saveAlerts(); }}>
+        <input
+          type="url"
+          placeholder={scope.alert_url_set ? 'Alerts on. Paste a new webhook URL to change' : 'Alert webhook URL (ntfy)'}
+          bind:value={alertUrl}
+        />
+        <button type="submit" class="btn">{alertUrl.trim() ? 'Save' : scope.alert_url_set ? 'Turn off' : 'Save'}</button>
+      </form>
       {#if job?.state === 'running'}
         <button type="button" class="btn warn" onclick={stopCapture} disabled={stopping}>
           {stopping ? 'Stopping…' : 'Stop capture'}
@@ -245,6 +265,15 @@
     margin-top: 0.75rem;
     padding-top: 0.75rem;
     border-top: 1px solid var(--border);
+  }
+  .alerts {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+  }
+  .alerts input {
+    flex: 1;
+    min-width: 0;
   }
   .targets {
     list-style: none;

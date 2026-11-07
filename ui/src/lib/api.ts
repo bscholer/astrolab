@@ -737,6 +737,7 @@ export interface ScopeState {
   observe?: { state: string; step?: string; target?: string; error?: string | null };
   scheduler?: { enabled: boolean; state: string; target?: string; reason?: string };
   targets?: ScopeAutoTarget[];
+  alert_url_set?: boolean;
   mirror?: { state: string; files_copied: number; last_ok: number | null; current?: string | null; error?: string | null };
 }
 
@@ -985,6 +986,7 @@ export const api = {
     postJSON<{ target: string }>('/api/scope/observe', req),
   setScopeAuto: (req: { enabled: boolean; targets?: ScopeAutoTarget[] }) =>
     putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/auto', req),
+  setScopeAlerts: (url: string) => putJSON<{ alert_url_set: boolean }>('/api/scope/alerts', { url }),
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   getScope: () => getJSON<ScopeState>('/api/scope'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),

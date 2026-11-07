@@ -1361,6 +1361,20 @@
         "title": "ScanStatusResponse",
         "type": "object"
       },
+      "ScopeAlertRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ScopeAlertRequest",
+        "type": "object"
+      },
       "ScopeAutoRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3611,6 +3625,47 @@
           }
         },
         "summary": "Put Scope"
+      }
+    },
+    "/api/scope/alerts": {
+      "put": {
+        "description": "Set the webhook for scheduler alerts. An empty url turns alerts off.",
+        "operationId": "put_scope_alerts_api_scope_alerts_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeAlertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Scope Alerts Api Scope Alerts Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Scope Alerts"
       }
     },
     "/api/scope/auto": {
