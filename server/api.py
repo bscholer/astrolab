@@ -104,6 +104,7 @@ from server.quality import (
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.scope_alerts import make_notifier
+from server.scope_autostack import AutoStacker
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
 from server.scope_plan import Candidate
@@ -117,6 +118,7 @@ from server.storage import (
     SETTING_CAPTURE_ROOT,
     SETTING_SCOPE_ALERT_URL,
     SETTING_SCOPE_AUTO,
+    SETTING_SCOPE_AUTO_STACK,
     SETTING_SCOPE_MIRROR_BASELINE,
     SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
@@ -163,6 +165,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             get_setting(SETTING_SCOPE_AUTO, False, db_path=job_manager.db_path)
         )
         scope_scheduler.start()
+        scope_autostack.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3224,6 +3227,33 @@ def _scan_after_copy() -> None:
 
 
 scope_observer = Observer()
+def _find_scope_session(folder: str) -> tuple[int, int] | None:
+    """Return (session_id, light count) for the catalog session that holds a mirrored folder."""
+    with _db() as conn:
+        row = conn.execute(
+            """
+            SELECT sf.session_id AS sid, COUNT(*) AS n
+            FROM session_frames sf JOIN frames f ON f.id = sf.frame_id
+            WHERE f.image_type = 'LIGHT' AND f.path LIKE ?
+            GROUP BY sf.session_id ORDER BY n DESC LIMIT 1
+            """,
+            (f"%/{folder}/%",),
+        ).fetchone()
+    return (row["sid"], row["n"]) if row else None
+
+
+def _submit_scope_stack(session_id: int) -> str:
+    template = load_template("calibrate_register_stack")
+    with _db() as conn:
+        job = build_from_session(conn, session_id, template)
+    return job_manager.submit(template, job)
+
+
+scope_autostack = AutoStacker(
+    lambda: bool(get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)),
+    _find_scope_session,
+    _submit_scope_stack,
+)
 scope_mirror = Mirror(
     get_client=_scope_client,
     get_root=_mirror_root,
@@ -3234,6 +3264,7 @@ scope_mirror = Mirror(
         SETTING_SCOPE_MIRROR_BASELINE, names, db_path=job_manager.db_path
     ),
     on_copied=_scan_after_copy,
+    on_session_copied=scope_autostack.touch,
 )
 
 
@@ -3323,6 +3354,7 @@ class ScopeAutoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
     targets: list[ScopeTarget] | None = None
+    auto_stack: bool | None = None
 
 
 @app.put("/api/scope/auto")
@@ -3332,9 +3364,14 @@ def put_scope_auto(req: ScopeAutoRequest) -> dict:
         rows = [t.model_dump() for t in req.targets]
         set_setting(SETTING_SCOPE_TARGETS, rows, db_path=job_manager.db_path)
     set_setting(SETTING_SCOPE_AUTO, req.enabled, db_path=job_manager.db_path)
+    if req.auto_stack is not None:
+        set_setting(SETTING_SCOPE_AUTO_STACK, req.auto_stack, db_path=job_manager.db_path)
     scope_scheduler.enabled = req.enabled
     return {
         "scheduler": scope_scheduler.snapshot(),
+        "auto_stack": bool(
+            get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)
+        ),
         "alert_url_set": bool(
             get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
         ),

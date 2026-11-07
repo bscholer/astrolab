@@ -667,6 +667,7 @@ SETTING_SCOPE_MIRROR_BASELINE = "scope_mirror_baseline"
 SETTING_SCOPE_TARGETS = "scope_targets"
 SETTING_SCOPE_AUTO = "scope_auto"
 SETTING_SCOPE_ALERT_URL = "scope_alert_url"
+SETTING_SCOPE_AUTO_STACK = "scope_auto_stack"
 
 SETTING_SITE_LATITUDE = "site_latitude"
 SETTING_SITE_LONGITUDE = "site_longitude"

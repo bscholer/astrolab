@@ -205,6 +205,24 @@
         >
           {sched?.enabled ? 'Stop auto' : 'Start auto'}
         </button>
+        <button
+          type="button"
+          class="btn"
+          disabled={savingAuto}
+          onclick={async () => {
+            savingAuto = true;
+            try {
+              await api.setScopeAuto({ enabled: !!sched?.enabled, auto_stack: !scope?.auto_stack });
+              await refresh();
+            } catch (e) {
+              toast.error(e instanceof Error ? e.message : String(e));
+            } finally {
+              savingAuto = false;
+            }
+          }}
+        >
+          Auto-stack {scope.auto_stack ? 'on' : 'off'}
+        </button>
         {#if scope.targets?.length}
           <ul class="targets">
             {#each scope.targets as t (t.name)}

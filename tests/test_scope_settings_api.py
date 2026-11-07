@@ -199,3 +199,9 @@ def test_frame_returns_the_decoded_jpeg(client, monkeypatch):
     monkeypatch.setattr(api_mod, "_scope_client", lambda: Svc())
     r = client.get("/api/scope/frame?camera=tele")
     assert r.content == b"\xff\xd8jpeg" and r.headers["content-type"] == "image/jpeg"
+
+
+def test_auto_stack_flag_is_kept_when_the_toggle_omits_it(client):
+    assert client.put("/api/scope/auto", json={"enabled": False, "auto_stack": True}).json()["auto_stack"]
+    r = client.put("/api/scope/auto", json={"enabled": True})
+    assert r.json()["auto_stack"] is True

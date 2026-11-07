@@ -68,12 +68,14 @@ class Mirror:
         save_baseline: Callable[[list[str]], None],
         on_copied: Callable[[], None],
         interval_s: float = 60,
+        on_session_copied: Callable[[str], None] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_root = get_root
         self._load_baseline = load_baseline
         self._save_baseline = save_baseline
         self._on_copied = on_copied
+        self._on_session_copied = on_session_copied or (lambda _name: None)
         self.interval_s = interval_s
         self._lock = threading.Lock()
         self.state: dict = {"state": "idle", "files_copied": 0, "last_ok": None, "error": None}
@@ -105,7 +107,10 @@ class Mirror:
                 if session in baseline:
                     continue
                 self._set(state="copying", current=session)
-                copied += mirror_session(client, session, root)
+                n = mirror_session(client, session, root)
+                copied += n
+                if n:
+                    self._on_session_copied(session)
             self._set(
                 state="idle",
                 current=None,

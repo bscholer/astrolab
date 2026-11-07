@@ -1378,6 +1378,17 @@
       "ScopeAutoRequest": {
         "additionalProperties": false,
         "properties": {
+          "auto_stack": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Stack"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
@@ -3707,6 +3718,46 @@
           }
         },
         "summary": "Put Scope Auto"
+      }
+    },
+    "/api/scope/frame": {
+      "get": {
+        "description": "One live frame from the scope camera, for a quick look at the sky.",
+        "operationId": "scope_frame_api_scope_frame_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "camera",
+            "required": false,
+            "schema": {
+              "default": "wide",
+              "pattern": "^(tele|wide)$",
+              "title": "Camera",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scope Frame"
       }
     },
     "/api/scope/observe": {
