@@ -22,6 +22,7 @@ SUN_MAX_ALT_DEG = -6.0
 DEFAULT_PITCHES = (40.0, 70.0, 100.0, 130.0, 160.0)
 DEFAULT_ROTATIONS = tuple(float(r) for r in range(0, 360, 45))
 SETTLE_S = 3.0
+RETRY_WAIT_S = 5.0
 TILE_W, TILE_H = 320, 180
 
 
@@ -101,6 +102,19 @@ class PanoScanner:
         ).start()
         return scan
 
+    def _tile(self, client, folder, pitch, rot, settle_s) -> bool:
+        for attempt in (1, 2):
+            try:
+                client.call("pointScope", {"pitch": pitch, "rotation": rot}, timeout=90)
+                time.sleep(settle_s)
+                frame = client.call("getFrame", {"camera": "wide"}, timeout=40)
+                (folder / tile_name(pitch, rot)).write_bytes(base64.b64decode(frame["data"]))
+                return True
+            except Exception as exc:
+                log.warning("pano tile %s/%s attempt %d failed: %s", pitch, rot, attempt, exc)
+                time.sleep(RETRY_WAIT_S)
+        return False
+
     def _run(self, client, scan, pitches, rotations, settle_s) -> None:
         folder = self.root / scan
         folder.mkdir(parents=True, exist_ok=True)
@@ -108,16 +122,8 @@ class PanoScanner:
         try:
             for pitch in pitches:
                 for rot in rotations:
-                    try:
-                        client.call("pointScope", {"pitch": pitch, "rotation": rot}, timeout=90)
-                        time.sleep(settle_s)
-                        frame = client.call("getFrame", {"camera": "wide"}, timeout=40)
-                        (folder / tile_name(pitch, rot)).write_bytes(
-                            base64.b64decode(frame["data"])
-                        )
-                    except Exception as exc:
+                    if not self._tile(client, folder, pitch, rot, settle_s):
                         failed += 1
-                        log.warning("pano tile %s/%s failed: %s", pitch, rot, exc)
                     self._set(done=self.snapshot()["done"] + 1, failed=failed)
             build_mosaic(folder, pitches, rotations)
             self._set(state="done")

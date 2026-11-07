@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from server import sky
+from server import scope_pano
 from server.scope_pano import PanoRefused, PanoScanner, build_mosaic, tile_name
 
 LOC = sky.observer_location(37.0, -122.0, 100.0)
@@ -56,6 +57,36 @@ def test_scan_visits_every_stop_and_builds_the_mosaic(tmp_path):
     assert snap["state"] == "done" and snap["done"] == 4
     assert client.points == [(40.0, 0.0), (40.0, 90.0), (100.0, 0.0), (100.0, 90.0)]
     assert Image.open(scanner.mosaic_path()).size == (640, 360)
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_wait(monkeypatch):
+    monkeypatch.setattr(scope_pano, "RETRY_WAIT_S", 0)
+
+
+class Flaky(Fake):
+    def __init__(self):
+        super().__init__()
+        self.refused = False
+
+    def call(self, op, payload=None, timeout=None):
+        if op == "pointScope" and not self.refused:
+            self.refused = True
+            raise RuntimeError("another tool call is running")
+        return super().call(op, payload, timeout)
+
+
+def test_a_busy_service_is_retried_once(tmp_path):
+    scanner = PanoScanner(tmp_path)
+    scanner.start(Flaky(), LOC, pitches=(40.0,), rotations=(0.0,), settle_s=0, when=NIGHT)
+    import time
+
+    for _ in range(100):
+        if scanner.snapshot()["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert scanner.snapshot()["failed"] == 0
+    assert (tmp_path / scanner.snapshot()["id"] / tile_name(40.0, 0.0)).is_file()
 
 
 def test_failed_tile_is_counted_and_left_black(tmp_path):
