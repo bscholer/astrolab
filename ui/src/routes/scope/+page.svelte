@@ -11,7 +11,6 @@
   let fetchError = $state<string | null>(null);
   let stopping = $state(false);
   let savingAuto = $state(false);
-  let alertUrl = $state('');
   let weather = $state<Awaited<ReturnType<typeof api.getScopeWeather>> | null>(null);
 
   let stackTick = $state(Date.now());
@@ -95,17 +94,6 @@
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       savingAuto = false;
-    }
-  }
-
-  async function saveAlerts() {
-    try {
-      await api.setScopeAlerts(alertUrl.trim());
-      toast.success(alertUrl.trim() ? 'Alerts on.' : 'Alerts off.');
-      alertUrl = '';
-      await refresh();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -221,26 +209,50 @@
   </div>
 
   <section class="panel">
-    <h2>Auto</h2>
-    <div class="row">
-      <button type="button" class="btn primary" disabled={savingAuto} onclick={() => setAuto(!sched?.enabled)}>
-        {sched?.enabled ? 'Stop auto' : 'Start auto'}
-      </button>
-      <label class="switch">
-        <input
-          type="checkbox"
-          checked={!!scope.auto_stack}
+    <h2>All night</h2>
+    <div class="switches">
+      <div class="sw-row">
+        <div class="sw-text">
+          <div class="sw-title">Run all night</div>
+          <div class="sw-sub">{sched?.enabled ? 'On. Picks a target and moves on when the sky or target fails.' : 'Off. The scope stays where it is.'}</div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!!sched?.enabled}
+          aria-label="Run all night"
+          class="switch"
+          class:on={!!sched?.enabled}
           disabled={savingAuto}
-          onchange={(e) => setAuto(!!sched?.enabled, undefined, e.currentTarget.checked)}
-        />
-        <span>Auto-stack</span>
-      </label>
+          onclick={() => setAuto(!sched?.enabled)}
+        ><span class="knob"></span></button>
+      </div>
+      <div class="sw-row">
+        <div class="sw-text">
+          <div class="sw-title">Stack new sessions</div>
+          <div class="sw-sub">{scope.auto_stack ? 'On. Stacks a session 5 minutes after its last frame.' : 'Off. Stack by hand from Projects.'}</div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!!scope.auto_stack}
+          aria-label="Stack new sessions"
+          class="switch"
+          class:on={!!scope.auto_stack}
+          disabled={savingAuto}
+          onclick={() => setAuto(!!sched?.enabled, undefined, !scope?.auto_stack)}
+        ><span class="knob"></span></button>
+      </div>
     </div>
+
+    <div class="subhead">Targets, in order</div>
     {#if scope.targets?.length}
-      <ol class="targets">
-        {#each scope.targets as t (t.name)}
+      <ul class="queue">
+        {#each scope.targets as t, i (t.name)}
           <li class:running={obs?.target === t.name}>
-            <span>{t.name}</span>
+            <span class="num">{i + 1}</span>
+            <span class="tname">{t.name}</span>
+            {#if obs?.target === t.name}<span class="tag">now</span>{/if}
             <button
               type="button"
               class="x"
@@ -251,7 +263,7 @@
             >
           </li>
         {/each}
-      </ol>
+      </ul>
     {:else}
       <p class="muted small">No targets yet. Add some from Tonight.</p>
     {/if}
@@ -288,22 +300,6 @@
         {#each problems as p}<div>{p}</div>{/each}
       </div>
     {/if}
-    <form
-      class="alerts"
-      onsubmit={(e) => {
-        e.preventDefault();
-        saveAlerts();
-      }}
-    >
-      <input
-        type="url"
-        placeholder={scope.alert_url_set ? 'Alerts on. Paste a new URL to change' : 'Alert webhook, for example https://ntfy.sh/your-topic'}
-        bind:value={alertUrl}
-      />
-      <button type="submit" class="btn">
-        {alertUrl.trim() ? 'Save' : scope.alert_url_set ? 'Turn off' : 'Save'}
-      </button>
-    </form>
   </details>
 {/if}
 
@@ -432,53 +428,121 @@
     font-size: 0.8rem;
     color: var(--fg-mute);
   }
-  .row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.9rem;
-  }
   .btn {
     min-height: 36px;
     padding: 0 1rem;
     font-size: 0.85rem;
   }
-  .switch {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.88rem;
-    cursor: pointer;
+  .switches {
+    display: flex;
+    flex-direction: column;
   }
-  .switch input {
+  .sw-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .sw-row:first-child {
+    padding-top: 0;
+  }
+  .sw-title {
+    font-weight: 500;
+  }
+  .sw-sub {
+    margin-top: 0.15rem;
+    font-size: 0.8rem;
+    color: var(--fg-mute);
+  }
+  .switch {
+    position: relative;
+    flex: none;
+    width: 46px;
+    height: 26px;
+    padding: 0;
+    cursor: pointer;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    transition: background 160ms ease, border-color 160ms ease;
+  }
+  .switch .knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
     width: 18px;
     height: 18px;
-    min-height: 0;
-    accent-color: var(--accent);
+    background: var(--fg-mute);
+    border-radius: 50%;
+    transition: transform 160ms ease, background 160ms ease;
   }
-  .targets {
-    margin: 0.8rem 0 0;
-    padding: 0 0 0 1.3rem;
-    font-size: 0.92rem;
+  .switch.on {
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    border-color: var(--accent);
   }
-  .targets li {
-    padding: 0.05rem 0;
+  .switch.on .knob {
+    transform: translateX(20px);
+    background: var(--accent);
   }
-  .targets li > span {
-    display: inline-block;
-    min-width: 7rem;
+  .switch:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
-  .targets li.running > span {
+  .queue {
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .queue li {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.2rem 0.4rem 0.2rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .queue li:last-child {
+    border-bottom: 0;
+  }
+  .queue .num {
+    width: 1.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--fg-mute);
+  }
+  .queue .tname {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+  }
+  .queue li.running .tname {
     color: var(--accent);
+  }
+  .tag {
+    padding: 0.05rem 0.5rem;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-radius: 999px;
   }
   .x {
     background: none;
     border: 0;
     color: var(--fg-mute);
     min-width: 40px;
-    min-height: 32px;
+    min-height: 40px;
     cursor: pointer;
-    font-size: 1.1rem;
+    font-size: 1.2rem;
+  }
+  .x:hover {
+    color: var(--bad);
   }
   .details summary {
     cursor: pointer;
@@ -519,24 +583,6 @@
     font-size: 0.68rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-  }
-  .alerts {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-top: 0.9rem;
-  }
-  .alerts input {
-    flex: 1;
-    min-width: 0;
-    height: 36px;
-    padding: 0 0.6rem;
-    font: inherit;
-    font-size: 0.85rem;
-    color: var(--fg);
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
   }
   .muted {
     color: var(--fg-mute);

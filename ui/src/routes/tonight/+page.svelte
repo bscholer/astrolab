@@ -259,27 +259,20 @@
   }
 </script>
 
-{#if (obs && obs.state === 'running') || job?.state === 'running'}
-  <a class="strip" href="/scope">
-    <strong>{obs?.state === 'running' ? obs.target : 'Scope'}</strong>
-    <span class="muted">
-      {#if obs?.state === 'running'}{obs.step}…{:else if job}{job.state}{#if job.frames}{' · '}{job.captured ?? 0}/{job.frames}{/if}{/if}
-    </span>
-    {#if job?.state === 'running'}
-      <button
-        type="button"
-        class="btn warn"
-        onclick={(e) => {
-          e.preventDefault();
-          stopCapture();
-        }}>Stop</button
-      >
-    {/if}
-  </a>
-{/if}
-
-<div class="header">
+<div
+  class="header"
+  class:has-pill={(obs && obs.state === 'running') || job?.state === 'running'}
+>
   <h1>Tonight</h1>
+  {#if (obs && obs.state === 'running') || job?.state === 'running'}
+    <a class="pill" href="/scope">
+      <span class="live-dot" aria-hidden="true"></span>
+      {obs?.state === 'running' ? obs.target : 'Scope'}
+      <span class="muted">
+        {#if obs?.state === 'running'}{obs.step}{:else if job}{job.captured ?? 0}/{job.frames ?? 0}{/if}
+      </span>
+    </a>
+  {/if}
   {#if data}
     <span class="meta muted small">
       {data.entries.length} visible · night {fmtWindow(data)}
@@ -463,22 +456,42 @@
 {/if}
 
 <style>
-  .strip {
-    display: flex;
+  .header {
+    position: relative;
+  }
+  .header.has-pill .meta {
+    padding-right: 8.5rem;
+  }
+  .pill {
+    position: absolute;
+    top: 0.25rem;
+    right: 0;
+    display: inline-flex;
     align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.75rem;
-    padding: 0.5rem 0.85rem;
-    font-size: 0.82rem;
-    color: inherit;
+    gap: 0.4rem;
+    max-width: 55%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.78rem;
+    color: var(--fg);
     text-decoration: none;
     border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    border-radius: var(--radius);
+    border-radius: 999px;
     background: var(--bg-elev);
   }
-  .strip .btn {
-    margin-left: auto;
+  .live-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 8px var(--good);
+  }
+  tbody td.num,
+  tbody td.name {
+    white-space: nowrap;
   }
   td.actions {
     white-space: nowrap;
@@ -722,7 +735,23 @@
        breathe without the table pushing outside the viewport. */
     thead th,
     tbody td {
-      padding: 0.5rem 0.5rem;
+      padding: 0.5rem 0.3rem;
+    }
+    thead th:first-child,
+    tbody td:first-child {
+      padding-left: 0.7rem;
+    }
+    table {
+      font-size: 0.82rem;
+    }
+    td.actions {
+      padding-right: 0.5rem;
+    }
+    .btn.compact {
+      padding: 0 0.55rem;
+    }
+    .btn.icon {
+      margin-left: 0.2rem;
     }
   }
 </style>

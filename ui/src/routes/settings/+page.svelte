@@ -62,6 +62,22 @@
   let scopeUrl = $state('');
   let scopeToken = $state('');
   let savingScope = $state(false);
+  let alertUrl = $state('');
+  let savingAlert = $state(false);
+
+  async function saveAlert(clear = false) {
+    savingAlert = true;
+    try {
+      await api.setScopeAlerts(clear ? '' : alertUrl.trim());
+      alertUrl = '';
+      toast.success(clear ? 'Alerts off.' : 'Alerts on.');
+      await loadScope();
+    } catch (e) {
+      toast.error(`Alert save failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      savingAlert = false;
+    }
+  }
 
   async function loadScope() {
     try {
@@ -365,6 +381,33 @@
     <button type="button" class="btn" onclick={saveScope} disabled={savingScope}>
       {savingScope ? 'Saving…' : 'Save'}
     </button>
+  </div>
+  <p class="muted small alert-note" style="margin-top: 1.1rem">
+    Alerts. A webhook that gets a short message when the night starts, the sky turns bad,
+    something stalls, or rain is forecast. A ntfy topic URL works.
+  </p>
+  <div class="capture-row">
+    <input
+      type="url"
+      class="capture-input"
+      placeholder={scope?.alert_url_set ? 'Alerts are on (type a new URL to replace)' : 'https://ntfy.sh/your-topic'}
+      bind:value={alertUrl}
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button
+      type="button"
+      class="btn"
+      onclick={() => saveAlert(false)}
+      disabled={savingAlert || !alertUrl.trim()}
+    >
+      Save
+    </button>
+    {#if scope?.alert_url_set}
+      <button type="button" class="btn" onclick={() => saveAlert(true)} disabled={savingAlert}>
+        Turn off
+      </button>
+    {/if}
   </div>
   {#if scope?.configured}
     {#if scope.reachable}
