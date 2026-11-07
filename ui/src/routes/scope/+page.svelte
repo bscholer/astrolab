@@ -88,6 +88,24 @@
   let pano = $state<Awaited<ReturnType<typeof api.getScopePano>> | null>(null);
   let panoTick = $state(Date.now());
 
+  let control = $state<Awaited<ReturnType<typeof api.getScopeControl>> | null>(null);
+
+  async function refreshControl() {
+    try {
+      control = await api.getScopeControl();
+    } catch {
+      control = null;
+    }
+  }
+
+  async function runControl(action: 'prepare' | 'calibrate' | 'close') {
+    try {
+      control = await api.runScopeControl(action);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   let compass = $state<Awaited<ReturnType<typeof api.getScopeCompass>> | null>(null);
 
   async function refreshCompass() {
@@ -218,10 +236,12 @@
     refreshWeather();
     refreshPano();
     refreshCompass();
+    refreshControl();
     pollTimer = setInterval(() => {
       refresh();
       if (pano?.state === 'running') refreshPano();
       if (compass?.state === 'running') refreshCompass();
+      if (control?.state === 'running') refreshControl();
     }, 5000);
     stackTimer = setInterval(() => {
       stackTick = Date.now();
@@ -367,6 +387,35 @@
       <p class="muted small">No targets yet. Add some from Tonight.</p>
     {/if}
   </section>
+
+  {#if scope.capabilities?.includes('setup')}
+    <section class="panel">
+      <h2>Controls</h2>
+      <div class="controls">
+        {#each [['prepare', 'Prepare'], ['calibrate', 'Calibrate'], ['close', 'Close barrel']] as [action, label] (action)}
+          <button
+            type="button"
+            class="btn"
+            disabled={control?.state === 'running' || job?.state === 'running' || !!sched?.enabled}
+            onclick={() => runControl(action as 'prepare' | 'calibrate' | 'close')}
+          >
+            {label}
+          </button>
+        {/each}
+      </div>
+      <p class="muted small">
+        {#if control?.state === 'running'}
+          {control.label}…
+        {:else if control?.state === 'failed'}
+          {control.error}
+        {:else if control?.state === 'done'}
+          Done.
+        {:else}
+          Prepare homes the scope. Calibrate focuses and plate solves. Run all night must be off.
+        {/if}
+      </p>
+    </section>
+  {/if}
 
   {#if scope.capabilities?.includes('pointing')}
     <section class="panel">
@@ -606,6 +655,12 @@
     display: flex;
     flex-direction: column;
   }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
   .sw-row {
     display: flex;
     align-items: center;

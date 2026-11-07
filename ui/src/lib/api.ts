@@ -909,6 +909,13 @@ export type ScopeCompass = {
   error?: string | null;
 };
 
+export type ScopeControl = {
+  state: string;
+  action?: string;
+  label?: string;
+  error?: string | null;
+};
+
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
   getTarget: (id: number) => getJSON<TargetDetail>(`/api/targets/${id}`),
@@ -1007,6 +1014,9 @@ export const api = {
   stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
   startScopePano: (teleCovered = false) =>
     postJSON<{ id: string }>(`/api/scope/pano?tele_covered=${teleCovered}`, {}),
+  runScopeControl: (action: 'prepare' | 'calibrate' | 'close') =>
+    postJSON<ScopeControl>('/api/scope/control', { action }),
+  getScopeControl: () => getJSON<ScopeControl>('/api/scope/control'),
   startScopeCompass: () => postJSON<ScopeCompass>('/api/scope/compass', {}),
   getScopeCompass: () => getJSON<ScopeCompass>('/api/scope/compass'),
   getScopePanoTiles: () =>

@@ -85,6 +85,19 @@
         "title": "CleanupRequest",
         "type": "object"
       },
+      "ControlIn": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ControlIn",
+        "type": "object"
+      },
       "CreateProjectFromSessionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3940,6 +3953,65 @@
           }
         },
         "summary": "Start Scope Compass"
+      }
+    },
+    "/api/scope/control": {
+      "get": {
+        "operationId": "get_scope_control_api_scope_control_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Control Api Scope Control Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Control"
+      },
+      "post": {
+        "description": "Run a manual action: prepare, calibrate, or close the barrel.",
+        "operationId": "start_scope_control_api_scope_control_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Scope Control Api Scope Control Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Scope Control"
       }
     },
     "/api/scope/frame": {

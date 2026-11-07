@@ -109,6 +109,8 @@ from server.registry import lookup as registry_lookup
 from server.scope_alerts import make_notifier
 from server.scope_autostack import AutoStacker
 from server.scope_compass import CompassRefused, CompassRun
+from server.scope_control import ACTIONS as CONTROL_ACTIONS
+from server.scope_control import ControlBusy, ScopeControl
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
 from server.scope_pano import PanoRefused, PanoScanner, build_overlay, tile_grid, tile_name
@@ -3675,6 +3677,45 @@ def start_scope_compass() -> dict:
 @app.get("/api/scope/compass")
 def get_scope_compass() -> dict:
     return scope_compass.snapshot()
+
+
+scope_control = ScopeControl()
+
+
+class ControlIn(BaseModel):
+    action: str
+
+
+@app.post("/api/scope/control", status_code=202)
+def start_scope_control(req: ControlIn) -> dict:
+    """Run a manual action: prepare, calibrate, or close the barrel."""
+    if req.action not in CONTROL_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"unknown action: {req.action}")
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night first")
+    busy = scope_observer.snapshot().get("state") == "running"
+    busy = busy or "running" in (scope_pano.snapshot()["state"], scope_compass.snapshot()["state"])
+    if busy:
+        raise HTTPException(status_code=409, detail="the scope is working on something else")
+    try:
+        status = client.call("getStatus") or {}
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if status.get("busy_elsewhere") or (status.get("job") or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="the scope is capturing, stop it first")
+    try:
+        scope_control.start(client, req.action)
+    except ControlBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return scope_control.snapshot()
+
+
+@app.get("/api/scope/control")
+def get_scope_control() -> dict:
+    return scope_control.snapshot()
 
 
 class PanoTileIn(BaseModel):
