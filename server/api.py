@@ -101,13 +101,18 @@ from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
+from server.scope_plan import Candidate
+from server.scope_preview import stack_preview
+from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceClient, ScopeServiceError
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_SCOPE_AUTO,
     SETTING_SCOPE_MIRROR_BASELINE,
+    SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
     SETTING_SCOPE_URL,
     SETTING_SITE_ELEVATION_M,
@@ -148,6 +153,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _bootstrap_capture_root()
     if os.environ.get("ASTROLAB_SCOPE_MIRROR", "1") == "1":
         scope_mirror.start()
+        scope_scheduler.enabled = bool(
+            get_setting(SETTING_SCOPE_AUTO, False, db_path=job_manager.db_path)
+        )
+        scope_scheduler.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3222,6 +3231,51 @@ scope_mirror = Mirror(
 )
 
 
+def _scope_site():
+    vals = [
+        get_setting(k, None, db_path=job_manager.db_path)
+        for k in (SETTING_SITE_LATITUDE, SETTING_SITE_LONGITUDE, SETTING_SITE_ELEVATION_M)
+    ]
+    if vals[0] is None or vals[1] is None:
+        return None
+    return sky.observer_location(float(vals[0]), float(vals[1]), float(vals[2] or 0))
+
+
+def _scope_targets() -> list[Candidate]:
+    rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    return [Candidate(r["name"], r["ra_deg"], r["dec_deg"]) for r in rows]
+
+
+scope_scheduler = Scheduler(_scope_client, _scope_site, _scope_targets, scope_observer)
+
+
+class ScopeTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    ra_deg: float = Field(ge=0, lt=360)
+    dec_deg: float = Field(ge=-90, le=90)
+
+
+class ScopeAutoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    targets: list[ScopeTarget] | None = None
+
+
+@app.put("/api/scope/auto")
+def put_scope_auto(req: ScopeAutoRequest) -> dict:
+    """Turn the all-night scheduler on or off. Optionally replace the target list."""
+    if req.targets is not None:
+        rows = [t.model_dump() for t in req.targets]
+        set_setting(SETTING_SCOPE_TARGETS, rows, db_path=job_manager.db_path)
+    set_setting(SETTING_SCOPE_AUTO, req.enabled, db_path=job_manager.db_path)
+    scope_scheduler.enabled = req.enabled
+    return {
+        "scheduler": scope_scheduler.snapshot(),
+        "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
+    }
+
+
 def _scope_state() -> dict:
     client = _scope_client()
     if client is None:
@@ -3229,6 +3283,8 @@ def _scope_state() -> dict:
     state = {
         "mirror": scope_mirror.snapshot(),
         "observe": scope_observer.snapshot(),
+        "scheduler": scope_scheduler.snapshot(),
+        "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
         "configured": True,
         "url": client.base_url,
         "has_token": bool(client.token),
@@ -3292,6 +3348,21 @@ def observe(req: ObserveRequest) -> dict:
     except ObserveBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"target": req.name}
+
+
+@app.get("/api/scope/preview")
+def scope_preview() -> Response:
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        found = stack_preview(client)
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if found is None:
+        raise HTTPException(status_code=404, detail="no stack yet")
+    session, jpeg = found
+    return Response(jpeg, media_type="image/jpeg", headers={"X-Scope-Session": session})
 
 
 @app.post("/api/scope/stop")

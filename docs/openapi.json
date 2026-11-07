@@ -1361,6 +1361,34 @@
         "title": "ScanStatusResponse",
         "type": "object"
       },
+      "ScopeAutoRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ScopeTarget"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targets"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ScopeAutoRequest",
+        "type": "object"
+      },
       "ScopeConfigRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1384,6 +1412,34 @@
           "url"
         ],
         "title": "ScopeConfigRequest",
+        "type": "object"
+      },
+      "ScopeTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "dec_deg": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Dec Deg",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ra_deg": {
+            "exclusiveMaximum": 360.0,
+            "minimum": 0.0,
+            "title": "Ra Deg",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "ra_deg",
+          "dec_deg"
+        ],
+        "title": "ScopeTarget",
         "type": "object"
       },
       "SessionPatchRequest": {
@@ -3557,6 +3613,47 @@
         "summary": "Put Scope"
       }
     },
+    "/api/scope/auto": {
+      "put": {
+        "description": "Turn the all-night scheduler on or off. Optionally replace the target list.",
+        "operationId": "put_scope_auto_api_scope_auto_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeAutoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Scope Auto Api Scope Auto Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Scope Auto"
+      }
+    },
     "/api/scope/observe": {
       "post": {
         "description": "Start prepare, calibrate, slew, and capture in the background.",
@@ -3596,6 +3693,22 @@
           }
         },
         "summary": "Observe"
+      }
+    },
+    "/api/scope/preview": {
+      "get": {
+        "operationId": "scope_preview_api_scope_preview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Scope Preview"
       }
     },
     "/api/scope/stop": {

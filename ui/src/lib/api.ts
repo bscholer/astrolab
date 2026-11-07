@@ -705,6 +705,7 @@ export interface ScopeJob {
   state: string;
   frames?: number;
   captured?: number;
+  failed?: number;
   session?: string | null;
   error?: string | null;
 }
@@ -717,7 +718,14 @@ export interface ScopeState {
   service?: { name?: string; vendor?: string; model?: string };
   spec_version?: string;
   capabilities?: string[];
-  status?: { app_connected?: boolean; job?: ScopeJob | null; pitch?: number | null };
+  status?: {
+    app_connected?: boolean;
+    job?: ScopeJob | null;
+    pitch?: number | null;
+    rotation?: number | null;
+    tele_darks?: number;
+    wide_darks?: number;
+  };
   error?: string;
   error_code?: string;
   observe?: { state: string; step?: string; target?: string; error?: string | null };

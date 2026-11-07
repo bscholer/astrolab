@@ -145,3 +145,19 @@ def test_second_observe_while_running_is_refused(client):
 
 def test_observe_without_a_configured_service_is_a_clear_error(client):
     assert client.post("/api/scope/observe", json=OBSERVE).status_code == 400
+
+
+def test_auto_toggle_stores_targets_and_state(client):
+    body = {"enabled": True, "targets": [{"name": "IC 1396", "ra_deg": 324.7, "dec_deg": 57.5}]}
+    r = client.put("/api/scope/auto", json=body)
+    assert r.status_code == 200
+    assert r.json()["targets"][0]["name"] == "IC 1396"
+    assert r.json()["scheduler"]["enabled"] is True
+    r = client.put("/api/scope/auto", json={"enabled": False})
+    assert r.json()["scheduler"]["enabled"] is False
+    assert r.json()["targets"][0]["name"] == "IC 1396"
+
+
+def test_auto_rejects_bad_coordinates(client):
+    body = {"enabled": True, "targets": [{"name": "x", "ra_deg": 400, "dec_deg": 0}]}
+    assert client.put("/api/scope/auto", json=body).status_code == 422
