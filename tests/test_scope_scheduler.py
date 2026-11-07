@@ -162,3 +162,32 @@ def test_cloudy_probe_keeps_waiting():
     assert s.snapshot()["state"] == "waiting"
     s.tick()
     assert client.calls.count("startCapture") == 1
+
+
+def test_stalled_capture_is_stopped_and_the_target_skipped():
+    client = FakeClient({"state": "running", "captured": 10, "failed": 0})
+    obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
+    clock = {"t": 0.0}
+    s = _sched(client, obs, NIGHT, [_target("a"), _target("b")])
+    s.mono = lambda: clock["t"]
+    s.tick()
+    assert "stopCapture" not in client.calls
+    clock["t"] = 11 * 60
+    s.tick()
+    assert "stopCapture" in client.calls
+    assert "a" in s.snapshot()["skipped"]
+
+
+def test_progress_resets_the_stall_timer():
+    client = FakeClient({"state": "running", "captured": 10, "failed": 0})
+    obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
+    clock = {"t": 0.0}
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.mono = lambda: clock["t"]
+    s.tick()
+    clock["t"] = 9 * 60
+    client.job = {"state": "running", "captured": 11, "failed": 0}
+    s.tick()
+    clock["t"] = 18 * 60
+    s.tick()
+    assert "stopCapture" not in client.calls

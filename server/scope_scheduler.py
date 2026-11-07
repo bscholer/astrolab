@@ -24,6 +24,7 @@ FAIL_RATIO = 0.5
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
+STALL_S = 10 * 60
 PROBE_FRAMES = 4
 PROBE_MAX_FAILED = 1
 PROBE_TIMEOUT_S = 150
@@ -52,6 +53,8 @@ class Scheduler:
         self._clock = clock
         self.interval_s = interval_s
         self.probe_poll_s = 10.0
+        self.mono: Callable[[], float] = time.monotonic
+        self._progress: tuple[str | None, int, float] = (None, -1, 0.0)
         self.enabled = False
         self._lock = threading.Lock()
         self._skip: dict[str, float] = {}
@@ -104,6 +107,15 @@ class Scheduler:
         except ScopeServiceError as exc:
             self._set(state="error", reason=str(exc))
 
+    def _stalled(self, target: str | None, job: dict) -> bool:
+        """True when the frame count has not moved for STALL_S."""
+        count = job.get("captured") or 0
+        name, last, since = self._progress
+        if name != target or count != last:
+            self._progress = (target, count, self.mono())
+            return False
+        return self.mono() - since > STALL_S
+
     def _probe(self, client) -> bool:
         """Shoot a few frames at the current pointing. Clear sky stacks, cloud does not."""
         self._set(state="probing", reason="checking the sky")
@@ -155,11 +167,17 @@ class Scheduler:
             self._sky_wait_until = 0.0
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
-            bad = failing(job) or cand is None or scope_plan.usable(cand, loc, now) is None
+            stalled = self._stalled(current, job)
+            bad = (
+                stalled
+                or failing(job)
+                or cand is None
+                or scope_plan.usable(cand, loc, now) is None
+            )
             if not bad:
                 self._set(state="observing", target=current, reason="capturing")
                 return
-            if failing(job):
+            if failing(job) or stalled:
                 self._skip_target(current, SKIP_AFTER_FAIL_S)
             client.call("stopCapture")
             self._set(state="switching", reason=f"leaving {current}")
