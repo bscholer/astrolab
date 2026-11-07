@@ -114,12 +114,27 @@
 
   // Reload each live frame a few seconds after the last one finished. Skip while the tab is hidden.
   function next(kind: 'wide' | 'tele') {
-    const delay = kind === 'wide' ? 3000 : 4000;
+    const delay = kind === 'wide' ? 8000 : 30000;
     setTimeout(() => {
       if (document.hidden) return next(kind);
       if (kind === 'wide') wideTick = Date.now();
       else teleTick = Date.now();
     }, delay);
+  }
+
+  // A failed frame retries later, so a scope that comes back gets its pictures back.
+  function retry(kind: 'wide' | 'tele') {
+    if (kind === 'wide') wideFailed = true;
+    else teleFailed = true;
+    setTimeout(() => {
+      if (kind === 'wide') {
+        wideFailed = false;
+        wideTick = Date.now();
+      } else {
+        teleFailed = false;
+        teleTick = Date.now();
+      }
+    }, 30000);
   }
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -187,7 +202,7 @@
             src="/api/scope/frame?camera=wide&t={wideTick}"
             alt="Live wide view"
             onload={() => next('wide')}
-            onerror={() => (wideFailed = true)}
+            onerror={() => retry('wide')}
           />
         {/if}
         <figcaption>Wide · live</figcaption>
@@ -200,7 +215,7 @@
             src="/api/scope/frame?camera=tele&t={teleTick}"
             alt="Live tele view"
             onload={() => next('tele')}
-            onerror={() => (teleFailed = true)}
+            onerror={() => retry('tele')}
           />
         {/if}
         <figcaption>Tele · live</figcaption>
