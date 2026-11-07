@@ -24,7 +24,6 @@ FAIL_RATIO = 0.5
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
-BUSY_CODE = "-11501"  # firmware: function busy, so retry soon
 STALL_S = 10 * 60
 WEATHER_EVERY_S = 30 * 60
 BARREL_OPEN_PITCH = 30.0
@@ -182,9 +181,7 @@ class Scheduler:
             return
         if obs.get("state") == "failed" and self._handled_failure != obs.get("error"):
             self._handled_failure = obs.get("error")
-            if BUSY_CODE in str(obs.get("error")):
-                pass
-            elif obs.get("step") == "calibrating":
+            if obs.get("step") == "calibrating":
                 self._sky_wait_until = time.time() + SKY_WAIT_S
                 self._notify("Scope", "Sky not clear: calibration failed. Waiting and probing.")
             else:
