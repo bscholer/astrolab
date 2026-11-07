@@ -9,8 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from PIL import Image
 
-from server import sky
-from server import scope_pano
+from server import scope_pano, sky
 from server.scope_pano import PanoRefused, PanoScanner, build_mosaic, tile_name
 
 LOC = sky.observer_location(37.0, -122.0, 100.0)
