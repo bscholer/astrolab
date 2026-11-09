@@ -60,17 +60,26 @@
 
   let adding = $state<string | null>(null);
 
-  async function addToAuto(e: TonightEntry) {
+  async function toggleAuto(e: TonightEntry) {
     adding = e.name;
     try {
       const current = (await api.getScope()).targets ?? [];
-      if (current.some((t) => t.name === e.name)) {
-        toast.success(`${e.name} is already on the auto list.`);
-        return;
-      }
-      const targets = [...current, { name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg, object_type: e.object_type }];
+      const on = current.some((t) => t.name === e.name);
+      const targets = on
+        ? current.filter((t) => t.name !== e.name)
+        : [
+            ...current,
+            {
+              name: e.name,
+              ra_deg: e.ra_deg,
+              dec_deg: e.dec_deg,
+              object_type: e.object_type,
+              display_name: displayName(e),
+              common_name: e.common_name,
+            }
+          ];
       await api.setScopeAuto({ enabled: !!scope?.scheduler?.enabled, targets });
-      toast.success(`Added ${e.name} to the auto list.`);
+      toast.success(on ? `Removed ${e.name} from the auto list.` : `Added ${e.name} to the auto list.`);
       await refreshScope();
     } catch (err) {
       toast.error((err as Error).message);
@@ -448,9 +457,9 @@
                   class="btn compact icon"
                   class:on={isOnAutoList(entry)}
                   disabled={adding !== null}
-                  title="Add to the all-night auto list"
-                  aria-label="Add {displayName(entry)} to the auto list"
-                  onclick={() => addToAuto(entry)}
+                  title={isOnAutoList(entry) ? 'Remove from the auto list' : 'Add to the all-night auto list'}
+                  aria-label="{isOnAutoList(entry) ? 'Remove' : 'Add'} {displayName(entry)} {isOnAutoList(entry) ? 'from' : 'to'} the auto list"
+                  onclick={() => toggleAuto(entry)}
                 >
                   {isOnAutoList(entry) ? '✓' : '+'}
                 </button>

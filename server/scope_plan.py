@@ -25,6 +25,7 @@ class Candidate:
     filter: str | None = None
     exposure_s: int | None = None
     gain: int | None = None
+    goal_hours: float | None = None
 
 
 DEFAULT_EXPOSURE_S = 15

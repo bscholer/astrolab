@@ -710,6 +710,9 @@ export interface ScopeAutoTarget {
   filter?: 'vis' | 'astro' | 'duo' | null;
   exposure_s?: 15 | 30 | 60 | null;
   gain?: number | null;
+  goal_hours?: number | null;
+  display_name?: string | null;
+  common_name?: string | null;
 }
 
 export interface ScopeJob {
@@ -742,7 +745,13 @@ export interface ScopeState {
   error?: string;
   error_code?: string;
   observe?: { state: string; step?: string; target?: string; error?: string | null };
-  scheduler?: { enabled: boolean; state: string; target?: string; reason?: string };
+  scheduler?: {
+    enabled: boolean;
+    state: string;
+    target?: string;
+    reason?: string;
+    integrated_s?: Record<string, number>;
+  };
   targets?: ScopeAutoTarget[];
   alert_url_set?: boolean;
   auto_stack?: boolean;

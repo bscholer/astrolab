@@ -129,6 +129,7 @@ from server.storage import (
     SETTING_SCOPE_MIRROR_BASELINE,
     SETTING_SCOPE_PANO_EXCLUDED,
     SETTING_SCOPE_POINTING,
+    SETTING_SCOPE_PROGRESS,
     SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
     SETTING_SCOPE_URL,
@@ -3422,6 +3423,7 @@ def _scope_targets() -> list[Candidate]:
             r.get("filter"),
             r.get("exposure_s"),
             r.get("gain"),
+            r.get("goal_hours"),
         )
         for r in rows
     ]
@@ -3468,6 +3470,8 @@ scope_scheduler = Scheduler(
     notify=make_notifier(
         lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
     ),
+    load_progress=lambda: get_setting(SETTING_SCOPE_PROGRESS, {}, db_path=job_manager.db_path),
+    save_progress=lambda p: set_setting(SETTING_SCOPE_PROGRESS, p, db_path=job_manager.db_path),
 )
 
 
@@ -3496,6 +3500,9 @@ class ScopeTarget(BaseModel):
     filter: Literal["vis", "astro", "duo"] | None = None
     exposure_s: Literal[15, 30, 60] | None = None
     gain: int | None = Field(None, ge=0)
+    goal_hours: float | None = Field(None, gt=0)
+    display_name: str | None = None
+    common_name: str | None = None
 
 
 class ScopeAutoRequest(BaseModel):

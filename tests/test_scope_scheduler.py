@@ -51,12 +51,38 @@ def _sched(client, observer, now, targets):
     return s
 
 
-def test_fail_streak_counts_rejections_since_the_last_accepted_frame():
-    s = _sched(FakeClient(), FakeObserver(), NIGHT, [])
-    assert s._fail_streak("a", {"captured": 6, "failed": 6}) == 6
-    assert s._fail_streak("a", {"captured": 10, "failed": 10}) == 10
-    assert s._fail_streak("a", {"captured": 12, "failed": 10}) == 0
-    assert s._fail_streak("b", {"captured": 3, "failed": 3}) == 3
+def test_streak_counts_rejections_since_the_last_accepted_frame():
+    s = _sched(FakeClient(), FakeObserver(), NIGHT, [_target("a")])
+    assert s._account("a", {"captured": 6, "failed": 6}) == 6
+    assert s._account("a", {"captured": 10, "failed": 10}) == 10
+    assert s._account("a", {"captured": 12, "failed": 10}) == 0
+    assert s._account("b", {"captured": 3, "failed": 3}) == 3
+
+
+def test_accepted_frames_add_integration_time_at_the_target_exposure():
+    saved = []
+    s = Scheduler(
+        lambda: FakeClient(),
+        lambda: LOC,
+        lambda: [Candidate("a", 0, 0, exposure_s=30)],
+        FakeObserver(),
+        save_progress=saved.append,
+    )
+    s._account("a", {"captured": 6, "failed": 2})
+    s._account("a", {"captured": 10, "failed": 2})
+    assert s._integrated["a"] == 8 * 30 and saved[-1] == {"a": 240}
+
+
+def test_target_at_its_goal_is_stopped_and_not_picked_again():
+    client = FakeClient({"state": "running", "captured": 4, "failed": 0})
+    obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
+    a = Candidate(_target("a").name, _target("a").ra_deg, _target("a").dec_deg, goal_hours=0.01)
+    s = _sched(client, obs, NIGHT, [a, _target("b")])
+    s.tick()
+    assert "stopCapture" in client.calls
+    client.job = {}
+    s.tick()
+    assert obs.started == ["b"]
 
 
 def test_nebula_defaults_to_duo_and_overrides_win():

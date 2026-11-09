@@ -187,6 +187,11 @@
     }
   }
 
+  function fmtHours(seconds: number): string {
+    const h = seconds / 3600;
+    return h < 1 ? `${Math.round(seconds / 60)} min` : `${h.toFixed(1)} h`;
+  }
+
   function editTarget(name: string, patch: Partial<ScopeAutoTarget>) {
     const targets = (scope?.targets ?? []).map((t) => (t.name === name ? { ...t, ...patch } : t));
     return setAuto(!!sched?.enabled, targets);
@@ -375,7 +380,17 @@
         {#each scope.targets as t, i (t.name)}
           <li class:running={obs?.target === t.name}>
             <span class="num">{i + 1}</span>
-            <span class="tname">{t.name}</span>
+            <span class="tname">
+              {t.display_name ?? t.name}
+              {#if t.common_name}<span class="muted small">{t.common_name}</span>{/if}
+              {#if t.goal_hours}
+                <span class="muted small"
+                  >{fmtHours(sched?.integrated_s?.[t.name] ?? 0)} / {fmtHours(t.goal_hours * 3600)}</span
+                >
+              {:else if sched?.integrated_s?.[t.name]}
+                <span class="muted small">{fmtHours(sched.integrated_s[t.name])}</span>
+              {/if}
+            </span>
             {#if obs?.target === t.name}<span class="tag">now</span>{/if}
             <select
               class="opt"
@@ -400,6 +415,17 @@
               <option value="30">30 s</option>
               <option value="60">60 s</option>
             </select>
+            <input
+              class="opt gain"
+              type="number"
+              min="0"
+              step="0.5"
+              aria-label="Integration goal in hours for {t.name}"
+              placeholder="goal h"
+              disabled={savingAuto}
+              value={t.goal_hours ?? ''}
+              onchange={(e) => editTarget(t.name, { goal_hours: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null })}
+            />
             <input
               class="opt gain"
               type="number"

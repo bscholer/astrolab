@@ -44,6 +44,8 @@ class Scheduler:
         interval_s: float = 60.0,
         notify: Callable[[str, str], None] | None = None,
         get_warning: Callable[[], str | None] | None = None,
+        load_progress: Callable[[], dict[str, float]] | None = None,
+        save_progress: Callable[[dict[str, float]], None] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_site = get_site
@@ -60,6 +62,9 @@ class Scheduler:
         self.mono: Callable[[], float] = time.monotonic
         self._progress: tuple[str | None, int, float] = (None, -1, 0.0)
         self._streak: tuple[str | None, int, int, int] = (None, 0, 0, 0)
+        self._save_progress = save_progress or (lambda _p: None)
+        self._load_progress = load_progress or dict
+        self._loaded: dict[str, float] | None = None
         self.enabled = False
         self._lock = threading.Lock()
         self._skip: dict[str, float] = {}
@@ -68,9 +73,20 @@ class Scheduler:
         self._parked = False
         self.state: dict = {"state": "off"}
 
+    @property
+    def _integrated(self) -> dict[str, float]:
+        if self._loaded is None:
+            self._loaded = dict(self._load_progress())
+        return self._loaded
+
     def snapshot(self) -> dict:
         with self._lock:
-            return {**self.state, "enabled": self.enabled, "skipped": sorted(self._active_skips())}
+            return {
+                **self.state,
+                "enabled": self.enabled,
+                "skipped": sorted(self._active_skips()),
+                "integrated_s": dict(self._integrated),
+            }
 
     def _set(self, **kw) -> None:
         with self._lock:
@@ -144,18 +160,37 @@ class Scheduler:
             return False
         return self.mono() - since > STALL_S
 
-    def _fail_streak(self, target: str | None, job: dict) -> int:
-        """Rejected frames in a row. Any accepted frame since the last tick resets it."""
+    def _account(self, target: str | None, job: dict) -> int:
+        """Track rejected frames in a row and credit accepted frames as integration time.
+
+        Any accepted frame since the last tick resets the streak. Returns the streak."""
         captured, failed = job.get("captured") or 0, job.get("failed") or 0
         name, last_c, last_f, streak = self._streak
         if name != target or captured < last_c:
             last_c = last_f = streak = 0
-        if captured - last_c > failed - last_f:
+        accepted = (captured - last_c) - (failed - last_f)
+        if accepted > 0:
             streak = 0
+            self._credit(target, accepted)
         else:
             streak += failed - last_f
         self._streak = (target, captured, failed, streak)
         return streak
+
+    def _credit(self, target: str | None, frames: int) -> None:
+        cand = next((c for c in self._get_targets() if c.name == target), None)
+        if cand is None:
+            return
+        exposure = scope_plan.capture_settings(cand).exposure_s
+        self._integrated[cand.name] = self._integrated.get(cand.name, 0.0) + frames * exposure
+        self._save_progress(dict(self._integrated))
+
+    def _goal_reached(self) -> set[str]:
+        return {
+            c.name
+            for c in self._get_targets()
+            if c.goal_hours and self._integrated.get(c.name, 0.0) >= c.goal_hours * 3600
+        }
 
     def _probe(self, client) -> bool:
         """Shoot a few frames at the current pointing. Clear sky stacks, cloud does not."""
@@ -194,6 +229,7 @@ class Scheduler:
     def _step(self, client, loc, now, job, capturing) -> None:
         obs = self._observer.snapshot()
         current = obs.get("target")
+        streak = self._account(current, job) if current else 0
         if obs.get("state") == "running" and obs.get("step") != "capturing":
             self._set(state="observing", target=current, reason=obs.get("step"))
             return
@@ -217,9 +253,14 @@ class Scheduler:
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             stalled = self._stalled(current, job)
-            rejecting = self._fail_streak(current, job) >= FAIL_STREAK
+            rejecting = streak >= FAIL_STREAK
+            done = current in self._goal_reached()
             bad = (
-                stalled or rejecting or cand is None or scope_plan.usable(cand, loc, now) is None
+                stalled
+                or rejecting
+                or done
+                or cand is None
+                or scope_plan.usable(cand, loc, now) is None
             )
             if not bad:
                 self._set(state="observing", target=current, reason="capturing")
@@ -228,11 +269,16 @@ class Scheduler:
                 self._skip_target(current, SKIP_AFTER_FAIL_S)
                 why = "stalled" if stalled else f"{FAIL_STREAK} frames in a row rejected"
                 self._notify("Scope", f"Leaving {current}: {why}")
+            if done:
+                self._notify("Scope", f"Integration goal reached for {current}")
             client.call("stopCapture")
             self._set(state="switching", reason=f"leaving {current}")
             return
         pick = scope_plan.pick_target(
-            self._get_targets(), loc, now, skip=frozenset(self._active_skips())
+            self._get_targets(),
+            loc,
+            now,
+            skip=frozenset(self._active_skips() | self._goal_reached()),
         )
         if pick is None:
             self._set(state="waiting", reason="no usable target, retrying")
