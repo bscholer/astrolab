@@ -706,6 +706,10 @@ export interface ScopeAutoTarget {
   name: string;
   ra_deg: number;
   dec_deg: number;
+  object_type?: string | null;
+  filter?: 'vis' | 'astro' | 'duo' | null;
+  exposure_s?: 15 | 30 | 60 | null;
+  gain?: number | null;
 }
 
 export interface ScopeJob {
@@ -1006,7 +1010,13 @@ export const api = {
     site_longitude?: number | null;
     site_elevation_m?: number | null;
   }) => patchJSON<SettingsResponse>('/api/settings', req),
-  observe: (req: { name: string; ra_deg: number; dec_deg: number; frames?: number }) =>
+  observe: (req: {
+    name: string;
+    ra_deg: number;
+    dec_deg: number;
+    frames?: number;
+    object_type?: string | null;
+  }) =>
     postJSON<{ target: string }>('/api/scope/observe', req),
   setScopeAuto: (req: { enabled: boolean; targets?: ScopeAutoTarget[]; auto_stack?: boolean }) =>
     putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/auto', req),

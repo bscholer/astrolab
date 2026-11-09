@@ -37,7 +37,7 @@ class Observer:
 
     def start(
         self, client: ScopeServiceClient, name: str, ra_deg: float, dec_deg: float, frames: int,
-        exposure_s: int,
+        exposure_s: int, gain: int = 60, filter_name: str = "astro",
     ) -> None:
         with self._lock:
             if self.state.get("state") == "running":
@@ -45,7 +45,7 @@ class Observer:
             self.state = {"state": "running", "step": "starting", "target": name, "error": None}
         self._thread = threading.Thread(
             target=self._run,
-            args=(client, name, ra_deg, dec_deg, frames, exposure_s),
+            args=(client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name),
             name="astrolab-observe",
             daemon=True,
         )
@@ -73,7 +73,7 @@ class Observer:
         except Exception:
             log.warning("could not record the pointing of %s", name, exc_info=True)
 
-    def _run(self, client, name, ra_deg, dec_deg, frames, exposure_s) -> None:
+    def _run(self, client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name) -> None:
         try:
             if client.has("setup"):
                 self._set(step="preparing")
@@ -88,7 +88,15 @@ class Observer:
             )
             self._record_pointing(client, name, ra_deg, dec_deg)
             self._set(step="starting capture")
-            client.call("startCapture", {"frames": frames, "exposure": str(exposure_s)})
+            client.call(
+                "startCapture",
+                {
+                    "frames": frames,
+                    "exposure": str(exposure_s),
+                    "gain": gain,
+                    "filter": filter_name,
+                },
+            )
             self._set(state="done", step="capturing")
         except ScopeServiceError as exc:
             self._set(state="failed", error=f"{self.snapshot().get('step')}: {exc}")

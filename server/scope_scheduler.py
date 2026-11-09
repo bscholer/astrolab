@@ -19,8 +19,7 @@ log = logging.getLogger(__name__)
 
 FRAMES_PER_RUN = 200
 EXPOSURE_S = 15
-FAIL_MIN_FRAMES = 6
-FAIL_RATIO = 0.5
+FAIL_STREAK = 10
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
@@ -32,12 +31,6 @@ BARREL_OPEN_PITCH = 30.0
 PROBE_FRAMES = 4
 PROBE_MAX_FAILED = 1
 PROBE_TIMEOUT_S = 150
-
-
-def failing(job: dict) -> bool:
-    """True when most frames of a run were rejected, after a minimum sample."""
-    captured, failed = job.get("captured") or 0, job.get("failed") or 0
-    return captured >= FAIL_MIN_FRAMES and failed / captured > FAIL_RATIO
 
 
 class Scheduler:
@@ -66,6 +59,7 @@ class Scheduler:
         self.probe_poll_s = 10.0
         self.mono: Callable[[], float] = time.monotonic
         self._progress: tuple[str | None, int, float] = (None, -1, 0.0)
+        self._streak: tuple[str | None, int, int, int] = (None, 0, 0, 0)
         self.enabled = False
         self._lock = threading.Lock()
         self._skip: dict[str, float] = {}
@@ -150,6 +144,19 @@ class Scheduler:
             return False
         return self.mono() - since > STALL_S
 
+    def _fail_streak(self, target: str | None, job: dict) -> int:
+        """Rejected frames in a row. Any accepted frame since the last tick resets it."""
+        captured, failed = job.get("captured") or 0, job.get("failed") or 0
+        name, last_c, last_f, streak = self._streak
+        if name != target or captured < last_c:
+            last_c = last_f = streak = 0
+        if captured - last_c > failed - last_f:
+            streak = 0
+        else:
+            streak += failed - last_f
+        self._streak = (target, captured, failed, streak)
+        return streak
+
     def _probe(self, client) -> bool:
         """Shoot a few frames at the current pointing. Clear sky stacks, cloud does not."""
         self._set(state="probing", reason="checking the sky")
@@ -210,15 +217,16 @@ class Scheduler:
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             stalled = self._stalled(current, job)
+            rejecting = self._fail_streak(current, job) >= FAIL_STREAK
             bad = (
-                stalled or failing(job) or cand is None or scope_plan.usable(cand, loc, now) is None
+                stalled or rejecting or cand is None or scope_plan.usable(cand, loc, now) is None
             )
             if not bad:
                 self._set(state="observing", target=current, reason="capturing")
                 return
-            if failing(job) or stalled:
+            if rejecting or stalled:
                 self._skip_target(current, SKIP_AFTER_FAIL_S)
-                why = "stalled" if stalled else "most frames rejected"
+                why = "stalled" if stalled else f"{FAIL_STREAK} frames in a row rejected"
                 self._notify("Scope", f"Leaving {current}: {why}")
             client.call("stopCapture")
             self._set(state="switching", reason=f"leaving {current}")
@@ -230,7 +238,10 @@ class Scheduler:
             self._set(state="waiting", reason="no usable target, retrying")
             return
         c = pick.target
-        self._observer.start(client, c.name, c.ra_deg, c.dec_deg, FRAMES_PER_RUN, EXPOSURE_S)
+        cs = scope_plan.capture_settings(c)
+        self._observer.start(
+            client, c.name, c.ra_deg, c.dec_deg, FRAMES_PER_RUN, cs.exposure_s, cs.gain, cs.filter
+        )
         if c.name != self._last_target:
             self._notify("Scope", f"Now shooting {c.name}")
             self._last_target = c.name

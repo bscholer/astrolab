@@ -48,7 +48,7 @@
   async function queueTarget(e: TonightEntry) {
     queuing = e.name;
     try {
-      const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg });
+      const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg, object_type: e.object_type });
       toast.success(`Started ${r.target}. Watch the banner for each step.`);
       await refreshScope();
     } catch (err) {
@@ -68,7 +68,7 @@
         toast.success(`${e.name} is already on the auto list.`);
         return;
       }
-      const targets = [...current, { name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg }];
+      const targets = [...current, { name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg, object_type: e.object_type }];
       await api.setScopeAuto({ enabled: !!scope?.scheduler?.enabled, targets });
       toast.success(`Added ${e.name} to the auto list.`);
       await refreshScope();

@@ -114,7 +114,7 @@ from server.scope_control import ControlBusy, ScopeControl
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
 from server.scope_pano import PanoRefused, PanoScanner, build_overlay, tile_grid, tile_name
-from server.scope_plan import Candidate
+from server.scope_plan import Candidate, capture_settings
 from server.scope_preview import stack_preview
 from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceClient, ScopeServiceError
@@ -3413,7 +3413,18 @@ def _scope_site():
 
 def _scope_targets() -> list[Candidate]:
     rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
-    return [Candidate(r["name"], r["ra_deg"], r["dec_deg"]) for r in rows]
+    return [
+        Candidate(
+            r["name"],
+            r["ra_deg"],
+            r["dec_deg"],
+            r.get("object_type"),
+            r.get("filter"),
+            r.get("exposure_s"),
+            r.get("gain"),
+        )
+        for r in rows
+    ]
 
 
 _weather_cache: dict = {"at": 0.0, "outlook": None}
@@ -3481,6 +3492,10 @@ class ScopeTarget(BaseModel):
     name: str
     ra_deg: float = Field(ge=0, lt=360)
     dec_deg: float = Field(ge=-90, le=90)
+    object_type: str | None = None
+    filter: Literal["vis", "astro", "duo"] | None = None
+    exposure_s: Literal[15, 30, 60] | None = None
+    gain: int | None = Field(None, ge=0)
 
 
 class ScopeAutoRequest(BaseModel):
@@ -3569,7 +3584,10 @@ class ObserveRequest(BaseModel):
     ra_deg: float = Field(ge=0, lt=360)
     dec_deg: float = Field(ge=-90, le=90)
     frames: int = Field(30, ge=1, le=500)
-    exposure_s: int = 15
+    exposure_s: Literal[15, 30, 60] = 15
+    gain: int = Field(60, ge=0)
+    filter: Literal["vis", "astro", "duo"] | None = None
+    object_type: str | None = None
 
 
 @app.post("/api/scope/observe", status_code=202)
@@ -3586,7 +3604,12 @@ def observe(req: ObserveRequest) -> dict:
         detail = f"service lacks capability: {', '.join(missing)}"
         raise HTTPException(status_code=400, detail=detail)
     try:
-        scope_observer.start(client, req.name, req.ra_deg, req.dec_deg, req.frames, req.exposure_s)
+        candidate = Candidate(req.name, req.ra_deg, req.dec_deg, req.object_type)
+        filter_name = req.filter or capture_settings(candidate).filter
+        scope_observer.start(
+            client, req.name, req.ra_deg, req.dec_deg, req.frames, req.exposure_s, req.gain,
+            filter_name,
+        )
     except ObserveBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"target": req.name}

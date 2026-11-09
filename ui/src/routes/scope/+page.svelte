@@ -187,6 +187,11 @@
     }
   }
 
+  function editTarget(name: string, patch: Partial<ScopeAutoTarget>) {
+    const targets = (scope?.targets ?? []).map((t) => (t.name === name ? { ...t, ...patch } : t));
+    return setAuto(!!sched?.enabled, targets);
+  }
+
   async function stopCapture() {
     stopping = true;
     try {
@@ -372,6 +377,39 @@
             <span class="num">{i + 1}</span>
             <span class="tname">{t.name}</span>
             {#if obs?.target === t.name}<span class="tag">now</span>{/if}
+            <select
+              class="opt"
+              aria-label="Filter for {t.name}"
+              disabled={savingAuto}
+              value={t.filter ?? ''}
+              onchange={(e) => editTarget(t.name, { filter: e.currentTarget.value || null } as Partial<ScopeAutoTarget>)}
+            >
+              <option value="">Filter: auto</option>
+              <option value="duo">Duo-band</option>
+              <option value="astro">Astro</option>
+              <option value="vis">Vis</option>
+            </select>
+            <select
+              class="opt"
+              aria-label="Exposure for {t.name}"
+              disabled={savingAuto}
+              value={t.exposure_s ?? ''}
+              onchange={(e) => editTarget(t.name, { exposure_s: (Number(e.currentTarget.value) || null) as ScopeAutoTarget['exposure_s'] })}
+            >
+              <option value="">15 s</option>
+              <option value="30">30 s</option>
+              <option value="60">60 s</option>
+            </select>
+            <input
+              class="opt gain"
+              type="number"
+              min="0"
+              aria-label="Gain for {t.name}"
+              placeholder="gain 60"
+              disabled={savingAuto}
+              value={t.gain ?? ''}
+              onchange={(e) => editTarget(t.name, { gain: e.currentTarget.value === '' ? null : Number(e.currentTarget.value) })}
+            />
             <button
               type="button"
               class="x"
@@ -743,6 +781,13 @@
     min-width: 0;
     font-family: var(--font-mono);
     font-size: 0.9rem;
+  }
+  .queue .opt {
+    font-size: 0.78rem;
+    padding: 0.1rem 0.3rem;
+  }
+  .queue .opt.gain {
+    width: 5.5rem;
   }
   .queue li.running .tname {
     color: var(--accent);

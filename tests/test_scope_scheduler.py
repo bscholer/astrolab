@@ -9,7 +9,7 @@ from astropy.time import Time
 
 from server import sky
 from server.scope_plan import Candidate
-from server.scope_scheduler import Scheduler, failing
+from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceError
 
 LOC = sky.observer_location(37.0, -122.0, 100.0)
@@ -40,8 +40,9 @@ class FakeObserver:
     def snapshot(self):
         return dict(self.state)
 
-    def start(self, client, name, *_):
+    def start(self, client, name, *args):
         self.started.append(name)
+        self.args = args
 
 
 def _sched(client, observer, now, targets):
@@ -50,10 +51,22 @@ def _sched(client, observer, now, targets):
     return s
 
 
-def test_failing_needs_a_sample():
-    assert not failing({"captured": 3, "failed": 3})
-    assert failing({"captured": 10, "failed": 6})
-    assert not failing({"captured": 10, "failed": 5})
+def test_fail_streak_counts_rejections_since_the_last_accepted_frame():
+    s = _sched(FakeClient(), FakeObserver(), NIGHT, [])
+    assert s._fail_streak("a", {"captured": 6, "failed": 6}) == 6
+    assert s._fail_streak("a", {"captured": 10, "failed": 10}) == 10
+    assert s._fail_streak("a", {"captured": 12, "failed": 10}) == 0
+    assert s._fail_streak("b", {"captured": 3, "failed": 3}) == 3
+
+
+def test_nebula_defaults_to_duo_and_overrides_win():
+    from server.scope_plan import capture_settings
+
+    assert capture_settings(Candidate("m42", 0, 0, "Emission Nebula")).filter == "duo"
+    assert capture_settings(Candidate("m31", 0, 0, "Galaxy")).filter == "astro"
+    assert capture_settings(Candidate("m31", 0, 0)).gain == 60
+    c = Candidate("x", 0, 0, "Emission Nebula", "astro", 30, 80)
+    assert (c.filter, capture_settings(c).exposure_s, capture_settings(c).gain) == ("astro", 30, 80)
 
 
 def test_idle_scope_starts_a_target():
@@ -69,7 +82,7 @@ def test_daytime_stops_capture_and_starts_nothing():
 
 
 def test_failing_target_is_stopped_then_skipped_for_the_next_pick():
-    client = FakeClient({"state": "running", "captured": 10, "failed": 8})
+    client = FakeClient({"state": "running", "captured": 10, "failed": 10})
     obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
     s = _sched(client, obs, NIGHT, [_target("a"), _target("b")])
     s.tick()
@@ -211,7 +224,7 @@ def test_alerts_fire_on_new_target_and_failing_target_only_once_per_change():
     s.tick()
     assert len(msgs) == 1 and msgs[0].startswith("Now shooting")
     obs.state = {"state": "done", "step": "capturing", "target": msgs[0].split()[-1]}
-    client.job = {"state": "running", "captured": 10, "failed": 8}
+    client.job = {"state": "running", "captured": 10, "failed": 10}
     s.tick()
     assert any(m.startswith("Leaving") for m in msgs)
 

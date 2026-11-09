@@ -21,6 +21,41 @@ class Candidate:
     name: str
     ra_deg: float
     dec_deg: float
+    object_type: str | None = None
+    filter: str | None = None
+    exposure_s: int | None = None
+    gain: int | None = None
+
+
+DEFAULT_EXPOSURE_S = 15
+DEFAULT_GAIN = 60
+DUO_BAND_TYPES = frozenset(
+    {
+        "Emission Nebula",
+        "H II Region",
+        "Nebula",
+        "Cluster with Nebula",
+        "Planetary Nebula",
+        "Supernova Remnant",
+    }
+)
+
+
+@dataclass(frozen=True)
+class CaptureSettings:
+    filter: str
+    exposure_s: int
+    gain: int
+
+
+def capture_settings(c: Candidate) -> CaptureSettings:
+    """Per-target overrides win. Gas nebulae default to duo-band, everything else to astro."""
+    default_filter = "duo" if c.object_type in DUO_BAND_TYPES else "astro"
+    return CaptureSettings(
+        c.filter or default_filter,
+        c.exposure_s or DEFAULT_EXPOSURE_S,
+        c.gain if c.gain is not None else DEFAULT_GAIN,
+    )
 
 
 @dataclass(frozen=True)
