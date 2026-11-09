@@ -381,8 +381,8 @@
           <li class:running={obs?.target === t.name}>
             <span class="num">{i + 1}</span>
             <span class="tname">
-              {t.display_name ?? t.name}
-              {#if t.common_name}<span class="muted small">{t.common_name}</span>{/if}
+              {t.common_name ?? t.display_name ?? t.name}
+              {#if t.common_name}<span class="muted small">{t.display_name ?? t.name}</span>{/if}
               {#if t.goal_hours}
                 <span class="muted small"
                   >{fmtHours(sched?.integrated_s?.[t.name] ?? 0)} / {fmtHours(t.goal_hours * 3600)}</span
