@@ -24,6 +24,8 @@ SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
 BUSY_CODE = "-11501"  # firmware: function busy
+MOTORS_UNSET_CODE = "-14520"  # firmware: motors need a reset after a reboot
+PREPARE_TIMEOUT_S = 180
 BUSY_WAIT_S = 15 * 60
 STALL_S = 10 * 60
 WEATHER_EVERY_S = 30 * 60
@@ -218,13 +220,20 @@ class Scheduler:
     def _park(self, client) -> None:
         """Close the barrel once per day. A service without the operation stays as it is."""
         try:
-            client.call("closeBarrel", timeout=90)
-            self._parked = True
+            self._close_barrel(client)
         except ScopeServiceError as exc:
-            if exc.code == "unsupported":
-                self._parked = True
-            else:
+            if exc.code != "unsupported":
                 raise
+        self._parked = True
+
+    def _close_barrel(self, client) -> None:
+        try:
+            client.call("closeBarrel", timeout=90)
+        except ScopeServiceError as exc:
+            if MOTORS_UNSET_CODE not in str(exc) or not client.has("setup"):
+                raise
+            client.call("prepareScope", timeout=PREPARE_TIMEOUT_S)
+            client.call("closeBarrel", timeout=90)
 
     def _step(self, client, loc, now, job, capturing) -> None:
         obs = self._observer.snapshot()
