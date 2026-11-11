@@ -257,7 +257,7 @@ class Scheduler:
     def _handle_observe_failure(self, target: str | None, obs: dict) -> None:
         error, step = obs.get("error") or "", obs.get("step")
         log.warning("observation of %s failed while %s: %s", target, step, error)
-        if step == "calibrating" and CLOUD_CODE in error:
+        if step == "calibrating" and (CLOUD_CODE in error or "timed out" in error):
             self._wait("sky not clear: calibration found no stars", SKY_WAIT_S)
             self._notify("Scope", "Sky not clear: calibration failed. Waiting and retrying.")
         elif step in ("preparing", "calibrating"):

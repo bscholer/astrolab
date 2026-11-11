@@ -304,6 +304,13 @@ def test_cloud_calibration_waits_then_retries_the_full_observation():
     assert obs.started == ["a"]
 
 
+def test_calibration_that_never_solves_counts_as_cloud_not_as_a_fault():
+    obs = FakeObserver(_failed("calibrating", "calibrating: calibration timed out"))
+    s = _sched(FakeClient(), obs, NIGHT, [_target("a")])
+    s.tick()
+    assert "sky not clear" in s.snapshot()["reason"]
+
+
 def test_other_calibration_errors_are_a_fault_alerted_once_and_retried_sooner_than_cloud():
     msgs = []
     obs = FakeObserver(_failed("calibrating", "scope closed the connection"))

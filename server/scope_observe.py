@@ -12,7 +12,7 @@ from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient, ScopeServic
 log = logging.getLogger(__name__)
 
 PREPARE_TIMEOUT_S = 90
-CALIBRATE_TIMEOUT_S = 330
+CALIBRATE_TIMEOUT_S = 450
 
 
 class ObserveBusy(Exception):
