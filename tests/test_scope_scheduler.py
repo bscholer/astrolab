@@ -166,45 +166,6 @@ def test_barrel_closes_again_after_the_next_night():
     assert client.calls.count("closeBarrel") == 2
 
 
-class ProbeClient(FakeClient):
-    def __init__(self, final):
-        super().__init__()
-        self.final = final
-
-    def call(self, op, payload=None, timeout=None):
-        self.calls.append(op)
-        if op == "getStatus":
-            return {"job": self.final}
-        return {}
-
-
-def _waiting(client, obs):
-    s = _sched(client, obs, NIGHT, [_target("a")])
-    s.probe_poll_s = 0
-    s._sky_wait_until = 1.0
-    return s
-
-
-def test_clear_probe_ends_the_wait_and_starts_a_target():
-    client = ProbeClient({"state": "done", "captured": 4, "failed": 0})
-    obs = FakeObserver()
-    s = _waiting(client, obs)
-    s.tick()
-    assert "startCapture" in client.calls
-    assert obs.started == ["a"]
-
-
-def test_cloudy_probe_keeps_waiting():
-    client = ProbeClient({"state": "done", "captured": 4, "failed": 3})
-    obs = FakeObserver()
-    s = _waiting(client, obs)
-    s.tick()
-    assert not obs.started
-    assert s.snapshot()["state"] == "waiting"
-    s.tick()
-    assert client.calls.count("startCapture") == 1
-
-
 def test_stalled_capture_is_stopped_and_the_target_skipped():
     client = FakeClient({"state": "running", "captured": 10, "failed": 0})
     obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
@@ -327,11 +288,90 @@ def test_scope_busy_elsewhere_means_no_motor_commands_and_no_park():
     assert "busy" in s.snapshot()["reason"]
 
 
-def test_busy_probe_backs_off_for_fifteen_minutes_not_five():
-    client = BusyClient({}, fail_capture=True)
-    obs = FakeObserver()
-    s = _waiting(client, obs)
+def _failed(step, error, target="a"):
+    return {"state": "failed", "step": step, "target": target, "error": error}
+
+
+def test_cloud_calibration_waits_then_retries_the_full_observation():
+    obs = FakeObserver(_failed("calibrating", "calibrate failed, code -11504"))
+    s = _sched(FakeClient(), obs, NIGHT, [_target("a")])
     s.tick()
-    wait = s._sky_wait_until - time.time()
-    assert 14 * 60 < wait <= 15 * 60
-    assert s.snapshot()["state"] == "waiting"
+    assert "sky not clear" in s.snapshot()["reason"]
+    assert not obs.started
+    s._sky_wait_until = time.time() - 1
+    obs.state = {"state": "idle"}
+    s.tick()
+    assert obs.started == ["a"]
+
+
+def test_other_calibration_errors_are_a_fault_alerted_once_and_retried_sooner_than_cloud():
+    msgs = []
+    obs = FakeObserver(_failed("calibrating", "scope closed the connection"))
+    s = _sched(FakeClient(), obs, NIGHT, [_target("a")])
+    s._notify = lambda t, m: msgs.append(m)
+    s.tick()
+    s.tick()
+    assert s.snapshot()["reason"].startswith("scope fault")
+    assert len([m for m in msgs if "not cloud" in m]) == 1
+    assert 60 < s._sky_wait_until - time.time() <= 2 * 60
+
+
+def test_failed_capture_job_stops_the_scope_and_pauses_one_tick_before_a_new_target():
+    client = FakeClient({"id": "j1", "state": "done"})
+    obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.tick()
+    obs.started.clear()
+    client.job = {"id": "j2", "state": "failed", "error": "scope closed the connection"}
+    s.tick()
+    assert client.calls.count("stopCapture") == 1
+    assert not obs.started
+    assert "capture job failed" in s.snapshot()["reason"]
+    s.tick()
+    assert client.calls.count("stopCapture") == 1
+    assert obs.started == ["a"]
+
+
+def test_a_failed_job_left_from_before_a_restart_is_not_acted_on():
+    client = FakeClient({"id": "old", "state": "failed", "error": "x"})
+    obs = FakeObserver()
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.tick()
+    assert "stopCapture" not in client.calls
+    assert obs.started == ["a"]
+
+
+def test_stuck_alert_fires_once_after_no_frames_and_rearms_when_frames_arrive():
+    msgs = []
+    clock = {"t": 0.0}
+    client = FakeClient({"id": "j", "state": "running", "captured": 0, "failed": 0})
+    obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.mono = lambda: clock["t"]
+    s._last_frame_at = 0.0
+    s._notify = lambda t, m: msgs.append(m)
+    clock["t"] = 44 * 60
+    s.tick()
+    assert not any("No frames" in m for m in msgs)
+    clock["t"] = 46 * 60
+    s.tick()
+    s.tick()
+    assert len([m for m in msgs if "No frames" in m]) == 1
+    client.job = {"id": "j", "state": "running", "captured": 3, "failed": 0}
+    s.tick()
+    assert s._stuck_alerted is False
+
+
+def test_low_disk_alerts_once_and_rearms_after_space_is_freed():
+    msgs = []
+    client = BusyClient({"sd_free_gb": 0.0})
+    s = _sched(client, FakeObserver(), NIGHT, [_target("a")])
+    s._notify = lambda t, m: msgs.append(m)
+    s.tick()
+    s.tick()
+    assert len([m for m in msgs if "SD card" in m]) == 1
+    client.status = {"sd_free_gb": 50.0}
+    s.tick()
+    client.status = {"sd_free_gb": 0.5}
+    s.tick()
+    assert len([m for m in msgs if "SD card" in m]) == 2

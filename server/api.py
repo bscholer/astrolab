@@ -147,6 +147,10 @@ from server.storage import (
 from server.system_metrics import collect_system_metrics
 from server.templates import TemplateNotFound, list_templates, load_template
 
+logging.basicConfig(
+    level=os.environ.get("ASTROLAB_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 log = logging.getLogger("astrolab.api")
 
 job_manager = JobManager()

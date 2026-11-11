@@ -16,6 +16,7 @@ from server.scope_plan import Candidate
 from server.scope_service import ScopeServiceClient, ScopeServiceError
 
 log = logging.getLogger(__name__)
+_UNSEEN = "<unseen>"
 
 FRAMES_PER_RUN = 200
 EXPOSURE_S = 15
@@ -23,14 +24,13 @@ FAIL_STREAK = 10
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
-BUSY_CODE = "-11501"  # firmware: function busy
-BUSY_WAIT_S = 15 * 60
+FAULT_WAIT_S = 2 * 60
+CLOUD_CODE = "-11504"  # firmware: calibration found no stars to solve
+MIN_FREE_GB = 2.0
+STUCK_S = 45 * 60
 STALL_S = 10 * 60
 WEATHER_EVERY_S = 30 * 60
 BARREL_OPEN_PITCH = 30.0
-PROBE_FRAMES = 4
-PROBE_MAX_FAILED = 1
-PROBE_TIMEOUT_S = 150
 
 
 class Scheduler:
@@ -58,7 +58,6 @@ class Scheduler:
         self._weather_checked = -WEATHER_EVERY_S
         self._weather_alerted = False
         self._last_target: str | None = None
-        self.probe_poll_s = 10.0
         self.mono: Callable[[], float] = time.monotonic
         self._progress: tuple[str | None, int, float] = (None, -1, 0.0)
         self._streak: tuple[str | None, int, int, int] = (None, 0, 0, 0)
@@ -71,6 +70,12 @@ class Scheduler:
         self._sky_wait_until = 0.0
         self._handled_failure: str | None = None
         self._parked = False
+        self._handled_job: str | None = _UNSEEN
+        self._fault_alerted: str | None = None
+        self._wait_reason = ""
+        self._last_frame_at = time.monotonic()
+        self._stuck_alerted = False
+        self._low_disk_alerted = False
         self.state: dict = {"state": "off"}
 
     @property
@@ -90,7 +95,13 @@ class Scheduler:
 
     def _set(self, **kw) -> None:
         with self._lock:
+            changed = (kw.get("state"), kw.get("reason")) != (
+                self.state.get("state"),
+                self.state.get("reason"),
+            )
             self.state = kw
+        if changed:
+            log.info("scheduler %s: %s", kw.get("state"), kw.get("reason") or kw.get("target"))
 
     def _active_skips(self) -> set[str]:
         now = time.time()
@@ -117,6 +128,7 @@ class Scheduler:
             status = client.call("getStatus") or {}
             job = status.get("job") or {}
             self._check_weather(status)
+            self._check_disk(status)
             if status.get("busy_elsewhere"):
                 self._set(state="waiting", reason="scope is busy with another capture")
                 return
@@ -126,14 +138,35 @@ class Scheduler:
                     client.call("stopCapture")
                 elif not self._parked:
                     self._park(client)
+                self._last_frame_at = self.mono()
                 self._set(state="waiting", reason="outside the night window")
                 return
             self._parked = False
             self._step(client, loc, now, job, capturing)
+            self._watch()
         except ScopeServiceError as exc:
             if self.state.get("state") != "error":
                 self._notify("Scope error", str(exc))
             self._set(state="error", reason=str(exc))
+
+    def _check_disk(self, status: dict) -> None:
+        """Alert once when the scope SD card runs low. A full card refuses every capture."""
+        free = status.get("sd_free_gb")
+        if free is None or free >= MIN_FREE_GB:
+            self._low_disk_alerted = False
+        elif not self._low_disk_alerted:
+            self._low_disk_alerted = True
+            log.warning("scope SD card nearly full: %.1f GB free", free)
+            self._notify("Scope", f"SD card nearly full ({free:.1f} GB free). Captures will fail.")
+
+    def _watch(self) -> None:
+        """Alert once when no accepted frame arrives for STUCK_S inside the night window."""
+        idle = self.mono() - self._last_frame_at
+        if idle > STUCK_S and not self._stuck_alerted:
+            self._stuck_alerted = True
+            why = self.state.get("reason") or self.state.get("state")
+            log.warning("no accepted frames for %d min: %s", idle // 60, why)
+            self._notify("Scope", f"No frames for {int(idle // 60)} min. Status: {why}")
 
     def _check_weather(self, status: dict) -> None:
         """Alert once per warning when rain is forecast and the barrel is open. Never closes it."""
@@ -182,6 +215,8 @@ class Scheduler:
         if cand is None:
             return
         exposure = scope_plan.capture_settings(cand).exposure_s
+        self._last_frame_at = self.mono()
+        self._stuck_alerted = False
         self._integrated[cand.name] = self._integrated.get(cand.name, 0.0) + frames * exposure
         self._save_progress(dict(self._integrated))
 
@@ -191,29 +226,6 @@ class Scheduler:
             for c in self._get_targets()
             if c.goal_hours and self._integrated.get(c.name, 0.0) >= c.goal_hours * 3600
         }
-
-    def _probe(self, client) -> bool:
-        """Shoot a few frames at the current pointing. Clear sky stacks, cloud does not."""
-        self._set(state="probing", reason="checking the sky")
-        try:
-            client.call("startCapture", {"frames": PROBE_FRAMES, "exposure": str(EXPOSURE_S)})
-        except ScopeServiceError as exc:
-            if BUSY_CODE not in str(exc):
-                raise
-            self._sky_wait_until = time.time() + BUSY_WAIT_S
-            return False
-        end = time.time() + PROBE_TIMEOUT_S
-        job: dict = {}
-        while time.time() < end:
-            time.sleep(self.probe_poll_s)
-            job = (client.call("getStatus") or {}).get("job") or {}
-            if job.get("state") != "running":
-                break
-        else:
-            client.call("stopCapture")
-        captured = job.get("captured") or 0
-        failed = job.get("failed") or 0
-        return captured >= PROBE_FRAMES and failed <= PROBE_MAX_FAILED
 
     def _park(self, client) -> None:
         """Close the barrel once per day. A service without the operation stays as it is."""
@@ -226,6 +238,25 @@ class Scheduler:
             else:
                 raise
 
+    def _wait(self, reason: str, seconds: float) -> None:
+        self._sky_wait_until = time.time() + seconds
+        self._wait_reason = reason
+        log.info("waiting %d min: %s", seconds // 60, reason)
+
+    def _handle_observe_failure(self, target: str | None, obs: dict) -> None:
+        error, step = obs.get("error") or "", obs.get("step")
+        log.warning("observation of %s failed while %s: %s", target, step, error)
+        if step == "calibrating" and CLOUD_CODE in error:
+            self._wait("sky not clear: calibration found no stars", SKY_WAIT_S)
+            self._notify("Scope", "Sky not clear: calibration failed. Waiting and retrying.")
+        elif step in ("preparing", "calibrating"):
+            self._wait(f"scope fault: {error}", FAULT_WAIT_S)
+            if self._fault_alerted != error:
+                self._fault_alerted = error
+                self._notify("Scope", f"Scope fault, not cloud: {error}. Retrying soon.")
+        else:
+            self._skip_target(target, SKIP_AFTER_ERROR_S)
+
     def _step(self, client, loc, now, job, capturing) -> None:
         obs = self._observer.snapshot()
         current = obs.get("target")
@@ -233,23 +264,22 @@ class Scheduler:
         if obs.get("state") == "running" and obs.get("step") != "capturing":
             self._set(state="observing", target=current, reason=obs.get("step"))
             return
+        if self._handled_job == _UNSEEN:
+            self._handled_job = job.get("id")
+        if job.get("state") == "failed" and job.get("id") != self._handled_job:
+            self._handled_job = job.get("id")
+            error = job.get("error") or "unknown error"
+            log.warning("capture job %s failed: %s", job.get("id"), error)
+            self._notify("Scope", f"Capture job failed: {error}")
+            client.call("stopCapture")
+            self._set(state="waiting", reason=f"capture job failed: {error}")
+            return
         if obs.get("state") == "failed" and self._handled_failure != obs.get("error"):
             self._handled_failure = obs.get("error")
-            if obs.get("step") == "calibrating":
-                self._sky_wait_until = time.time() + SKY_WAIT_S
-                self._notify("Scope", "Sky not clear: calibration failed. Waiting and probing.")
-            else:
-                self._skip_target(current, SKIP_AFTER_ERROR_S)
-        if not capturing and self._sky_wait_until:
-            if time.time() < self._sky_wait_until:
-                self._set(state="waiting", reason="sky not clear, probing again soon")
-                return
-            if not self._probe(client):
-                self._sky_wait_until = max(self._sky_wait_until, time.time() + SKY_WAIT_S)
-                self._set(state="waiting", reason="sky not clear, probing again soon")
-                return
-            self._sky_wait_until = 0.0
-            self._notify("Scope", "Sky is clear again")
+            self._handle_observe_failure(current, obs)
+        if not capturing and time.time() < self._sky_wait_until:
+            self._set(state="waiting", reason=self._wait_reason)
+            return
         if capturing:
             cand = next((c for c in self._get_targets() if c.name == current), None)
             stalled = self._stalled(current, job)
@@ -284,6 +314,7 @@ class Scheduler:
             self._set(state="waiting", reason="no usable target, retrying")
             return
         c = pick.target
+        self._sky_wait_until = 0.0
         cs = scope_plan.capture_settings(c)
         self._observer.start(
             client, c.name, c.ra_deg, c.dec_deg, FRAMES_PER_RUN, cs.exposure_s, cs.gain, cs.filter
