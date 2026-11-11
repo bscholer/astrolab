@@ -108,6 +108,7 @@ from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.scope_alerts import make_notifier
 from server.scope_autostack import AutoStacker
+from server.scope_cleanup import Cleaner
 from server.scope_compass import CompassRefused, CompassRun
 from server.scope_control import ACTIONS as CONTROL_ACTIONS
 from server.scope_control import ControlBusy, ScopeControl
@@ -180,6 +181,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         )
         scope_scheduler.start()
         scope_autostack.start()
+        scope_cleaner.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3403,6 +3405,15 @@ scope_mirror = Mirror(
     ),
     on_copied=_scan_after_copy,
     on_session_copied=scope_autostack.touch,
+)
+
+
+scope_cleaner = Cleaner(
+    _scope_client,
+    _mirror_root,
+    notify=make_notifier(
+        lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+    ),
 )
 
 
