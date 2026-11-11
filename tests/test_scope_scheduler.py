@@ -166,6 +166,33 @@ def test_barrel_closes_again_after_the_next_night():
     assert client.calls.count("closeBarrel") == 2
 
 
+class RebootedClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.reset = False
+
+    def has(self, _group):
+        return True
+
+    def call(self, op, payload=None, timeout=None):
+        if op == "prepareScope":
+            self.reset = True
+        if op == "closeBarrel" and not self.reset:
+            self.calls.append(op)
+            raise ScopeServiceError("move motor 2 to 0.0 failed, code -14520")
+        return super().call(op, payload, timeout)
+
+
+def test_barrel_close_resets_the_motors_after_a_scope_reboot():
+    client = RebootedClient()
+    s = _sched(client, FakeObserver(), DAY, [_target("a")])
+    s.tick()
+    assert client.calls == ["getStatus", "closeBarrel", "prepareScope", "closeBarrel"]
+    assert s.snapshot()["state"] == "waiting"
+    s.tick()
+    assert client.calls.count("closeBarrel") == 2
+
+
 class ProbeClient(FakeClient):
     def __init__(self, final):
         super().__init__()
