@@ -375,3 +375,16 @@ def test_low_disk_alerts_once_and_rearms_after_space_is_freed():
     client.status = {"sd_free_gb": 0.5}
     s.tick()
     assert len([m for m in msgs if "SD card" in m]) == 2
+
+
+def test_capture_astrolab_started_but_the_relay_lost_is_stopped_while_a_foreign_one_is_left():
+    client = BusyClient({"job": {"id": "j", "state": "running"}})
+    obs = FakeObserver({"state": "done", "step": "capturing", "target": "a"})
+    s = _sched(client, obs, NIGHT, [_target("a")])
+    s.tick()
+    client.status = {"job": None, "busy_elsewhere": True}
+    s.tick()
+    assert client.calls.count("stopCapture") == 1
+    s.tick()
+    assert client.calls.count("stopCapture") == 1
+    assert "busy" in s.snapshot()["reason"]

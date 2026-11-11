@@ -71,6 +71,7 @@ class Scheduler:
         self._handled_failure: str | None = None
         self._parked = False
         self._handled_job: str | None = _UNSEEN
+        self._owns_capture = False
         self._fault_alerted: str | None = None
         self._wait_reason = ""
         self._last_frame_at = time.monotonic()
@@ -129,10 +130,20 @@ class Scheduler:
             job = status.get("job") or {}
             self._check_weather(status)
             self._check_disk(status)
+            capturing = job.get("state") == "running"
+            if capturing:
+                self._owns_capture = True
+            elif job.get("state") == "done":
+                self._owns_capture = False
             if status.get("busy_elsewhere"):
+                if self._owns_capture:
+                    log.warning("scope still shoots a capture that astrolab started, stopping it")
+                    self._owns_capture = False
+                    client.call("stopCapture")
+                    self._set(state="waiting", reason="stopping a capture the relay lost track of")
+                    return
                 self._set(state="waiting", reason="scope is busy with another capture")
                 return
-            capturing = job.get("state") == "running"
             if not scope_plan.in_window(loc, now):
                 if capturing:
                     client.call("stopCapture")
