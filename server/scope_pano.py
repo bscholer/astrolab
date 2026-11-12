@@ -15,7 +15,7 @@ from astropy.coordinates import AltAz, EarthLocation, get_sun
 from astropy.time import Time
 from PIL import Image, ImageDraw
 
-from server.scope_horizon import CENTER_FRACTION, sky_mask
+from server.scope_horizon import CENTER_FRACTION, cached_mask
 from server.scope_service import ScopeServiceClient
 
 log = logging.getLogger(__name__)
@@ -98,12 +98,14 @@ def build_overlay(folder: Path, excluded: set[str], clear: dict[str, bool] | Non
                     ImageDraw.Draw(tile).rectangle(box, outline=color, width=4)
             else:
                 a = np.asarray(tile).copy()
-                m = sky_mask(tile)
+                m = cached_mask(folder / name)
                 a[m] = (0.4 * a[m] + 0.6 * np.array([255, 0, 255])).astype(np.uint8)
                 tile = Image.fromarray(a)
             sheet.paste(tile, (c * TILE_W, r * TILE_H))
     out = folder / "overlay.jpg"
-    sheet.save(out, "JPEG", quality=85)
+    tmp = folder / "overlay.tmp.jpg"
+    sheet.save(tmp, "JPEG", quality=85)
+    tmp.replace(out)  # a request reading the old file never sees half a new one
     return out
 
 

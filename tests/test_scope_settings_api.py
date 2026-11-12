@@ -22,6 +22,7 @@ CAPS = {
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "catalog.sqlite"
     api.scope_observer.state = {"state": "idle"}
+    api._frame_last.clear()
     api.job_manager.reset_for_tests(db_path=db_path)
     monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path))
     seen: list[dict] = []
@@ -141,6 +142,7 @@ def test_second_observe_while_running_is_refused(client):
     api.scope_observer.state = {"state": "running", "target": "M31"}
     assert client.post("/api/scope/observe", json=OBSERVE).status_code == 409
     api.scope_observer.state = {"state": "idle"}
+    api._frame_last.clear()
 
 
 def test_observe_without_a_configured_service_is_a_clear_error(client):
@@ -343,3 +345,24 @@ def test_overlay_boxes_follow_the_drawn_line(client, tmp_path, monkeypatch):
 
     assert near(top, CLEAR_COLOR), top  # pitch 60 is altitude 60, above the line
     assert near(bottom, BLOCKED_COLOR), bottom  # pitch 20 is below it
+
+
+def test_frame_requests_share_one_grab(client, monkeypatch):
+    import base64 as b64
+
+    calls = []
+
+    class Svc:
+        def has(self, cap):
+            return True
+
+        def call(self, op, payload=None, timeout=None):
+            calls.append(op)
+            return {"data": b64.b64encode(b"jpeg").decode()}
+
+    monkeypatch.setattr(api, "_scope_client", lambda: Svc())
+    assert client.get("/api/scope/frame?camera=wide").content == b"jpeg"
+    assert client.get("/api/scope/frame?camera=wide").content == b"jpeg"
+    assert calls == ["getFrame"]
+    client.get("/api/scope/frame?camera=tele")
+    assert calls == ["getFrame", "getFrame"]

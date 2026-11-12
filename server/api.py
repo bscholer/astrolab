@@ -183,6 +183,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         scope_scheduler.start()
         scope_autostack.start()
         scope_cleaner.start()
+        threading.Thread(target=_warm_scope_caches, name="astrolab-warm", daemon=True).start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3730,15 +3731,27 @@ MIN_HORIZON_POINTS = 3
 _hints_cache: dict = {"key": None, "value": []}
 
 
+_model_cache: dict = {"key": None, "value": None}
+
+
+def _mount_model() -> scope_mount.MountModel | None:
+    """The compass fit, redone only when a slew is added. A good fit or None."""
+    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+    key = (len(pairs), repr(pairs[-1]) if pairs else None, _scope_site() is not None)
+    if _model_cache["key"] != key:
+        model = scope_mount.fit(pairs, _scope_site())
+        _model_cache.update(key=key, value=model if model is not None and model.good else None)
+    return _model_cache["value"]
+
+
 def _horizon_hints() -> list[tuple[float, float, bool]]:
     """Where the middle of each scan frame points, marked sky or not. Empty without a good fit."""
-    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+    model = _mount_model()
     folder = scope_pano.folder()
     excluded = _pano_excluded()
-    key = (str(folder), tuple(sorted(excluded)), len(pairs), pairs[-1].get("t") if pairs else None)
+    key = (str(folder), tuple(sorted(excluded)), _model_cache["key"])
     if _hints_cache["key"] != key:
-        model = scope_mount.fit(pairs, _scope_site())
-        good = model is not None and model.good and folder is not None
+        good = model is not None and folder is not None
         hints = scope_horizon.tile_centers(folder, model, excluded) if good else []
         _hints_cache.update(key=key, value=hints)
     return _hints_cache["value"]
@@ -3870,9 +3883,8 @@ def put_scope_pano_tile(req: PanoTileIn) -> dict:
 def _line_says_clear(folder: Path) -> dict[str, bool] | None:
     """For each scan frame, whether the drawn horizon calls its middle clear. None if no line."""
     limit = _scope_horizon_limit()
-    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
-    model = scope_mount.fit(pairs, _scope_site()) if limit else None
-    if model is None or not model.good:
+    model = _mount_model() if limit else None
+    if model is None:
         return None
     pitches, rotations = tile_grid(folder)
     out = {}
@@ -3883,28 +3895,66 @@ def _line_says_clear(folder: Path) -> dict[str, bool] | None:
     return out
 
 
+_overlay_key: dict[str, tuple] = {}
+
+
+def _warm_scope_caches() -> None:
+    """Fit the mount and read the scan once at startup, so the Scope page opens fast."""
+    try:
+        _horizon_hints()
+        folder = scope_pano.folder()
+        if folder is not None:
+            get_scope_pano_overlay()
+    except Exception:
+        log.exception("could not warm the scope caches")
+
+
 @app.get("/api/scope/pano/overlay")
 def get_scope_pano_overlay() -> FileResponse:
     folder = scope_pano.folder()
     if folder is None:
         raise HTTPException(status_code=404, detail="no scan yet")
-    path = build_overlay(folder, _pano_excluded(), _line_says_clear(folder))
+    excluded, clear = _pano_excluded(), _line_says_clear(folder)
+    boxes = None if clear is None else tuple(sorted(clear.items()))
+    key = (str(folder), tuple(sorted(excluded)), boxes)
+    path = folder / "overlay.jpg"
+    if _overlay_key.get(str(folder)) != key or not path.is_file():
+        build_overlay(folder, excluded, clear)
+        _overlay_key[str(folder)] = key
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+FRAME_FRESH_S = 5.0
+_frame_locks = {"tele": threading.Lock(), "wide": threading.Lock()}
+_frame_last: dict[str, tuple[float, bytes | str]] = {}
 
 
 @app.get("/api/scope/frame")
 def scope_frame(camera: str = Query("wide", pattern="^(tele|wide)$")) -> Response:
-    """One live frame from the scope camera, for a quick look at the sky."""
-    client = _scope_client()
-    if client is None:
-        raise HTTPException(status_code=400, detail="no scope service configured")
-    try:
-        if not client.has("preview"):
-            raise HTTPException(status_code=400, detail="service lacks capability: preview")
-        data = client.call("getFrame", {"camera": camera}, timeout=80)["data"]
-    except ScopeServiceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return Response(base64.b64decode(data), media_type="image/jpeg")
+    """One live frame from the scope camera, for a quick look at the sky.
+
+    Each grab opens the scope's video stream and waits for a keyframe, up to 70 seconds for
+    the tele. Requests for the same camera share one grab, and a frame or failure from the
+    last few seconds is reused, so open tabs and retries do not pile streams up on the scope.
+    """
+    with _frame_locks[camera]:
+        last = _frame_last.get(camera)
+        if last and time.monotonic() - last[0] < FRAME_FRESH_S:
+            if isinstance(last[1], str):
+                raise HTTPException(status_code=502, detail=last[1])
+            return Response(last[1], media_type="image/jpeg")
+        client = _scope_client()
+        if client is None:
+            raise HTTPException(status_code=400, detail="no scope service configured")
+        try:
+            if not client.has("preview"):
+                raise HTTPException(status_code=400, detail="service lacks capability: preview")
+            data = base64.b64decode(client.call("getFrame", {"camera": camera}, timeout=80)["data"])
+        except ScopeServiceError as exc:
+            _frame_last[camera] = (time.monotonic(), str(exc))
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _frame_last[camera] = (time.monotonic(), data)
+    return Response(data, media_type="image/jpeg")
 
 
 @app.post("/api/scope/stop")

@@ -84,6 +84,7 @@ ok "worker pid=$WORKER_PID"
 # scripts/dev-push.sh can copy code into a running pod. Off by default.
 if [[ "${1:-}" == "uvicorn" && ( "${ASTROLAB_DEV_RELOAD:-0}" == "1" || -f /data/dev-reload ) ]]; then
     warn "dev reload on: code changes under /app/server and /app/nodes restart the API"
-    set -- "$@" --reload --reload-dir /app/server --reload-dir /app/nodes
+    # Do not wait out long camera-frame requests before reloading.
+    set -- "$@" --reload --reload-dir /app/server --reload-dir /app/nodes --timeout-graceful-shutdown 3
 fi
 exec "$@"

@@ -88,7 +88,7 @@ OVERCAST_MAX_COLOR = 12.0
 _mask_cache: dict[tuple[str, float], np.ndarray] = {}
 
 
-def _cached_mask(path) -> np.ndarray:
+def cached_mask(path) -> np.ndarray:
     key = (str(path), path.stat().st_mtime)
     if key not in _mask_cache:
         _mask_cache[key] = sky_mask(Image.open(path))
@@ -125,7 +125,7 @@ def tile_centers(folder, model, excluded: set[str]) -> list[tuple[float, float, 
             if tile_name(pitch, rot) in excluded or not path.is_file():
                 continue
             alt, az = model.to_sky(pitch, rot)
-            sky = center_is_sky(Image.open(path), _cached_mask(path))
+            sky = center_is_sky(Image.open(path), cached_mask(path))
             out.append((float(alt), float(az), sky))
     return out
 
