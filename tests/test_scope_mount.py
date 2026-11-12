@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from server import scope_horizon, scope_mount
+from server import scope_horizon
 from server.scope_mount import MountModel, enu, fit
 
 
@@ -80,40 +80,22 @@ def test_needs_three_pairs():
     assert fit([{"pitch": None, "rotation": 3, "alt_deg": 1, "az_deg": 2}] * 5) is None
 
 
-def _tree_line(az):
-    """A house at azimuth 90 to 150 up to 40 degrees, trees elsewhere at 15 to 25."""
-    return np.where((az > 90) & (az < 150), 40.0, 20.0 + 5.0 * np.sin(np.radians(3 * az)))
+def test_drawn_points_join_into_a_line_that_wraps_past_north():
+    profile = scope_horizon.profile_from_points([(350, 20), (10, 40), (180, 30)])
+    assert scope_horizon.horizon_at(profile, 0) == pytest.approx(30, abs=1.5)
+    assert scope_horizon.horizon_at(profile, 95) == pytest.approx(35, abs=1.5)
+    assert scope_horizon.horizon_at(profile, 180) == pytest.approx(30, abs=0.5)
 
 
-def _tiles(model, pitches, rotations):
-    tiles = []
-    for pitch in pitches:
-        for rot in rotations:
-            rays = scope_horizon.pixel_directions(model, pitch, rot, 180, 320)
-            alt, az = scope_mount.alt_az(rays)
-            tiles.append((pitch, rot, alt > _tree_line(az)))
-    return tiles
+def test_scan_frames_place_their_middle_and_tell_sky(tmp_path):
+    from PIL import Image
 
-
-def test_horizon_line_follows_the_mask():
-    true = _true_model(tilt=(2.0, -1.0, 80.0))
-    model = fit(_pairs(true, MOTORS, noise_deg=0.2))
-    tiles = _tiles(true, (10.0, 35.0, 60.0), tuple(float(r) for r in range(0, 360, 45)))
-    profile = scope_horizon._fill_gaps(
-        scope_horizon.horizon_profile(*scope_horizon.vote_grid(tiles, model))
-    )
-    assert all(v is not None for v in profile)
-    for az in (0, 45, 120, 200, 300):
-        want = float(_tree_line(np.array(az + 1.0)))
-        got = scope_horizon.horizon_at(profile, az)
-        assert want - 1 <= got <= want + 5, (az, want, got)
-
-
-def test_unseen_azimuths_stay_unknown():
-    profile = [None] * scope_horizon.AZ_BINS
-    profile[0] = 10.0
-    profile[3] = 30.0
-    filled = scope_horizon._fill_gaps(profile)
-    assert filled[1] == filled[2] == 30.0
-    assert filled[50] is None
-    assert scope_horizon.horizon_at(filled, 1.0 * scope_horizon.CELL_DEG) == 30.0
+    Image.new("RGB", (320, 180), (110, 150, 215)).save(tmp_path / "p45_r10.jpg")
+    Image.new("RGB", (320, 180), (60, 70, 30)).save(tmp_path / "p30_r100.jpg")
+    true = _true_model()
+    hints = scope_horizon.tile_centers(tmp_path, true, set())
+    by_sky = {sky: (alt, az) for alt, az, sky in hints}
+    alt, az = true.to_sky(45, 10)
+    assert by_sky[True] == pytest.approx((float(alt), float(az)))
+    assert False in by_sky
+    assert scope_horizon.tile_centers(tmp_path, true, {"p45_r10.jpg"})[0][2] is False

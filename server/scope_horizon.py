@@ -80,72 +80,11 @@ def sky_mask(image: Image.Image) -> np.ndarray:
     return _smooth_edges(out, 3)
 
 
-# The wide camera's field of view, across and up the frame. The DWARF 3 wide lens is about 45
-# degrees across, and the frame is 16:9.
-WIDE_HFOV_DEG = 45.0
-WIDE_VFOV_DEG = 2 * np.degrees(np.arctan(np.tan(np.radians(WIDE_HFOV_DEG / 2)) * 9 / 16))
 CELL_DEG = 2.0
-SAMPLE_STEP = 4
 AZ_BINS = int(360 / CELL_DEG)
-ALT_BINS = int(180 / CELL_DEG)
-
-
-def pixel_directions(model, pitch: float, rotation: float, h: int, w: int) -> np.ndarray:
-    """Sky (east, north, up) unit vector for each pixel of a wide frame, shape (h, w, 3)."""
-    d, up = model.vectors(pitch, rotation)
-    right = np.cross(d, up)
-    tx = np.tan(np.radians(WIDE_HFOV_DEG / 2))
-    ty = np.tan(np.radians(WIDE_VFOV_DEG / 2))
-    u = (2 * (np.arange(w) + 0.5) / w - 1) * tx
-    v = (1 - 2 * (np.arange(h) + 0.5) / h) * ty
-    rays = d + u[None, :, None] * right + v[:, None, None] * up
-    return rays / np.linalg.norm(rays, axis=-1, keepdims=True)
-
-
-def _cells(alt: np.ndarray, az: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    row = np.clip(((alt + 90) / CELL_DEG).astype(int), 0, ALT_BINS - 1)
-    col = (az / CELL_DEG).astype(int) % AZ_BINS
-    return row, col
-
-
-def vote_grid(tiles, model) -> tuple[np.ndarray, np.ndarray]:
-    """Sky and blocked counts per (altitude, azimuth) cell from (pitch, rotation, mask) tiles."""
-    from server.scope_mount import alt_az
-
-    sky_votes = np.zeros((ALT_BINS, AZ_BINS))
-    blocked = np.zeros((ALT_BINS, AZ_BINS))
-    for pitch, rotation, mask in tiles:
-        m = mask[::SAMPLE_STEP, ::SAMPLE_STEP]
-        h, w = mask.shape
-        rays = pixel_directions(model, pitch, rotation, h, w)[::SAMPLE_STEP, ::SAMPLE_STEP]
-        alt, az = alt_az(rays)
-        row, col = _cells(alt, az)
-        np.add.at(sky_votes, (row[m], col[m]), 1)
-        np.add.at(blocked, (row[~m], col[~m]), 1)
-    return sky_votes, blocked
-
-
-def horizon_profile(sky_votes: np.ndarray, blocked: np.ndarray) -> list[float | None]:
-    """For each azimuth cell, the top of the highest blocked cell. None where nothing was seen.
-
-    A cell is blocked when more of its samples are not sky than are. A branch that hangs over
-    sky still counts, so the line errs on the side of leaving a target out.
-    """
-    seen = (sky_votes + blocked) > 0
-    is_blocked = seen & (blocked > sky_votes)
-    out: list[float | None] = []
-    for col in range(AZ_BINS):
-        rows = np.flatnonzero(is_blocked[:, col])
-        if rows.size:
-            out.append(float((rows.max() + 1) * CELL_DEG - 90))
-        elif seen[:, col].any():
-            out.append(float(np.flatnonzero(seen[:, col]).min() * CELL_DEG - 90))
-        else:
-            out.append(None)
-    return out
-
-
-GAP_FILL_BINS = 5
+CENTER_FRACTION = 0.2
+OVERCAST_MIN_GRAY = 140.0
+OVERCAST_MAX_COLOR = 12.0
 _mask_cache: dict[tuple[str, float], np.ndarray] = {}
 
 
@@ -156,53 +95,71 @@ def _cached_mask(path) -> np.ndarray:
     return _mask_cache[key]
 
 
-def _fill_gaps(profile: list[float | None]) -> list[float | None]:
-    """Fill short runs of unseen azimuths with the higher of the two seen sides."""
-    n = len(profile)
-    if all(v is None for v in profile):
-        return profile
-    out = list(profile)
-    for i in range(n):
-        if profile[i] is not None:
-            continue
-        left = next((k for k in range(1, n) if profile[(i - k) % n] is not None), None)
-        right = next((k for k in range(1, n) if profile[(i + k) % n] is not None), None)
-        if left is None or right is None or left + right - 1 > GAP_FILL_BINS:
-            continue
-        out[i] = max(profile[(i - left) % n], profile[(i + right) % n])
-    return out
+def center_is_sky(image: Image.Image, mask: np.ndarray) -> bool:
+    """Whether the middle of a frame is mostly sky. Only the middle is placed reliably.
+
+    Flat gray overcast fails the mask, which wants blue or glare, so a bright, colorless,
+    smooth middle counts as sky too.
+    """
+    h, w = mask.shape
+    dh, dw = int(h * CENTER_FRACTION / 2), int(w * CENTER_FRACTION / 2)
+    if mask[h // 2 - dh : h // 2 + dh, w // 2 - dw : w // 2 + dw].mean() > 0.5:
+        return True
+    a = np.asarray(image.convert("RGB").resize((w, h))).astype(float)
+    a = a[h // 2 - dh : h // 2 + dh, w // 2 - dw : w // 2 + dw]
+    gray = a.mean(2)
+    color = (a.max(2) - a.min(2)).mean()
+    texture = np.abs(np.diff(gray, axis=1)).mean()
+    return bool(gray.mean() > OVERCAST_MIN_GRAY and color < OVERCAST_MAX_COLOR and texture < 5)
 
 
-def build_horizon(folder, model, excluded: set[str]) -> list[float | None]:
-    """Horizon altitude for each CELL_DEG of azimuth, from the scan tiles not left out."""
+def tile_centers(folder, model, excluded: set[str]) -> list[tuple[float, float, bool]]:
+    """(alt, az, sky) where the middle of each scan frame points, as hints for drawing."""
     from server.scope_pano import tile_grid, tile_name
 
     pitches, rotations = tile_grid(folder)
-    tiles = []
+    out = []
     for pitch in pitches:
         for rot in rotations:
-            name = tile_name(pitch, rot)
-            path = folder / name
-            if name in excluded or not path.is_file():
+            path = folder / tile_name(pitch, rot)
+            if tile_name(pitch, rot) in excluded or not path.is_file():
                 continue
-            tiles.append((pitch, rot, _cached_mask(path)))
-    return _fill_gaps(horizon_profile(*vote_grid(tiles, model)))
+            alt, az = model.to_sky(pitch, rot)
+            sky = center_is_sky(Image.open(path), _cached_mask(path))
+            out.append((float(alt), float(az), sky))
+    return out
+
+
+def profile_from_points(points: list[tuple[float, float]]) -> list[float]:
+    """Horizon altitude every CELL_DEG of azimuth, joining drawn (az, alt) points around."""
+    pts = sorted((az % 360, alt) for az, alt in points)
+    az = np.array([a for a, _ in pts])
+    alt = np.array([v for _, v in pts])
+    az = np.concatenate([az - 360, az, az + 360])
+    alt = np.concatenate([alt, alt, alt])
+    centers = np.arange(AZ_BINS) * CELL_DEG + CELL_DEG / 2
+    return [round(float(v), 1) for v in np.interp(centers, az, alt)]
 
 
 def horizon_at(profile: list[float | None], az_deg: float) -> float | None:
-    """The horizon altitude at an azimuth, None where the scan saw nothing."""
+    """The horizon altitude at an azimuth, None where nothing is known."""
     if not profile:
         return None
     return profile[int((az_deg % 360) / CELL_DEG) % len(profile)]
 
 
 def horizon_svg(
-    profile: list[float | None], points: list[tuple[float, float, bool]], floor_deg: float
+    profile: list[float | None],
+    hints: list[tuple[float, float, bool]],
+    drawn: list[tuple[float, float]],
+    floor_deg: float,
 ) -> str:
     """A sky map of the horizon line: zenith at the center, the true horizon at the rim.
 
     North is up and east is right, like a map of the yard. The shaded band is blocked.
-    points are (alt, az, used) for the slews behind the fit.
+    hints are (alt, az, sky) for the middle of each scan frame. drawn are the (az, alt)
+    points the line was drawn through. The UI maps taps back with the same geometry:
+    a 360 square, the rim 26 in from the edge.
     """
     size, pad = 360, 26
     c, rim = size / 2, size / 2 - pad
@@ -248,20 +205,20 @@ def horizon_svg(
             )
             path += " Z"
         parts.append(f'<path d="{path}" fill="none" stroke="#5eead4" stroke-width="2"/>')
-        for az, v in seen[:: max(1, len(seen) // 36)]:
-            x, y = xy(v, az)
-            parts.append(
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="transparent">'
-                f"<title>azimuth {az:.0f}°, clear above {v:.0f}°</title></circle>"
-            )
-    for alt, az, used in points:
+    for alt, az, is_sky in hints:
+        if alt < 0:
+            continue
         x, y = xy(alt, az)
-        fill = "#e9f1ff" if used else "none"
-        state = "used" if used else "left out"
+        fill, what = ("#86b6ef", "sky") if is_sky else ("#eb6834", "blocked")
         parts.append(
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{fill}" '
-            'stroke="#e9f1ff" stroke-width="1.5">'
-            f"<title>slew at altitude {alt:.0f}°, azimuth {az:.0f}°, {state}</title></circle>"
+            f'<rect x="{x - 4:.1f}" y="{y - 4:.1f}" width="8" height="8" rx="2" fill="{fill}">'
+            f"<title>scan frame at altitude {alt:.0f}°, azimuth {az:.0f}°: {what}</title></rect>"
+        )
+    for az, alt in drawn:
+        x, y = xy(alt, az)
+        parts.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#e9f1ff">'
+            f"<title>azimuth {az:.0f}°, clear above {alt:.0f}°</title></circle>"
         )
     parts.append("</svg>")
     return "\n".join(parts)

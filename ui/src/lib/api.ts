@@ -913,6 +913,12 @@ async function deleteJSON<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
+export type ScopeHorizon = {
+  active: boolean;
+  points: [number, number][];
+  profile: number[] | null;
+};
+
 export type ScopeCompass = {
   state: string;
   step?: string;
@@ -1038,10 +1044,8 @@ export const api = {
   getScopeControl: () => getJSON<ScopeControl>('/api/scope/control'),
   startScopeCompass: () => postJSON<ScopeCompass>('/api/scope/compass', {}),
   getScopeCompass: () => getJSON<ScopeCompass>('/api/scope/compass'),
-  getScopeHorizon: () =>
-    getJSON<{ active: boolean; reason: string | null; fit: { rms_deg: number; used: number; total: number } | null }>(
-      '/api/scope/horizon',
-    ),
+  getScopeHorizon: () => getJSON<ScopeHorizon>('/api/scope/horizon'),
+  setScopeHorizon: (points: [number, number][]) => putJSON<ScopeHorizon>('/api/scope/horizon', { points }),
   getScopePanoTiles: () =>
     getJSON<{ pitches: number[]; rotations: number[]; excluded: string[] }>('/api/scope/pano/tiles'),
   setScopePanoTile: (req: { pitch: number; rotation: number; excluded: boolean }) =>

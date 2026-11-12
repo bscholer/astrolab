@@ -36,7 +36,7 @@ def alt_az(v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _mount_vectors(theta_deg, phi_deg) -> tuple[np.ndarray, np.ndarray]:
-    """Pointing and the direction of falling theta (image up) in the mount's frame."""
+    """Pointing and the direction of falling theta, toward the axis, in the mount's frame."""
     t, p = np.radians(theta_deg), np.radians(phi_deg)
     d = np.stack([np.sin(t) * np.cos(p), np.sin(t) * np.sin(p), np.cos(t)], -1)
     up = -np.stack([np.cos(t) * np.cos(p), np.cos(t) * np.sin(p), -np.sin(t)], -1)
@@ -77,10 +77,14 @@ class MountModel:
         return theta, self.rotation_sign * np.asarray(rotation, float)
 
     def vectors(self, pitch, rotation) -> tuple[np.ndarray, np.ndarray]:
-        """Pointing and image-up as sky (east, north, up) vectors."""
-        d, up = _mount_vectors(*self._theta_phi(pitch, rotation))
+        """Pointing and image-up as sky (east, north, up) vectors.
+
+        Raising the pitch moves the view toward the top of the frame, so image-up follows
+        rising pitch. That holds on a level tripod and on a tilted mount alike.
+        """
+        d, toward_axis = _mount_vectors(*self._theta_phi(pitch, rotation))
         r = np.array(self.matrix)
-        return d @ r.T, up @ r.T
+        return d @ r.T, -self.pitch_sign * toward_axis @ r.T
 
     def to_sky(self, pitch, rotation) -> tuple[np.ndarray, np.ndarray]:
         """Altitude and azimuth, in degrees, of where the motors point."""
@@ -156,12 +160,6 @@ def fit(pairs: list[dict], loc=None) -> MountModel | None:
         _cost, ps, rs, z, r = _search(data[keep, :2], sky_all[keep])
         a_all, _ = _mount_vectors(ps * data[:, 0] + z, rs * data[:, 1])
         err = _errors_deg(r, a_all, sky_all)
-    # Pitch p and its mirror -p point the same way once turned 180 degrees, but flip image up.
-    # Pick the one where sky slews sit between the mount's zenith and its horizon, as built.
-    mid = float(np.median(ps * data[keep, 0] + z))
-    z -= 360.0 * round(mid / 360.0)
-    if mid - 360.0 * round(mid / 360.0) < 0:
-        ps, z, r = -ps, -z, r @ np.diag([-1.0, -1.0, 1.0])
     used = err[keep]
     per_pair: list[float | None] = [None] * len(pairs)
     for i, e in zip(index, err, strict=True):

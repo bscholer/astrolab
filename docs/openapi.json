@@ -490,6 +490,33 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HorizonIn": {
+        "properties": {
+          "points": {
+            "description": "(azimuth, altitude) pairs in degrees.",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "HorizonIn",
+        "type": "object"
+      },
       "Job": {
         "additionalProperties": false,
         "description": "A concrete request to run a template against specific inputs.",
@@ -4183,7 +4210,7 @@
     },
     "/api/scope/horizon": {
       "get": {
-        "description": "The fitted motor-to-sky mapping and the horizon line the scheduler keeps targets above.",
+        "description": "The drawn horizon line the scheduler keeps targets above.",
         "operationId": "get_scope_horizon_api_scope_horizon_get",
         "responses": {
           "200": {
@@ -4200,11 +4227,50 @@
           }
         },
         "summary": "Get Scope Horizon"
+      },
+      "put": {
+        "description": "Save the horizon line as points drawn on the sky map. An empty list clears it.",
+        "operationId": "put_scope_horizon_api_scope_horizon_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HorizonIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Scope Horizon Api Scope Horizon Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Scope Horizon"
       }
     },
     "/api/scope/horizon.svg": {
       "get": {
-        "description": "The horizon line as a sky map, with the slews the fit used as dots.",
+        "description": "The drawn line on a sky map, with the middle of each scan frame as a sky or blocked hint.",
         "operationId": "get_scope_horizon_svg_api_scope_horizon_svg_get",
         "responses": {
           "200": {

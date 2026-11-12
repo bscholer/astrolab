@@ -127,6 +127,7 @@ from server.storage import (
     SETTING_SCOPE_ALERT_URL,
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_AUTO_STACK,
+    SETTING_SCOPE_HORIZON,
     SETTING_SCOPE_MIRROR_BASELINE,
     SETTING_SCOPE_PANO_EXCLUDED,
     SETTING_SCOPE_POINTING,
@@ -3725,91 +3726,75 @@ def get_scope_compass() -> dict:
     return scope_compass.snapshot()
 
 
-_horizon_cache: dict = {"key": None, "value": None}
+MIN_HORIZON_POINTS = 3
+_hints_cache: dict = {"key": None, "value": []}
 
 
-def _scope_horizon() -> dict:
-    """Fit the mount from the saved slews, then turn the scan's sky mask into a horizon line."""
+def _horizon_hints() -> list[tuple[float, float, bool]]:
+    """Where the middle of each scan frame points, marked sky or not. Empty without a good fit."""
     pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
     folder = scope_pano.folder()
     excluded = _pano_excluded()
-    key = (
-        str(folder),
-        tuple(sorted(excluded)),
-        len(pairs),
-        pairs[-1].get("t") if pairs else None,
-        _scope_site() is not None,
-    )
-    if _horizon_cache["key"] == key:
-        return _horizon_cache["value"]
-    model = scope_mount.fit(pairs, _scope_site())
-    out: dict = {
-        "active": False,
-        "reason": None,
-        "scan": folder.name if folder else None,
-        "fit": model.summary() if model else None,
-        "pairs": [
-            {"target": p.get("target"), "t": p.get("t"), "error_deg": e}
-            for p, e in zip(pairs, model.errors_deg, strict=True)
-        ]
-        if model
-        else [],
-        "cell_deg": scope_horizon.CELL_DEG,
-        "margin_deg": scope_plan.HORIZON_MARGIN_DEG,
-        "profile": None,
-    }
-    if model is None:
-        out["reason"] = f"need {scope_mount.MIN_PAIRS} slews with motor angles, have {len(pairs)}"
-    elif not model.good:
-        out["reason"] = (
-            f"the compass fit is off by {model.rms_deg:.1f} degrees, "
-            f"the limit is {scope_mount.GOOD_RMS_DEG:.0f}"
-        )
-    elif folder is None:
-        out["reason"] = "no surroundings scan yet"
-    else:
-        profile = scope_horizon.build_horizon(folder, model, excluded)
-        out["profile"] = profile
-        if all(v is None for v in profile):
-            out["reason"] = "the scan has no usable tiles"
-        else:
-            out["active"] = True
-    _horizon_cache.update(key=key, value=out)
-    return out
+    key = (str(folder), tuple(sorted(excluded)), len(pairs), pairs[-1].get("t") if pairs else None)
+    if _hints_cache["key"] != key:
+        model = scope_mount.fit(pairs, _scope_site())
+        good = model is not None and model.good and folder is not None
+        hints = scope_horizon.tile_centers(folder, model, excluded) if good else []
+        _hints_cache.update(key=key, value=hints)
+    return _hints_cache["value"]
+
+
+def _drawn_horizon() -> list[tuple[float, float]]:
+    rows = get_setting(SETTING_SCOPE_HORIZON, [], db_path=job_manager.db_path) or []
+    return [(float(az), float(alt)) for az, alt in rows]
 
 
 def _scope_horizon_limit() -> scope_plan.Horizon | None:
-    """The horizon for the scheduler. None, so only the altitude floor applies, when not ready."""
-    try:
-        h = _scope_horizon()
-    except Exception:
-        log.exception("could not build the scope horizon")
+    """The drawn horizon for the scheduler. None, so only the altitude floor applies, if unset."""
+    points = _drawn_horizon()
+    if len(points) < MIN_HORIZON_POINTS:
         return None
-    if not h["active"]:
-        return None
-    profile = h["profile"]
+    profile = scope_horizon.profile_from_points(points)
     return lambda az: scope_horizon.horizon_at(profile, az)
+
+
+class HorizonIn(BaseModel):
+    points: list[tuple[float, float]] = Field(description="(azimuth, altitude) pairs in degrees.")
 
 
 @app.get("/api/scope/horizon")
 def get_scope_horizon() -> dict:
-    """The fitted motor-to-sky mapping and the horizon line the scheduler keeps targets above."""
-    return _scope_horizon()
+    """The drawn horizon line the scheduler keeps targets above."""
+    points = _drawn_horizon()
+    active = len(points) >= MIN_HORIZON_POINTS
+    return {
+        "active": active,
+        "points": points,
+        "profile": scope_horizon.profile_from_points(points) if active else None,
+        "cell_deg": scope_horizon.CELL_DEG,
+        "margin_deg": scope_plan.HORIZON_MARGIN_DEG,
+    }
+
+
+@app.put("/api/scope/horizon")
+def put_scope_horizon(req: HorizonIn) -> dict:
+    """Save the horizon line as points drawn on the sky map. An empty list clears it."""
+    points = [[az % 360, min(max(alt, 0.0), 90.0)] for az, alt in req.points]
+    set_setting(SETTING_SCOPE_HORIZON, points, db_path=job_manager.db_path)
+    return get_scope_horizon()
 
 
 @app.get("/api/scope/horizon.svg")
 def get_scope_horizon_svg() -> Response:
-    """The horizon line as a sky map, with the slews the fit used as dots."""
-    h = _scope_horizon()
-    loc = _scope_site()
-    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
-    limit = (h["fit"] or {}).get("max_deg", 0)
-    points = []
-    for p, row in zip(pairs, h["pairs"], strict=False):
-        aa = scope_mount.pair_alt_az(p, loc) if row["error_deg"] is not None else None
-        if aa is not None:
-            points.append((aa[0], aa[1], row["error_deg"] <= limit))
-    svg = scope_horizon.horizon_svg(h["profile"] or [], points, scope_plan.MIN_ALT_DEG)
+    """The drawn line on a sky map, with the middle of each scan frame as a sky or blocked hint."""
+    points = _drawn_horizon()
+    profile = scope_horizon.profile_from_points(points) if len(points) >= MIN_HORIZON_POINTS else []
+    try:
+        hints = _horizon_hints()
+    except Exception:
+        log.exception("could not place the scan frames")
+        hints = []
+    svg = scope_horizon.horizon_svg(profile, hints, points, scope_plan.MIN_ALT_DEG)
     return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-cache"})
 
 

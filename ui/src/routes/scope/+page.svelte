@@ -126,12 +126,36 @@
 
   let horizon = $state<Awaited<ReturnType<typeof api.getScopeHorizon>> | null>(null);
 
+  let horizonTick = $state(Date.now());
+
   async function refreshHorizon() {
     try {
       horizon = await api.getScopeHorizon();
+      horizonTick = Date.now();
     } catch {
       horizon = null;
     }
+  }
+
+  async function saveHorizon(points: [number, number][]) {
+    try {
+      horizon = await api.setScopeHorizon(points);
+      horizonTick = Date.now();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // Same geometry as the server's sky map: a 360 square with the rim 26 in from the edge.
+  function addHorizonPoint(e: MouseEvent) {
+    if (!horizon) return;
+    const box = (e.currentTarget as HTMLImageElement).getBoundingClientRect();
+    const x = ((e.clientX - box.left) / box.width) * 360 - 180;
+    const y = 180 - ((e.clientY - box.top) / box.height) * 360;
+    const r = Math.min(Math.hypot(x, y), 154);
+    const alt = Math.round(90 - (90 * r) / 154);
+    const az = Math.round(((Math.atan2(x, y) * 180) / Math.PI + 360) % 360);
+    saveHorizon([...horizon.points, [az, alt]]);
   }
 
   async function refreshPano() {
@@ -557,15 +581,28 @@
         <p class="muted small">Pink is sky. Tap a picture that is wrong to leave it out.</p>
       {/if}
       {#if horizon}
-        {#if horizon.active}
-          <img class="horizon" src="/api/scope/horizon.svg?t={panoTick}" alt="Horizon line seen from the scope" />
-          <p class="muted small">
-            Gray is blocked. Run all night keeps targets above the line. Compass fit is off by
-            {horizon.fit?.rms_deg.toFixed(1)}° over {horizon.fit?.used} of {horizon.fit?.total} slews.
-          </p>
-        {:else}
-          <p class="muted small">No horizon yet: {horizon.reason}.</p>
-        {/if}
+        <div class="sw-title">Horizon</div>
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <img
+          class="horizon"
+          src="/api/scope/horizon.svg?t={horizonTick}"
+          alt="Sky map for drawing the horizon. Tap to add a point."
+          onclick={addHorizonPoint}
+        />
+        <p class="muted small">
+          Center is straight up, the edge is the true horizon, north is up. Squares are the middle
+          of each scan picture: blue saw sky, orange did not. Tap where the clear sky starts, all
+          the way around. Run all night keeps targets above the line.
+        </p>
+        <div class="sw-row">
+          <span class="muted small">
+            {horizon.active ? `${horizon.points.length} points` : 'Needs 3 points or more'}
+          </span>
+          <span>
+            <button type="button" class="btn" disabled={!horizon.points.length} onclick={() => saveHorizon(horizon!.points.slice(0, -1))}>Undo</button>
+            <button type="button" class="btn" disabled={!horizon.points.length} onclick={() => saveHorizon([])}>Clear</button>
+          </span>
+        </div>
       {/if}
     </section>
   {/if}
