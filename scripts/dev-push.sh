@@ -60,8 +60,9 @@ fi
 if [[ "$worker" == 1 ]]; then
     echo "restarting the job worker"
     # Logs go to PID 1's stdout so they still show in kubectl logs.
-    k exec "$TARGET" -- sh -c 'pkill -f "python -m server.worker" || true
-        cd /app && setsid nohup python -m server.worker >/proc/1/fd/1 2>&1 </dev/null &'
+    # Anchored, so the match skips this sh -c, whose command line also names the worker.
+    k exec "$TARGET" -- sh -c "pkill -f '^python -m server.worker'; sleep 1
+        cd /app && setsid -f python -m server.worker >/proc/1/fd/1 2>&1 </dev/null"
 fi
 
 # Give uvicorn's reloader a moment to notice, then wait until the API answers again.
