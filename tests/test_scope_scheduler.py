@@ -395,3 +395,22 @@ def test_capture_astrolab_started_but_the_relay_lost_is_stopped_while_a_foreign_
     s.tick()
     assert client.calls.count("stopCapture") == 1
     assert "busy" in s.snapshot()["reason"]
+
+
+def test_frames_are_noted_on_the_sky_map_where_the_target_is():
+    from server import sky
+    from server.scope_skymap import SkyMap, cell_key
+
+    store: dict = {}
+    skymap = SkyMap(lambda: store.get("c", {}), lambda c: store.update(c=c))
+    target = _target("a")
+    s = Scheduler(
+        lambda: FakeClient(), lambda: LOC, lambda: [target], FakeObserver(), clock=lambda: NIGHT,
+        skymap=skymap,
+    )
+    s._account("a", {"captured": 6, "failed": 2})
+    alt, az = sky.alt_az_now(target.ra_deg, target.dec_deg, LOC, NIGHT)
+    cell = skymap.cells()[cell_key(alt, az)]
+    assert (cell["good"], cell["failed"]) == (4, 2)
+    s._account("a", {"captured": 6, "failed": 2})
+    assert skymap.cells()[cell_key(alt, az)]["good"] == 4

@@ -490,33 +490,6 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "HorizonIn": {
-        "properties": {
-          "points": {
-            "description": "(azimuth, altitude) pairs in degrees.",
-            "items": {
-              "maxItems": 2,
-              "minItems": 2,
-              "prefixItems": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "number"
-                }
-              ],
-              "type": "array"
-            },
-            "title": "Points",
-            "type": "array"
-          }
-        },
-        "required": [
-          "points"
-        ],
-        "title": "HorizonIn",
-        "type": "object"
-      },
       "Job": {
         "additionalProperties": false,
         "description": "A concrete request to run a template against specific inputs.",
@@ -4208,83 +4181,6 @@
         "summary": "Scope Frame"
       }
     },
-    "/api/scope/horizon": {
-      "get": {
-        "description": "The drawn horizon line the scheduler keeps targets above.",
-        "operationId": "get_scope_horizon_api_scope_horizon_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Scope Horizon Api Scope Horizon Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Scope Horizon"
-      },
-      "put": {
-        "description": "Save the horizon line as points drawn on the sky map. An empty list clears it.",
-        "operationId": "put_scope_horizon_api_scope_horizon_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HorizonIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Put Scope Horizon Api Scope Horizon Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Put Scope Horizon"
-      }
-    },
-    "/api/scope/horizon.svg": {
-      "get": {
-        "description": "The drawn line on a sky map, with the middle of each scan frame as a sky or blocked hint.",
-        "operationId": "get_scope_horizon_svg_api_scope_horizon_svg_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Scope Horizon Svg"
-      }
-    },
     "/api/scope/observe": {
       "post": {
         "description": "Start prepare, calibrate, slew, and capture in the background.",
@@ -4517,6 +4413,63 @@
           }
         },
         "summary": "Scope Preview"
+      }
+    },
+    "/api/scope/skymap": {
+      "delete": {
+        "description": "Forget what was learned, such as after moving the scope.",
+        "operationId": "delete_scope_skymap_api_scope_skymap_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Scope Skymap Api Scope Skymap Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Scope Skymap"
+      },
+      "get": {
+        "description": "What the scheduler has learned about which parts of the sky the scope can see.",
+        "operationId": "get_scope_skymap_api_scope_skymap_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Skymap Api Scope Skymap Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Skymap"
+      }
+    },
+    "/api/scope/skymap.svg": {
+      "get": {
+        "description": "The learned patches on a sky map.",
+        "operationId": "get_scope_skymap_svg_api_scope_skymap_svg_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Skymap Svg"
       }
     },
     "/api/scope/stop": {

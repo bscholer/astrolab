@@ -124,38 +124,16 @@
     }
   }
 
-  let horizon = $state<Awaited<ReturnType<typeof api.getScopeHorizon>> | null>(null);
+  let skymap = $state<Awaited<ReturnType<typeof api.getScopeSkymap>> | null>(null);
+  let skymapTick = $state(Date.now());
 
-  let horizonTick = $state(Date.now());
-
-  async function refreshHorizon() {
+  async function refreshSkymap() {
     try {
-      horizon = await api.getScopeHorizon();
-      horizonTick = Date.now();
+      skymap = await api.getScopeSkymap();
+      skymapTick = Date.now();
     } catch {
-      horizon = null;
+      skymap = null;
     }
-  }
-
-  async function saveHorizon(points: [number, number][]) {
-    try {
-      horizon = await api.setScopeHorizon(points);
-      horizonTick = Date.now();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  // Same geometry as the server's sky map: a 360 square with the rim 26 in from the edge.
-  function addHorizonPoint(e: MouseEvent) {
-    if (!horizon) return;
-    const box = (e.currentTarget as HTMLImageElement).getBoundingClientRect();
-    const x = ((e.clientX - box.left) / box.width) * 360 - 180;
-    const y = 180 - ((e.clientY - box.top) / box.height) * 360;
-    const r = Math.min(Math.hypot(x, y), 154);
-    const alt = Math.round(90 - (90 * r) / 154);
-    const az = Math.round(((Math.atan2(x, y) * 180) / Math.PI + 360) % 360);
-    saveHorizon([...horizon.points, [az, alt]]);
   }
 
   async function refreshPano() {
@@ -164,7 +142,6 @@
       if (pano.state === 'done') {
         panoTick = Date.now();
         tiles = await api.getScopePanoTiles();
-        await refreshHorizon();
       }
     } catch {
       pano = null;
@@ -188,7 +165,6 @@
       await api.setScopePanoTile({ pitch, rotation, excluded: !tiles.excluded.includes(name) });
       tiles = await api.getScopePanoTiles();
       panoTick = Date.now();
-      await refreshHorizon();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -281,7 +257,7 @@
     refresh();
     refreshWeather();
     refreshPano();
-    refreshHorizon();
+    refreshSkymap();
     refreshCompass();
     refreshControl();
     pollTimer = setInterval(() => {
@@ -574,43 +550,23 @@
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <img
           class="mosaic"
-          src="/api/scope/pano/overlay?t={panoTick}-{horizonTick}"
+          src="/api/scope/pano/overlay?t={panoTick}"
           alt="Wide camera scan, sky in pink. Tap a tile to leave it out."
           onclick={toggleTile}
         />
-        <p class="muted small">
-          {#if horizon?.active}
-            Boxes show what your line says about the middle of each picture: blue clear, orange
-            blocked. A blue box on a tree or an orange box on open sky means the line needs work
-            near there.
-          {:else}
-            Pink is sky. Tap a picture that is wrong to leave it out.
-          {/if}
-        </p>
+        <p class="muted small">Pink is sky. Tap a picture that is wrong to leave it out.</p>
       {/if}
-      {#if horizon}
-        <div class="sw-title">Horizon</div>
-        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-        <img
-          class="horizon"
-          src="/api/scope/horizon.svg?t={horizonTick}"
-          alt="Sky map for drawing the horizon. Tap to add a point."
-          onclick={addHorizonPoint}
-        />
+      {#if skymap}
+        <div class="sw-title">What the scope can see</div>
+        <img class="horizon" src="/api/scope/skymap.svg?t={skymapTick}" alt="Sky map of what the scope has learned it can see" />
         <p class="muted small">
-          Center is straight up, the edge is the true horizon, north is up. Squares are the middle
-          of each scan picture: blue saw sky, orange did not. Tap where the clear sky starts, all
-          the way around. Run all night keeps targets above the line.
+          Learned from Run all night. Each dot is a 5° patch of sky: blue gave good frames, orange
+          keeps failing on several nights, so something is in the way, gray has too little to go on
+          yet. Run all night skips orange patches. Center is straight up, north is up.
         </p>
-        <div class="sw-row">
-          <span class="muted small">
-            {horizon.active ? `${horizon.points.length} points` : 'Needs 3 points or more'}
-          </span>
-          <span>
-            <button type="button" class="btn" disabled={!horizon.points.length} onclick={() => saveHorizon(horizon!.points.slice(0, -1))}>Undo</button>
-            <button type="button" class="btn" disabled={!horizon.points.length} onclick={() => saveHorizon([])}>Clear</button>
-          </span>
-        </div>
+        <p class="muted small">
+          {skymap.cells.clear} clear · {skymap.cells.blocked} blocked · {skymap.cells.unknown} not sure yet
+        </p>
       {/if}
     </section>
   {/if}

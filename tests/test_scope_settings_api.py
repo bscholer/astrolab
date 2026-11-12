@@ -23,6 +23,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "catalog.sqlite"
     api.scope_observer.state = {"state": "idle"}
     api._frame_last.clear()
+    api.scope_skymap._cells = None
     api.job_manager.reset_for_tests(db_path=db_path)
     monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path))
     seen: list[dict] = []
@@ -143,6 +144,7 @@ def test_second_observe_while_running_is_refused(client):
     assert client.post("/api/scope/observe", json=OBSERVE).status_code == 409
     api.scope_observer.state = {"state": "idle"}
     api._frame_last.clear()
+    api.scope_skymap._cells = None
 
 
 def test_observe_without_a_configured_service_is_a_clear_error(client):
@@ -286,22 +288,6 @@ def test_excluded_pano_tiles_persist_and_show_in_the_overlay(client, tmp_path, m
     assert r.json()["excluded"] == []
 
 
-def test_drawn_horizon_saves_and_feeds_the_scheduler(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(api.scope_pano, "state", {"state": "idle"})
-    assert client.get("/api/scope/horizon").json()["active"] is False
-    assert api._scope_horizon_limit() is None
-    r = client.put("/api/scope/horizon", json={"points": [[0, 20], [120, 45], [370, 30], [240, -5]]})
-    body = r.json()
-    assert body["active"] is True
-    assert body["points"][2] == [10.0, 30.0] and body["points"][3] == [240.0, 0.0]
-    limit = api._scope_horizon_limit()
-    assert limit(120.0) == pytest.approx(45, abs=1)
-    svg = client.get("/api/scope/horizon.svg")
-    assert svg.headers["content-type"].startswith("image/svg+xml")
-    assert svg.text.count("<circle") >= 4
-    assert client.put("/api/scope/horizon", json={"points": []}).json()["active"] is False
-
-
 def test_restart_finds_the_last_scan(tmp_path):
     from server.scope_pano import PanoScanner
 
@@ -310,41 +296,6 @@ def test_restart_finds_the_last_scan(tmp_path):
     (tmp_path / "scan1" / "p30_r0.jpg").write_bytes(b"x")
     assert PanoScanner(tmp_path).snapshot() == {"state": "done", "id": "scan1"}
     assert PanoScanner(tmp_path / "none").snapshot() == {"state": "idle"}
-
-
-def test_overlay_boxes_follow_the_drawn_line(client, tmp_path, monkeypatch):
-    import io
-
-    from PIL import Image
-
-    from server import scope_mount
-    from server.scope_pano import BLOCKED_COLOR, CLEAR_COLOR
-
-    model = scope_mount.MountModel(-1.0, 90.0, -1.0, ((0, 1, 0), (1, 0, 0), (0, 0, 1)), 0, 0, 0, 0)
-    for pitch, rot in [(45, 10), (40, 100), (50, 190), (45, 280), (70, 150)]:
-        alt, az = model.to_sky(pitch, rot)
-        api._store_pointing(
-            {"pitch": pitch, "rotation": rot, "alt_deg": float(alt), "az_deg": float(az)}
-        )
-    folder = tmp_path / "pano" / "abc"
-    folder.mkdir(parents=True)
-    for pitch in (20, 60):
-        buf = io.BytesIO()
-        Image.new("RGB", (320, 180), (40, 40, 40)).save(buf, "JPEG")
-        (folder / f"p{pitch}_r0.jpg").write_bytes(buf.getvalue())
-    monkeypatch.setattr(api.scope_pano, "state", {"state": "done", "id": "abc"})
-    monkeypatch.setattr(api.scope_pano, "root", tmp_path / "pano")
-    client.put("/api/scope/horizon", json={"points": [[0, 40], [120, 40], [240, 40]]})
-
-    sheet = Image.open(io.BytesIO(client.get("/api/scope/pano/overlay").content)).convert("RGB")
-    edge = (160 - 32 + 1, 90)  # left side of the middle box
-    top, bottom = sheet.getpixel(edge), sheet.getpixel((edge[0], 180 + edge[1]))
-
-    def near(px, color):
-        return sum(abs(a - b) for a, b in zip(px, color, strict=True)) < 90
-
-    assert near(top, CLEAR_COLOR), top  # pitch 60 is altitude 60, above the line
-    assert near(bottom, BLOCKED_COLOR), bottom  # pitch 20 is below it
 
 
 def test_frame_requests_share_one_grab(client, monkeypatch):
@@ -366,3 +317,16 @@ def test_frame_requests_share_one_grab(client, monkeypatch):
     assert calls == ["getFrame"]
     client.get("/api/scope/frame?camera=tele")
     assert calls == ["getFrame", "getFrame"]
+
+
+def test_skymap_reports_learned_patches_and_forgets(client):
+    from datetime import UTC, datetime
+
+    at = datetime(2026, 11, 12, 6, 0, tzinfo=UTC)
+    api.scope_skymap.record(40.0, 120.0, 5, 0, at)
+    body = client.get("/api/scope/skymap").json()
+    assert body["cells"] == {"clear": 1, "blocked": 0, "unknown": 0}
+    assert "40/120" in body["patches"]
+    svg = client.get("/api/scope/skymap.svg")
+    assert svg.headers["content-type"].startswith("image/svg+xml") and "<circle" in svg.text
+    assert client.delete("/api/scope/skymap").json()["cells"]["clear"] == 0

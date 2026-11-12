@@ -61,7 +61,7 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import scope_horizon, scope_mount, scope_plan, sky_thumbs, weather
+from server import scope_plan, sky_thumbs, weather
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
@@ -119,6 +119,7 @@ from server.scope_plan import Candidate, capture_settings
 from server.scope_preview import stack_preview
 from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceClient, ScopeServiceError
+from server.scope_skymap import SkyMap, skymap_svg
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
@@ -127,11 +128,11 @@ from server.storage import (
     SETTING_SCOPE_ALERT_URL,
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_AUTO_STACK,
-    SETTING_SCOPE_HORIZON,
     SETTING_SCOPE_MIRROR_BASELINE,
     SETTING_SCOPE_PANO_EXCLUDED,
     SETTING_SCOPE_POINTING,
     SETTING_SCOPE_PROGRESS,
+    SETTING_SCOPE_SKYMAP,
     SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
     SETTING_SCOPE_URL,
@@ -3478,6 +3479,11 @@ def scope_weather() -> dict:
     return dataclasses.asdict(o)
 
 
+scope_skymap = SkyMap(
+    lambda: get_setting(SETTING_SCOPE_SKYMAP, {}, db_path=job_manager.db_path),
+    lambda cells: set_setting(SETTING_SCOPE_SKYMAP, cells, db_path=job_manager.db_path),
+)
+
 scope_scheduler = Scheduler(
     _scope_client,
     _scope_site,
@@ -3489,7 +3495,7 @@ scope_scheduler = Scheduler(
     ),
     load_progress=lambda: get_setting(SETTING_SCOPE_PROGRESS, {}, db_path=job_manager.db_path),
     save_progress=lambda p: set_setting(SETTING_SCOPE_PROGRESS, p, db_path=job_manager.db_path),
-    get_horizon=lambda: _scope_horizon_limit(),
+    skymap=scope_skymap,
 )
 
 
@@ -3727,87 +3733,23 @@ def get_scope_compass() -> dict:
     return scope_compass.snapshot()
 
 
-MIN_HORIZON_POINTS = 3
-_hints_cache: dict = {"key": None, "value": []}
+@app.get("/api/scope/skymap")
+def get_scope_skymap() -> dict:
+    """What the scheduler has learned about which parts of the sky the scope can see."""
+    return {**scope_skymap.summary(), "patches": scope_skymap.cells()}
 
 
-_model_cache: dict = {"key": None, "value": None}
+@app.delete("/api/scope/skymap")
+def delete_scope_skymap() -> dict:
+    """Forget what was learned, such as after moving the scope."""
+    scope_skymap.clear()
+    return scope_skymap.summary()
 
 
-def _mount_model() -> scope_mount.MountModel | None:
-    """The compass fit, redone only when a slew is added. A good fit or None."""
-    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
-    key = (len(pairs), repr(pairs[-1]) if pairs else None, _scope_site() is not None)
-    if _model_cache["key"] != key:
-        model = scope_mount.fit(pairs, _scope_site())
-        _model_cache.update(key=key, value=model if model is not None and model.good else None)
-    return _model_cache["value"]
-
-
-def _horizon_hints() -> list[tuple[float, float, bool]]:
-    """Where the middle of each scan frame points, marked sky or not. Empty without a good fit."""
-    model = _mount_model()
-    folder = scope_pano.folder()
-    excluded = _pano_excluded()
-    key = (str(folder), tuple(sorted(excluded)), _model_cache["key"])
-    if _hints_cache["key"] != key:
-        good = model is not None and folder is not None
-        hints = scope_horizon.tile_centers(folder, model, excluded) if good else []
-        _hints_cache.update(key=key, value=hints)
-    return _hints_cache["value"]
-
-
-def _drawn_horizon() -> list[tuple[float, float]]:
-    rows = get_setting(SETTING_SCOPE_HORIZON, [], db_path=job_manager.db_path) or []
-    return [(float(az), float(alt)) for az, alt in rows]
-
-
-def _scope_horizon_limit() -> scope_plan.Horizon | None:
-    """The drawn horizon for the scheduler. None, so only the altitude floor applies, if unset."""
-    points = _drawn_horizon()
-    if len(points) < MIN_HORIZON_POINTS:
-        return None
-    profile = scope_horizon.profile_from_points(points)
-    return lambda az: scope_horizon.horizon_at(profile, az)
-
-
-class HorizonIn(BaseModel):
-    points: list[tuple[float, float]] = Field(description="(azimuth, altitude) pairs in degrees.")
-
-
-@app.get("/api/scope/horizon")
-def get_scope_horizon() -> dict:
-    """The drawn horizon line the scheduler keeps targets above."""
-    points = _drawn_horizon()
-    active = len(points) >= MIN_HORIZON_POINTS
-    return {
-        "active": active,
-        "points": points,
-        "profile": scope_horizon.profile_from_points(points) if active else None,
-        "cell_deg": scope_horizon.CELL_DEG,
-        "margin_deg": scope_plan.HORIZON_MARGIN_DEG,
-    }
-
-
-@app.put("/api/scope/horizon")
-def put_scope_horizon(req: HorizonIn) -> dict:
-    """Save the horizon line as points drawn on the sky map. An empty list clears it."""
-    points = [[az % 360, min(max(alt, 0.0), 90.0)] for az, alt in req.points]
-    set_setting(SETTING_SCOPE_HORIZON, points, db_path=job_manager.db_path)
-    return get_scope_horizon()
-
-
-@app.get("/api/scope/horizon.svg")
-def get_scope_horizon_svg() -> Response:
-    """The drawn line on a sky map, with the middle of each scan frame as a sky or blocked hint."""
-    points = _drawn_horizon()
-    profile = scope_horizon.profile_from_points(points) if len(points) >= MIN_HORIZON_POINTS else []
-    try:
-        hints = _horizon_hints()
-    except Exception:
-        log.exception("could not place the scan frames")
-        hints = []
-    svg = scope_horizon.horizon_svg(profile, hints, points, scope_plan.MIN_ALT_DEG)
+@app.get("/api/scope/skymap.svg")
+def get_scope_skymap_svg() -> Response:
+    """The learned patches on a sky map."""
+    svg = skymap_svg(scope_skymap.cells(), scope_plan.MIN_ALT_DEG)
     return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-cache"})
 
 
@@ -3880,30 +3822,13 @@ def put_scope_pano_tile(req: PanoTileIn) -> dict:
     return {"excluded": sorted(excluded)}
 
 
-def _line_says_clear(folder: Path) -> dict[str, bool] | None:
-    """For each scan frame, whether the drawn horizon calls its middle clear. None if no line."""
-    limit = _scope_horizon_limit()
-    model = _mount_model() if limit else None
-    if model is None:
-        return None
-    pitches, rotations = tile_grid(folder)
-    out = {}
-    for pitch in pitches:
-        for rot in rotations:
-            alt, az = model.to_sky(pitch, rot)
-            out[tile_name(pitch, rot)] = bool(alt > limit(float(az)))
-    return out
-
-
 _overlay_key: dict[str, tuple] = {}
 
 
 def _warm_scope_caches() -> None:
-    """Fit the mount and read the scan once at startup, so the Scope page opens fast."""
+    """Read the scan once at startup, so the Scope page opens fast."""
     try:
-        _horizon_hints()
-        folder = scope_pano.folder()
-        if folder is not None:
+        if scope_pano.folder() is not None:
             get_scope_pano_overlay()
     except Exception:
         log.exception("could not warm the scope caches")
@@ -3914,12 +3839,11 @@ def get_scope_pano_overlay() -> FileResponse:
     folder = scope_pano.folder()
     if folder is None:
         raise HTTPException(status_code=404, detail="no scan yet")
-    excluded, clear = _pano_excluded(), _line_says_clear(folder)
-    boxes = None if clear is None else tuple(sorted(clear.items()))
-    key = (str(folder), tuple(sorted(excluded)), boxes)
+    excluded = _pano_excluded()
+    key = (str(folder), tuple(sorted(excluded)))
     path = folder / "overlay.jpg"
     if _overlay_key.get(str(folder)) != key or not path.is_file():
-        build_overlay(folder, excluded, clear)
+        build_overlay(folder, excluded)
         _overlay_key[str(folder)] = key
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 

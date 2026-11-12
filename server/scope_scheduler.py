@@ -10,10 +10,11 @@ from datetime import UTC, datetime
 
 from astropy.coordinates import EarthLocation
 
-from server import scope_plan
+from server import scope_plan, sky
 from server.scope_observe import Observer
 from server.scope_plan import Candidate
 from server.scope_service import ScopeServiceClient, ScopeServiceError
+from server.scope_skymap import SkyMap
 
 log = logging.getLogger(__name__)
 _UNSEEN = "<unseen>"
@@ -46,13 +47,13 @@ class Scheduler:
         get_warning: Callable[[], str | None] | None = None,
         load_progress: Callable[[], dict[str, float]] | None = None,
         save_progress: Callable[[dict[str, float]], None] | None = None,
-        get_horizon: Callable[[], scope_plan.Horizon | None] | None = None,
+        skymap: SkyMap | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_site = get_site
         self._get_targets = get_targets
         self._observer = observer
-        self._get_horizon = get_horizon or (lambda: None)
+        self._skymap = skymap
         self._clock = clock
         self.interval_s = interval_s
         self._notify = notify or (lambda *_: None)
@@ -215,6 +216,7 @@ class Scheduler:
         if name != target or captured < last_c:
             last_c = last_f = streak = 0
         accepted = (captured - last_c) - (failed - last_f)
+        self._learn(target, accepted, failed - last_f)
         if accepted > 0:
             streak = 0
             self._credit(target, accepted)
@@ -222,6 +224,21 @@ class Scheduler:
             streak += failed - last_f
         self._streak = (target, captured, failed, streak)
         return streak
+
+    def _learn(self, target: str | None, good: int, failed: int) -> None:
+        """Note where in the sky these frames came out good or failed."""
+        if self._skymap is None or (good <= 0 and failed <= 0):
+            return
+        cand = next((c for c in self._get_targets() if c.name == target), None)
+        loc = self._get_site()
+        if cand is None or loc is None:
+            return
+        now = self._clock()
+        try:
+            alt, az = sky.alt_az_now(cand.ra_deg, cand.dec_deg, loc, now)
+            self._skymap.record(alt, az, good, failed, now)
+        except Exception:
+            log.warning("could not note %s on the sky map", target, exc_info=True)
 
     def _credit(self, target: str | None, frames: int) -> None:
         cand = next((c for c in self._get_targets() if c.name == target), None)
@@ -271,7 +288,7 @@ class Scheduler:
             self._skip_target(target, SKIP_AFTER_ERROR_S)
 
     def _step(self, client, loc, now, job, capturing) -> None:
-        horizon = self._get_horizon()
+        blocked = self._skymap.blocked if self._skymap else None
         obs = self._observer.snapshot()
         current = obs.get("target")
         streak = self._account(current, job) if current else 0
@@ -304,7 +321,7 @@ class Scheduler:
                 or rejecting
                 or done
                 or cand is None
-                or scope_plan.usable(cand, loc, now, horizon=horizon) is None
+                or scope_plan.usable(cand, loc, now, blocked=blocked) is None
             )
             if not bad:
                 self._set(state="observing", target=current, reason="capturing")
@@ -323,7 +340,7 @@ class Scheduler:
             loc,
             now,
             skip=frozenset(self._active_skips() | self._goal_reached()),
-            horizon=horizon,
+            blocked=blocked,
         )
         if pick is None:
             self._set(state="waiting", reason="no usable target, retrying")
