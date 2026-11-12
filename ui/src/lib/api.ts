@@ -1038,6 +1038,10 @@ export const api = {
   getScopeControl: () => getJSON<ScopeControl>('/api/scope/control'),
   startScopeCompass: () => postJSON<ScopeCompass>('/api/scope/compass', {}),
   getScopeCompass: () => getJSON<ScopeCompass>('/api/scope/compass'),
+  getScopeHorizon: () =>
+    getJSON<{ active: boolean; reason: string | null; fit: { rms_deg: number; used: number; total: number } | null }>(
+      '/api/scope/horizon',
+    ),
   getScopePanoTiles: () =>
     getJSON<{ pitches: number[]; rotations: number[]; excluded: string[] }>('/api/scope/pano/tiles'),
   setScopePanoTile: (req: { pitch: number; rotation: number; excluded: boolean }) =>

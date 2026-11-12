@@ -54,3 +54,11 @@ def test_moon_separation_is_zero_at_the_moon():
     moon = get_body("moon", Time(NOW, scale="utc"), LOC).icrs
     at_moon = Candidate("m", float(moon.ra.deg), float(moon.dec.deg))
     assert moon_separation_deg(at_moon, LOC, NOW) < 0.5
+
+
+def test_target_behind_the_horizon_is_skipped():
+    a = _high("a")
+    alt, _az = sky.alt_az_now(a.ra_deg, a.dec_deg, LOC, NOW)
+    assert pick_target([a], LOC, NOW, horizon=lambda _az: alt - 10).target.name == "a"
+    assert pick_target([a], LOC, NOW, horizon=lambda _az: alt + 1) is None
+    assert pick_target([a], LOC, NOW, horizon=lambda _az: None).target.name == "a"

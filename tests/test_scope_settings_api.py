@@ -282,3 +282,53 @@ def test_excluded_pano_tiles_persist_and_show_in_the_overlay(client, tmp_path, m
     assert sheet.getpixel((320 + 160, 20))[0] < 60
     r = client.put("/api/scope/pano/tile", json={"pitch": 100, "rotation": 45, "excluded": False})
     assert r.json()["excluded"] == []
+
+
+def test_horizon_needs_slews_then_maps_the_scan(client, tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    from server import scope_mount
+
+    api.scope_horizon._mask_cache.clear()
+    api._horizon_cache.update(key=None, value=None)
+    monkeypatch.setattr(api.scope_pano, "state", {"state": "idle"})
+    first = client.get("/api/scope/horizon").json()
+    assert first["active"] is False and "slews" in first["reason"]
+
+    # Pitch is altitude and rotation is azimuth, on a level mount facing north.
+    model = scope_mount.MountModel(-1.0, 90.0, -1.0, ((0, 1, 0), (1, 0, 0), (0, 0, 1)), 0, 0, 0, 0)
+    for pitch, rot in [(45, 10), (40, 100), (50, 190), (45, 280), (70, 150)]:
+        alt, az = model.to_sky(pitch, rot)
+        api._store_pointing(
+            {"pitch": pitch, "rotation": rot, "alt_deg": float(alt), "az_deg": float(az)}
+        )
+    folder = tmp_path / "pano" / "abc"
+    folder.mkdir(parents=True)
+    for rot in range(0, 360, 45):
+        buf = io.BytesIO()
+        Image.new("RGB", (320, 180), (110, 150, 215)).save(buf, "JPEG")
+        (folder / f"p30_r{rot}.jpg").write_bytes(buf.getvalue())
+    monkeypatch.setattr(api.scope_pano, "state", {"state": "done", "id": "abc"})
+    monkeypatch.setattr(api.scope_pano, "root", tmp_path / "pano")
+
+    h = client.get("/api/scope/horizon").json()
+    assert h["active"] is True, h["reason"]
+    assert h["fit"]["rms_deg"] < 0.5
+    assert all(v is not None and v < 25 for v in h["profile"])
+    svg = client.get("/api/scope/horizon.svg")
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert svg.text.count("<circle") >= 5
+    limit = api._scope_horizon_limit()
+    assert limit is not None and limit(123.0) < 25
+
+
+def test_restart_finds_the_last_scan(tmp_path):
+    from server.scope_pano import PanoScanner
+
+    (tmp_path / "old").mkdir()
+    (tmp_path / "scan1").mkdir()
+    (tmp_path / "scan1" / "p30_r0.jpg").write_bytes(b"x")
+    assert PanoScanner(tmp_path).snapshot() == {"state": "done", "id": "scan1"}
+    assert PanoScanner(tmp_path / "none").snapshot() == {"state": "idle"}

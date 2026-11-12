@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -12,6 +13,10 @@ from astropy.time import Time
 from server import sky
 
 MIN_ALT_DEG = 30.0
+HORIZON_MARGIN_DEG = 3.0
+
+# Gives the lowest clear altitude at an azimuth, or None where nothing is known.
+Horizon = Callable[[float], float | None]
 MOON_LIMIT_DEG = 10.0
 LOOKAHEAD_MIN = 20
 
@@ -80,18 +85,28 @@ def moon_separation_deg(c: Candidate, loc: EarthLocation, at: datetime) -> float
     return float(target.separation(moon).deg)
 
 
-def _alt(c: Candidate, loc: EarthLocation, at: datetime) -> float:
-    return sky.alt_az_now(c.ra_deg, c.dec_deg, loc, at)[0]
+def _clear(c: Candidate, loc: EarthLocation, at: datetime, min_alt: float, horizon) -> float | None:
+    alt, az = sky.alt_az_now(c.ra_deg, c.dec_deg, loc, at)
+    if alt < min_alt:
+        return None
+    blocked_to = horizon(az) if horizon else None
+    if blocked_to is not None and alt < blocked_to + HORIZON_MARGIN_DEG:
+        return None
+    return alt
 
 
 def usable(
-    c: Candidate, loc: EarthLocation, now: datetime, min_alt: float = MIN_ALT_DEG
+    c: Candidate,
+    loc: EarthLocation,
+    now: datetime,
+    min_alt: float = MIN_ALT_DEG,
+    horizon: Horizon | None = None,
 ) -> float | None:
-    """Return the altitude, or None when low, setting soon, or near the moon."""
-    alt = _alt(c, loc, now)
-    if alt < min_alt:
+    """Return the altitude, or None when low, behind something, setting soon, or near the moon."""
+    alt = _clear(c, loc, now, min_alt, horizon)
+    if alt is None:
         return None
-    if _alt(c, loc, now + timedelta(minutes=LOOKAHEAD_MIN)) < min_alt:
+    if _clear(c, loc, now + timedelta(minutes=LOOKAHEAD_MIN), min_alt, horizon) is None:
         return None
     if moon_separation_deg(c, loc, now) < MOON_LIMIT_DEG:
         return None
@@ -105,13 +120,14 @@ def pick_target(
     current: str | None = None,
     skip: frozenset[str] = frozenset(),
     min_alt: float = MIN_ALT_DEG,
+    horizon: Horizon | None = None,
 ) -> Pick | None:
     """Keep the current target while it stays usable. Otherwise take the highest one."""
     usable_now = []
     for c in candidates:
         if c.name in skip:
             continue
-        alt = usable(c, loc, now, min_alt)
+        alt = usable(c, loc, now, min_alt, horizon)
         if alt is not None:
             usable_now.append(Pick(c, alt))
     if not usable_now:

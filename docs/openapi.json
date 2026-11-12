@@ -769,8 +769,29 @@
           },
           "exposure_s": {
             "default": 15,
+            "enum": [
+              15,
+              30,
+              60
+            ],
             "title": "Exposure S",
             "type": "integer"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vis",
+                  "astro",
+                  "duo"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
           },
           "frames": {
             "default": 30,
@@ -779,9 +800,26 @@
             "title": "Frames",
             "type": "integer"
           },
+          "gain": {
+            "default": 60,
+            "minimum": 0.0,
+            "title": "Gain",
+            "type": "integer"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
           },
           "ra_deg": {
             "exclusiveMaximum": 360.0,
@@ -1494,15 +1532,104 @@
       "ScopeTarget": {
         "additionalProperties": false,
         "properties": {
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
           "dec_deg": {
             "maximum": 90.0,
             "minimum": -90.0,
             "title": "Dec Deg",
             "type": "number"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "exposure_s": {
+            "anyOf": [
+              {
+                "enum": [
+                  15,
+                  30,
+                  60
+                ],
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vis",
+                  "astro",
+                  "duo"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gain"
+          },
+          "goal_hours": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal Hours"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
           },
           "ra_deg": {
             "exclusiveMaximum": 360.0,
@@ -4052,6 +4179,44 @@
           }
         },
         "summary": "Scope Frame"
+      }
+    },
+    "/api/scope/horizon": {
+      "get": {
+        "description": "The fitted motor-to-sky mapping and the horizon line the scheduler keeps targets above.",
+        "operationId": "get_scope_horizon_api_scope_horizon_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Horizon Api Scope Horizon Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Horizon"
+      }
+    },
+    "/api/scope/horizon.svg": {
+      "get": {
+        "description": "The horizon line as a sky map, with the slews the fit used as dots.",
+        "operationId": "get_scope_horizon_svg_api_scope_horizon_svg_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Horizon Svg"
       }
     },
     "/api/scope/observe": {

@@ -46,11 +46,13 @@ class Scheduler:
         get_warning: Callable[[], str | None] | None = None,
         load_progress: Callable[[], dict[str, float]] | None = None,
         save_progress: Callable[[dict[str, float]], None] | None = None,
+        get_horizon: Callable[[], scope_plan.Horizon | None] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_site = get_site
         self._get_targets = get_targets
         self._observer = observer
+        self._get_horizon = get_horizon or (lambda: None)
         self._clock = clock
         self.interval_s = interval_s
         self._notify = notify or (lambda *_: None)
@@ -269,6 +271,7 @@ class Scheduler:
             self._skip_target(target, SKIP_AFTER_ERROR_S)
 
     def _step(self, client, loc, now, job, capturing) -> None:
+        horizon = self._get_horizon()
         obs = self._observer.snapshot()
         current = obs.get("target")
         streak = self._account(current, job) if current else 0
@@ -301,7 +304,7 @@ class Scheduler:
                 or rejecting
                 or done
                 or cand is None
-                or scope_plan.usable(cand, loc, now) is None
+                or scope_plan.usable(cand, loc, now, horizon=horizon) is None
             )
             if not bad:
                 self._set(state="observing", target=current, reason="capturing")
@@ -320,6 +323,7 @@ class Scheduler:
             loc,
             now,
             skip=frozenset(self._active_skips() | self._goal_reached()),
+            horizon=horizon,
         )
         if pick is None:
             self._set(state="waiting", reason="no usable target, retrying")

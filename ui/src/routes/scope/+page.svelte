@@ -124,12 +124,23 @@
     }
   }
 
+  let horizon = $state<Awaited<ReturnType<typeof api.getScopeHorizon>> | null>(null);
+
+  async function refreshHorizon() {
+    try {
+      horizon = await api.getScopeHorizon();
+    } catch {
+      horizon = null;
+    }
+  }
+
   async function refreshPano() {
     try {
       pano = await api.getScopePano();
       if (pano.state === 'done') {
         panoTick = Date.now();
         tiles = await api.getScopePanoTiles();
+        await refreshHorizon();
       }
     } catch {
       pano = null;
@@ -153,6 +164,7 @@
       await api.setScopePanoTile({ pitch, rotation, excluded: !tiles.excluded.includes(name) });
       tiles = await api.getScopePanoTiles();
       panoTick = Date.now();
+      await refreshHorizon();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -245,6 +257,7 @@
     refresh();
     refreshWeather();
     refreshPano();
+    refreshHorizon();
     refreshCompass();
     refreshControl();
     pollTimer = setInterval(() => {
@@ -543,6 +556,17 @@
         />
         <p class="muted small">Pink is sky. Tap a picture that is wrong to leave it out.</p>
       {/if}
+      {#if horizon}
+        {#if horizon.active}
+          <img class="horizon" src="/api/scope/horizon.svg?t={panoTick}" alt="Horizon line seen from the scope" />
+          <p class="muted small">
+            Gray is blocked. Run all night keeps targets above the line. Compass fit is off by
+            {horizon.fit?.rms_deg.toFixed(1)}° over {horizon.fit?.used} of {horizon.fit?.total} slews.
+          </p>
+        {:else}
+          <p class="muted small">No horizon yet: {horizon.reason}.</p>
+        {/if}
+      {/if}
     </section>
   {/if}
 
@@ -838,6 +862,12 @@
   }
   .x:hover {
     color: var(--bad);
+  }
+  .horizon {
+    display: block;
+    width: 100%;
+    max-width: 420px;
+    margin: 0.8rem auto 0;
   }
   .mosaic {
     display: block;

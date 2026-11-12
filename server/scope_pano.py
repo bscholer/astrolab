@@ -93,11 +93,20 @@ def build_overlay(folder: Path, excluded: set[str]) -> Path:
     return out
 
 
+def latest_scan(root: Path) -> str | None:
+    """The newest scan folder that has tiles in it, so a restart still finds the last scan."""
+    if not root.is_dir():
+        return None
+    scans = [p for p in root.iterdir() if p.is_dir() and any(p.glob("p*_r*.jpg"))]
+    return max(scans, key=lambda p: p.stat().st_mtime).name if scans else None
+
+
 class PanoScanner:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._lock = threading.Lock()
-        self.state: dict = {"state": "idle"}
+        scan = latest_scan(root)
+        self.state: dict = {"state": "done", "id": scan} if scan else {"state": "idle"}
 
     def snapshot(self) -> dict:
         with self._lock:
