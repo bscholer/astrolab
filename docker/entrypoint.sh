@@ -79,4 +79,11 @@ ok "worker pid=$WORKER_PID"
 # ---------------------------------------------------------------------------
 # 4. Hand off to the foreground process (uvicorn)
 # ---------------------------------------------------------------------------
+# Dev reload: with ASTROLAB_DEV_RELOAD=1 or a /data/dev-reload file, uvicorn
+# restarts itself when Python files under server/ or nodes/ change, so
+# scripts/dev-push.sh can copy code into a running pod. Off by default.
+if [[ "${1:-}" == "uvicorn" && ( "${ASTROLAB_DEV_RELOAD:-0}" == "1" || -f /data/dev-reload ) ]]; then
+    warn "dev reload on: code changes under /app/server and /app/nodes restart the API"
+    set -- "$@" --reload --reload-dir /app/server --reload-dir /app/nodes
+fi
 exec "$@"

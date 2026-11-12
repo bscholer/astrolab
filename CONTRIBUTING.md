@@ -41,6 +41,15 @@ build` once, then just hit `http://localhost:8000/` — FastAPI serves the
 prebuilt UI under the same origin. Re-run `npm run build` after frontend
 edits.
 
+### Trying a change on a deployed pod
+
+`scripts/dev-push.sh` copies the working tree into a running Kubernetes pod
+in seconds, without an image build. Add `--ui` to build and copy the UI, and
+`--worker` to restart the job worker. It needs the pod to run uvicorn with
+`--reload`, which the image does when `ASTROLAB_DEV_RELOAD=1` is set or
+`/data/dev-reload` exists. The first run creates that file, and reload starts
+with the next pod start. The next real deploy replaces whatever was copied in.
+
 ## Linux vs macOS
 
 The pipeline shells out to three Linux-only tools: **Siril 1.4+**,
