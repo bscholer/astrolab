@@ -308,3 +308,38 @@ def test_restart_finds_the_last_scan(tmp_path):
     (tmp_path / "scan1" / "p30_r0.jpg").write_bytes(b"x")
     assert PanoScanner(tmp_path).snapshot() == {"state": "done", "id": "scan1"}
     assert PanoScanner(tmp_path / "none").snapshot() == {"state": "idle"}
+
+
+def test_overlay_boxes_follow_the_drawn_line(client, tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    from server import scope_mount
+    from server.scope_pano import BLOCKED_COLOR, CLEAR_COLOR
+
+    model = scope_mount.MountModel(-1.0, 90.0, -1.0, ((0, 1, 0), (1, 0, 0), (0, 0, 1)), 0, 0, 0, 0)
+    for pitch, rot in [(45, 10), (40, 100), (50, 190), (45, 280), (70, 150)]:
+        alt, az = model.to_sky(pitch, rot)
+        api._store_pointing(
+            {"pitch": pitch, "rotation": rot, "alt_deg": float(alt), "az_deg": float(az)}
+        )
+    folder = tmp_path / "pano" / "abc"
+    folder.mkdir(parents=True)
+    for pitch in (20, 60):
+        buf = io.BytesIO()
+        Image.new("RGB", (320, 180), (40, 40, 40)).save(buf, "JPEG")
+        (folder / f"p{pitch}_r0.jpg").write_bytes(buf.getvalue())
+    monkeypatch.setattr(api.scope_pano, "state", {"state": "done", "id": "abc"})
+    monkeypatch.setattr(api.scope_pano, "root", tmp_path / "pano")
+    client.put("/api/scope/horizon", json={"points": [[0, 40], [120, 40], [240, 40]]})
+
+    sheet = Image.open(io.BytesIO(client.get("/api/scope/pano/overlay").content)).convert("RGB")
+    edge = (160 - 32 + 1, 90)  # left side of the middle box
+    top, bottom = sheet.getpixel(edge), sheet.getpixel((edge[0], 180 + edge[1]))
+
+    def near(px, color):
+        return sum(abs(a - b) for a, b in zip(px, color, strict=True)) < 90
+
+    assert near(top, CLEAR_COLOR), top  # pitch 60 is altitude 60, above the line
+    assert near(bottom, BLOCKED_COLOR), bottom  # pitch 20 is below it

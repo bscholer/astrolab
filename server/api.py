@@ -3867,12 +3867,28 @@ def put_scope_pano_tile(req: PanoTileIn) -> dict:
     return {"excluded": sorted(excluded)}
 
 
+def _line_says_clear(folder: Path) -> dict[str, bool] | None:
+    """For each scan frame, whether the drawn horizon calls its middle clear. None if no line."""
+    limit = _scope_horizon_limit()
+    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+    model = scope_mount.fit(pairs, _scope_site()) if limit else None
+    if model is None or not model.good:
+        return None
+    pitches, rotations = tile_grid(folder)
+    out = {}
+    for pitch in pitches:
+        for rot in rotations:
+            alt, az = model.to_sky(pitch, rot)
+            out[tile_name(pitch, rot)] = bool(alt > limit(float(az)))
+    return out
+
+
 @app.get("/api/scope/pano/overlay")
 def get_scope_pano_overlay() -> FileResponse:
     folder = scope_pano.folder()
     if folder is None:
         raise HTTPException(status_code=404, detail="no scan yet")
-    path = build_overlay(folder, _pano_excluded())
+    path = build_overlay(folder, _pano_excluded(), _line_says_clear(folder))
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 

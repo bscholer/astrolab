@@ -15,7 +15,7 @@ from astropy.coordinates import AltAz, EarthLocation, get_sun
 from astropy.time import Time
 from PIL import Image, ImageDraw
 
-from server.scope_horizon import sky_mask
+from server.scope_horizon import CENTER_FRACTION, sky_mask
 from server.scope_service import ScopeServiceClient
 
 log = logging.getLogger(__name__)
@@ -66,8 +66,16 @@ def tile_grid(folder: Path) -> tuple[list[float], list[float]]:
     return sorted(pitches), sorted(rotations)
 
 
-def build_overlay(folder: Path, excluded: set[str]) -> Path:
-    """Mosaic with the sky in magenta. Excluded tiles are dimmed and crossed out."""
+CLEAR_COLOR = (134, 182, 239)
+BLOCKED_COLOR = (235, 104, 52)
+
+
+def build_overlay(folder: Path, excluded: set[str], clear: dict[str, bool] | None = None) -> Path:
+    """Mosaic with the sky in magenta. Excluded tiles are dimmed and crossed out.
+
+    With clear, which maps tile names to whether the drawn horizon calls the frame's middle
+    clear, the photos stay plain and a box marks each middle: blue clear, orange blocked.
+    """
     pitches, rotations = tile_grid(folder)
     rows = sorted(pitches, reverse=True)
     sheet = Image.new("RGB", (TILE_W * len(rotations), TILE_H * len(rows)))
@@ -82,6 +90,12 @@ def build_overlay(folder: Path, excluded: set[str]) -> Path:
                 draw = ImageDraw.Draw(tile)
                 draw.line((0, 0, TILE_W, TILE_H), fill=(255, 255, 255), width=2)
                 draw.line((0, TILE_H, TILE_W, 0), fill=(255, 255, 255), width=2)
+            elif clear is not None:
+                if name in clear:
+                    bw, bh = TILE_W * CENTER_FRACTION / 2, TILE_H * CENTER_FRACTION / 2
+                    box = (TILE_W / 2 - bw, TILE_H / 2 - bh, TILE_W / 2 + bw, TILE_H / 2 + bh)
+                    color = CLEAR_COLOR if clear[name] else BLOCKED_COLOR
+                    ImageDraw.Draw(tile).rectangle(box, outline=color, width=4)
             else:
                 a = np.asarray(tile).copy()
                 m = sky_mask(tile)

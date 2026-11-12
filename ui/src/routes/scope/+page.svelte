@@ -574,11 +574,19 @@
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <img
           class="mosaic"
-          src="/api/scope/pano/overlay?t={panoTick}"
+          src="/api/scope/pano/overlay?t={panoTick}-{horizonTick}"
           alt="Wide camera scan, sky in pink. Tap a tile to leave it out."
           onclick={toggleTile}
         />
-        <p class="muted small">Pink is sky. Tap a picture that is wrong to leave it out.</p>
+        <p class="muted small">
+          {#if horizon?.active}
+            Boxes show what your line says about the middle of each picture: blue clear, orange
+            blocked. A blue box on a tree or an orange box on open sky means the line needs work
+            near there.
+          {:else}
+            Pink is sky. Tap a picture that is wrong to leave it out.
+          {/if}
+        </p>
       {/if}
       {#if horizon}
         <div class="sw-title">Horizon</div>
