@@ -48,7 +48,9 @@ def test_refuses_before_full_dark():
         CompassRun(lambda _p: None).start(Fake(), LOC, when=NOON)
 
 
-def test_stores_pairs_and_skips_a_refused_slew():
+def test_stores_pairs_and_skips_a_refused_slew(monkeypatch):
+    # The run slews at the real current time, so keep the real Moon out of the way.
+    monkeypatch.setattr("server.scope_compass.moon_separation_deg", lambda *a: 90.0)
     pairs = []
     run = CompassRun(pairs.append)
     run.start(Fake(fail_goto_at="45/280"), LOC, settle_s=0, when=NIGHT)

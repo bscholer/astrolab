@@ -330,3 +330,17 @@ def test_skymap_reports_learned_patches_and_forgets(client):
     svg = client.get("/api/scope/skymap.svg")
     assert svg.headers["content-type"].startswith("image/svg+xml") and "<circle" in svg.text
     assert client.delete("/api/scope/skymap").json()["cells"]["clear"] == 0
+
+
+def test_scope_url_and_site_seed_from_the_environment_once(client, monkeypatch):
+    from server.storage import SETTING_SCOPE_URL, SETTING_SITE_LATITUDE, get_setting
+
+    monkeypatch.setenv("ASTROLAB_SCOPE_URL_DEFAULT", "http://fakescope:9902")
+    monkeypatch.setenv("ASTROLAB_SITE_DEFAULT", "44.0,-121.3,1100")
+    api._bootstrap_scope_settings()
+    db = api.job_manager.db_path
+    assert get_setting(SETTING_SCOPE_URL, None, db_path=db) == "http://fakescope:9902"
+    assert get_setting(SETTING_SITE_LATITUDE, None, db_path=db) == 44.0
+    monkeypatch.setenv("ASTROLAB_SCOPE_URL_DEFAULT", "http://other")
+    api._bootstrap_scope_settings()
+    assert get_setting(SETTING_SCOPE_URL, None, db_path=db) == "http://fakescope:9902"

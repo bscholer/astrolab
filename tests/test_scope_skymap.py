@@ -18,10 +18,11 @@ def test_cells_and_nights():
     assert cell_key(37.2, 121.9) == "35/120"
     assert cell_key(10.0, 359.9) == "10/355"
     assert cell_key(10.0, -0.1) == "10/355"
-    # 01:00 and 11:00 UTC on the same night share a date; the next evening does not.
-    assert night_of(datetime(2026, 11, 12, 1, 0, tzinfo=UTC)) == "2026-11-11"
-    assert night_of(datetime(2026, 11, 12, 11, 0, tzinfo=UTC)) == "2026-11-11"
-    assert night_of(datetime(2026, 11, 13, 1, 0, tzinfo=UTC)) == "2026-11-12"
+    # In Oregon, dusk at 01:00 UTC and dawn at 13:30 UTC are one night; the next dusk is not.
+    bend = -121.3
+    assert night_of(datetime(2026, 11, 13, 1, 0, tzinfo=UTC), bend) == "2026-11-12"
+    assert night_of(datetime(2026, 11, 13, 13, 30, tzinfo=UTC), bend) == "2026-11-12"
+    assert night_of(datetime(2026, 11, 14, 1, 0, tzinfo=UTC), bend) == "2026-11-13"
 
 
 def test_good_frames_mark_a_patch_clear():

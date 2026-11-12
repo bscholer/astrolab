@@ -176,6 +176,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # pragma: no cover
         log.exception("project rehydrate failed; continuing with empty state")
     _bootstrap_capture_root()
+    _bootstrap_scope_settings()
     if os.environ.get("ASTROLAB_SCOPE_MIRROR", "1") == "1":
         scope_mirror.start()
         scope_scheduler.enabled = bool(
@@ -196,6 +197,31 @@ def _make_progress_callback() -> Any:
         scan_state.update(seen, path)
 
     return _cb
+
+
+def _bootstrap_scope_settings() -> None:
+    """Seed the scope URL and site from the environment on a fresh database.
+
+    ASTROLAB_SCOPE_URL_DEFAULT is the scope service, such as a fake scope in staging.
+    ASTROLAB_SITE_DEFAULT is "lat,lon" or "lat,lon,elevation_m". A value already saved,
+    such as one set in Settings, always wins.
+    """
+    url = os.environ.get("ASTROLAB_SCOPE_URL_DEFAULT", "").strip()
+    if url and not get_setting(SETTING_SCOPE_URL, None, db_path=job_manager.db_path):
+        set_setting(SETTING_SCOPE_URL, url, db_path=job_manager.db_path)
+        log.info("seeded the scope URL from ASTROLAB_SCOPE_URL_DEFAULT: %s", url)
+    site = os.environ.get("ASTROLAB_SITE_DEFAULT", "").strip()
+    if site and get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path) is None:
+        try:
+            parts = [float(p) for p in site.split(",")]
+            lat, lon, elev = (parts + [0.0])[:3]
+        except ValueError:
+            log.warning("ASTROLAB_SITE_DEFAULT=%r is not lat,lon[,elevation_m]", site)
+            return
+        set_setting(SETTING_SITE_LATITUDE, lat, db_path=job_manager.db_path)
+        set_setting(SETTING_SITE_LONGITUDE, lon, db_path=job_manager.db_path)
+        set_setting(SETTING_SITE_ELEVATION_M, elev, db_path=job_manager.db_path)
+        log.info("seeded the site from ASTROLAB_SITE_DEFAULT: %s", site)
 
 
 def _bootstrap_capture_root() -> None:

@@ -239,7 +239,7 @@ class Scheduler:
         now = self._clock()
         try:
             alt, az = sky.alt_az_now(cand.ra_deg, cand.dec_deg, loc, now)
-            self._skymap.record(alt, az, good, failed, now)
+            self._skymap.record(alt, az, good, failed, now, float(loc.lon.deg))
         except Exception:
             log.warning("could not note %s on the sky map", target, exc_info=True)
 

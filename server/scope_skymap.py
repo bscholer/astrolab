@@ -28,9 +28,13 @@ def cell_key(alt: float, az: float) -> str:
     return f"{a:g}/{z:g}"
 
 
-def night_of(at: datetime) -> str:
-    """The date a night started on, in UTC shifted back 12 hours so one night is one date."""
-    return (at.astimezone(UTC) - timedelta(hours=12)).date().isoformat()
+def night_of(at: datetime, lon: float = 0.0) -> str:
+    """The date a night started on. Nights split at local solar noon, from the longitude.
+
+    A plain UTC split would cut a night in Oregon in two at 4 am, and count it twice.
+    """
+    local_noon_shift = timedelta(hours=lon / 15 - 12)
+    return (at.astimezone(UTC) + local_noon_shift).date().isoformat()
 
 
 def verdict(cell: dict) -> str:
@@ -63,8 +67,13 @@ class SkyMap:
                 self._cells = dict(self._load() or {})
             return {k: dict(v) for k, v in self._cells.items()}
 
-    def record(self, alt: float, az: float, good: int, failed: int, at: datetime) -> None:
-        """Add frames shot at this altitude and azimuth. Below the horizon is ignored."""
+    def record(
+        self, alt: float, az: float, good: int, failed: int, at: datetime, lon: float = 0.0
+    ) -> None:
+        """Add frames shot at this altitude and azimuth. Below the horizon is ignored.
+
+        lon is the site's longitude, so a night counts once however late it runs.
+        """
         if alt < 0 or (good <= 0 and failed <= 0):
             return
         self.cells()
@@ -74,7 +83,7 @@ class SkyMap:
             cell["good"] += max(good, 0)
             cell["failed"] += max(failed, 0)
             if failed > 0:
-                night = night_of(at)
+                night = night_of(at, lon)
                 if night not in cell["nights"]:
                     cell["nights"] = (cell["nights"] + [night])[-NIGHTS_KEPT:]
             self._save(dict(self._cells))

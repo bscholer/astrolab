@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from astropy.coordinates import get_body
+import astropy.units as u
+import pytest
+from astropy.coordinates import SkyCoord, get_body
 from astropy.time import Time
 
 from server import scope_plan, sky
@@ -51,7 +53,9 @@ def test_moon_limit_rejects_close_target(monkeypatch):
 
 
 def test_moon_separation_is_zero_at_the_moon():
-    moon = get_body("moon", Time(NOW, scale="utc"), LOC).icrs
+    # The Moon's RA and Dec as seen from the site (GCRS). Its ICRS position is from the
+    # solar system barycentre, nowhere near where the Moon appears in the sky.
+    moon = get_body("moon", Time(NOW, scale="utc"), LOC)
     at_moon = Candidate("m", float(moon.ra.deg), float(moon.dec.deg))
     assert moon_separation_deg(at_moon, LOC, NOW) < 0.5
 
@@ -60,3 +64,12 @@ def test_target_in_a_blocked_patch_is_skipped():
     a = _high("a")
     assert pick_target([a], LOC, NOW, blocked=lambda _alt, _az: False).target.name == "a"
     assert pick_target([a], LOC, NOW, blocked=lambda _alt, _az: True) is None
+
+
+def test_moon_separation_is_seen_from_the_site():
+    """Comparing in the Moon's own frame. Converting it to ICRS (barycentric) is far off."""
+    t = Time(NOW, scale="utc")
+    moon = get_body("moon", t, LOC)
+    for ra, dec in ((10, 41), (98, 5), (270, 66)):
+        right = moon.separation(SkyCoord(ra=ra * u.deg, dec=dec * u.deg)).deg
+        assert moon_separation_deg(Candidate("x", ra, dec), LOC, NOW) == pytest.approx(right, abs=0.2)
