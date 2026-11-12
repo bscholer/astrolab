@@ -61,7 +61,7 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import scope_plan, sky_thumbs, weather
+from server import scope_plan, sky_thumbs, telemetry, weather
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import open_db
@@ -242,7 +242,9 @@ def _bootstrap_capture_root() -> None:
     threading.Thread(target=_scan, name="astrolab-first-scan", daemon=True).start()
 
 
+telemetry.setup("astrolab")
 app = FastAPI(title="astrolab", version="0.1.0", lifespan=lifespan)
+telemetry.instrument_app(app)
 
 # Phase 1 dev: SvelteKit dev server runs on a different port. Allow it through
 # CORS. Tighten or drop once the static build is mounted under the same origin.

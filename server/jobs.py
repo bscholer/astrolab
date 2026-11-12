@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from . import telemetry
 from .cache import ContentCache
 from .catalog.db import connect as open_catalog_db
 from .catalog.db import retry_on_locked
@@ -715,17 +716,20 @@ class JobWorker:
             )
         )
         try:
-            outputs = run_job(
-                record.template,
-                record.job,
-                cache=self._cache,
-                events=event_sink,
-                force=record.force,
-                cancel=cancel_event,
-                job_id=record.id,
-                db_path=self._db_path,
-                cache_max_bytes=cache_max_bytes,
-            )
+            with telemetry.tracer.start_as_current_span("job") as span:
+                span.set_attribute("astrolab.job_id", record.id)
+                span.set_attribute("astrolab.force", bool(record.force))
+                outputs = run_job(
+                    record.template,
+                    record.job,
+                    cache=self._cache,
+                    events=telemetry.node_spans(event_sink),
+                    force=record.force,
+                    cancel=cancel_event,
+                    job_id=record.id,
+                    db_path=self._db_path,
+                    cache_max_bytes=cache_max_bytes,
+                )
             record.outputs = outputs
             self._terminate(record, status="completed")
         except JobCancelled as exc:

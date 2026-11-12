@@ -16,6 +16,7 @@ from server import sky
 from server.scope_pano import sun_altitude_deg
 from server.scope_plan import Candidate, moon_separation_deg
 from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient
+from server.telemetry import fail, traced
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class CompassRun:
             daemon=True,
         ).start()
 
+    @traced("scope.compass")
     def _run(self, client, loc, points, settle_s) -> None:
         try:
             client.call("prepareScope", timeout=PREPARE_TIMEOUT_S)
@@ -95,6 +97,7 @@ class CompassRun:
                 self._set(done=self.snapshot()["done"] + 1, failed=failed)
             self._set(state="done", step="done")
         except Exception as exc:
+            fail(f"{self.snapshot().get('step')}: {exc}")
             self._set(state="failed", error=f"{self.snapshot().get('step')}: {exc}")
 
     def _slew(self, client, loc, alt, az, settle_s) -> bool:

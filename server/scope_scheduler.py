@@ -15,6 +15,7 @@ from server.scope_observe import Observer
 from server.scope_plan import Candidate
 from server.scope_service import ScopeServiceClient, ScopeServiceError
 from server.scope_skymap import SkyMap
+from server.telemetry import note, traced
 
 log = logging.getLogger(__name__)
 _UNSEEN = "<unseen>"
@@ -104,6 +105,7 @@ class Scheduler:
                 self.state.get("reason"),
             )
             self.state = kw
+        note(scheduler_state=kw.get("state"), reason=kw.get("reason"), target=kw.get("target"))
         if changed:
             log.info("scheduler %s: %s", kw.get("state"), kw.get("reason") or kw.get("target"))
 
@@ -115,6 +117,7 @@ class Scheduler:
         if name:
             self._skip[name] = time.time() + seconds
 
+    @traced("scope.tick")
     def tick(self) -> None:
         client, loc = self._get_client(), self._get_site()
         if not self.enabled:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from server.scope_mirror import list_sessions
 from server.scope_service import ScopeServiceClient, ScopeServiceError
+from server.telemetry import traced
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ class Cleaner:
         self._clock = clock
         self.last: dict = {"at": None, "deleted": [], "error": None}
 
+    @traced("scope.cleanup")
     def run_once(self) -> list[str]:
         client, root = self._get_client(), self._get_root()
         if client is None or root is None:

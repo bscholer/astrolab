@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 
 from server.scope_service import SLEW_TIMEOUT_S, ScopeServiceClient, ScopeServiceError
+from server.telemetry import fail, note, traced
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +74,9 @@ class Observer:
         except Exception:
             log.warning("could not record the pointing of %s", name, exc_info=True)
 
+    @traced("scope.observe")
     def _run(self, client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name) -> None:
+        note(target=name, frames=frames, exposure_s=exposure_s, gain=gain, filter=filter_name)
         try:
             if client.has("setup"):
                 self._set(step="preparing")
@@ -99,6 +102,8 @@ class Observer:
             )
             self._set(state="done", step="capturing")
         except ScopeServiceError as exc:
+            fail(f"{self.snapshot().get('step')}: {exc}")
             self._set(state="failed", error=f"{self.snapshot().get('step')}: {exc}")
         except Exception as exc:
+            fail(str(exc))
             self._set(state="failed", error=str(exc))

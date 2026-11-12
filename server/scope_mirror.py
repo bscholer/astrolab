@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from server.scope_service import ScopeServiceClient
+from server.telemetry import traced
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class Mirror:
         with self._lock:
             self.state.update(kw)
 
+    @traced("scope.mirror")
     def run_once(self) -> int:
         client, root = self._get_client(), self._get_root()
         if client is None or root is None:

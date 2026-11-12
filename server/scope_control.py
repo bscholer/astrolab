@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 
 from server.scope_service import ScopeServiceClient
+from server.telemetry import fail, note, traced
 
 ACTIONS = {
     "prepare": ("prepareScope", 90, "Preparing"),
@@ -38,12 +39,15 @@ class ScopeControl:
             target=self._run, args=(client, action), name="astrolab-control", daemon=True
         ).start()
 
+    @traced("scope.control")
     def _run(self, client, action) -> None:
+        note(action=action)
         op, timeout = ACTIONS[action][:2]
         try:
             client.call(op, timeout=timeout)
             with self._lock:
                 self.state["state"] = "done"
         except Exception as exc:
+            fail(exc)
             with self._lock:
                 self.state.update(state="failed", error=str(exc))

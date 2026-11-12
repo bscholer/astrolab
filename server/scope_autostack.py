@@ -7,6 +7,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from server.telemetry import traced
+
 log = logging.getLogger(__name__)
 
 QUIET_S = 5 * 60
@@ -35,6 +37,7 @@ class AutoStacker:
         with self._lock:
             self._last_arrival[folder] = self._clock()
 
+    @traced("scope.autostack")
     def tick(self) -> list[str]:
         """Submit a job for each quiet folder with frames not yet stacked. Return job ids."""
         if not self._get_enabled():

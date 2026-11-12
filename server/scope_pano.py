@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 
 from server.scope_horizon import cached_mask
 from server.scope_service import ScopeServiceClient
+from server.telemetry import fail, note, traced
 
 log = logging.getLogger(__name__)
 
@@ -170,7 +171,9 @@ class PanoScanner:
                 time.sleep(RETRY_WAIT_S)
         return False
 
+    @traced("scope.pano")
     def _run(self, client, scan, pitches, rotations, settle_s) -> None:
+        note(scan=scan)
         folder = self.root / scan
         folder.mkdir(parents=True, exist_ok=True)
         failed = 0
@@ -183,4 +186,5 @@ class PanoScanner:
             build_mosaic(folder, pitches, rotations)
             self._set(state="done")
         except Exception as exc:
+            fail(str(exc))
             self._set(state="failed", error=str(exc))
