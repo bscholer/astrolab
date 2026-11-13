@@ -77,6 +77,10 @@ class IncompatibleSessions(JobBuildError):
 
 MIN_FRAMES_FOR_STACK = 3
 
+# Only frames with quality other than 'failed' get stacked. The Dwarf 3 saves subs
+# it could not find stars in as failed_*.fits; they are cloud, trees, or trails,
+# and a session of mostly those makes plate solving and registration fail.
+
 # Fields a multi-session bundle must agree on before we will stack them.
 # Order matters only for stable error formatting.
 #
@@ -131,16 +135,20 @@ def session_lights_folder(conn: sqlite3.Connection, session_id: int) -> Path:
     return parents.pop()
 
 
-def _lights_parent_count(conn: sqlite3.Connection, session_id: int) -> int:
+def _folder_is_clean(conn: sqlite3.Connection, session_id: int) -> bool:
+    """The session's lights are one folder with no failed frames, so the folder
+    itself can be the input. Otherwise the job gets a folder of links to its good
+    frames (convert reads every FITS in its input folder)."""
     rows = conn.execute(
         """
-        SELECT DISTINCT path FROM frames
+        SELECT path, quality FROM frames
         WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
           AND image_type = 'LIGHT'
         """,
         (session_id,),
     ).fetchall()
-    return len({Path(r["path"]).parent for r in rows})
+    parents = {Path(r["path"]).parent for r in rows}
+    return len(parents) == 1 and all(r["quality"] != "failed" for r in rows)
 
 
 def matched_master_path(
@@ -220,18 +228,18 @@ def build_from_sessions(
             """
             SELECT COUNT(*) FROM frames
             WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
-              AND image_type = 'LIGHT'
+              AND image_type = 'LIGHT' AND quality IS NOT 'failed'
             """,
             (sid,),
         ).fetchone()[0]
     if total_lights < MIN_FRAMES_FOR_STACK:
         if len(session_ids) == 1:
             raise TooFewFrames(
-                f"session {session_ids[0]} has only {total_lights} light frame(s); "
+                f"session {session_ids[0]} has only {total_lights} good light frame(s); "
                 f"the pipeline needs at least {MIN_FRAMES_FOR_STACK}"
             )
         raise TooFewFrames(
-            f"sessions {session_ids} have only {total_lights} light frame(s) "
+            f"sessions {session_ids} have only {total_lights} good light frame(s) "
             f"between them; the pipeline needs at least {MIN_FRAMES_FOR_STACK}"
         )
 
@@ -239,7 +247,7 @@ def build_from_sessions(
     # per-bundle staging dir of symlinks for N>=2. A single session can span
     # folders too (the scheduler returns to a target several times a night,
     # and each return is a new scope folder); that one gets staged as well.
-    if len(session_ids) == 1 and _lights_parent_count(conn, session_ids[0]) == 1:
+    if len(session_ids) == 1 and _folder_is_clean(conn, session_ids[0]):
         lights_dir = session_lights_folder(conn, session_ids[0])
     else:
         lights_dir = _stage_multi_session_lights(conn, session_ids)
@@ -540,15 +548,26 @@ def _load_sessions(
     return out
 
 
+def canon_instrument(name: str) -> str:
+    """'DWARF 3' and 'DWARFIII' are one scope (firmware renamed it in late 2025)."""
+    return name.replace(" ", "").upper().replace("III", "3")
+
+
 def _assert_compatible(sessions: list[sqlite3.Row]) -> None:
     """Raise IncompatibleSessions if the bundle disagrees on any
     COMPAT_FIELDS value."""
     head = sessions[0]
     conflicts: list[str] = []
+
+    def same(field: str, a: Any, b: Any) -> bool:
+        if field == "instrument" and a and b:
+            return canon_instrument(a) == canon_instrument(b)
+        return a == b
+
     for field in COMPAT_FIELDS:
         head_val = head[field]
         for s in sessions[1:]:
-            if s[field] != head_val:
+            if not same(field, s[field], head_val):
                 values = sorted(
                     {repr(s[field]) for s in sessions}
                     | {repr(head_val)}
@@ -584,7 +603,7 @@ def _stage_multi_session_lights(
         FROM session_frames sf
         JOIN frames f ON f.id = sf.frame_id
         WHERE sf.session_id IN ({placeholders})
-          AND f.image_type = 'LIGHT'
+          AND f.image_type = 'LIGHT' AND f.quality IS NOT 'failed'
         ORDER BY sf.session_id, f.path
         """,  # noqa: S608  (placeholders are ints)
         sorted_ids,

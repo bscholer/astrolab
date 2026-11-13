@@ -360,3 +360,14 @@ def test_persisted_match_round_trips(db: sqlite3.Connection) -> None:
     assert row["master_id"] == chosen
     assert row["match_quality"] == "exact"
     assert row["overridden"] == 0
+
+
+def test_new_firmware_instrument_name_matches_factory_masters(db: sqlite3.Connection) -> None:
+    # Firmware since late 2025 writes 'DWARF 3'; the factory masters say 'DWARFIII'.
+    sid = _insert_session(db, instrument="DWARF 3", exptime=30.0, avg_temp=22.0)
+    dark = _insert_master(db, kind="dark", exptime=30.0, ccd_temp=22.0)
+    bias = _insert_master(db, kind="bias")
+
+    out = match_session(db, sid)
+    assert out["dark"]["master_id"] == dark
+    assert out["bias"]["master_id"] == bias

@@ -270,7 +270,7 @@ def test_build_from_session_explicit_master_id(db, tmp_path: Path) -> None:
 def test_build_rejects_single_frame_session(db, tmp_path: Path) -> None:
     _seed_session(db, folder=tmp_path / "tiny", n_frames=1)
     template = load_template("calibrate_register_stack")
-    with pytest.raises(TooFewFrames, match="only 1 light frame"):
+    with pytest.raises(TooFewFrames, match="only 1 good light frame"):
         build_from_session(db, 1, template)
 
 
@@ -426,3 +426,53 @@ def test_stack_per_night_keeps_per_night_nodes_same_as_one_night_template() -> N
             one_night[nid].kind, one_night[nid].variant, one_night[nid].params,
             one_night[nid].inputs,
         ), nid
+
+
+def _add_failed_frames(db, folder: Path, n: int, session_id: int = 1) -> None:
+    for i in range(n):
+        p = folder / f"failed_frame_{i}.fits"
+        p.write_bytes(b"FAKE")
+        with db:
+            cur = db.execute(
+                "INSERT INTO frames (path, image_type, quality, instrument, exptime, gain)"
+                " VALUES (?, 'LIGHT', 'failed', 'DWARFIII', 30.0, 60)",
+                (str(p),),
+            )
+            db.execute(
+                "INSERT INTO session_frames (session_id, frame_id) VALUES (?, ?)",
+                (session_id, cur.lastrowid),
+            )
+
+
+def test_build_stacks_only_good_frames(db, tmp_path: Path, monkeypatch) -> None:
+    # Failed frames (no stars found by the scope) sink plate solving; the job
+    # gets links to the good frames instead of the whole folder.
+    monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path / "home"))
+    _seed_session(db, folder=tmp_path / "s", n_frames=3)
+    _add_failed_frames(db, tmp_path / "s", 5)
+    _seed_master_dark(db, master_id=1, path=tmp_path / "masters" / "dark.fit")
+    _set_calibration_match(db, session_id=1, master_id=1)
+
+    job = build_from_session(db, 1, load_template("calibrate_register_stack"))
+
+    staged = job.inputs["convert.lights"].path
+    assert staged.parent.name == "lights_stage"
+    assert sorted(p.name for p in staged.iterdir()) == [
+        f"s1__frame_{i}.fits" for i in range(3)
+    ]
+
+
+def test_build_counts_only_good_frames(db, tmp_path: Path) -> None:
+    _seed_session(db, folder=tmp_path / "s", n_frames=2)
+    _add_failed_frames(db, tmp_path / "s", 16)
+    with pytest.raises(TooFewFrames, match="2 good"):
+        build_from_session(db, 1, load_template("calibrate_register_stack"))
+
+
+def test_old_and_new_dwarf3_instrument_names_stack_together(db, tmp_path: Path) -> None:
+    _seed_session(db, session_id=1, folder=tmp_path / "a", instrument="DWARFIII")
+    _seed_session(db, session_id=2, folder=tmp_path / "b", instrument="DWARF 3")
+    _seed_master_dark(db, master_id=1, path=tmp_path / "masters" / "dark.fit")
+    for sid in (1, 2):
+        _set_calibration_match(db, session_id=sid, master_id=1)
+    build_from_sessions(db, [1, 2], load_template("stack_per_night"))
