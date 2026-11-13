@@ -80,6 +80,8 @@ MIN_FRAMES_FOR_STACK = 3
 # Only frames with quality other than 'failed' get stacked. The Dwarf 3 saves subs
 # it could not find stars in as failed_*.fits; they are cloud, trees, or trails,
 # and a session of mostly those makes plate solving and registration fail.
+# Failed frames that triage found as starry as the good ones (rescued = 1, see
+# server/catalog/triage.py) are stacked too.
 
 # Fields a multi-session bundle must agree on before we will stack them.
 # Order matters only for stable error formatting.
@@ -136,19 +138,19 @@ def session_lights_folder(conn: sqlite3.Connection, session_id: int) -> Path:
 
 
 def _folder_is_clean(conn: sqlite3.Connection, session_id: int) -> bool:
-    """The session's lights are one folder with no failed frames, so the folder
+    """The session's lights are one folder of stackable frames only, so the folder
     itself can be the input. Otherwise the job gets a folder of links to its good
-    frames (convert reads every FITS in its input folder)."""
+    and rescued frames (convert reads every FITS in its input folder)."""
     rows = conn.execute(
         """
-        SELECT path, quality FROM frames
+        SELECT path, quality, rescued FROM frames
         WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
           AND image_type = 'LIGHT'
         """,
         (session_id,),
     ).fetchall()
     parents = {Path(r["path"]).parent for r in rows}
-    return len(parents) == 1 and all(r["quality"] != "failed" for r in rows)
+    return len(parents) == 1 and all(r["quality"] != "failed" or r["rescued"] == 1 for r in rows)
 
 
 def matched_master_path(
@@ -228,7 +230,7 @@ def build_from_sessions(
             """
             SELECT COUNT(*) FROM frames
             WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
-              AND image_type = 'LIGHT' AND quality IS NOT 'failed'
+              AND image_type = 'LIGHT' AND (quality IS NOT 'failed' OR rescued = 1)
             """,
             (sid,),
         ).fetchone()[0]
@@ -603,7 +605,7 @@ def _stage_multi_session_lights(
         FROM session_frames sf
         JOIN frames f ON f.id = sf.frame_id
         WHERE sf.session_id IN ({placeholders})
-          AND f.image_type = 'LIGHT' AND f.quality IS NOT 'failed'
+          AND f.image_type = 'LIGHT' AND (f.quality IS NOT 'failed' OR f.rescued = 1)
         ORDER BY sf.session_id, f.path
         """,  # noqa: S608  (placeholders are ints)
         sorted_ids,

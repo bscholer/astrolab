@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -447,6 +447,15 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "INSERT INTO schema_version (version) VALUES (17)",
+    ],
+    18: [
+        # Second look at frames the scope rejected (server/catalog/triage.py).
+        # stars/star_fwhm: our own star count and size; rescued: NULL = not
+        # looked at, 0 = junk, 1 = good enough to stack and back up.
+        "ALTER TABLE frames ADD COLUMN stars INTEGER",
+        "ALTER TABLE frames ADD COLUMN star_fwhm REAL",
+        "ALTER TABLE frames ADD COLUMN rescued INTEGER",
+        "INSERT INTO schema_version (version) VALUES (18)",
     ],
 }
 

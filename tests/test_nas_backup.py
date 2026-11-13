@@ -89,7 +89,24 @@ def test_snapshot_db_daily_and_prunes_old(tmp_path: Path) -> None:
 
 
 def test_backup_is_off_without_a_root(tmp_path: Path) -> None:
-    assert NasBackup(lambda: None, lambda: tmp_path, tmp_path / "a.sqlite").run() == {}
+    assert NasBackup(lambda: None, lambda: None, tmp_path / "a.sqlite").run() == {}
+    # With captures but no NAS, failed frames are still triaged (for stacking).
+    result = NasBackup(lambda: None, lambda: tmp_path, tmp_path / "a.sqlite").run()
+    assert set(result) == {"at", "triage"}
+
+
+def test_copy_captures_keeps_rescued_failed_frames(tmp_path: Path) -> None:
+    src = tmp_path / "captures" / "M 31"
+    src.mkdir(parents=True)
+    keep = src / "failed_M 31_0001.fits"
+    keep.write_bytes(b"starry")
+    (src / "failed_M 31_0002.fits").write_bytes(b"cloud")
+    for f in src.iterdir():
+        _old(f)
+    dest = tmp_path / "nas"
+
+    copy_captures(tmp_path / "captures", dest, rescued={str(keep)})
+    assert [p.name for p in (dest / "M 31").iterdir()] == ["failed_M 31_0001.fits"]
 
 
 def test_resolve_finds_outputs_after_the_cache_moved(tmp_path: Path) -> None:

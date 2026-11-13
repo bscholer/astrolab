@@ -1,9 +1,11 @@
 """Copy what can't be remade to the NAS: raw captures, finished images, the database.
 
 Turned on by ASTROLAB_NAS_ROOT (a mounted folder). Runs hourly. Adds and updates files,
-never deletes them, except database snapshots older than DB_KEEP_DAYS. Layout:
+never deletes them, except database snapshots older than DB_KEEP_DAYS. Each pass first
+triages new failed_* frames (server/catalog/triage.py), so the ones good enough to
+stack are backed up with the rest; triage runs even with no NAS configured. Layout:
 
-    captures/<session folder>/...         raw frames, darks (failed_* frames skipped)
+    captures/<session folder>/...         raw frames, darks; failed_* frames only if rescued
     images/<project>/<project> v<seq>.png  every completed version's picture
     images/<project>/<project> v<seq> <port>.fit  stacked and final FITS
     db/astrolab-<date>.sqlite              a daily snapshot
@@ -23,6 +25,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from server.catalog.db import connect as connect_catalog
+from server.catalog.triage import rescued_paths, triage_pending
 from server.telemetry import note, traced
 
 log = logging.getLogger(__name__)
@@ -59,11 +63,21 @@ def _safe(name: str) -> str:
     return re.sub(r"[\\/:*?\"<>|]+", "_", name).strip() or "unnamed"
 
 
-def copy_captures(captures: Path, dest: Path, now: float | None = None) -> int:
+TRIAGE_BUDGET_S = 1800
+"""Most of an hourly pass triage may use; the backlog carries over to the next pass."""
+
+
+def copy_captures(
+    captures: Path, dest: Path, now: float | None = None, rescued: set[str] | None = None
+) -> int:
+    """Copy settled capture files. failed_* frames are skipped unless triage rescued them."""
     now = time.time() if now is None else now
+    rescued = rescued or set()
     copied = 0
     for src in captures.rglob("*"):
-        if not src.is_file() or src.name.startswith("failed_") or src.name.endswith(".part"):
+        if not src.is_file() or src.name.endswith(".part"):
+            continue
+        if src.name.startswith("failed_") and str(src) not in rescued:
             continue
         if now - src.stat().st_mtime < SETTLE_S:
             continue
@@ -151,16 +165,22 @@ class NasBackup:
     @traced("nas.backup")
     def run(self) -> dict:
         root = self._root()
-        if root is None:
-            return {}
-        result: dict = {"at": datetime.now(UTC).isoformat()}
-        steps: list[tuple[str, Callable[[], object]]] = [
-            ("db", lambda: snapshot_db(self._db_path, root / "db")),
-            ("images", self._images),
-        ]
         captures = self._captures()
-        if captures is not None and captures.is_dir():
-            steps.append(("captures", lambda: copy_captures(captures, root / "captures")))
+        has_captures = captures is not None and captures.is_dir()
+        result: dict = {"at": datetime.now(UTC).isoformat()}
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if has_captures:
+            steps.append(("triage", self._triage))
+        if root is not None:
+            steps += [
+                ("db", lambda: snapshot_db(self._db_path, root / "db")),
+                ("images", self._images),
+            ]
+            if has_captures:
+                steps.append(("captures", lambda: copy_captures(
+                    captures, root / "captures", rescued=self._rescued())))
+        if not steps:
+            return {}
         for name, step in steps:
             try:
                 result[name] = step()
@@ -172,6 +192,20 @@ class NasBackup:
         self.last = result
         return result
 
+    def _triage(self) -> dict:
+        conn = connect_catalog(self._db_path)
+        try:
+            return triage_pending(conn, budget_s=TRIAGE_BUDGET_S)
+        finally:
+            conn.close()
+
+    def _rescued(self) -> set[str]:
+        conn = sqlite3.connect(self._db_path)
+        try:
+            return rescued_paths(conn)
+        finally:
+            conn.close()
+
     def _images(self) -> int:
         conn = sqlite3.connect(self._db_path)
         try:
@@ -180,7 +214,7 @@ class NasBackup:
             conn.close()
 
     def start(self) -> None:
-        if self._root() is None:
+        if self._root() is None and self._captures() is None:
             return
 
         def loop() -> None:
