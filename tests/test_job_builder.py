@@ -160,6 +160,37 @@ def test_session_lights_folder_raises_when_split_across_dirs(
         session_lights_folder(db, 1)
 
 
+def test_build_from_session_stages_a_session_split_across_folders(
+    db, tmp_path: Path, monkeypatch
+) -> None:
+    # The scheduler returns to a target several times a night; each return is
+    # its own scope folder, but the catalog groups them into one session.
+    monkeypatch.setenv("ASTROLAB_HOME", str(tmp_path / "home"))
+    _seed_session(db, folder=tmp_path / "run1", n_frames=2)
+    for i, name in enumerate(["frame_a.fits", "frame_b.fits"]):
+        folder = tmp_path / f"run{i + 2}"
+        folder.mkdir()
+        (folder / name).write_bytes(b"FAKE")
+        with db:
+            cur = db.execute(
+                "INSERT INTO frames (path, image_type, instrument, exptime, gain)"
+                " VALUES (?, 'LIGHT', 'DWARFIII', 30.0, 60)",
+                (str(folder / name),),
+            )
+            db.execute(
+                "INSERT INTO session_frames (session_id, frame_id) VALUES (1, ?)",
+                (cur.lastrowid,),
+            )
+    _seed_master_dark(db, master_id=1, path=tmp_path / "masters" / "dark.fit")
+    _set_calibration_match(db, session_id=1, master_id=1)
+
+    job = build_from_session(db, 1, load_template("calibrate_register_stack"))
+
+    staged = job.inputs["convert.lights"].path
+    assert staged.parent.name == "lights_stage"
+    assert len(list(staged.iterdir())) == 4
+
+
 def test_build_from_session_auto_uses_matched_master(db, tmp_path: Path) -> None:
     _seed_session(db, folder=tmp_path / "sess")
     _seed_master_dark(db, master_id=1, path=tmp_path / "masters" / "dark.fit")

@@ -405,6 +405,7 @@
               {/if}
             </span>
             {#if obs?.target === t.name}<span class="tag">now</span>{/if}
+            <span class="opts">
             <select
               class="opt"
               aria-label="Filter for {t.name}"
@@ -457,6 +458,7 @@
               onclick={() => setAuto(!!sched?.enabled, scope?.targets?.filter((o) => o.name !== t.name))}
               >×</button
             >
+            </span>
           </li>
         {/each}
       </ul>
@@ -813,8 +815,9 @@
   }
   .queue li {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.7rem;
+    gap: 0.2rem 0.7rem;
     padding: 0.2rem 0.4rem 0.2rem 0.8rem;
     border-bottom: 1px solid var(--border);
   }
@@ -828,10 +831,28 @@
     color: var(--fg-mute);
   }
   .queue .tname {
-    flex: 1;
+    flex: 1 1 12rem;
     min-width: 0;
+    overflow-wrap: anywhere;
     font-family: var(--font-mono);
     font-size: 0.9rem;
+  }
+  .queue .opts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: auto;
+  }
+  /* On a phone the settings go under the name instead of squeezing it. */
+  @media (max-width: 640px) {
+    .queue .opts {
+      flex-basis: 100%;
+      padding-left: 1.8rem;
+    }
+    .queue .opts .x {
+      margin-left: auto;
+    }
   }
   .queue .opt {
     font-size: 0.78rem;

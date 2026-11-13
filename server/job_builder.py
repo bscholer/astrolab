@@ -131,6 +131,18 @@ def session_lights_folder(conn: sqlite3.Connection, session_id: int) -> Path:
     return parents.pop()
 
 
+def _lights_parent_count(conn: sqlite3.Connection, session_id: int) -> int:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT path FROM frames
+        WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
+          AND image_type = 'LIGHT'
+        """,
+        (session_id,),
+    ).fetchall()
+    return len({Path(r["path"]).parent for r in rows})
+
+
 def matched_master_path(
     conn: sqlite3.Connection, session_id: int, kind: str
 ) -> Path | None:
@@ -222,8 +234,10 @@ def build_from_sessions(
         )
 
     # Resolve the lights directory: a single session's folder for N=1, or a
-    # per-bundle staging dir of symlinks for N>=2.
-    if len(session_ids) == 1:
+    # per-bundle staging dir of symlinks for N>=2. A single session can span
+    # folders too (the scheduler returns to a target several times a night,
+    # and each return is a new scope folder); that one gets staged as well.
+    if len(session_ids) == 1 and _lights_parent_count(conn, session_ids[0]) == 1:
         lights_dir = session_lights_folder(conn, session_ids[0])
     else:
         lights_dir = _stage_multi_session_lights(conn, session_ids)
