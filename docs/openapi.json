@@ -714,7 +714,17 @@
           },
           "inputs": {
             "additionalProperties": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
             },
             "title": "Inputs",
             "type": "object"
@@ -727,6 +737,11 @@
             "additionalProperties": true,
             "title": "Params",
             "type": "object"
+          },
+          "per_session": {
+            "default": false,
+            "title": "Per Session",
+            "type": "boolean"
           },
           "ui_depends_on": {
             "anyOf": [
@@ -1028,6 +1043,7 @@
           "sequence/fits",
           "master/fits",
           "master/fits/list",
+          "image/fits/list",
           "channel_triple"
         ],
         "title": "PortType",

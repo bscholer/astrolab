@@ -111,20 +111,87 @@ def _resolved_params(
     if profile is not None:
         # profile defaults can be keyed by node_id or by kind; node_id wins.
         merged.update(profile.pipeline_defaults.get(kind, {}))
+        merged.update(profile.pipeline_defaults.get(base_node_id(node_id), {}))
         merged.update(profile.pipeline_defaults.get(node_id, {}))
     merged.update(raw_template_params)
+    # A per-session copy ('stack@42') takes the template node's overrides, then its own.
+    if base_node_id(node_id) != node_id:
+        merged.update(job.param_overrides.get(base_node_id(node_id), {}))
     merged.update(job.param_overrides.get(node_id, {}))
     return params_schema.model_validate(merged)
+
+
+def _sources(src: str | list[str]) -> list[str]:
+    return src if isinstance(src, list) else [src]
+
+
+def base_node_id(nid: str) -> str:
+    """'stack@42' -> 'stack': the template node a per-session copy came from."""
+    return nid.split("@", 1)[0]
+
+
+def session_keys(job: Job) -> list[str]:
+    """The sessions a job has per-session inputs for, from keys like 'convert@42.lights'."""
+    keys = {k.split(".", 1)[0].split("@", 1)[1] for k in job.inputs if "@" in k.split(".", 1)[0]}
+    return sorted(keys, key=lambda k: (len(k), k))
+
+
+def expand_per_session(template: Template, job: Job) -> Template:
+    """Copy each per_session node once per session in the job.
+
+    Copies are '<id>@<key>', wired to the copies of their per-session sources. A shared
+    node that reads a per-session output gets a list of every copy's output. Templates
+    without per-session nodes come back unchanged.
+    """
+    per = {n.id for n in template.nodes if n.per_session}
+    if not per:
+        return template
+    keys = session_keys(job)
+    if not keys:
+        raise RunError(per.pop(), "per-session template but the job has no per-session inputs")
+
+    def one(src: str, key: str) -> str:
+        nid, port = src.split(".", 1)
+        return f"{nid}@{key}.{port}" if nid in per else src
+
+    nodes = []
+    for n in template.nodes:
+        if n.id in per:
+            for key in keys:
+                nodes.append(
+                    n.model_copy(
+                        update={
+                            "id": f"{n.id}@{key}",
+                            "per_session": False,
+                            "inputs": {p: one(src, key) for p, src in n.inputs.items()},
+                        }
+                    )
+                )
+        else:
+            inputs: dict[str, str | list[str]] = {}
+            for port, src in n.inputs.items():
+                if isinstance(src, str) and src.split(".", 1)[0] in per:
+                    inputs[port] = [one(src, key) for key in keys]
+                else:
+                    inputs[port] = src
+            nodes.append(n.model_copy(update={"inputs": inputs}))
+    outputs = {}
+    for name, src in template.outputs.items():
+        if src.split(".", 1)[0] in per:
+            raise RunError(src, "a template output can't come from a per-session node")
+        outputs[name] = src
+    return template.model_copy(update={"nodes": nodes, "outputs": outputs})
 
 
 def _topo_order(template: Template) -> list[str]:
     """Topo sort by explicit edges. Raises on cycles."""
     deps: dict[str, set[str]] = {n.id: set() for n in template.nodes}
     for node in template.nodes:
-        for src_ref in node.inputs.values():
-            src_node = src_ref.split(".", 1)[0]
-            if src_node in deps:
-                deps[node.id].add(src_node)
+        for src in node.inputs.values():
+            for src_ref in _sources(src):
+                src_node = src_ref.split(".", 1)[0]
+                if src_node in deps:
+                    deps[node.id].add(src_node)
     order: list[str] = []
     visited: set[str] = set()
     visiting: set[str] = set()
@@ -150,10 +217,11 @@ def _successors(template: Template) -> dict[str, set[str]]:
     """Reverse adjacency: producer node id -> set of consumer node ids."""
     out: dict[str, set[str]] = {n.id: set() for n in template.nodes}
     for node in template.nodes:
-        for src_ref in node.inputs.values():
-            src_nid = src_ref.split(".", 1)[0]
-            if src_nid in out:
-                out[src_nid].add(node.id)
+        for src in node.inputs.values():
+            for src_ref in _sources(src):
+                src_nid = src_ref.split(".", 1)[0]
+                if src_nid in out:
+                    out[src_nid].add(node.id)
     return out
 
 
@@ -185,6 +253,11 @@ def _resolve_inputs(
                     f"input port '{in_port}' has no edge and no external input "
                     f"'{external_key}' in job.inputs",
                 )
+        elif isinstance(src, list):
+            missing = [s for s in src if s not in refs]
+            if missing:
+                raise RunError(nid, f"unresolved input edges {missing} for port '{in_port}'")
+            resolved[in_port] = [refs[s] for s in src]  # type: ignore[misc]
         else:
             if src not in refs:
                 raise RunError(nid, f"unresolved input edge '{src}' for port '{in_port}'")
@@ -250,6 +323,7 @@ def run_job(
     on_event: EventFn = events if events is not None else _noop_events
     cancel_event: threading.Event = cancel if cancel is not None else threading.Event()
 
+    template = expand_per_session(template, job)
     by_id = {n.id: n for n in template.nodes}
     order = _topo_order(template)
     successors_of = _successors(template)

@@ -13,6 +13,7 @@ import type { JobSummary } from './api';
  */
 const TEMPLATE_DISPLAY_NAMES: Record<string, string> = {
   calibrate_register_stack: 'Calibrate · Register · Stack',
+  stack_per_night: 'Stack Each Night · Combine',
   hoo_dwarf3_dualband: 'HOO Recombine',
   hoo_recombine: 'HOO Recombine',
   hso_recombine: 'HSO Recombine'

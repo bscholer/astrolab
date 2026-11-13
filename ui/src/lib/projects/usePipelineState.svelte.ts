@@ -50,6 +50,8 @@ export function createPipelineState() {
     const key = eventKey(ev);
     if (seenEventKey.has(key)) return;
     seenEventKey.add(key);
+    // Per-night copies ('stack@42') report on their template node, latest night wins.
+    if (ev.node_id?.includes('@')) ev = { ...ev, node_id: ev.node_id.split('@')[0] };
     if (ev.kind && ev.node_id) nodeKind = { ...nodeKind, [ev.node_id]: ev.kind };
     if (ev.hash && ev.node_id) nodeHash = { ...nodeHash, [ev.node_id]: ev.hash };
     if (ev.node_id) {

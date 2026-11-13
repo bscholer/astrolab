@@ -202,6 +202,8 @@ def build_from_sessions(
     # canonical order; without it [1,2] and [2,1] would race for the same dir.
     session_ids = sorted(set(session_ids))
     cal = calibration if calibration is not None else CalibrationSpec()
+    if any(n.per_session for n in template.nodes):
+        return _build_per_session(conn, session_ids, template, cal)
 
     # Compatibility gate (and frame-count gate): only meaningful for N>=2,
     # but we always run the row lookup so a bogus id surfaces as
@@ -407,6 +409,53 @@ def build_from_sessions(
     )
 
 
+def _build_per_session(
+    conn: sqlite3.Connection,
+    session_ids: list[int],
+    template: Template,
+    cal: CalibrationSpec,
+) -> Job:
+    """Inputs for a template whose per_session nodes run once per session.
+
+    Each session gets exactly the inputs a one-session job of those nodes would
+    get, keyed '<node>@<session>.<port>'. Same lights path, darks, and params mean
+    the same cache keys, so a night auto-stack already stacked is a cache hit.
+    """
+    sessions = _load_sessions(conn, session_ids)
+    if len(sessions) > 1:
+        _assert_compatible(sessions)
+    per = [n.model_copy(update={"per_session": False}) for n in template.nodes if n.per_session]
+    sub = Template(id=template.id, version=template.version, nodes=per)
+    inputs: dict[str, Ref | list[Ref]] = {}
+    overrides: dict[str, dict[str, Any]] = {}
+    used: list[int] = []
+    for sid in session_ids:
+        try:
+            one = build_from_sessions(conn, [sid], sub, cal)
+        except TooFewFrames:
+            continue  # a session too short to stack on its own adds nothing
+        used.append(sid)
+        for key, ref in one.inputs.items():
+            nid, port = key.split(".", 1)
+            inputs[f"{nid}@{sid}.{port}"] = ref
+        for nid, params in one.param_overrides.items():
+            overrides[f"{nid}@{sid}"] = params
+    if not used:
+        raise TooFewFrames(
+            f"none of sessions {session_ids} has the {MIN_FRAMES_FOR_STACK} light "
+            "frames a stack needs"
+        )
+    return Job(
+        template_id=template.id,
+        template_version=template.version,
+        target_id=None,
+        session_ids=[str(sid) for sid in session_ids],
+        calibration=cal,
+        inputs=inputs,
+        param_overrides=overrides,
+    )
+
+
 def _dark_bin_meta(
     *,
     path: str | Path,
@@ -519,7 +568,7 @@ def _stage_multi_session_lights(
     """Materialize a flat directory of symlinks pointing at every light
     frame across the bundle.
 
-    The directory path is deterministic per (sorted) bundle so re-runs hit
+    The directory path is deterministic per bundle and frame list, so re-runs hit
     the same convert_lights cache entry. Filenames are prefixed with
     `s<session_id>__` to avoid collisions when two sessions share frame
     numbers (Dwarf 3 starts every session at frame 0001).
@@ -528,11 +577,6 @@ def _stage_multi_session_lights(
     session are picked up without an explicit reset.
     """
     sorted_ids = sorted(session_ids)
-    bundle_key = ",".join(str(sid) for sid in sorted_ids)
-    h = hashlib.sha1(bundle_key.encode("utf-8")).hexdigest()[:16]
-    stage_root = astrolab_home() / "lights_stage" / h
-    stage_root.mkdir(parents=True, exist_ok=True)
-
     placeholders = ",".join("?" for _ in sorted_ids)
     rows = conn.execute(
         f"""
@@ -549,6 +593,16 @@ def _stage_multi_session_lights(
         raise SessionNotFound(
             f"no light frames found across sessions {sorted_ids}"
         )
+
+    # Key the folder on the frames, not just the session ids: the path is what
+    # the cache hashes, and a session that gains frames (the scheduler came
+    # back to the target) must not reuse the stack of its earlier frames.
+    bundle_key = ",".join(str(sid) for sid in sorted_ids) + "|" + "\n".join(
+        f"{r['session_id']}:{r['path']}" for r in rows
+    )
+    h = hashlib.sha1(bundle_key.encode("utf-8")).hexdigest()[:16]
+    stage_root = astrolab_home() / "lights_stage" / h
+    stage_root.mkdir(parents=True, exist_ok=True)
 
     desired: dict[str, Path] = {}
     for r in rows:

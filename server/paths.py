@@ -38,6 +38,9 @@ def cache_root() -> Path:
     ContentCache root won't see a hot path change.
     """
     override = _read_cache_root_override()
+    if override is None and os.environ.get("ASTROLAB_CACHE_ROOT_DEFAULT", "").strip():
+        # The deployment's cache volume, used until Settings saves a root.
+        override = Path(os.environ["ASTROLAB_CACHE_ROOT_DEFAULT"].strip())
     if override is not None:
         override.mkdir(parents=True, exist_ok=True)
         return override

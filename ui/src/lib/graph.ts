@@ -21,6 +21,7 @@ const NODE_DISPLAY_NAMES: Record<string, string> = {
   seq_bg_extract: 'Background',
   seq_register: 'Register',
   seq_stack: 'Stack',
+  combine_stacks: 'Combine Nights',
   narrowband_extract: 'Narrowband Extract',
   narrowband_compose: 'Narrowband Compose',
   graxpert: 'GraXpert',

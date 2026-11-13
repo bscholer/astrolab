@@ -391,3 +391,38 @@ def test_build_from_sessions_empty_input_raises(db) -> None:
     template = load_template("calibrate_register_stack")
     with pytest.raises(JobBuildError, match="at least one"):
         build_from_sessions(db, [], template)
+
+
+def test_stack_per_night_gives_each_night_its_one_night_inputs(db, tmp_path: Path) -> None:
+    # Same lights path, darks, and overrides as a one-night run means the same
+    # cache keys, so nights auto-stack already did are cache hits.
+    _seed_session(db, session_id=1, folder=tmp_path / "n1", exptime=30.0)
+    _seed_session(db, session_id=2, folder=tmp_path / "n2", exptime=30.0)
+    _seed_session(db, session_id=3, folder=tmp_path / "n3", n_frames=2)  # too short
+    _seed_master_dark(db, master_id=1, path=tmp_path / "masters" / "dark.fit")
+    for sid in (1, 2, 3):
+        _set_calibration_match(db, session_id=sid, master_id=1)
+
+    job = build_from_sessions(db, [1, 2, 3], load_template("stack_per_night"))
+    single = build_from_session(db, 2, load_template("calibrate_register_stack"))
+
+    assert {k for k in job.inputs if k.startswith("convert@")} == {
+        "convert@1.lights",
+        "convert@2.lights",
+    }
+    assert job.inputs["convert@2.lights"] == single.inputs["convert.lights"]
+    assert job.inputs["calibrate@2.dark"] == single.inputs["calibrate.dark"]
+    assert job.param_overrides["calibrate@2"] == single.param_overrides["calibrate"]
+
+
+def test_stack_per_night_keeps_per_night_nodes_same_as_one_night_template() -> None:
+    per_night = {n.id: n for n in load_template("stack_per_night").nodes if n.per_session}
+    one_night = {n.id: n for n in load_template("calibrate_register_stack").nodes}
+    assert set(per_night) == {
+        "convert", "calibrate", "resample", "offset", "bg_extract", "register", "stack"
+    }
+    for nid, node in per_night.items():
+        assert (node.kind, node.variant, node.params, node.inputs) == (
+            one_night[nid].kind, one_night[nid].variant, one_night[nid].params,
+            one_night[nid].inputs,
+        ), nid

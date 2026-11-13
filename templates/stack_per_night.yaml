@@ -1,0 +1,236 @@
+id: stack_per_night
+version: 1
+description: |
+  Many nights of one target, at any mix of exposures: each night (catalog
+  session) is calibrated, registered, and stacked on its own, then
+  combine_stacks plate-solves the nightly stacks onto one grid and stacks
+  them with noise weighting, so longer exposures and longer nights count
+  for more. Everything after the combine matches calibrate_register_stack.
+
+  Why per night: each night's steps keep the same cache keys as a
+  one-night calibrate_register_stack run (and the auto-stack the scope
+  queues after every session), so adding a night to a project only
+  processes that night plus the cheap combine. A single stack of every
+  frame would recalibrate and re-register every night each time, and
+  hold hundreds of GB of intermediates. The cost is that outlier
+  rejection runs within a night (plenty of frames for it) rather than
+  across all frames at once, which makes no visible difference here.
+
+  Nodes marked per_session run once per night. Their settings apply to
+  every night.
+  Inputs the Job must supply, per night:
+    convert@<session>.lights   the night's raw subs
+    calibrate@<session>.dark   matched master darks
+
+nodes:
+  - id: convert
+    per_session: true
+    kind: convert_lights
+    params:
+      basename: light
+      fitseq: false
+
+  - id: calibrate
+    per_session: true
+    kind: calibrate
+    params:
+      input_basename: light
+      fitseq: false
+      # cfa, equalize_cfa, debayer, cosmetic all default-on for OSC.
+    inputs:
+      sequence: convert.sequence
+
+  - id: resample
+    per_session: true
+    kind: seq_resample
+    params:
+      input_basename: pp_light
+      fitseq: false
+      enabled: false
+      # Flip the toggle on in the UI for fast iteration (~4x speedup);
+      # off for the final render. Both lineages stay cached.
+    inputs:
+      sequence: calibrate.sequence
+
+  - id: offset
+    per_session: true
+    kind: seq_offset
+    params:
+      input_basename: rs_pp_light
+      fitseq: false
+      pedestal: 0.01
+    inputs:
+      sequence: resample.sequence
+
+  - id: bg_extract
+    per_session: true
+    kind: seq_bg_extract
+    params:
+      input_basename: rs_pp_light
+      fitseq: false
+      degree: 1
+      samples: 10
+    inputs:
+      sequence: offset.sequence
+
+  - id: register
+    per_session: true
+    kind: seq_register
+    params:
+      input_basename: bkg_rs_pp_light
+      fitseq: false
+      method: platesolve
+    inputs:
+      sequence: bg_extract.sequence
+
+  - id: stack
+    per_session: true
+    kind: seq_stack
+    params:
+      input_basename: r_bkg_rs_pp_light
+      fitseq: false
+      method: rej
+      # rgb_equal / maximize / filter_included default-on.
+    inputs:
+      sequence: register.sequence
+
+  - id: combine
+    kind: combine_stacks
+    # Joins the nightly stacks. One night passes straight through.
+    inputs:
+      images: stack.image
+
+  - id: crop
+    kind: crop
+    # Auto-trims the zero-fill registration border on first run (width == 0
+    # sentinel triggers the signal-bbox auto-detect). Once the user drags a
+    # rectangle in the project page UI the explicit coords take over.
+    # Threshold + padding live in advanced and control the auto-trim only.
+    # Sits right after the stack so all downstream linear ops (GraXpert,
+    # color_balance, auto_bp_shift) and the autostretch histogram only see
+    # real-data pixels.
+    params:
+      enabled: true
+      threshold: 0.001
+      padding: 0
+    inputs:
+      image: combine.image
+
+  - id: graxpert_bg
+    kind: graxpert
+    # GraXpert AI background extraction. Off by default; flip on if Siril's
+    # polynomial bg_extract leaves residual gradient or you have a tough
+    # light-pollution sky. Runs on linear (pre-stretch) data, where the
+    # background model is cleanest.
+    params:
+      enabled: false
+      mode: bg_extract
+      smoothing: 0.0
+      correction: Subtraction
+    inputs:
+      image: crop.image
+
+  - id: graxpert_denoise
+    kind: graxpert
+    # GraXpert AI denoise. Off by default. Strength 0.4-0.6 is the typical
+    # sweet spot. Runs on linear data: GraXpert's noise model is fit on
+    # pre-stretch distributions, and stretching after denoise keeps the
+    # denoiser from over-smoothing the boosted shadow noise.
+    params:
+      enabled: false
+      mode: denoise
+      strength: 0.5
+    inputs:
+      image: graxpert_bg.image
+
+  - id: color_balance
+    kind: color_balance
+    # SCNR green (rmgreen) to kill the OSC Bayer-matrix green cast. Runs
+    # in the linear domain so the subsequent autostretch curve operates
+    # on color-neutral data instead of amplifying the green wash into a
+    # permanent stained look. On by default for OSC; flip off for targets
+    # where green emission is genuinely present.
+    params:
+      enabled: true
+      amount: 0.85
+    inputs:
+      image: graxpert_denoise.image
+
+  - id: auto_bp_shift
+    kind: auto_bp_shift
+    # Linear black-point shift sized to a target clip fraction. The
+    # canonical first move of a manual GHS workflow, automated: push BP
+    # up until ~1% of pixels fall below it, then linearly rescale. The
+    # downstream stretch (autostretch / mtf / asinh) sees a histogram
+    # with the background already crushed toward zero, so its tone
+    # curve doesn't have to do as much work.
+    params:
+      enabled: true
+      clip_fraction: 0.01
+    inputs:
+      image: color_balance.image
+
+  - id: stretch
+    kind: stretch
+    # Linear-domain processing ends here. Everything below operates on
+    # stretched data (StarNet was trained on stretched 16-bit images).
+    # target_bg dropped from the Siril default (0.25) to 0.05 because
+    # auto_bp_shift already pushed the background toward zero; leaving
+    # target_bg at 0.25 would lift the BG back up and undo the shift.
+    params:
+      method: autostretch
+      target_bg: 0.05
+    inputs:
+      image: auto_bp_shift.image
+
+  - id: starnet_extract
+    kind: starnet_extract
+    # StarNet++ split into starless + stars. Off by default. When off, both
+    # outputs are well-defined (starless=input, stars=zero) so the recombine
+    # math at the end of the chain stays consistent.
+    params:
+      enabled: false
+    inputs:
+      image: stretch.image
+
+  - id: starnet_replace
+    kind: starnet_replace
+    # Siril findstar+synthstar to regenerate clean Gaussian stars. Off by
+    # default — passes the StarNet stars layer through unchanged.
+    params:
+      enabled: false
+    inputs:
+      starless: starnet_extract.starless
+      stars: starnet_extract.stars
+    # Surface this row only when the starless workflow is on — synthstar
+    # regen is meaningless when stars haven't been extracted.
+    ui_depends_on: starnet_extract
+
+  - id: starnet_recombine
+    kind: starnet_recombine
+    # Recombine starless + (regenerated) stars. On by default; with extract
+    # off the inputs are (input, zero-image) so this is a no-op identity.
+    params:
+      enabled: true
+      blend: add
+    inputs:
+      starless: starnet_extract.starless
+      stars: starnet_replace.image
+    # Hide along with replace so the whole starless workflow lives or dies
+    # as a unit; replace already gates on extract, so this transitively
+    # disappears when extract is off.
+    ui_depends_on: starnet_replace
+
+  - id: save
+    kind: save_image
+    inputs:
+      image: starnet_recombine.image
+
+outputs:
+  image: save.image
+  stacked: combine.image
+  stretched: stretch.image
+  cropped: crop.image
+  starless: starnet_extract.starless
+  stars: starnet_replace.image
+  recombined: starnet_recombine.image

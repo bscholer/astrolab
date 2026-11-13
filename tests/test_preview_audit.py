@@ -57,6 +57,7 @@ NODE_LAYOUT: dict[tuple[str, str | None], dict[str, str]] = {
     ("seq_register", None): {"sequence": "sequence/"},
     ("seq_resample", None): {"sequence": "sequence/"},
     ("seq_stack", None): {"image": "image.fit"},
+    ("combine_stacks", None): {"image": "image.fit"},
     ("starnet_extract", None): {
         "starless": "starless.fit",
         "stars": "stars.fit",
