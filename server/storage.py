@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import nodes.basic  # noqa: F401  registers nodes, so tiers resolve (unknown = bulk)
 from nodes.base import Node
 from server.cache import DONE_MARKER, ContentCache
 from server.catalog.db import connect as open_catalog_db
@@ -130,6 +131,22 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}  # noqa: SIM118
 
 
+def _node_tier_map(template_json: str) -> dict[str, str]:
+    """Node id -> storage tier for a stored template; {} if it won't parse."""
+    try:
+        t = Template.model_validate(json.loads(template_json))
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for spec in t.nodes:
+        try:
+            cls: type[Node] = registry_lookup(spec.kind, spec.variant)
+            out[spec.id] = cls.tier
+        except KeyError:
+            continue
+    return out
+
+
 def build_reachability(
     conn: sqlite3.Connection,
     cache: ContentCache,
@@ -156,8 +173,16 @@ def build_reachability(
     # job_ids. Legacy list-shaped payloads are kept verbatim and resolved
     # below using the project's template node order, matching the old
     # storage behavior so old records don't silently change meaning.
+    tier_rank = {"bulk": 0, "keep": 1}
+
+    def _promote(entry: CacheEntryInfo, tier: str) -> None:
+        if tier_rank.get(tier, 0) > tier_rank.get(entry.tier, 0):
+            entry.tier = tier
+
     job_hashes_raw: dict[str, dict[str, str] | list[str]] = {}
-    for j in conn.execute("SELECT id, status, node_hashes_json FROM jobs").fetchall():
+    for j in conn.execute(
+        "SELECT id, status, node_hashes_json, template_json FROM jobs"
+    ).fetchall():
         if not j["node_hashes_json"]:
             continue
         try:
@@ -168,26 +193,21 @@ def build_reachability(
             for h in raw.values() if isinstance(raw, dict) else raw:
                 if isinstance(h, str) and h in entries:
                     entries[h].from_completed_job = True
+            # Tier from the job's own template, so results of jobs without a
+            # project (auto-stacks) are protected like project results.
+            if isinstance(raw, dict) and j["template_json"]:
+                job_tiers = _node_tier_map(j["template_json"])
+                for node_id, h in raw.items():
+                    if isinstance(h, str) and h in entries:
+                        tier = job_tiers.get(node_id) or job_tiers.get(node_id.split("@", 1)[0])
+                        if tier:
+                            _promote(entries[h], tier)
         if isinstance(raw, dict):
             job_hashes_raw[j["id"]] = {
                 str(k): str(v) for k, v in raw.items() if isinstance(v, str)
             }
         elif isinstance(raw, list):
             job_hashes_raw[j["id"]] = [h for h in raw if isinstance(h, str)]
-
-    def _node_tier_map(template_json: str) -> dict[str, str]:
-        try:
-            t = Template.model_validate(json.loads(template_json))
-        except Exception:
-            return {}
-        out: dict[str, str] = {}
-        for spec in t.nodes:
-            try:
-                cls: type[Node] = registry_lookup(spec.kind, spec.variant)
-                out[spec.id] = cls.tier
-            except KeyError:
-                continue
-        return out
 
     # We don't have a stored mapping from node_hash to its (kind, variant),
     # so we approximate: walk each history entry, infer per-node tier from
@@ -196,8 +216,6 @@ def build_reachability(
     # node implementation, so tier is stable; if a tier mismatch ever shows
     # up we promote to `keep` to avoid evicting something a downstream user
     # is counting on.
-    tier_rank = {"bulk": 0, "keep": 1}
-
     for pid, p in projects.items():
         tier_map = _node_tier_map(p["template_json"])
         template = Template.model_validate(json.loads(p["template_json"]))
@@ -235,9 +253,7 @@ def build_reachability(
                 # Per-session copies ('stack@42') share their template node's tier.
                 spec = spec_by_id.get(node_id) or spec_by_id.get(node_id.split("@", 1)[0])
                 if spec is not None:
-                    tier = tier_map.get(spec.id, "bulk")
-                    if tier_rank.get(tier, 0) > tier_rank.get(entry.tier, 0):
-                        entry.tier = tier
+                    _promote(entry, tier_map.get(spec.id, "bulk"))
                 if entry.oldest_owner_updated_at is None or (
                     project_updated < entry.oldest_owner_updated_at
                 ):
@@ -506,11 +522,14 @@ def run_cleanup(
     interrupted runs) older than DEAD_GRACE_S go on every call, budget or not.
     Younger ones stay so a retry of a failed run reuses its finished steps.
 
-    Budget eviction order (lower = evict first):
-      1. Orphans (no project owns them) regardless of tier.
-      2. Bulk-tier entries (pre-stack sequence data), oldest project first.
-      3. Keep-tier entries (stack output and post-stack work). Only touched
-         when 1 and 2 didn't reclaim enough.
+    Budget eviction only takes bulk-tier entries (pre-stack sequence data):
+      1. Orphans first (no project owns them, e.g. old auto-stack work).
+      2. Then project-owned bulk, oldest project first.
+    Keep-tier entries (stacks and everything after) are results people look
+    at, and small next to bulk, so the budget never takes them; one huge run
+    once evicted every other project's images that way. They go when their
+    project is deleted or they turn dead. If bulk alone can't get under
+    budget, the result says over_budget and the per-node disk check decides.
 
     Entries with a live in-use marker are skipped regardless of position;
     the lockfile protocol guarantees a running job's reads/writes survive
@@ -548,7 +567,7 @@ def run_cleanup(
             over_budget=False,
         )
 
-    ordered = sorted(entries.values(), key=_eviction_key)
+    ordered = sorted((e for e in entries.values() if e.tier != "keep"), key=_eviction_key)
     log.info(
         "run_cleanup start: total=%d max=%d over_by=%d entries=%d alive_jobs=%d",
         total,
@@ -573,12 +592,7 @@ def run_cleanup(
                 sorted(cache.in_use_by(e.node_hash) & alive),
             )
             continue
-        if not e.owners:
-            reason = "orphan"
-        elif e.tier == "keep":
-            reason = "over-budget-keep"
-        else:
-            reason = "over-budget-bulk"
+        reason = "orphan" if not e.owners else "over-budget-bulk"
         log.info(
             "run_cleanup pick: hash=%s reason=%s bytes=%d tier=%s owners=%d "
             "oldest_owner=%s",
