@@ -156,3 +156,26 @@ def test_mirror_skips_purged_and_cleaner_frees_them(tmp_path: Path) -> None:
 
     cleaner = Cleaner(lambda: scope, lambda: root, get_purged=lambda: {name})
     assert cleaner.run_once() == [name]
+
+
+def test_one_targets_sessions_in_a_night_count_together(tmp_path: Path) -> None:
+    c = tmp_path / "captures"
+    with open_db(tmp_path / "c.sqlite") as db:
+        _session(db, c, 1, folder="DWARF_RAW_a", good=12)  # 6 min
+        _session(db, c, 2, folder="DWARF_RAW_b", good=12)  # 6 min, same night: 12 min
+        _session(db, c, 3, folder="DWARF_RAW_c", good=12)  # 6 min, a week later
+        with db:
+            db.execute("UPDATE sessions SET started_at = '2026-11-12T22:00:00' WHERE id = 1")
+            db.execute("UPDATE sessions SET started_at = '2026-11-13T03:30:00' WHERE id = 2")
+            db.execute("UPDATE sessions SET started_at = '2026-11-20T22:00:00' WHERE id = 3")
+        decide(db, now=NOW)
+        assert _verdicts(db) == {1: "keep", 2: "keep", 3: "scrap"}
+
+
+def test_plan_skips_nested_folders(tmp_path: Path) -> None:
+    c = tmp_path / "captures"
+    with open_db(tmp_path / "c.sqlite") as db:
+        _session(db, c, 1, folder="DWARF_RAW_MOSAIC_x/DWARF_RAW_panel", good=1)
+        decide(db, now=NOW)
+        assert _verdicts(db) == {1: "scrap"}
+        assert scrap_plan(db, c, None) == []

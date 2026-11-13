@@ -7,8 +7,8 @@ Every few minutes:
    - keep at once: it has SCRAP_BELOW_S of good frames, a project uses it, or
      it is short-exposure work (Moon, planets) that star counts can't judge;
    - otherwise wait until it has settled (no new frame for SETTLE_S) and its
-     failed frames are triaged, then keep it if good + rescued frames reach
-     SCRAP_BELOW_S, else call it scrap.
+     failed frames are triaged, then keep it if the good + rescued frames of
+     its target that night (all sessions) reach SCRAP_BELOW_S, else scrap.
 3. Purge scrap capture folders when the purge setting is on: delete them
    from the capture root and the NAS, and record a tombstone so the scope
    mirror never copies them back (the scope cleaner may then free them from
@@ -30,6 +30,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from server.catalog.db import connect as connect_catalog
@@ -53,6 +54,8 @@ FOLDER_PREFIX = "DWARF_RAW_"
 class _Session:
     id: int
     exptime: float | None
+    night: tuple[int | None, str] = (None, "")
+    """(target, night) - sessions of one target in one night are judged together."""
     newest_mtime: float = 0.0
     good: int = 0
     rescued: int = 0
@@ -68,14 +71,15 @@ def _sessions(conn: sqlite3.Connection) -> dict[int, _Session]:
     out: dict[int, _Session] = {}
     for r in conn.execute(
         """
-        SELECT s.id, s.exptime, f.path, f.mtime, f.quality, f.rescued
+        SELECT s.id, s.exptime, f.path, f.mtime, f.quality, f.rescued,
+               s.target_id, s.started_at
         FROM sessions s
         JOIN session_frames sf ON sf.session_id = s.id
         JOIN frames f ON f.id = sf.frame_id
         WHERE f.image_type = 'LIGHT'
         """
     ):
-        s = out.setdefault(r[0], _Session(r[0], r[1]))
+        s = out.setdefault(r[0], _Session(r[0], r[1], (r[6], _night(r[7]))))
         s.newest_mtime = max(s.newest_mtime, r[3] or 0.0)
         s.folders.add(str(Path(r[2]).parent))
         if r[4] != "failed":
@@ -85,6 +89,16 @@ def _sessions(conn: sqlite3.Connection) -> dict[int, _Session]:
         elif r[5] is None:
             s.untriaged += 1
     return out
+
+
+def _night(started_at: str | None) -> str:
+    """The date the night began: a session starting before noon belongs to the evening before."""
+    if not started_at:
+        return ""
+    try:
+        return (datetime.fromisoformat(started_at) - timedelta(hours=12)).date().isoformat()
+    except ValueError:
+        return started_at[:10]
 
 
 def _project_sessions(conn: sqlite3.Connection) -> set[int]:
@@ -114,9 +128,15 @@ def decide(conn: sqlite3.Connection, now: float | None = None) -> dict[str, int]
     decided = {r[0] for r in conn.execute("SELECT session_id FROM session_verdicts")}
     in_projects = _project_sessions(conn)
     counts = {"keep": 0, "scrap": 0, "waiting": 0}
+    # A target's sessions from one night count together: the scheduler can
+    # split a night into several sessions, each short but fine combined.
+    nights: dict[tuple[int | None, str], list[_Session]] = defaultdict(list)
+    for s in sessions.values():
+        nights[s.night].append(s)
     for s in sessions.values():
         if s.id in decided:
             continue
+        night = nights[s.night] if s.night[0] is not None and s.night[1] else [s]
         verdict: str | None
         if (
             s.exptime is None
@@ -125,10 +145,10 @@ def decide(conn: sqlite3.Connection, now: float | None = None) -> dict[str, int]
             or s.id in in_projects
         ):
             verdict = "keep"
-        elif now - s.newest_mtime < SETTLE_S or s.untriaged:
+        elif any(now - n.newest_mtime < SETTLE_S or n.untriaged for n in night):
             verdict = None
         else:
-            verdict = "keep" if s.usable_s >= SCRAP_BELOW_S else "scrap"
+            verdict = "keep" if sum(n.usable_s for n in night) >= SCRAP_BELOW_S else "scrap"
         if verdict is None:
             counts["waiting"] += 1
             continue
@@ -193,7 +213,11 @@ def scrap_plan(
     plan: list[ScrapFolder] = []
     for folder, members in sorted(by_folder.items()):
         path = Path(folder)
-        if not path.name.startswith(FOLDER_PREFIX):
+        # Only scope session folders right under the capture root: that is what
+        # the mirror copies and the scope cleaner deletes (mosaic panels nest).
+        if not path.name.startswith(FOLDER_PREFIX) or (
+            captures is not None and path.parent != captures
+        ):
             continue
         if any(verdicts.get(s.id) != "scrap" for s in members):
             continue
