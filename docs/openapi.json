@@ -1662,6 +1662,20 @@
         "title": "ScopeTarget",
         "type": "object"
       },
+      "ScrapPurgeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ScrapPurgeRequest",
+        "type": "object"
+      },
       "SessionPatchRequest": {
         "additionalProperties": false,
         "description": "Body for PATCH /api/sessions/{id}.\n\nThree independent operations the user may pass:\n- reassign to an existing target via `target_id`\n- reassign to a (new or reused) target via `new_target_name`\n- update freeform `description`\n\nReassign uses exactly-one-of semantics across `target_id` and\n`new_target_name`. If both are unset, the request is a metadata-only\nupdate (description). If neither is set and description is also\nomitted, the call is a no-op; we return the current session row\nrather than 400 since \"no-op succeeds\" is cheaper for clients.\n\n`description=None` after model parse means \"field omitted\" if it\nwasn't in `model_fields_set`, or \"explicit clear\" if it was. The\nhandler discriminates via `model_fields_set`.",
@@ -2525,6 +2539,68 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/curator": {
+      "get": {
+        "description": "The curator's last pass and a dry run: the scrap folders a purge would delete.",
+        "operationId": "get_curator_api_curator_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Curator Api Curator Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Curator"
+      }
+    },
+    "/api/curator/purge": {
+      "put": {
+        "description": "Turn automatic deletion of scrap capture folders on or off.",
+        "operationId": "set_scrap_purge_api_curator_purge_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScrapPurgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Scrap Purge Api Curator Purge Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Scrap Purge"
+      }
+    },
     "/api/gallery": {
       "get": {
         "description": "Every successful history entry across all projects, newest\nfirst. Each entry has the bits a card needs (preview pointer +\ntarget/template names) so the UI doesn't have to JOIN per render.",

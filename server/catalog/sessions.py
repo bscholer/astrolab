@@ -282,6 +282,11 @@ def cluster_sessions(
         conn.execute(
             f"DELETE FROM sessions WHERE id IN ({placeholders})", tuple(orphans)
         )
+        # Session ids get reused; a verdict must not pass to a new session.
+        conn.execute(
+            f"DELETE FROM session_verdicts WHERE session_id IN ({placeholders})",
+            tuple(orphans),
+        )
 
     # Targets whose sessions all vanished are orphans now.
     conn.execute(

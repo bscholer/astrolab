@@ -78,6 +78,7 @@ from server.catalog.sky_match import (
     target_centroid,
     target_envelope,
 )
+from server.curator import Curator, purged_names
 from server.endpoints import (
     StatusHint,
     ToolAnnotations,
@@ -137,6 +138,7 @@ from server.storage import (
     SETTING_SCOPE_TARGETS,
     SETTING_SCOPE_TOKEN,
     SETTING_SCOPE_URL,
+    SETTING_SCRAP_PURGE,
     SETTING_SITE_ELEVATION_M,
     SETTING_SITE_LATITUDE,
     SETTING_SITE_LONGITUDE,
@@ -187,6 +189,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         scope_autostack.start()
         scope_cleaner.start()
         threading.Thread(target=_warm_scope_caches, name="astrolab-warm", daemon=True).start()
+    curator.start()
     nas_backup.start()
     yield
     job_manager.shutdown(wait=False)
@@ -623,10 +626,14 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                  FROM frames f
                  JOIN session_frames sf ON sf.frame_id = f.id
                  JOIN sessions s2 ON s2.id = sf.session_id
+                 JOIN session_verdicts v2 ON v2.session_id = s2.id AND v2.verdict = 'keep'
                  WHERE s2.target_id = t.id
                ) AS bytes_on_disk
         FROM targets t
-        LEFT JOIN sessions s ON s.target_id = t.id
+        JOIN sessions s ON s.target_id = t.id
+        -- The library shows kept sessions only: new ones appear once the
+        -- curator has judged them, scrap never (server/curator.py).
+        JOIN session_verdicts v ON v.session_id = s.id AND v.verdict = 'keep'
         GROUP BY t.id, t.name
         ORDER BY t.name
         """
@@ -670,6 +677,7 @@ def get_target(target_id: int, conn: DBDep) -> TargetDetail:
         """
         SELECT * FROM sessions
         WHERE target_id = ?
+          AND id IN (SELECT session_id FROM session_verdicts WHERE verdict = 'keep')
         ORDER BY started_at
         """,
         (target_id,),
@@ -3427,6 +3435,44 @@ scope_autostack = AutoStacker(
     _find_scope_session,
     _submit_scope_stack,
 )
+def _purged_folders() -> set[str]:
+    with _db() as conn:
+        return purged_names(conn)
+
+
+curator = Curator(
+    job_manager.db_path or default_db_path(),
+    _mirror_root,
+    nas_root,
+    lambda: bool(get_setting(SETTING_SCRAP_PURGE, False, db_path=job_manager.db_path)),
+)
+
+
+class ScrapPurgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@app.get("/api/curator")
+def get_curator() -> dict:
+    """The curator's last pass and a dry run: the scrap folders a purge would delete."""
+    plan = curator.plan()
+    return {
+        "purge_enabled": bool(get_setting(SETTING_SCRAP_PURGE, False, db_path=job_manager.db_path)),
+        "last": curator.last,
+        "scrap": [p.as_dict() for p in plan],
+        "scrap_bytes": sum(p.bytes for p in plan),
+        "scrap_nas_bytes": sum(p.nas_bytes for p in plan),
+    }
+
+
+@app.put("/api/curator/purge")
+def set_scrap_purge(req: ScrapPurgeRequest) -> dict:
+    """Turn automatic deletion of scrap capture folders on or off."""
+    set_setting(SETTING_SCRAP_PURGE, req.enabled, db_path=job_manager.db_path)
+    return {"purge_enabled": req.enabled}
+
+
 nas_backup = NasBackup(
     nas_root,
     _mirror_root,
@@ -3444,6 +3490,7 @@ scope_mirror = Mirror(
     ),
     on_copied=_scan_after_copy,
     on_session_copied=scope_autostack.touch,
+    get_purged=lambda: _purged_folders(),
 )
 
 
@@ -3453,6 +3500,7 @@ scope_cleaner = Cleaner(
     notify=make_notifier(
         lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
     ),
+    get_purged=lambda: _purged_folders(),
 )
 
 

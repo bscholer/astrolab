@@ -455,6 +455,26 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE frames ADD COLUMN stars INTEGER",
         "ALTER TABLE frames ADD COLUMN star_fwhm REAL",
         "ALTER TABLE frames ADD COLUMN rescued INTEGER",
+        # server/curator.py: 'keep' or 'scrap' per session once it has settled.
+        # The library and the NAS copy only see kept sessions.
+        """
+        CREATE TABLE session_verdicts (
+            session_id  INTEGER PRIMARY KEY,
+            verdict     TEXT NOT NULL,
+            usable_s    REAL NOT NULL,
+            decided_at  REAL NOT NULL
+        )
+        """,
+        # Capture folders deleted as scrap. The mirror never copies them
+        # again; the scope cleaner may delete them from the scope.
+        """
+        CREATE TABLE purged_folders (
+            name        TEXT PRIMARY KEY,
+            bytes       INTEGER NOT NULL,
+            usable_s    REAL NOT NULL,
+            purged_at   REAL NOT NULL
+        )
+        """,
         "INSERT INTO schema_version (version) VALUES (18)",
     ],
 }

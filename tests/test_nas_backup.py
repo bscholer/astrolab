@@ -89,10 +89,18 @@ def test_snapshot_db_daily_and_prunes_old(tmp_path: Path) -> None:
 
 
 def test_backup_is_off_without_a_root(tmp_path: Path) -> None:
-    assert NasBackup(lambda: None, lambda: None, tmp_path / "a.sqlite").run() == {}
-    # With captures but no NAS, failed frames are still triaged (for stacking).
-    result = NasBackup(lambda: None, lambda: tmp_path, tmp_path / "a.sqlite").run()
-    assert set(result) == {"at", "triage"}
+    assert NasBackup(lambda: None, lambda: tmp_path, tmp_path / "a.sqlite").run() == {}
+
+
+def test_copy_captures_takes_only_kept_scope_folders(tmp_path: Path) -> None:
+    captures = tmp_path / "captures"
+    for name in ("DWARF_RAW_TELE_M 31_kept", "DWARF_RAW_TELE_M 31_undecided", "CALI_FRAME"):
+        (captures / name).mkdir(parents=True)
+        (captures / name / "a.fits").write_bytes(b"x")
+        _old(captures / name / "a.fits")
+    dest = tmp_path / "nas"
+    copy_captures(captures, dest, kept={str(captures / "DWARF_RAW_TELE_M 31_kept")})
+    assert sorted(p.name for p in dest.iterdir()) == ["CALI_FRAME", "DWARF_RAW_TELE_M 31_kept"]
 
 
 def test_copy_captures_keeps_rescued_failed_frames(tmp_path: Path) -> None:

@@ -83,11 +83,13 @@ class Cleaner:
         get_root: Callable[[], Path | None],
         notify: Callable[[str, str], None] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        get_purged: Callable[[], set[str]] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_root = get_root
         self._notify = notify or (lambda *_: None)
         self._clock = clock
+        self._get_purged = get_purged or set
         self.last: dict = {"at": None, "deleted": [], "error": None}
 
     @traced("scope.cleanup")
@@ -103,7 +105,12 @@ class Cleaner:
             if (status.get("job") or {}).get("state") == "running" or status.get("busy_elsewhere"):
                 return []
             held = []
+            purged = self._get_purged()
             for session in list_sessions(client):
+                if session in purged:  # copied, judged scrap, deleted here: done with it
+                    entries = client.call("listFiles", {"path": session})["entries"]
+                    held.append((session, sum(e["size"] for e in entries if not e["dir"])))
+                    continue
                 size = mirrored_size(client, session, root)
                 if size is not None:
                     held.append((session, size))

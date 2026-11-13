@@ -575,6 +575,11 @@ def scan(
             match_all_sessions(conn)
         with conn:
             _resolve_targets(conn)
+        # Judge sessions now, so a long-enough new session shows in the library
+        # right after the scan instead of at the curator's next pass.
+        from server.curator import decide
+
+        decide(conn)
 
     log.info("scan complete: %r", stats)
     return stats

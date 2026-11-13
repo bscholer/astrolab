@@ -70,6 +70,7 @@ class Mirror:
         on_copied: Callable[[], None],
         interval_s: float = 60,
         on_session_copied: Callable[[str], None] | None = None,
+        get_purged: Callable[[], set[str]] | None = None,
     ) -> None:
         self._get_client = get_client
         self._get_root = get_root
@@ -77,6 +78,7 @@ class Mirror:
         self._save_baseline = save_baseline
         self._on_copied = on_copied
         self._on_session_copied = on_session_copied or (lambda _name: None)
+        self._get_purged = get_purged or set
         self.interval_s = interval_s
         self._lock = threading.Lock()
         self.state: dict = {"state": "idle", "files_copied": 0, "last_ok": None, "error": None}
@@ -104,9 +106,10 @@ class Mirror:
             if baseline is None:
                 self._save_baseline(sessions)
                 baseline = sessions
+            purged = self._get_purged()  # scrap the curator deleted; never copy it back
             copied = 0
             for session in sessions:
-                if session in baseline:
+                if session in baseline or session in purged:
                     continue
                 self._set(state="copying", current=session)
                 n = mirror_session(client, session, root)

@@ -732,6 +732,8 @@ SETTING_SCOPE_AUTO_STACK = "scope_auto_stack"
 SETTING_SCOPE_POINTING = "scope_pointing_pairs"
 SETTING_SCOPE_PANO_EXCLUDED = "scope_pano_excluded"
 SETTING_SCOPE_SKYMAP = "scope_skymap"
+SETTING_SCRAP_PURGE = "scrap_purge"
+"""When true, the curator deletes scrap capture folders (server/curator.py)."""
 
 SETTING_SITE_LATITUDE = "site_latitude"
 SETTING_SITE_LONGITUDE = "site_longitude"
