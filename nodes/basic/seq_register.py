@@ -278,49 +278,59 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
             apply_opts.append(f"-scale={params.drizzle_scale}")
             apply_opts.append(f"-pixfrac={params.drizzle_dropsize}")
 
-        if params.method == "platesolve":
-            ctx.progress(0.2, "seq_register: plate-solving sequence")
-            ps_opts = ["-nocache", "-force"]
-            if params.distortion:
-                ps_opts.append("-disto=ps_distortion")
-            align_commands: list[str] = [
-                f"seqplatesolve {params.input_basename} {' '.join(ps_opts)}",
-                f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
-            ]
-        else:  # star
-            ctx.progress(0.2, "seq_register: star-aligning sequence")
-            reg_opts: list[str] = [
-                f"-transf={params.transform}",
-                f"-minpairs={params.min_pairs}",
-            ]
-            if params.two_pass:
-                reg_opts.append("-2pass")
-            align_commands = [
-                f"register {params.input_basename} {' '.join(reg_opts)}",
-                f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
-            ]
+        ps_opts = ["-nocache", "-force"]
+        if params.distortion:
+            ps_opts.append("-disto=ps_distortion")
+        platesolve = [
+            f"seqplatesolve {params.input_basename} {' '.join(ps_opts)}",
+            f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+        ]
+        reg_opts: list[str] = [f"-transf={params.transform}", f"-minpairs={params.min_pairs}"]
+        if params.two_pass:
+            reg_opts.append("-2pass")
+        star = [
+            f"register {params.input_basename} {' '.join(reg_opts)}",
+            f"seqapplyreg {params.input_basename} {' '.join(apply_opts)}".rstrip(),
+        ]
+        # Plate solving, tried twice: Siril 1.4 fails to finish when the reference
+        # frame doesn't solve (cloud, trees), but the failed pass records which
+        # frames solved in this node's copy of the .seq, so the second pass drops
+        # them and succeeds. Star matching is the last resort, and the only
+        # method for method='star'.
+        attempts = (
+            [("plate-solving", platesolve), ("plate-solving again", platesolve)]
+            if params.method == "platesolve"
+            else []
+        ) + [("star-aligning", star)]
 
         out_basename = f"r_{params.input_basename}"
-        commands = [
-            f"cd {quote(seq_out.resolve())}",
-            *align_commands,
-        ]
-        # Two Siril sub-commands in succession (platesolve+applyreg or
-        # register+applyreg). phases=2 partitions the [0.2, 0.95] band so
-        # the second command's fresh 0% sweep advances to the upper half
-        # instead of visually rewinding the bar to zero.
-        wrote = run_siril_on_sequence(
-            node_name="seq_register",
-            seq_in=seq_in,
-            seq_out=seq_out,
-            commands=commands,
-            basename=params.input_basename,
-            out_basename=out_basename,
-            fitseq=params.fitseq,
-            ctx=ctx,
-            runtime=SirilRuntime(),
-            phases=2,
-        )
+        errors: list[str] = []
+        for label, align_commands in attempts:
+            ctx.progress(0.2, f"seq_register: {label} sequence")
+            # Two Siril sub-commands in succession (align + applyreg). phases=2
+            # partitions the [0.2, 0.95] band so the second command's fresh 0%
+            # sweep advances to the upper half instead of rewinding the bar.
+            try:
+                wrote = run_siril_on_sequence(
+                    node_name="seq_register",
+                    seq_in=seq_in,
+                    seq_out=seq_out,
+                    commands=[f"cd {quote(seq_out.resolve())}", *align_commands],
+                    basename=params.input_basename,
+                    out_basename=out_basename,
+                    fitseq=params.fitseq,
+                    ctx=ctx,
+                    runtime=SirilRuntime(),
+                    phases=2,
+                )
+                break
+            except RuntimeError as exc:
+                if ctx.cancel.is_set():
+                    raise
+                errors.append(f"{label}: {exc}")
+                ctx.warn("registration_retry", f"{label} failed; trying again another way")
+        else:
+            raise RuntimeError("seq_register: every alignment attempt failed\n" + "\n".join(errors))
 
         ctx.progress(1.0, f"seq_register: wrote {wrote}")
         return {"sequence": seq_ref(seq_out)}

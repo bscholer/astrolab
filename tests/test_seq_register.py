@@ -262,3 +262,45 @@ def test_raises_when_siril_fails(
             ctx=_ctx(tmp_path),
             out_dir=out_dir,
         )
+
+
+class _FlakyRuntime(FakeRuntime):
+    """Fails the first `fails` runs, then writes the registered frames."""
+
+    def __init__(self, out_seq: Path, fails: int) -> None:
+        super().__init__()
+        self.out_seq, self.fails = out_seq, fails
+
+    def run(self, commands, **kw) -> SirilResult:
+        super().run(commands, **kw)
+        if len(self.calls) <= self.fails:
+            return SirilResult(returncode=1, stdout="Finalizing sequence processing failed.",
+                               stderr="", ssf="")
+        (self.out_seq / "r_bkg_pp_light_00001.fit").write_bytes(b"FAKE")
+        return SirilResult(returncode=0, stdout="ok", stderr="", ssf="")
+
+
+@pytest.mark.parametrize(
+    ("fails", "expect"),
+    [(1, ["seqplatesolve", "seqplatesolve"]),
+     (2, ["seqplatesolve", "seqplatesolve", "register"])],
+)
+def test_platesolve_retries_then_falls_back_to_star_matching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: int, expect: list[str]
+) -> None:
+    seq_in = _make_seq_dir(tmp_path / "in", "bkg_pp_light")
+    (seq_in / "bkg_pp_light_.seq").write_text("S 'bkg_pp_light' 1 3\n")
+    out_dir = tmp_path / "out"
+    rt = _FlakyRuntime(out_dir / "sequence", fails)
+    monkeypatch.setattr("nodes.basic.seq_register.SirilRuntime", lambda *a, **k: rt)
+
+    SeqRegisterNode().run(
+        inputs={"sequence": Ref(node_hash="ext", port="sequence", path=seq_in,
+                                type=PortType.SEQUENCE_FITS)},
+        params=SeqRegisterParams(fitseq=False),
+        ctx=_ctx(tmp_path),
+        out_dir=out_dir,
+    )
+    assert [c["commands"][1].split()[0] for c in rt.calls] == expect
+    # The input's .seq was copied, not linked, so Siril can't edit the input.
+    assert (seq_in / "bkg_pp_light_.seq").read_text() == "S 'bkg_pp_light' 1 3\n"
