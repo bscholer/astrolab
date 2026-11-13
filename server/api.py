@@ -64,7 +64,7 @@ import server.sky as sky
 from server import scope_plan, sky_thumbs, telemetry, weather
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
-from server.catalog.db import open_db
+from server.catalog.db import default_db_path, open_db
 from server.catalog.fits_reader import normalize_target
 from server.catalog.matching import match_bundle_darks
 from server.catalog.openngc import CatalogEntry
@@ -98,6 +98,7 @@ from server.jobs import JobManager
 from server.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
 from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
+from server.nas_backup import NasBackup, nas_root
 from server.paths import astrolab_home
 from server.preview import PreviewError, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
@@ -186,6 +187,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         scope_autostack.start()
         scope_cleaner.start()
         threading.Thread(target=_warm_scope_caches, name="astrolab-warm", daemon=True).start()
+    nas_backup.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3424,6 +3426,12 @@ scope_autostack = AutoStacker(
     lambda: bool(get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)),
     _find_scope_session,
     _submit_scope_stack,
+)
+nas_backup = NasBackup(
+    nas_root,
+    _mirror_root,
+    job_manager.db_path or default_db_path(),
+    lambda: job_manager.cache.root,
 )
 scope_mirror = Mirror(
     get_client=_scope_client,
