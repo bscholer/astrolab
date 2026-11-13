@@ -47,16 +47,17 @@ RUN apt-get update -qq && \
 WORKDIR /fetch
 
 # --- Siril 1.4 AppImage (extracted via unsquashfs; no FUSE, no runtime exec) -
-# Using Siril 1.4.3 — latest stable in the 1.4 series (siril.py MIN_VERSION=(1,4)).
-# 1.4.3 fixes the use-after-free + double-free in prepare_venv_environment
+# Using Siril 1.4.5, the latest stable 1.4 release (siril.py MIN_VERSION=(1,4)).
+# Bumping it changes every Siril node's cache key, so the next run of each
+# project recomputes. 1.4.3 fixed the use-after-free + double-free in prepare_venv_environment
 # (src/io/siril_pythonmodule.c, upstream commit a07edcd0) that corrupts the
 # GLib slab allocator on Siril startup whenever the embedded sirilpy install
 # fails. That was the root cause of every "siril exited -11" we saw on 1.4.2.
 # Hosted on free-astro.org; the GitLab releases page does not provide AppImages.
 # We use unsquashfs -offset to extract without running the AppImage ELF stub,
 # which avoids FUSE dependency and cross-arch execution issues.
-ARG SIRIL_VERSION=1.4.3
-ARG SIRIL_URL=https://free-astro.org/download/Siril-1.4.3-x86_64.AppImage
+ARG SIRIL_VERSION=1.4.5
+ARG SIRIL_URL=https://free-astro.org/download/Siril-1.4.5-x86_64.AppImage
 
 RUN curl -fL --progress-bar -o Siril.AppImage "$SIRIL_URL" && \
     # AppImage Type 2: the squashfs superblock starts immediately after the ELF

@@ -60,6 +60,23 @@ if [[ "${ASTROLAB_ENABLE_STARNET:-0}" == "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2b. Local Gaia star catalogue for plate solving
+# ---------------------------------------------------------------------------
+# Siril uses a local catalogue when one is installed and the online VizieR
+# service otherwise, which is slow and sometimes down for hours. The catalogue
+# (siril_cat_healpix8_astro.dat, about 3 GB, from Zenodo record 14692304) is too
+# big for the image, so it lives on a volume: ASTROLAB_SIRIL_CATALOGS, by
+# default siril-catalogs/ under the cache root. Link it where Siril looks.
+CATALOGS="${ASTROLAB_SIRIL_CATALOGS:-${ASTROLAB_CACHE_ROOT_DEFAULT:-/data/cache}/siril-catalogs}"
+if [[ -f "$CATALOGS/siril_cat_healpix8_astro.dat" ]]; then
+    mkdir -p "$HOME/.local/share/siril"
+    ln -sf "$CATALOGS/siril_cat_healpix8_astro.dat" "$HOME/.local/share/siril/gaia_astrometric.dat"
+    ok "local Gaia catalogue: $CATALOGS"
+else
+    warn "no local Gaia catalogue in $CATALOGS; plate solving uses the online service"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Start the job worker
 # ---------------------------------------------------------------------------
 # The worker is a separate process that polls the SQLite job table and runs
