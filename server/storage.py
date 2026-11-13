@@ -28,13 +28,14 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from nodes.base import Node
-from server.cache import ContentCache
+from server.cache import DONE_MARKER, ContentCache
 from server.catalog.db import connect as open_catalog_db
 from server.models import Template
 from server.registry import lookup as registry_lookup
@@ -231,7 +232,8 @@ def build_reachability(
                     continue
                 entry = entries[hash_str]
                 entry.owners.add(pid)
-                spec = spec_by_id.get(node_id)
+                # Per-session copies ('stack@42') share their template node's tier.
+                spec = spec_by_id.get(node_id) or spec_by_id.get(node_id.split("@", 1)[0])
                 if spec is not None:
                     tier = tier_map.get(spec.id, "bulk")
                     if tier_rank.get(tier, 0) > tier_rank.get(entry.tier, 0):
@@ -451,6 +453,17 @@ def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
     return (has_owners, tier_rank, age_key)
 
 
+DEAD_GRACE_S = 24 * 3600
+"""Dead entries younger than this stay, so retrying a failed run resumes where it stopped."""
+
+
+def _age_s(cache: ContentCache, node_hash: str) -> float:
+    try:
+        return time.time() - (cache.entry_dir(node_hash) / DONE_MARKER).stat().st_mtime
+    except OSError:
+        return float("inf")
+
+
 @dataclass
 class CleanupResult:
     """What `run_cleanup` actually did, surfaced to the UI."""
@@ -490,7 +503,8 @@ def run_cleanup(
     """Evict dead entries, then more until total usage is <= max_bytes.
 
     Dead entries (no project, no completed job: deleted projects, failed and
-    interrupted runs) go on every call, budget or not; nothing can use them.
+    interrupted runs) older than DEAD_GRACE_S go on every call, budget or not.
+    Younger ones stay so a retry of a failed run reuses its finished steps.
 
     Budget eviction order (lower = evict first):
       1. Orphans (no project owns them) regardless of tier.
@@ -509,6 +523,8 @@ def run_cleanup(
     dead_count = 0
     dead_freed = 0
     for e in [e for e in entries.values() if e.dead]:
+        if _age_s(cache, e.node_hash) < DEAD_GRACE_S:
+            continue
         if cache.is_in_use(e.node_hash, alive):
             continue  # the budget pass below counts it if it gets that far
         dead_freed += cache.evict(e.node_hash, reason="dead")

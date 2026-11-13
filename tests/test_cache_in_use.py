@@ -203,8 +203,16 @@ def test_run_cleanup_always_evicts_dead_entries(tmp_path: Path) -> None:
         )
     conn.close()
 
+    import os
+
+    for h in ("h_failed", "h_done", "h_unknown"):
+        old = cache.entry_dir(h) / "_done"
+        os.utime(old, (1, 1))
+    _commit_entry(cache, "h_fresh")  # dead but recent: a retry may still want it
+
     result = run_cleanup(cache, max_bytes=10**12, db_path=db_path)
 
+    assert cache.entry_dir("h_fresh").exists()
     assert result.evicted_count == 1
     assert not cache.entry_dir("h_unknown").exists()
     assert cache.entry_dir("h_failed").exists()  # the completed job used it too
