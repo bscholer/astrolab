@@ -4,7 +4,8 @@
   Slider sets cache_max_bytes (binary GiB). The "Run cleanup" button
   triggers POST /api/storage/cleanup which evicts entries until the cache
   fits under the budget. Eviction order:
-    1. Unreachable entries (deleted projects, half-runs) always go first.
+    1. Dead entries (deleted projects, failed or interrupted runs) go on
+       every sweep, under budget or not. Results of completed jobs stay.
     2. Bulk-tier entries (pre-stack sequence data — convert/calibrate/
        register/etc.) by oldest owning project first.
     3. Keep-tier entries (stack output and post-stack work) only when 1

@@ -178,3 +178,34 @@ def test_in_use_marker_naming(tmp_path: Path) -> None:
     cache.mark_in_use("h1", "job-abc")
     marker = cache.entry_dir("h1") / f"{INUSE_PREFIX}job-abc"
     assert marker.exists() and marker.is_file()
+
+
+def test_run_cleanup_always_evicts_dead_entries(tmp_path: Path) -> None:
+    # Under budget, a failed run's leftovers still go; a completed standalone
+    # job's output (auto-stack has no project) stays.
+    import json
+
+    cache = ContentCache(root=tmp_path / "cache")
+    db_path = tmp_path / "catalog.sqlite"
+    _commit_entry(cache, "h_failed")
+    _commit_entry(cache, "h_done")
+    _commit_entry(cache, "h_unknown")
+    _seed_jobs_table(db_path, ("failed-job", "failed"), ("done-job", "completed"))
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "UPDATE jobs SET node_hashes_json = ? WHERE id = 'failed-job'",
+            (json.dumps({"convert": "h_failed"}),),
+        )
+        conn.execute(
+            "UPDATE jobs SET node_hashes_json = ? WHERE id = 'done-job'",
+            (json.dumps({"convert": "h_failed", "stack": "h_done"}),),
+        )
+    conn.close()
+
+    result = run_cleanup(cache, max_bytes=10**12, db_path=db_path)
+
+    assert result.evicted_count == 1
+    assert not cache.entry_dir("h_unknown").exists()
+    assert cache.entry_dir("h_failed").exists()  # the completed job used it too
+    assert cache.entry_dir("h_done").exists()

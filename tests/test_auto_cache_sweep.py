@@ -51,6 +51,17 @@ def test_sweep_cache_noops_under_budget(tmp_path: Path) -> None:
     _commit_entry(cache, "h1", payload=1_000)
     # Budget high enough to keep everything.
     set_setting(SETTING_CACHE_MAX_BYTES, 1_000_000_000, db_path=db_path)
+    # A completed job made h1, so it isn't dead (dead entries go regardless).
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO jobs (id, status, template_id, template_version, template_json,"
+            " job_json, submitted_at, node_hashes_json) VALUES ('j', 'completed', 't', 1,"
+            " '{}', '{}', '2026-01-01T00:00:00Z', '{\"n\": \"h1\"}')"
+        )
+    conn.close()
 
     worker = JobWorker(cache=cache, db_path=db_path)
     worker.sweep_cache()

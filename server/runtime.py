@@ -318,6 +318,13 @@ def run_job(
         if any(succ in must_run for succ in successors_of[nid]):
             must_run.add(nid)
 
+    # Hold every cache hit from now on: one may be an entry no project owns
+    # (a failed run's leftovers), which cleanup removes on sight otherwise.
+    if job_id is not None:
+        for p in plan.values():
+            if p.is_hit:
+                cache_obj.mark_in_use(p.h, job_id)
+
     # ---- Pass 3: execute. ----
     for nid in order:
         if cancel_event.is_set():

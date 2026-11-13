@@ -64,6 +64,16 @@ class CacheEntryInfo:
     oldest_owner_updated_at: str | None = None
     """ISO timestamp of the least-recently-updated project that owns this
     entry. Used within a tier to evict oldest-project entries first."""
+    from_completed_job: bool = False
+    """A completed job (with or without a project) produced or used this
+    entry. Auto-stack and other standalone jobs have no project, so their
+    results have no owners but are not dead."""
+
+    @property
+    def dead(self) -> bool:
+        """Nothing can reach it: no project history and no completed job.
+        Left behind by deleted projects and failed or interrupted runs."""
+        return not self.owners and not self.from_completed_job
 
 
 @dataclass
@@ -146,13 +156,17 @@ def build_reachability(
     # below using the project's template node order, matching the old
     # storage behavior so old records don't silently change meaning.
     job_hashes_raw: dict[str, dict[str, str] | list[str]] = {}
-    for j in conn.execute("SELECT id, node_hashes_json FROM jobs").fetchall():
+    for j in conn.execute("SELECT id, status, node_hashes_json FROM jobs").fetchall():
         if not j["node_hashes_json"]:
             continue
         try:
             raw = json.loads(j["node_hashes_json"])
         except (ValueError, TypeError):
             continue
+        if j["status"] == "completed":
+            for h in raw.values() if isinstance(raw, dict) else raw:
+                if isinstance(h, str) and h in entries:
+                    entries[h].from_completed_job = True
         if isinstance(raw, dict):
             job_hashes_raw[j["id"]] = {
                 str(k): str(v) for k, v in raw.items() if isinstance(v, str)
@@ -239,8 +253,8 @@ def system_storage(
         entries, projects = build_reachability(conn, cache)
 
     total_bytes = sum(e.bytes for e in entries.values())
-    unreachable_bytes = sum(e.bytes for e in entries.values() if not e.owners)
-    unreachable_count = sum(1 for e in entries.values() if not e.owners)
+    unreachable_bytes = sum(e.bytes for e in entries.values() if e.dead)
+    unreachable_count = sum(1 for e in entries.values() if e.dead)
 
     per_project: list[ProjectStorage] = []
     for pid, p in projects.items():
@@ -426,7 +440,7 @@ def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
     """Sort key: lower = evict sooner.
 
     Position 0: orphan-flag (0 = no owners, 1 = has owners) so unreachable
-    entries always go first.
+    entries go first (dead ones are already gone by then, see run_cleanup).
     Position 1: tier rank (bulk=0, keep=1).
     Position 2: oldest-owner timestamp ascending; unknown sorts after
     populated values so we don't accidentally prioritize an undated entry.
@@ -473,9 +487,12 @@ def run_cleanup(
     max_bytes: int,
     db_path: Path | None = None,
 ) -> CleanupResult:
-    """Evict cache entries until total usage is <= max_bytes.
+    """Evict dead entries, then more until total usage is <= max_bytes.
 
-    Eviction order (lower = evict first):
+    Dead entries (no project, no completed job: deleted projects, failed and
+    interrupted runs) go on every call, budget or not; nothing can use them.
+
+    Budget eviction order (lower = evict first):
       1. Orphans (no project owns them) regardless of tier.
       2. Bulk-tier entries (pre-stack sequence data), oldest project first.
       3. Keep-tier entries (stack output and post-stack work). Only touched
@@ -489,6 +506,17 @@ def run_cleanup(
         entries, _ = build_reachability(conn, cache)
         alive = _alive_job_ids(conn)
 
+    dead_count = 0
+    dead_freed = 0
+    for e in [e for e in entries.values() if e.dead]:
+        if cache.is_in_use(e.node_hash, alive):
+            continue  # the budget pass below counts it if it gets that far
+        dead_freed += cache.evict(e.node_hash, reason="dead")
+        dead_count += 1
+        del entries[e.node_hash]
+    if dead_count:
+        log.info("run_cleanup dead: evicted=%d freed=%d", dead_count, dead_freed)
+
     total = sum(e.bytes for e in entries.values())
     if total <= max_bytes:
         log.info(
@@ -498,8 +526,8 @@ def run_cleanup(
             len(entries),
         )
         return CleanupResult(
-            evicted_count=0,
-            bytes_freed=0,
+            evicted_count=dead_count,
+            bytes_freed=dead_freed,
             bytes_remaining=total,
             over_budget=False,
         )
@@ -514,7 +542,7 @@ def run_cleanup(
         len(alive),
     )
 
-    evicted_count = 0
+    evicted_count = dead_count
     bytes_freed = 0
     skipped_in_use = 0
     for e in ordered:
@@ -549,18 +577,20 @@ def run_cleanup(
         evicted_count += 1
 
     over_budget = (total - bytes_freed) > max_bytes
+    remaining = total - bytes_freed
+    bytes_freed += dead_freed
     log.info(
         "run_cleanup done: evicted=%d freed=%d remaining=%d over_budget=%s skipped_in_use=%d",
         evicted_count,
         bytes_freed,
-        total - bytes_freed,
+        remaining,
         over_budget,
         skipped_in_use,
     )
     return CleanupResult(
         evicted_count=evicted_count,
         bytes_freed=bytes_freed,
-        bytes_remaining=total - bytes_freed,
+        bytes_remaining=remaining,
         over_budget=over_budget,
         skipped_in_use_count=skipped_in_use,
     )
