@@ -574,6 +574,24 @@ export interface PreviewRef {
   port: string;
 }
 
+export interface MasterAdvice {
+  hours: number;
+  snr: number | null;
+  options: { hours: number; noise_drop: number; snr: number | null }[];
+  verdict: 'worth_it' | 'slowing' | 'diminishing';
+  headline: string;
+  third_h: number;
+}
+
+export interface MasterAdviceRow {
+  project_id: string;
+  name: string;
+  target: string;
+  filter: string | null;
+  advice: MasterAdvice;
+  plan: { name: string; goal_hours: number | null; shot_hours: number } | null;
+}
+
 export interface MorningMasterUpdate {
   project_id: string;
   name: string;
@@ -587,6 +605,7 @@ export interface MorningMasterUpdate {
   added_s: number;
   total_s: number;
   noise_drop: number | null;
+  advice?: MasterAdvice | null;
 }
 
 export interface MorningTarget {
@@ -1004,6 +1023,10 @@ export const api = {
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
   listProjects: () => getJSON<Project[]>('/api/projects'),
+  getMasterAdvice: () => getJSON<MasterAdviceRow[]>('/api/target-masters/advice'),
+  queueMoreData: (projectId: string, hours: number) =>
+    postJSON<{ target: Record<string, unknown>; advice: MasterAdviceRow }>(
+      `/api/target-masters/${projectId}/more`, { hours }),
   getMorning: (night?: string) =>
     getJSON<MorningResponse>(`/api/morning${night ? `?night=${encodeURIComponent(night)}` : ''}`),
   getProject: (id: string) => getJSON<Project>(`/api/projects/${id}`),

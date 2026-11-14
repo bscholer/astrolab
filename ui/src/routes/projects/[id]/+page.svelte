@@ -37,6 +37,8 @@
   import PipelineRow from '$lib/projects/PipelineRow.svelte';
   import CompareController from '$lib/projects/CompareController.svelte';
   import QuickSliders from '$lib/projects/QuickSliders.svelte';
+  import MoreData from '$lib/MoreData.svelte';
+  import type { MasterAdviceRow } from '$lib/api';
   import SessionRow from '$lib/SessionRow.svelte';
   import Checkbox from '$lib/Checkbox.svelte';
 
@@ -48,6 +50,19 @@
     (ev, onTerminal) => pipeline.applyEvent(ev, onTerminal)
   );
   const patchQueue = createPatchQueue(() => project);
+
+  // Target masters only: what more hours would buy (server/capture_loop.py).
+  let advice = $state<MasterAdviceRow | null>(null);
+  let adviceFor = '';
+  $effect(() => {
+    const p = project;
+    if (!p?.master || adviceFor === `${p.id}:${p.current_job_id}`) return;
+    adviceFor = `${p.id}:${p.current_job_id}`;
+    api.getMasterAdvice().then(
+      (rows) => (advice = rows.find((r) => r.project_id === p.id) ?? null),
+      () => (advice = null)
+    );
+  });
   const compare = createCompareSlots(() => project);
 
   const id = $derived($page.params.id ?? '');
@@ -996,6 +1011,10 @@
       </div>
     </details>
     </div>
+
+    {#if project?.master && advice}
+      <MoreData row={advice} onUpdated={(r) => (advice = r)} />
+    {/if}
 
     {#if project}
       <QuickSliders {project} disabled={patchQueue.patching} onNodeOverrideChange={handleNodeOverrideChange} />

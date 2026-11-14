@@ -62,6 +62,7 @@ import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
 from server import scope_plan, sky_thumbs, telemetry, weather
+from server.capture_loop import advise, measure_cached, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import default_db_path, open_db
@@ -3439,7 +3440,128 @@ def run_masters() -> dict:
 @app.get("/api/morning")
 def get_morning(conn: DBDep, night: str | None = None) -> dict:
     """Last night (or `night`, YYYY-MM-DD): targets shot, what was kept, what each master gained."""
-    return morning(conn, project_manager.get, job_manager.get, night)
+    payload = morning(conn, project_manager.get, job_manager.get, night)
+    for t in payload["targets"]:
+        for m in t["masters"]:
+            project = project_manager.get(m["project_id"])
+            advice = _master_advice(conn, project) if project else None
+            m["advice"] = advice["advice"] if advice else None
+    return payload
+
+
+def _stacked_output(project) -> tuple[str, Path] | None:
+    """The newest linear stack among the project's renders."""
+    for entry in sorted(project.history, key=lambda h: h.seq, reverse=True):
+        record = job_manager.get(entry.job_id)
+        ref = (record.outputs or {}).get("stacked") if record else None
+        if ref is not None:
+            return ref.node_hash, Path(ref.path)
+    return None
+
+
+def _master_advice(conn: sqlite3.Connection, project) -> dict | None:
+    """Noise, SNR and what more hours would buy for one target master."""
+    info = master_projects(conn).get(project.id)
+    if info is None:
+        return None
+    ids = [int(s) for s in project.source_session_ids]
+    marks = ",".join("?" * len(ids)) or "NULL"
+    total_s = conn.execute(
+        "SELECT COALESCE(SUM(usable_s), 0) FROM session_verdicts"  # noqa: S608
+        f" WHERE session_id IN ({marks})",
+        ids,
+    ).fetchone()[0]
+    stacked = _stacked_output(project)
+    quality = None
+    if stacked is not None:
+        try:
+            quality = measure_cached(*stacked)
+        except Exception:
+            log.warning("could not measure %s", stacked[1], exc_info=True)
+    target = conn.execute(
+        "SELECT name, resolved_canonical FROM targets WHERE id = ?", (info["target_id"],)
+    ).fetchone()
+    name = target["name"] if target else project.name
+    canonical = target["resolved_canonical"] if target else None
+    plan_targets = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+
+    def same_object(t: dict) -> bool:
+        if t.get("name") == name:
+            return True
+        hit = openngc_enrich(t.get("name"))
+        return bool(canonical and hit and hit.canonical == canonical)
+
+    in_plan = next((t for t in plan_targets if same_object(t)), None)
+    shot = scope_scheduler.snapshot().get("integrated_s", {})
+    return {
+        "project_id": project.id,
+        "name": project.name,
+        "target": name,
+        "filter": info["key"].split("|")[3] or None,
+        "advice": advise(total_s, quality).as_dict(),
+        "plan": (
+            {
+                "name": in_plan["name"],
+                "goal_hours": in_plan.get("goal_hours"),
+                "shot_hours": shot.get(in_plan["name"], 0.0) / 3600,
+            }
+            if in_plan
+            else None
+        ),
+    }
+
+
+@app.get("/api/target-masters/advice")
+def get_master_advice(conn: DBDep) -> list[dict]:
+    """Every target master with its noise and what more hours would buy, best gains first."""
+    out = []
+    for project in project_manager.list():
+        a = _master_advice(conn, project)
+        if a is not None:
+            out.append(a)
+    out.sort(key=lambda a: -a["advice"]["options"][1]["noise_drop"])
+    return out
+
+
+class MoreDataRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hours: float = Field(gt=0, le=50)
+
+
+@app.post("/api/target-masters/{project_id}/more")
+def queue_more_data(project_id: str, req: MoreDataRequest, conn: DBDep) -> dict:
+    """Ask the scheduler for `hours` more of this master's target: raise its goal, or add it."""
+    project = project_manager.get(project_id)
+    advice = _master_advice(conn, project) if project else None
+    if advice is None:
+        raise HTTPException(status_code=404, detail=f"no target master {project_id}")
+    name = advice["plan"]["name"] if advice["plan"] else advice["target"]
+    entry = openngc_enrich(name)
+    ids = [int(s) for s in project.source_session_ids]
+    marks = ",".join("?" * len(ids)) or "NULL"
+    exposures = conn.execute(
+        f"SELECT exptime, COUNT(*) n FROM sessions WHERE id IN ({marks})"  # noqa: S608
+        " GROUP BY exptime ORDER BY n DESC",
+        ids,
+    ).fetchall()
+    targets = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    try:
+        updated, target = queue_more(
+            targets,
+            scope_scheduler.snapshot().get("integrated_s", {}),
+            name=name,
+            more_h=req.hours,
+            ra_deg=entry.ra_deg if entry else None,
+            dec_deg=entry.dec_deg if entry else None,
+            object_type=entry.object_type if entry else None,
+            filter_name=advice["filter"],
+            exposure_s=int(exposures[0]["exptime"]) if exposures else 30,
+            common_name=entry.common_name if entry else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    set_setting(SETTING_SCOPE_TARGETS, updated, db_path=job_manager.db_path)
+    return {"target": target, "advice": _master_advice(conn, project)}
 
 
 def _purged_folders() -> set[str]:

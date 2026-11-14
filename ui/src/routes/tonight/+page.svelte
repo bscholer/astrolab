@@ -5,6 +5,18 @@
 <script lang="ts">
   import { api, type ScopeState, type TonightEntry, type TonightResponse } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import MoreData from '$lib/MoreData.svelte';
+  import type { MasterAdviceRow } from '$lib/api';
+  import { onMount } from 'svelte';
+
+  // Masters that gain the most from more time (server/capture_loop.py).
+  let worth = $state<MasterAdviceRow[]>([]);
+  onMount(() => {
+    api.getMasterAdvice().then(
+      (rows) => (worth = rows.filter((r) => r.advice.verdict !== 'diminishing').slice(0, 4)),
+      () => (worth = [])
+    );
+  });
   import { displayName, matchesSearch, typeGroup, upWindow, type TypeGroup } from '$lib/tonight';
 
   let data = $state<TonightResponse | null>(null);
@@ -318,6 +330,19 @@
 {:else if loading && data === null}
   <p class="muted">Computing the sky…</p>
 {:else if data}
+  {#if worth.length}
+    <section class="panel worth" aria-label="Worth more time">
+      <h2 class="worth-h">Worth more time</h2>
+      <ul>
+        {#each worth as row, i (row.project_id)}
+          <li>
+            <a class="worth-name" href="/projects/{row.project_id}">{row.name}</a>
+            <MoreData {row} compact onUpdated={(r) => (worth[i] = r)} />
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
   <input
     class="search"
     type="search"
@@ -613,6 +638,26 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     box-shadow: var(--shadow);
+  }
+  .worth-h {
+    margin: 0 0 0.6rem;
+    font-size: 1.05rem;
+  }
+  .worth ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.9rem;
+  }
+  .worth li {
+    display: grid;
+    gap: 0.2rem;
+  }
+  .worth-name {
+    font-weight: 600;
+    color: var(--fg);
+    text-decoration: none;
   }
   .error-panel {
     border-color: var(--bad);

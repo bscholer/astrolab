@@ -151,6 +151,7 @@
                 <span>master now {formatIntegrationTime(m.total_s)}</span>
                 {#if m.noise_drop}<span title="Expected from integration time: noise falls with its square root">noise −{pct(m.noise_drop)}</span>{/if}
               </div>
+              {#if m.advice}<div class="next">Next: {m.advice.headline.charAt(0).toLowerCase() + m.advice.headline.slice(1)}</div>{/if}
               <a class="open" href="/projects/{m.project_id}">Finish it →</a>
             {/if}
           </div>
@@ -312,6 +313,10 @@
   .gain b {
     color: var(--fg);
     font-weight: 600;
+  }
+  .next {
+    font-size: 0.85rem;
+    color: var(--fg-mute);
   }
   .open {
     font-size: 0.85rem;

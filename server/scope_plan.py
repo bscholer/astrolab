@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -146,8 +146,17 @@ def pick_target(
     skip: frozenset[str] = frozenset(),
     min_alt: float = MIN_ALT_DEG,
     blocked: Blocked | None = None,
+    integrated: Mapping[str, float] | None = None,
 ) -> Pick | None:
-    """Keep the current target while it stays usable. Otherwise take the highest one."""
+    """Keep the current target while it stays usable. Otherwise take the best one.
+
+    Without `integrated` the best is the highest. With it (seconds already
+    shot per target), each target scores the noise drop another hour would
+    give it times the squared sine of its altitude (frames get worse fast
+    toward the horizon), so time goes where it improves a picture most: a
+    target with little data beats a well-covered one at a similar height,
+    but not one much higher.
+    """
     usable_now = []
     for c in candidates:
         if c.name in skip:
@@ -160,4 +169,12 @@ def pick_target(
     for p in usable_now:
         if p.target.name == current:
             return p
-    return max(usable_now, key=lambda p: p.alt_deg)
+    if integrated is None:
+        return max(usable_now, key=lambda p: p.alt_deg)
+    return max(usable_now, key=lambda p: hour_gain(integrated.get(p.target.name, 0.0))
+               * math.sin(math.radians(max(p.alt_deg, 0.0))) ** 2)
+
+
+def hour_gain(shot_s: float) -> float:
+    """How much another hour cuts the noise of `shot_s` seconds of data."""
+    return 1 - math.sqrt(shot_s / (shot_s + 3600)) if shot_s > 0 else 1.0

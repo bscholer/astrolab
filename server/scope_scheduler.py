@@ -344,6 +344,7 @@ class Scheduler:
             now,
             skip=frozenset(self._active_skips() | self._goal_reached()),
             blocked=blocked,
+            integrated=dict(self._integrated),
         )
         if pick is None:
             self._set(state="waiting", reason="no usable target, retrying")

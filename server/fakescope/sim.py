@@ -69,7 +69,8 @@ class SimReport:
     skymap: SkyMap
 
     def skymap_accuracy(self) -> dict:
-        """How the learned patches compare with the yard: right and wrong calls of each kind."""
+        """How the learned patches compare with the yard: right and wrong calls of each
+        kind, and calls on cells an obstacle's edge crosses."""
         out = Counter()
         for key, cell in self.skymap.cells().items():
             v = verdict(cell)
@@ -77,7 +78,18 @@ class SimReport:
                 out["unknown"] += 1
                 continue
             alt0, az0 = (float(x) for x in key.split("/"))
-            truly_blocked = self.scope.scene.blocked(alt0 + CELL_DEG / 2, az0 + CELL_DEG / 2)
+            # A cell an obstacle's edge runs through is blocked in part; either
+            # call is fair, so it is counted apart.
+            inset = CELL_DEG * 0.01
+            corners = {
+                self.scope.scene.blocked(alt0 + da, az0 + dz)
+                for da in (inset, CELL_DEG - inset)
+                for dz in (inset, CELL_DEG - inset)
+            }
+            if len(corners) > 1:
+                out[f"{v}_edge"] += 1
+                continue
+            truly_blocked = corners.pop()
             out[f"{v}_{'right' if (v == 'blocked') == truly_blocked else 'wrong'}"] += 1
         return dict(out)
 

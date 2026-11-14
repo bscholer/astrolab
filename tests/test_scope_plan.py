@@ -73,3 +73,22 @@ def test_moon_separation_is_seen_from_the_site():
     for ra, dec in ((10, 41), (98, 5), (270, 66)):
         right = moon.separation(SkyCoord(ra=ra * u.deg, dec=dec * u.deg)).deg
         assert moon_separation_deg(Candidate("x", ra, dec), LOC, NOW) == pytest.approx(right, abs=0.2)
+
+
+def test_time_goes_where_it_helps_most() -> None:
+    from server.scope_plan import hour_gain
+
+    a = Candidate("a", 0.0, 89.0)  # always high from this site
+    b = Candidate("b", 180.0, 89.5)
+    both = [a, b]
+    # Equal data: the higher one, as before.
+    higher = pick_target(both, LOC, NOW).target.name
+    assert pick_target(both, LOC, NOW, integrated={}).target.name == higher
+    lower = "a" if higher == "b" else "b"
+    # Hours on the higher one, nothing on the lower: the lower one gains more.
+    assert pick_target(both, LOC, NOW, integrated={higher: 5 * 3600}).target.name == lower
+    # The current target is kept while usable, whatever the gains.
+    assert pick_target(both, LOC, NOW, current=higher,
+                       integrated={higher: 9 * 3600}).target.name == higher
+    assert hour_gain(0) == 1.0
+    assert hour_gain(3600) == pytest.approx(1 - 0.5 ** 0.5)

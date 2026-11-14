@@ -704,6 +704,22 @@
         "title": "MasterRow",
         "type": "object"
       },
+      "MoreDataRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "hours": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 50.0,
+            "title": "Hours",
+            "type": "number"
+          }
+        },
+        "required": [
+          "hours"
+        ],
+        "title": "MoreDataRequest",
+        "type": "object"
+      },
       "NodeSpec": {
         "additionalProperties": false,
         "description": "One node entry inside a Template (the YAML representation, not the runtime Node).",
@@ -4992,6 +5008,30 @@
         "summary": "Get Masters"
       }
     },
+    "/api/target-masters/advice": {
+      "get": {
+        "description": "Every target master with its noise and what more hours would buy, best gains first.",
+        "operationId": "get_master_advice_api_target_masters_advice_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Get Master Advice Api Target Masters Advice Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Master Advice"
+      }
+    },
     "/api/target-masters/run": {
       "post": {
         "description": "Create and extend target masters now instead of waiting for the next pass.",
@@ -5011,6 +5051,58 @@
           }
         },
         "summary": "Run Masters"
+      }
+    },
+    "/api/target-masters/{project_id}/more": {
+      "post": {
+        "description": "Ask the scheduler for `hours` more of this master's target: raise its goal, or add it.",
+        "operationId": "queue_more_data_api_target_masters__project_id__more_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoreDataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Queue More Data Api Target Masters  Project Id  More Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue More Data"
       }
     },
     "/api/targets": {
