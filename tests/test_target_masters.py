@@ -307,3 +307,25 @@ def test_keeper_moves_masters_to_the_latest_template(tmp_path: Path) -> None:
     assert moved == [(pid, latest.version)]
     p.template = latest
     assert keeper.upgrade() == []
+
+
+def test_combine_trims_to_the_well_covered_area(tmp_path: Path) -> None:
+    import numpy as np
+    from astropy.io import fits
+
+    from nodes.basic.combine_stacks import mask_low_coverage
+
+    rng = np.random.default_rng(3)
+    h, w = 1024, 1536
+    noise = np.full((h, w), 0.001, dtype=np.float32)
+    noise[:, :384] = noise[:, -384:] = 0.001 / np.sqrt(0.4)  # side bands: 40% of the exposure
+    img = 0.02 + rng.normal(0, 1, (h, w)).astype(np.float32) * noise
+    img[448:576, 704:832] += rng.normal(0, 0.01, (128, 128)).astype(np.float32)  # noisy core
+    p = tmp_path / "c.fit"
+    fits.PrimaryHDU(np.stack([img] * 3)).writeto(p)
+
+    kept = mask_low_coverage(p, 0.7)
+    out = fits.getdata(p)[0]
+    assert 0.4 < kept < 0.6
+    assert (out[:, :320] == 0).all() and (out[:, -320:] == 0).all()  # bands blanked
+    assert (out[448:576, 704:832] != 0).all()  # the bright core stays
