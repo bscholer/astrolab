@@ -8,10 +8,10 @@ night, its render and the render before it, for a before/after compare).
 from __future__ import annotations
 
 import math
-from pathlib import Path
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from server.catalog.common_names import lookup as lookup_common_name
