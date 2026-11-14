@@ -125,7 +125,7 @@ def test_nights_join_one_master(tmp_path: Path, _fake_build) -> None:
         assert p.name == "NGC 1499"
         assert p.source_session_ids == ["1", "2"]
         # California is a nebula shot duo-band: the recipe rides on the first render.
-        assert p.overrides["stretch"] == {"target_bg": 0.14, "shadows_clip": -3.5}
+        assert p.overrides["stretch"] == {"method": "auto"}
         assert p.overrides["color_balance"] == {"amount": 0.7}
         assert "calibrate@1" in p.overrides
         assert p.history[0].label == "master: 1.2 h from Nov 12, recipe: emission nebula, duo-band"
@@ -167,7 +167,7 @@ def test_old_targets_and_filters(tmp_path: Path) -> None:
         names = sorted(p.name for p in projects.records.values())
         assert names == ["M 33", "M 33 (HaOIII)"]
         astro = next(p for p in projects.records.values() if p.name == "M 33")
-        assert astro.overrides["stretch"] == {"target_bg": 0.1}
+        assert astro.overrides["stretch"] == {"method": "auto"}
         assert "color_balance" not in astro.overrides
 
 
@@ -223,3 +223,33 @@ def test_morning(tmp_path: Path) -> None:
 
         # An earlier night can be asked for by date.
         assert morning(db, projects.get, jobs.get, "2026-11-12")["targets"][0]["state"] == "updated"
+
+
+def test_auto_stretch_follows_the_image() -> None:
+    import numpy as np
+
+    from nodes.basic.stretch import _mtf, auto_mtf
+
+    rng = np.random.default_rng(1)
+    sky = rng.normal(0.002, 0.0002, (3, 400, 600)).astype(np.float32)
+
+    # A moderate galaxy: the object lands at 0.4 with the sky inside its range.
+    galaxy = sky.copy()
+    galaxy[:, 150:250, 250:350] += 0.0015
+    black, mid, info = auto_mtf(galaxy)
+    assert info["object_out"] == pytest.approx(0.4, abs=0.01)
+    assert 0.08 <= info["sky_out"] <= 0.15
+    # A bright one would leave the sky below its floor; the floor lifts both.
+    galaxy[:, 150:250, 250:350] += 0.004
+    _, _, info = auto_mtf(galaxy)
+    assert info["sky_out"] == pytest.approx(0.08, abs=0.002)
+    assert info["object_out"] > 0.4
+    assert black < info["sky"]
+
+    # A faint nebula: the sky is lifted to its cap, not beyond.
+    faint = sky.copy()
+    faint[:, 100:300, 100:500] += 0.0002
+    _, mid, info = auto_mtf(faint)
+    assert info["sky_out"] == pytest.approx(0.15, abs=0.005)
+    assert info["object_out"] > info["sky_out"]
+    assert _mtf(0.5, 0.5) == pytest.approx(0.5)

@@ -20,6 +20,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
+from astropy.io import fits
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import image_ref, quote
@@ -31,10 +33,12 @@ from server.siril import SirilRuntime, make_progress_handler
 
 
 class StretchParams(BaseModel):
-    method: Literal["autostretch", "mtf", "asinh"] = Field(
+    method: Literal["autostretch", "auto", "mtf", "asinh"] = Field(
         default="autostretch",
         description="Stretch algorithm. 'autostretch' picks shadow/midtone/highlight "
-        "automatically (closest to what Siril GUI shows on load). 'mtf' is the "
+        "automatically (closest to what Siril GUI shows on load). 'auto' measures "
+        "the image: it lifts the faint extended signal (galaxy, nebula) to a visible "
+        "level and keeps the sky within a set range. 'mtf' is the "
         "classic three-slider midtones transfer function for manual control. "
         "'asinh' suits galaxy-style images with bright cores and dim halos.",
         json_schema_extra={
@@ -94,6 +98,36 @@ class StretchParams(BaseModel):
         },
     )
 
+    # --- auto (image-based) ---
+    auto_object: float = Field(
+        default=0.4,
+        ge=0.1,
+        le=0.8,
+        description="Where the faint extended signal (galaxy arms, nebula) lands "
+        "after the stretch, 0-1. Higher is brighter.",
+        json_schema_extra={
+            "hash_precision": 3,
+            "ui_when": {"method": "auto"},
+            "agent_hint": "Higher brightens the object; the sky follows within its limits.",
+        },
+    )
+    auto_bg_min: float = Field(
+        default=0.08,
+        ge=0.0,
+        le=0.5,
+        description="Darkest the sky background may get.",
+        json_schema_extra={"hash_precision": 3, "ui_section": "advanced",
+                           "ui_when": {"method": "auto"}},
+    )
+    auto_bg_max: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=0.5,
+        description="Brightest the sky background may get. Faint targets hit this "
+        "limit; more would only show more noise.",
+        json_schema_extra={"hash_precision": 3, "ui_section": "advanced",
+                           "ui_when": {"method": "auto"}},
+    )
     # --- mtf ---
     mtf_shadows: float = Field(
         default=0.0,
@@ -212,7 +246,20 @@ class StretchNode(Node[StretchParams]):
         save_stem = out_image.with_suffix("").name
 
         ctx.progress(0.1, f"stretch: applying {params.method}")
-        stretch_cmd = _build_stretch_cmd(params)
+        if params.method == "auto":
+            data = fits.getdata(src)
+            black, mid, info = auto_mtf(
+                data, params.auto_object, params.auto_bg_min, params.auto_bg_max
+            )
+            ctx.progress(
+                0.2,
+                f"stretch: auto sky {info['sky']:.5f} noise {info['noise']:.5f} "
+                f"signal {info['signal']:.5f} -> black {black:.5f} midtones {mid:.5f} "
+                f"(sky lands at {info['sky_out']:.2f}, object at {info['object_out']:.2f})",
+            )
+            stretch_cmd = f"mtf {black:.6g} {mid:.6g} 1"
+        else:
+            stretch_cmd = _build_stretch_cmd(params)
         commands = [
             f"cd {quote(out_dir_path.resolve())}",
             f"load {quote(src.resolve())}",
@@ -242,6 +289,51 @@ class StretchNode(Node[StretchParams]):
 
         ctx.progress(1.0, f"stretch: wrote {out_image.name}")
         return {"image": image_ref(out_image, display_ready=True)}
+
+
+def _mtf(x: float, m: float) -> float:
+    return (m - 1) * x / ((2 * m - 1) * x - m)
+
+
+def _midtones_for(x: float, y: float) -> float:
+    """The MTF midtones balance that maps x to y."""
+    return x * (y - 1) / (2 * x * y - x - y)
+
+
+def auto_mtf(
+    data: np.ndarray, obj: float = 0.4, bg_min: float = 0.08, bg_max: float = 0.15
+) -> tuple[float, float, dict[str, float]]:
+    """Pick a linked MTF (black point, midtones) from the image itself.
+
+    Sky: median of the luminance, noise: its MAD. Signal: the 99.5th
+    percentile of the luminance after an 8x8 block median, which erases
+    stars and keeps extended light (galaxy arms, nebula). The black point
+    sits 2.8 sigma below the sky, as in Siril's autostretch; the midtones
+    put the signal at `obj`, then move so the sky stays in [bg_min, bg_max].
+    A strong galaxy gets a dark sky, a faint nebula a brighter one.
+    """
+    lum = data.mean(axis=0) if data.ndim == 3 and data.shape[0] in (3, 4) else data
+    lum = np.asarray(lum, dtype=np.float32)[::4, ::4]
+    finite = lum[np.isfinite(lum)]
+    sky = float(np.median(finite))
+    noise = float(1.4826 * np.median(np.abs(finite - sky)))
+    h, w = (lum.shape[0] // 8) * 8, (lum.shape[1] // 8) * 8
+    blocks = np.nan_to_num(lum[:h, :w]).reshape(h // 8, 8, w // 8, 8).swapaxes(1, 2)
+    smooth = np.median(blocks.reshape(h // 8, w // 8, 64), axis=2)
+    signal = float(np.percentile(smooth, 99.5)) if smooth.size else sky
+    black = max(0.0, sky - 2.8 * noise)
+    scale = max(1.0 - black, 1e-6)
+    xs = min(max((signal - black) / scale, 1e-6), 0.999)
+    xb = min(max((sky - black) / scale, 1e-6), 0.999)
+    mid = _midtones_for(xs, obj) if xs > xb else _midtones_for(xb, bg_max)
+    if _mtf(xb, mid) > bg_max:
+        mid = _midtones_for(xb, bg_max)
+    elif _mtf(xb, mid) < bg_min:
+        mid = _midtones_for(xb, bg_min)
+    mid = min(max(mid, 1e-6), 0.999)
+    info = {"sky": sky, "noise": noise, "signal": signal,
+            "sky_out": _mtf(xb, mid), "object_out": _mtf(xs, mid)}
+    return black, mid, info
 
 
 def _build_stretch_cmd(p: StretchParams) -> str:

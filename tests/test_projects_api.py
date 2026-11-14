@@ -194,7 +194,7 @@ def test_template_schema_endpoint(client) -> None:
     assert {"convert", "calibrate", "bg_extract", "register", "stack", "stretch", "save"} <= set(by_id)
     # Schema carries Pydantic Field metadata: descriptions, ranges, enums.
     stretch_props = by_id["stretch"]["schema"]["properties"]
-    assert stretch_props["method"]["enum"] == ["autostretch", "mtf", "asinh"]
+    assert stretch_props["method"]["enum"] == ["autostretch", "auto", "mtf", "asinh"]
     assert "description" in stretch_props["shadows_clip"]
 
 

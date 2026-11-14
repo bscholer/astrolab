@@ -16,7 +16,7 @@
 
   // Template defaults when the template doesn't set the param itself.
   const FALLBACK: Record<string, Record<string, unknown>> = {
-    stretch: { method: 'autostretch', target_bg: 0.25 },
+    stretch: { method: 'autostretch', target_bg: 0.25, auto_object: 0.4 },
     auto_bp_shift: { enabled: true, clip_fraction: 0.01 },
     graxpert_bg: { enabled: false },
     graxpert_denoise: { enabled: false, strength: 0.5 },
@@ -48,7 +48,11 @@
   }
 
   const has = (id: string) => project.template.nodes.some((n) => n.id === id);
-  const autostretch = $derived(has('stretch') && value('stretch', 'method') === 'autostretch');
+  const method = $derived(has('stretch') ? String(value('stretch', 'method')) : '');
+  const autostretch = $derived(method === 'autostretch' || method === 'auto');
+  // 'auto' measures the image; brightness moves where the object lands.
+  const brightParam = $derived(method === 'auto' ? 'auto_object' : 'target_bg');
+  const brightRange = $derived(method === 'auto' ? [0.15, 0.7] : [0.03, 0.3]);
 
   // Local drag values, reset from the project whenever it changes.
   let brightness = $state(0);
@@ -56,7 +60,7 @@
   let noise = $state(0);
   let green = $state(0);
   $effect(() => {
-    brightness = Number(value('stretch', 'target_bg') ?? 0.25);
+    brightness = Number(value('stretch', brightParam) ?? (brightParam === 'auto_object' ? 0.4 : 0.25));
     darkSky = Number(value('auto_bp_shift', 'clip_fraction') ?? 0.01) * 100;
     noise = value('graxpert_denoise', 'enabled') ? Number(value('graxpert_denoise', 'strength') ?? 0.5) : 0;
     green = value('color_balance', 'enabled') === false ? 0 : Number(value('color_balance', 'amount') ?? 0.85);
@@ -70,9 +74,11 @@
     <div class="grid">
       <label>
         <span class="name">Brightness <span class="val">{brightness.toFixed(2)}</span></span>
-        <input type="range" min="0.03" max="0.3" step="0.01" bind:value={brightness} {disabled}
-          onchange={() => commit('stretch', { target_bg: Number(brightness.toFixed(2)) })} />
-        <span class="hint">Where the sky background lands after the stretch.</span>
+        <input type="range" min={brightRange[0]} max={brightRange[1]} step="0.01" bind:value={brightness} {disabled}
+          onchange={() => commit('stretch', { [brightParam]: Number(brightness.toFixed(2)) })} />
+        <span class="hint">{method === 'auto'
+          ? 'How bright the galaxy or nebula comes out; the sky follows.'
+          : 'Where the sky background lands after the stretch.'}</span>
       </label>
       {#if has('auto_bp_shift') && value('auto_bp_shift', 'enabled') !== false}
         <label>
