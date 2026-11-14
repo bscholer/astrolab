@@ -432,6 +432,64 @@ def _resolve_targets(conn: sqlite3.Connection) -> None:
         resolve_target(conn, trow["id"], trow["name"])
 
 
+MERGE_POSITION_ARCMIN = 60.0
+"""A target matched to a catalog object only by sky position joins that
+object's named target when its frames are centred this close."""
+
+
+def merge_duplicate_targets(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Fold targets that are one object under two names into one.
+
+    The scope names a target after whatever the user or the scheduler typed
+    (M 31 one season, NGC 224 the next), so the library, the curator's
+    night grouping and the target masters would treat one galaxy as two.
+    Targets resolved by name to the same catalog object merge; a target
+    resolved only by position joins them when it is within
+    MERGE_POSITION_ARCMIN. The target named exactly as the catalog object
+    is kept, else the one with the most sessions. Sessions keep their
+    target across rescans, so a merge sticks. Returns (merged, kept) names.
+    """
+    rows = conn.execute(
+        """
+        SELECT t.id, t.name, t.resolved_canonical AS canonical, t.resolved_source AS source,
+               t.resolved_separation_arcmin AS sep,
+               (SELECT COUNT(*) FROM sessions s WHERE s.target_id = t.id) AS n
+        FROM targets t WHERE t.resolved_canonical IS NOT NULL
+        """
+    ).fetchall()
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        if r["source"] == "name" or (r["sep"] is not None and r["sep"] <= MERGE_POSITION_ARCMIN):
+            groups.setdefault(r["canonical"], []).append(r)
+    merged: list[tuple[str, str]] = []
+    for canonical, members in groups.items():
+        if len(members) < 2 or not any(m["source"] == "name" for m in members):
+            continue
+        keep = max(members, key=lambda m: (m["name"] == canonical, m["n"], -m["id"]))
+        for m in members:
+            if m["id"] == keep["id"]:
+                continue
+            conn.execute(
+                "UPDATE sessions SET target_id = ? WHERE target_id = ?", (keep["id"], m["id"])
+            )
+            for key, in conn.execute(
+                "SELECT key FROM target_masters WHERE target_id = ?", (m["id"],)
+            ).fetchall():
+                new_key = f"{keep['id']}|{key.split('|', 1)[1]}"
+                taken = conn.execute("SELECT 1 FROM target_masters WHERE key = ?", (new_key,))
+                if taken.fetchone():
+                    conn.execute("DELETE FROM target_masters WHERE key = ?", (key,))
+                else:
+                    conn.execute(
+                        "UPDATE target_masters SET key = ?, target_id = ? WHERE key = ?",
+                        (new_key, keep["id"], key),
+                    )
+            conn.execute("DELETE FROM targets WHERE id = ?", (m["id"],))
+            merged.append((m["name"], keep["name"]))
+            log.info("merged target %s into %s (%s)", m["name"], keep["name"], canonical)
+    return merged
+
+
 def _walk_fits(root: Path) -> Iterator[Path]:
     """Yield every ``*.fits`` / ``*.fit`` file under ``root`` (case-insensitive).
 
@@ -575,6 +633,7 @@ def scan(
             match_all_sessions(conn)
         with conn:
             _resolve_targets(conn)
+            merge_duplicate_targets(conn)
         # Judge sessions now, so a long-enough new session shows in the library
         # right after the scan instead of at the curator's next pass.
         from server.curator import decide
