@@ -8,6 +8,7 @@ night, its render and the render before it, for a before/after compare).
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable
@@ -25,10 +26,15 @@ def _common_name(name: str | None) -> str | None:
 
 
 def _preview(record: Any) -> dict[str, str] | None:
+    """The render a job left, if its file is still in the cache."""
     if record is None or not record.outputs:
         return None
     port = "image" if "image" in record.outputs else next(iter(record.outputs))
-    return {"hash": record.outputs[port].node_hash, "port": port}
+    ref = record.outputs[port]
+    path = getattr(ref, "path", None)
+    if path is not None and not Path(path).exists():
+        return None
+    return {"hash": ref.node_hash, "port": port}
 
 
 def _master_update(

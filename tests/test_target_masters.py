@@ -221,6 +221,11 @@ def test_morning(tmp_path: Path) -> None:
         assert u["status"] == "completed" and u["after"] == {"hash": "after", "port": "image"}
         assert u["before"] == {"hash": "before", "port": "image"}
 
+        # A render whose file left the cache is skipped, not shown broken.
+        jobs[f"{pid}-j2"].outputs["image"].path = str(tmp_path / "gone.png")
+        [u] = morning(db, projects.get, jobs.get)["targets"][0]["masters"]
+        assert u["after"] is None and u["before"] == {"hash": "before", "port": "image"}
+
         # An earlier night can be asked for by date.
         assert morning(db, projects.get, jobs.get, "2026-11-12")["targets"][0]["state"] == "updated"
 
