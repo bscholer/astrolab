@@ -564,6 +564,12 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     # gives the loser plenty of room to wait for the winner to finish.
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
+    # In WAL mode NORMAL only fsyncs at checkpoints, not on every commit.
+    # The database stays consistent through a crash; a power cut can lose
+    # the last few commits. FULL cost ~19 ms per commit on the replicated
+    # volume, and a job writes a few rows per node (events, progress), so
+    # a fully cached 47-node rerun spent ~5 s just committing.
+    conn.execute("PRAGMA synchronous = NORMAL")
     # PRAGMA journal_mode is special: it can fail with SQLITE_BUSY even
     # when busy_timeout is set, because changing journal mode requires
     # an exclusive lock the timeout sometimes doesn't wait for. Skip it
