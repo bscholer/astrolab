@@ -288,5 +288,48 @@ def test_crop_auto_trim_default_params() -> None:
 
 
 def test_crop_node_version_bumped() -> None:
-    """Node version should be 2 (bumped from 1 to invalidate caches)."""
-    assert CropNode.version == 2
+    """Version 3: auto-trim also shrinks off zero-filled wedges."""
+    assert CropNode.version == 3
+
+
+# ---------------------------------------------------------------------------
+# Shrinking the box to real data (several nights, shifted and rotated)
+# ---------------------------------------------------------------------------
+
+
+def _union_of_nights() -> np.ndarray:
+    """Two nights' footprints on one grid: one shifted, one slightly rotated."""
+    img = np.zeros((300, 400), dtype=np.float32)
+    img[20:260, 10:380] = 0.02  # night 1
+    yy, xx = np.mgrid[0:300, 0:400]
+    # night 2: a rectangle rotated by ~2 degrees around the centre
+    a = np.deg2rad(2.0)
+    u = (xx - 200) * np.cos(a) + (yy - 150) * np.sin(a)
+    v = -(xx - 200) * np.sin(a) + (yy - 150) * np.cos(a)
+    img[(np.abs(u) < 185) & (np.abs(v) < 135)] = 0.02
+    return img
+
+
+def test_shrink_leaves_no_zero_fill_inside() -> None:
+    from nodes.basic.crop import _shrink_to_data, _signal_mask
+
+    img = _union_of_nights()
+    x, y, w, h = _bbox_of_signal(img, 0.001)
+    inner = img[y : y + h, x : x + w]
+    assert (inner <= 0.001).mean() > 0.05  # the plain bbox keeps the wedges
+    x, y, w, h = _shrink_to_data(_signal_mask(img, 0.001), x, y, w, h)
+    inner = img[y : y + h, x : x + w]
+    assert (inner <= 0.001).mean() < 0.005
+    assert w > 300 and h > 200  # only the wedges went, not the picture
+
+
+def test_shrink_tolerates_dead_pixels_and_gives_up_on_empty_frames() -> None:
+    from nodes.basic.crop import _shrink_to_data, _signal_mask
+
+    img = np.full((400, 400), 0.02, dtype=np.float32)
+    img[0, 50] = 0.0  # a dead pixel on the edge is not a border
+    assert _shrink_to_data(_signal_mask(img, 0.001), 0, 0, 400, 400) == (0, 0, 400, 400)
+    sparse = np.zeros((100, 100), dtype=np.float32)
+    sparse[::10, ::10] = 0.02  # mostly empty everywhere: leave it alone
+    x, y, w, h = _bbox_of_signal(sparse, 0.001)
+    assert _shrink_to_data(_signal_mask(sparse, 0.001), x, y, w, h) == (x, y, w, h)

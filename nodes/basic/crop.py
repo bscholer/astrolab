@@ -10,10 +10,14 @@ Two operating modes
 Auto-trim (default, no user box)
     When width == 0 (the sentinel for "no user override yet"), the node
     computes the bounding box of pixels above `threshold` and crops to that
-    box, optionally padded by `padding` pixels. This is the same
-    threshold+padding algorithm that the old auto_crop node used: the
-    pedestal_offset step pushes real signal ~0.01 above zero, so a 0.001
-    cutoff cleanly separates the registration zero-fill border from real data.
+    box, optionally padded by `padding` pixels. The pedestal_offset step
+    pushes real signal ~0.01 above zero, so a 0.001 cutoff cleanly separates
+    the registration zero-fill border from real data.
+
+    Then the box shrinks until its edges are real data: frames from several
+    nights (or a drifting night) are shifted and slightly rotated, so their
+    union leaves zero-filled wedges inside the bounding box, which GraXpert
+    and the stretch turn into a bright band around the picture.
 
 User crop (explicit bbox)
     When the user drags a rectangle in the UI crop picker, the parent page
@@ -147,7 +151,7 @@ class CropParams(BaseModel):
 @register("crop")
 class CropNode(Node[CropParams]):
     id = "crop"
-    version = 2
+    version = 3
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
@@ -218,6 +222,8 @@ class CropNode(Node[CropParams]):
             # Auto-trim: compute bounding box of signal above threshold.
             ctx.progress(0.3, "crop: auto-detecting signal bbox")
             x, y, w, h = _bbox_of_signal(data, params.threshold)
+            if w > 0 and h > 0:
+                x, y, w, h = _shrink_to_data(_signal_mask(data, params.threshold), x, y, w, h)
 
             if w <= 0 or h <= 0:
                 # Nothing above threshold — keep the original rather than emitting
@@ -287,23 +293,62 @@ def _slice_spatial(arr: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarra
     raise RuntimeError(f"crop: unsupported FITS shape {arr.shape}")
 
 
-def _bbox_of_signal(arr: np.ndarray, threshold: float) -> tuple[int, int, int, int]:
-    """Return (x, y, w, h) of pixels with any channel > threshold.
+def _signal_mask(arr: np.ndarray, threshold: float) -> np.ndarray:
+    """2D mask of pixels with any channel > threshold.
 
     Per-axis any() reduces RGB cubes to a 2D mask where a pixel counts as
     "real" if any channel is above threshold — preserves edge content where
     only one channel happens to be lit (rare in practice but cheap to handle).
     """
-    finite = np.isfinite(arr)
-    above = finite & (arr > threshold)
+    above = np.isfinite(arr) & (arr > threshold)
     if arr.ndim == 2:
-        mask = above
-    elif arr.ndim == 3 and arr.shape[0] in (3, 4):
-        mask = above.any(axis=0)
-    elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
-        mask = above.any(axis=-1)
-    else:
-        raise RuntimeError(f"crop: unsupported FITS shape {arr.shape}")
+        return above
+    if arr.ndim == 3 and arr.shape[0] in (3, 4):
+        return above.any(axis=0)
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        return above.any(axis=-1)
+    raise RuntimeError(f"crop: unsupported FITS shape {arr.shape}")
+
+
+EDGE_NODATA = 0.005
+"""An edge row or column may be this much nodata (dead pixels, black star cores)."""
+
+
+def _shrink_to_data(
+    mask: np.ndarray, x: int, y: int, w: int, h: int, tol: float = EDGE_NODATA
+) -> tuple[int, int, int, int]:
+    """Move the emptiest edge of the box inward until every edge is real data.
+
+    Greedy, one edge at a time, so a wedge on one side costs only that side.
+    Never shrinks below a quarter of the box in either direction; a frame
+    that empty is passed on as is rather than cropped to a sliver.
+    """
+    x0, x1, y0, y1 = x, x + w - 1, y, y + h - 1
+    min_w, min_h = max(1, w // 4), max(1, h // 4)
+    while x1 - x0 + 1 > min_w and y1 - y0 + 1 > min_h:
+        gaps = {
+            "top": 1 - mask[y0, x0 : x1 + 1].mean(),
+            "bottom": 1 - mask[y1, x0 : x1 + 1].mean(),
+            "left": 1 - mask[y0 : y1 + 1, x0].mean(),
+            "right": 1 - mask[y0 : y1 + 1, x1].mean(),
+        }
+        side = max(gaps, key=gaps.get)
+        if gaps[side] <= tol:
+            return x0, y0, x1 - x0 + 1, y1 - y0 + 1
+        if side == "top":
+            y0 += 1
+        elif side == "bottom":
+            y1 -= 1
+        elif side == "left":
+            x0 += 1
+        else:
+            x1 -= 1
+    return x, y, w, h
+
+
+def _bbox_of_signal(arr: np.ndarray, threshold: float) -> tuple[int, int, int, int]:
+    """Return (x, y, w, h) of pixels with any channel > threshold."""
+    mask = _signal_mask(arr, threshold)
 
     if not mask.any():
         return 0, 0, 0, 0
