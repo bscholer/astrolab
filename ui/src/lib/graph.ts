@@ -24,6 +24,7 @@ const NODE_DISPLAY_NAMES: Record<string, string> = {
   combine_stacks: 'Combine Nights',
   narrowband_extract: 'Narrowband Extract',
   narrowband_compose: 'Narrowband Compose',
+  narrowband_pack: 'Pack Ha · OIII',
   graxpert: 'GraXpert',
   stretch: 'Stretch',
   starnet_extract: 'Extract Stars',

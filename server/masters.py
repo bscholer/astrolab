@@ -38,12 +38,19 @@ from server.catalog.db import connect as connect_catalog
 from server.catalog.openngc import enrich
 from server.curator import MIN_EXPTIME_S, SETTLE_S, _night, _sessions
 from server.job_builder import JobBuildError, build_from_sessions, canon_instrument
-from server.recipes import recipe_for
+from server.recipes import is_duo, recipe_for
 from server.telemetry import traced
 
 log = logging.getLogger(__name__)
 
 TEMPLATE_ID = "stack_per_night"
+DUO_TEMPLATE_ID = "stack_per_night_duo"
+"""Duo-band (H-alpha + OIII) masters split the channels before debayering;
+see templates/stack_per_night_duo.yaml for why."""
+TEMPLATE_IDS = (TEMPLATE_ID, DUO_TEMPLATE_ID)
+DUO_RESET_NODES = ("channel_map", "color_balance")
+"""Moving onto the duo template drops these edits so HOO comes on and SCNR
+green removal goes off, as that template sets them."""
 NEW_WITHIN_DAYS = 45
 MIN_SESSION_S = 600.0
 """Sessions with less usable exposure stay out of masters: a few frames rarely
@@ -83,6 +90,10 @@ class Action:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def template_for(filter_name: str | None) -> str:
+    return DUO_TEMPLATE_ID if is_duo(filter_name) else TEMPLATE_ID
 
 
 def _key(r: sqlite3.Row) -> str:
@@ -189,7 +200,7 @@ def apply(conn: sqlite3.Connection, projects: Any, action: Action, now: float | 
     now = time.time() if now is None else now
     snapshot = {"added": action.add, "added_s": action.add_s, "total_s": action.total_s}
     if action.action == "create":
-        template = load_template(TEMPLATE_ID)
+        template = load_template(template_for(action.filter))
         target_id = int(action.key.split("|", 1)[0])
         name = conn.execute("SELECT name FROM targets WHERE id = ?", (target_id,)).fetchone()[0]
         entry = enrich(name)
@@ -287,24 +298,44 @@ class MasterKeeper:
             return self.last
 
     def upgrade(self) -> list[str]:
-        """Move masters onto the latest stack_per_night; they are the server's to keep."""
+        """Keep masters on the latest template of the right family; they are the
+        server's to keep. A duo-band master on the plain template moves to the
+        duo one (history and finishing edits kept)."""
         from server.templates import load_template
 
-        latest = load_template(TEMPLATE_ID)
+        latest = {tid: load_template(tid) for tid in TEMPLATE_IDS}
         conn = connect_catalog(self._db_path)
+        moved = []
         try:
-            ids = list(master_projects(conn))
+            for pid, row in master_projects(conn).items():
+                project = self._projects.get(pid)
+                if project is None or project.template.id not in TEMPLATE_IDS:
+                    continue
+                parts = row["key"].split("|")
+                filt = parts[3] if len(parts) > 3 and parts[3] != "None" else None
+                want = latest[template_for(filt)]
+                if project.template.id != want.id:
+                    ids = [int(s) for s in project.source_session_ids]
+                    try:
+                        job = build_from_sessions(conn, ids, want)
+                    except JobBuildError as exc:
+                        log.warning("master %s: cannot move to %s: %s", project.name, want.id, exc)
+                        continue
+                    self._projects.switch_template(
+                        pid,
+                        new_template=want,
+                        new_base_job=job,
+                        label="H-alpha and OIII split before debayering (real HOO colour)",
+                        reset_nodes=DUO_RESET_NODES if want.id == DUO_TEMPLATE_ID else (),
+                    )
+                    moved.append(pid)
+                    log.info("master %s moved to %s", project.name, want.id)
+                elif project.template.version < want.version:
+                    self._projects.upgrade_template(pid, new_template=want)
+                    moved.append(pid)
+                    log.info("master %s moved to %s v%d", project.name, want.id, want.version)
         finally:
             conn.close()
-        moved = []
-        for pid in ids:
-            project = self._projects.get(pid)
-            if project is None or project.template.id != TEMPLATE_ID:
-                continue
-            if project.template.version < latest.version:
-                self._projects.upgrade_template(pid, new_template=latest)
-                moved.append(pid)
-                log.info("master %s moved to %s v%d", project.name, TEMPLATE_ID, latest.version)
         return moved
 
     def start(self) -> None:

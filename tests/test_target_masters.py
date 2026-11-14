@@ -126,7 +126,9 @@ def test_nights_join_one_master(tmp_path: Path, _fake_build) -> None:
         assert p.source_session_ids == ["1", "2"]
         # California is a nebula shot duo-band: the recipe rides on the first render.
         assert p.overrides["stretch"] == {"method": "auto"}
-        assert p.overrides["color_balance"] == {"amount": 0.7}
+        # Duo-band: the split template, which has HOO on and SCNR off itself.
+        assert p.template.id == "stack_per_night_duo"
+        assert "color_balance" not in p.overrides
         assert "calibrate@1" in p.overrides
         assert p.history[0].label == "master: 1.2 h from Nov 12, recipe: emission nebula, duo-band"
         assert plan(db, projects.get, now)[0].action == "up_to_date"
@@ -308,6 +310,28 @@ def test_keeper_moves_masters_to_the_latest_template(tmp_path: Path) -> None:
     assert keeper.upgrade() == [pid]
     assert moved == [(pid, latest.version)]
     p.template = latest
+    assert keeper.upgrade() == []
+
+
+def test_keeper_moves_duo_masters_to_the_split_template(tmp_path: Path) -> None:
+    from server.masters import MasterKeeper
+    from server.templates import load_template
+
+    switched = []
+    projects = FakeProjects()
+    projects.switch_template = lambda pid, **kw: switched.append(
+        (pid, kw["new_template"].id, kw["reset_nodes"])
+    )
+    db_path = tmp_path / "c.sqlite"
+    with open_db(db_path) as db:
+        add_session(db, 1, target="NGC 1499", start="2026-11-11T21:00:00", filt="HaOIII")
+        pid = apply(db, projects, plan(db, projects.get, ts("2026-11-12T09:00:00"))[0])
+    p = projects.get(pid)
+    p.template = load_template("stack_per_night")  # made before the duo template existed
+    keeper = MasterKeeper(db_path, projects, lambda: True)
+    assert keeper.upgrade() == [pid]
+    assert switched == [(pid, "stack_per_night_duo", ("channel_map", "color_balance"))]
+    p.template = load_template("stack_per_night_duo")
     assert keeper.upgrade() == []
 
 

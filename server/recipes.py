@@ -37,6 +37,10 @@ class Recipe:
     overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+def is_duo(filter_name: str | None) -> bool:
+    return (filter_name or "").replace("-", "").replace(" ", "").upper() in DUO_BAND
+
+
 def _kind(object_type: str | None) -> str:
     if object_type in NEBULA_TYPES:
         return "nebula"
@@ -47,14 +51,13 @@ def _kind(object_type: str | None) -> str:
 
 def recipe_for(object_type: str | None, filter_name: str | None) -> Recipe:
     kind = _kind(object_type)
-    duo = (filter_name or "").replace("-", "").replace(" ", "").upper() in DUO_BAND
+    duo = is_duo(filter_name)
     base: dict[str, dict[str, Any]] = {"graxpert_bg": {"enabled": True}}
     if kind == "nebula":
         base["graxpert_denoise"] = {"enabled": True}
         base["stretch"] = {"method": "auto"}
-        if duo:
-            # SCNR at full strength eats the teal of OIII on duo-band data.
-            base["color_balance"] = {"amount": 0.7}
+        # Duo-band masters use stack_per_night_duo, which splits H-alpha and
+        # OIII before debayering and has HOO on and SCNR off by default.
         return Recipe(
             "nebula-duo" if duo else "nebula",
             "Emission nebula, duo-band" if duo else "Nebula",

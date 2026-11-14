@@ -41,6 +41,7 @@ from server.registry import lookup as registry_lookup
 NODE_LAYOUT: dict[tuple[str, str | None], dict[str, str]] = {
     ("auto_bp_shift", None): {"image": "image.fit"},
     ("channel_map", None): {"image": "image.fit"},
+    ("narrowband_pack", None): {"image": "image.fit"},
     ("calibrate", None): {"sequence": "sequence/"},
     ("color_balance", None): {"image": "image.fit"},
     ("convert_lights", None): {"sequence": "sequence/"},

@@ -664,3 +664,51 @@ def test_project_response_surfaces_latest_template_version(
     body = client.get(f"/api/projects/{rid}").json()
     assert body["template_version"] == 1
     assert body["latest_template_version"] == 3
+
+
+def test_switch_template_keeps_history_and_shared_edits(client, tmp_path: Path) -> None:
+    """A master moving pipeline family (duo-band onto the split template)
+    keeps its id and history; edits for nodes the new template still has
+    carry over, reset nodes and vanished nodes drop."""
+    from server.models import Job, Template
+
+    src = _make_png(tmp_path / "in.png")
+    rid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    body = client.patch(
+        f"/api/projects/{rid}",
+        json={"overrides": {"ds": {"target_size_px": 32}}},
+    ).json()
+    _wait_for_job(client, body["history"][-1]["job_id"])
+    other = Template.model_validate(
+        {
+            "id": "test_downscale_other",
+            "version": 1,
+            "nodes": [
+                {"id": "ds", "kind": "downscale", "params": {"target_size_px": 64}},
+                {"id": "ds2", "kind": "downscale", "params": {"target_size_px": 16},
+                 "inputs": {"image": "ds.image"}},
+            ],
+            "outputs": {"thumb": "ds2.image"},
+        }
+    )
+    p = project_manager.get(rid)
+    job = Job.model_validate(
+        {**p.base_job.model_dump(mode="json"), "template_id": other.id, "template_version": 1}
+    )
+    before = len(p.history)
+    project, job_id = project_manager.switch_template(
+        rid, new_template=other, new_base_job=job, label="moved"
+    )
+    assert project.template.id == "test_downscale_other"
+    assert len(project.history) == before + 1
+    assert project.history[-1].label == "moved"
+    assert project.current_overrides() == {"ds": {"target_size_px": 32}}
+    _wait_for_job(client, job_id)
+    # Persisted: a fresh read from the DB sees the new template.
+    project_manager.rehydrate()
+    assert project_manager.get(rid).template.id == "test_downscale_other"
+
+    project, _ = project_manager.switch_template(
+        rid, new_template=other, new_base_job=job, label="reset", reset_nodes=("ds",)
+    )
+    assert project.current_overrides() == {}
