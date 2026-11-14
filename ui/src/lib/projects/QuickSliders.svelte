@@ -10,9 +10,13 @@
   type Props = {
     project: Project;
     disabled?: boolean;
+    /** Phones only: the current render, pinned above the sliders. */
+    resultSrc?: string | null;
+    rendering?: boolean;
     onNodeOverrideChange: (nodeId: string, snapshot: Record<string, unknown>) => void;
   };
-  let { project, disabled = false, onNodeOverrideChange }: Props = $props();
+  let { project, disabled = false, resultSrc = null, rendering = false, onNodeOverrideChange }: Props =
+    $props();
 
   // Template defaults when the template doesn't set the param itself.
   const FALLBACK: Record<string, Record<string, unknown>> = {
@@ -83,6 +87,13 @@
 {#if autostretch}
   <section class="quick" aria-label="Quick finishing">
     <h2 class="section-h">Quick</h2>
+    {#if resultSrc}
+      <!-- Phones: the picture stays in view while you work the sliders below. -->
+      <div class="mobile-result" class:rendering>
+        <img src={resultSrc} alt="Current render" />
+        {#if rendering}<span class="badge">rendering…</span>{/if}
+      </div>
+    {/if}
     <div class="grid">
       <label>
         <span class="name">Brightness <span class="val">{brightness.toFixed(2)}</span></span>
@@ -214,5 +225,54 @@
   }
   .toggle input {
     accent-color: var(--accent);
+  }
+  .mobile-result {
+    display: none;
+  }
+  @media (max-width: 700px) {
+    .mobile-result {
+      display: block;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      margin: 0 -0.25rem 0.6rem;
+      background: var(--bg);
+      padding: 0.25rem;
+      border-radius: 10px;
+    }
+    .mobile-result img {
+      display: block;
+      width: 100%;
+      max-height: 38vh;
+      object-fit: contain;
+      border-radius: 8px;
+      background: #000;
+    }
+    .mobile-result.rendering img {
+      opacity: 0.6;
+    }
+    .badge {
+      position: absolute;
+      right: 0.75rem;
+      bottom: 0.75rem;
+      font-size: 0.75rem;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: var(--bg-elev);
+      color: var(--fg-mute);
+      border: 1px solid var(--border);
+    }
+    .grid {
+      grid-template-columns: 1fr;
+      gap: 0.55rem;
+      padding: 0.7rem 0.8rem;
+    }
+    /* The hints are a desktop luxury; each control's name says enough here. */
+    .hint {
+      display: none;
+    }
+    .quick {
+      margin: 0.75rem 0;
+    }
   }
 </style>

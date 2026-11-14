@@ -1017,7 +1017,19 @@
     {/if}
 
     {#if project}
-      <QuickSliders {project} disabled={patchQueue.patching} onNodeOverrideChange={handleNodeOverrideChange} />
+      <QuickSliders
+        {project}
+        disabled={patchQueue.patching}
+        resultSrc={finalOutput
+          ? api.previewUrl(finalOutput[1].node_hash, finalOutput[0])
+          : project.preview_hash && project.preview_port
+            ? api.previewUrl(project.preview_hash, project.preview_port)
+            : null}
+        rendering={patchQueue.patching ||
+          subscription.activeJob?.status === 'running' ||
+          subscription.activeJob?.status === 'queued'}
+        onNodeOverrideChange={handleNodeOverrideChange}
+      />
     {/if}
 
     {#if schema && project}
