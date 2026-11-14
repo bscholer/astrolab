@@ -263,6 +263,8 @@ class MasterKeeper:
             conn = connect_catalog(self._db_path)
             done: list[dict[str, Any]] = []
             try:
+                for pid in self.upgrade():
+                    done.append({"action": "upgrade", "project_id": pid})
                 for a in plan(conn, self._projects.get):
                     if a.action not in ("create", "add"):
                         continue
@@ -277,6 +279,27 @@ class MasterKeeper:
                 conn.close()
             self.last = {"at": time.time(), "actions": done}
             return self.last
+
+    def upgrade(self) -> list[str]:
+        """Move masters onto the latest stack_per_night; they are the server's to keep."""
+        from server.templates import load_template
+
+        latest = load_template(TEMPLATE_ID)
+        conn = connect_catalog(self._db_path)
+        try:
+            ids = list(master_projects(conn))
+        finally:
+            conn.close()
+        moved = []
+        for pid in ids:
+            project = self._projects.get(pid)
+            if project is None or project.template.id != TEMPLATE_ID:
+                continue
+            if project.template.version < latest.version:
+                self._projects.upgrade_template(pid, new_template=latest)
+                moved.append(pid)
+                log.info("master %s moved to %s v%d", project.name, TEMPLATE_ID, latest.version)
+        return moved
 
     def start(self) -> None:
         def loop() -> None:

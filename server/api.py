@@ -41,6 +41,7 @@ import contextlib
 import dataclasses
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -3509,6 +3510,27 @@ def _master_advice(conn: sqlite3.Connection, project) -> dict | None:
             else None
         ),
     }
+
+
+@app.get("/api/projects/{project_id}/export")
+def export_project(project_id: str, kind: Literal["image", "stacked"] = "image") -> FileResponse:
+    """Download the current render at full resolution (PNG), or its linear stack (FITS)."""
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    by_seq = {h.seq: h for h in project.history}
+    order = [project.current_seq] + sorted((s for s in by_seq if s != project.current_seq),
+                                           reverse=True)
+    for seq in order:
+        record = job_manager.get(by_seq[seq].job_id)
+        ref = (record.outputs or {}).get(kind) if record else None
+        if ref is not None and Path(ref.path).exists():
+            path = Path(ref.path)
+            stem = re.sub(r"[^\w .()-]+", "", project.name).strip() or "astrolab"
+            date = (record.finished_at or "")[:10]
+            name = f"{stem} v{seq + 1}{' ' + date if date else ''}{path.suffix}"
+            return FileResponse(path, filename=name)
+    raise HTTPException(status_code=404, detail=f"no {kind} output in cache for {project_id}")
 
 
 @app.get("/api/target-masters/advice")

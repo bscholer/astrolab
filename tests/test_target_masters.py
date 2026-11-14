@@ -253,3 +253,52 @@ def test_auto_stretch_follows_the_image() -> None:
     assert info["sky_out"] == pytest.approx(0.15, abs=0.005)
     assert info["object_out"] > info["sky_out"]
     assert _mtf(0.5, 0.5) == pytest.approx(0.5)
+
+
+def test_hoo_and_colour_strength(tmp_path: Path) -> None:
+    import numpy as np
+    from astropy.io import fits
+
+    from nodes.basic.channel_map import hoo
+    from nodes.basic.stretch import saturate_fits
+
+    rng = np.random.default_rng(2)
+    rgb = rng.normal(0.01, 0.0005, (3, 200, 200)).astype(np.float32)
+    rgb[0, 50:150, 50:150] += 0.02  # H-alpha nebula, strong
+    rgb[1:, 80:120, 80:120] += 0.004  # OIII core, faint
+    rgb[:, :, :10] = 0.0  # registration border
+    out = hoo(rgb, 1.0)
+    assert np.array_equal(out[1], out[2])  # green and blue are both OIII
+    assert np.allclose(out[0], rgb[0])  # red is H-alpha untouched
+    core = out[1, 80:120, 80:120].mean() - np.median(out[1])
+    assert core > 0.01  # faint OIII lifted toward H-alpha's spread
+    assert (out[:, :, :10] == 0).all()  # border stays nodata
+    weak = hoo(rgb, 0.5)
+    assert weak[1, 80:120, 80:120].mean() < out[1, 80:120, 80:120].mean()
+
+    p = tmp_path / "s.fit"
+    img = np.stack([np.full((4, 4), 0.6), np.full((4, 4), 0.4), np.full((4, 4), 0.2)])
+    fits.PrimaryHDU(img.astype(np.float32)).writeto(p)
+    saturate_fits(p, 0.0)
+    assert np.allclose(fits.getdata(p), 0.4)  # grey at the same brightness
+
+
+def test_keeper_moves_masters_to_the_latest_template(tmp_path: Path) -> None:
+    from server.masters import MasterKeeper
+    from server.templates import load_template
+
+    latest = load_template("stack_per_night")
+    moved = []
+    projects = FakeProjects()
+    projects.upgrade_template = lambda pid, new_template: moved.append((pid, new_template.version))
+    db_path = tmp_path / "c.sqlite"
+    with open_db(db_path) as db:
+        add_session(db, 1, target="M 33", start="2026-11-11T21:00:00", filt="Astro")
+        pid = apply(db, projects, plan(db, projects.get, ts("2026-11-12T09:00:00"))[0])
+    p = projects.get(pid)
+    p.template = SimpleNamespace(id="stack_per_night", version=latest.version - 1)
+    keeper = MasterKeeper(db_path, projects, lambda: True)
+    assert keeper.upgrade() == [pid]
+    assert moved == [(pid, latest.version)]
+    p.template = latest
+    assert keeper.upgrade() == []

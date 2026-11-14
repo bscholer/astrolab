@@ -16,11 +16,12 @@
 
   // Template defaults when the template doesn't set the param itself.
   const FALLBACK: Record<string, Record<string, unknown>> = {
-    stretch: { method: 'autostretch', target_bg: 0.25, auto_object: 0.4 },
+    stretch: { method: 'autostretch', target_bg: 0.25, auto_object: 0.4, saturation: 1 },
     auto_bp_shift: { enabled: true, clip_fraction: 0.01 },
     graxpert_bg: { enabled: false },
     graxpert_denoise: { enabled: false, strength: 0.5 },
     color_balance: { enabled: true, amount: 0.85 },
+    channel_map: { enabled: false, oiii_strength: 0.6 },
   };
 
   function templateParams(nodeId: string): Record<string, unknown> | null {
@@ -59,13 +60,24 @@
   let darkSky = $state(0);
   let noise = $state(0);
   let green = $state(0);
+  let colour = $state(1);
+  let oiii = $state(0.6);
   $effect(() => {
     brightness = Number(value('stretch', brightParam) ?? (brightParam === 'auto_object' ? 0.4 : 0.25));
     darkSky = Number(value('auto_bp_shift', 'clip_fraction') ?? 0.01) * 100;
     noise = value('graxpert_denoise', 'enabled') ? Number(value('graxpert_denoise', 'strength') ?? 0.5) : 0;
     green = value('color_balance', 'enabled') === false ? 0 : Number(value('color_balance', 'amount') ?? 0.85);
+    colour = Number(value('stretch', 'saturation') ?? 1);
+    oiii = Number(value('channel_map', 'oiii_strength') ?? 0.6);
   });
   const gradient = $derived(!!value('graxpert_bg', 'enabled'));
+  const hooOn = $derived(!!value('channel_map', 'enabled'));
+
+  // HOO and SCNR fight: green removal would eat the OIII. Switch them together.
+  function setHoo(on: boolean) {
+    commit('channel_map', { enabled: on });
+    commit('color_balance', { enabled: !on });
+  }
 </script>
 
 {#if autostretch}
@@ -97,13 +109,35 @@
           <span class="hint">GraXpert denoise; 0.4–0.6 is the usual range.</span>
         </label>
       {/if}
-      {#if has('color_balance')}
+      <label>
+        <span class="name">Colour strength <span class="val">{colour.toFixed(2)}</span></span>
+        <input type="range" min="0" max="2" step="0.05" bind:value={colour} {disabled}
+          onchange={() => commit('stretch', { saturation: Number(colour.toFixed(2)) })} />
+        <span class="hint">1 leaves colour as it is; higher is more vivid.</span>
+      </label>
+      {#if has('channel_map') && hooOn}
+        <label>
+          <span class="name">OIII strength <span class="val">{oiii.toFixed(2)}</span></span>
+          <input type="range" min="0.1" max="1.5" step="0.05" bind:value={oiii} {disabled}
+            onchange={() => commit('channel_map', { oiii_strength: Number(oiii.toFixed(2)) })} />
+          <span class="hint">Teal OIII against red H-alpha; lower if it looks noisy.</span>
+        </label>
+      {/if}
+      {#if has('color_balance') && !hooOn}
         <label>
           <span class="name">Green removal <span class="val">{green === 0 ? 'off' : green.toFixed(2)}</span></span>
           <input type="range" min="0" max="1" step="0.05" bind:value={green} {disabled}
             onchange={() =>
               commit('color_balance', green === 0 ? { enabled: false } : { enabled: true, amount: Number(green.toFixed(2)) })} />
           <span class="hint">Less keeps the teal of OIII on duo-band data.</span>
+        </label>
+      {/if}
+      {#if has('channel_map')}
+        <label class="toggle">
+          <input type="checkbox" checked={hooOn} {disabled}
+            onchange={(e) => setHoo((e.currentTarget as HTMLInputElement).checked)} />
+          <span class="name">HOO colour</span>
+          <span class="hint">For duo-band nebulae: red H-alpha, teal OIII.</span>
         </label>
       {/if}
       {#if has('graxpert_bg')}
@@ -115,6 +149,11 @@
         </label>
       {/if}
     </div>
+    <p class="export">
+      Export the current version:
+      <a href="/api/projects/{project.id}/export" download>full-size PNG</a> ·
+      <a href="/api/projects/{project.id}/export?kind=stacked" download>linear stack (FITS)</a>
+    </p>
   </section>
 {/if}
 
@@ -155,6 +194,14 @@
   input[type='range'] {
     width: 100%;
     accent-color: var(--accent);
+  }
+  .export {
+    margin: 0.5rem 0 0;
+    font-size: 0.82rem;
+    color: var(--fg-mute);
+  }
+  .export a {
+    color: var(--accent);
   }
   .toggle {
     display: grid;

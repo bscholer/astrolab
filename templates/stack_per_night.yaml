@@ -1,5 +1,5 @@
 id: stack_per_night
-version: 1
+version: 2
 description: |
   Many nights of one target, at any mix of exposures: each night (catalog
   session) is calibrated, registered, and stacked on its own, then
@@ -143,6 +143,17 @@ nodes:
     inputs:
       image: graxpert_bg.image
 
+  - id: channel_map
+    kind: channel_map
+    # False colour for duo-band data on a colour camera: HOO maps red to
+    # H-alpha and green and blue to OIII. Off by default; the Quick panel's
+    # HOO switch turns it on. Turn color_balance off with it, or SCNR eats
+    # the OIII.
+    params:
+      enabled: false
+    inputs:
+      image: graxpert_denoise.image
+
   - id: color_balance
     kind: color_balance
     # SCNR green (rmgreen) to kill the OSC Bayer-matrix green cast. Runs
@@ -154,7 +165,7 @@ nodes:
       enabled: true
       amount: 0.85
     inputs:
-      image: graxpert_denoise.image
+      image: channel_map.image
 
   - id: auto_bp_shift
     kind: auto_bp_shift
