@@ -1415,7 +1415,9 @@
   .result-frame img {
     display: block;
     width: 100%;
-    max-height: 72vh;
+    /* Leave room under the picture for the history strip (about 170px)
+       below the header, so versions and compare stay in view. */
+    max-height: max(360px, calc(100vh - 330px));
     object-fit: contain;
   }
   .result-frame.rendering img {
@@ -1504,6 +1506,10 @@
       overflow: visible;
     }
   }
+  /* Hidden on wider screens; declared before the phone query so it loses there. */
+  .history-mobile {
+    display: none;
+  }
   @media (max-width: 700px) {
     /* Phones: the picture stays in view while you work the sliders. */
     .bench-result {
@@ -1522,9 +1528,6 @@
     .history-mobile {
       display: block;
     }
-  }
-  .history-mobile {
-    display: none;
   }
   .capture-line {
     display: flex;
