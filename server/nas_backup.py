@@ -10,6 +10,9 @@ of its failed_* frames only those triage rescued. Layout:
     images/<project>/<project> v<seq>.png  every completed version's picture
     images/<project>/<project> v<seq> <port>.fit  stacked and final FITS
     db/astrolab-<date>.sqlite              a daily snapshot
+
+The captures and app (images, db) folders can be moved with ASTROLAB_NAS_CAPTURES_DIR
+and ASTROLAB_NAS_APP_DIR; see nas_captures and nas_app.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from pathlib import Path
 from server.catalog.db import connect as connect_catalog
 from server.catalog.triage import rescued_paths
 from server.curator import FOLDER_PREFIX, kept_folders
+from server.paths import nas_app, nas_captures
 from server.telemetry import note, traced
 
 log = logging.getLogger(__name__)
@@ -178,7 +182,7 @@ class NasBackup:
             return {}
         result: dict = {"at": datetime.now(UTC).isoformat()}
         steps: list[tuple[str, Callable[[], object]]] = [
-            ("db", lambda: snapshot_db(self._db_path, root / "db")),
+            ("db", lambda: snapshot_db(self._db_path, nas_app(root) / "db")),
             ("images", self._images),
         ]
         captures = self._captures()
@@ -201,12 +205,12 @@ class NasBackup:
             rescued, kept = rescued_paths(conn), kept_folders(conn)
         finally:
             conn.close()
-        return copy_captures(captures, root / "captures", rescued=rescued, kept=kept)
+        return copy_captures(captures, nas_captures(root), rescued=rescued, kept=kept)
 
     def _images(self) -> int:
         conn = sqlite3.connect(self._db_path)
         try:
-            return copy_images(conn, self._root() / "images", self._cache_root())
+            return copy_images(conn, nas_app(self._root()) / "images", self._cache_root())
         finally:
             conn.close()
 

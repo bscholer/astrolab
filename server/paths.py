@@ -71,3 +71,16 @@ def _read_cache_root_override() -> Path | None:
     if not raw:
         return None
     return Path(str(raw)).expanduser().resolve()
+
+
+def nas_captures(root: Path) -> Path:
+    """Where raw captures go. ASTROLAB_NAS_CAPTURES_DIR names a folder under the root
+    (default 'captures'); point it at the scope's own layout ('Astronomy' in a copy of
+    its card) so the backup adds to that copy instead of duplicating it."""
+    return root / os.environ.get("ASTROLAB_NAS_CAPTURES_DIR", "captures").strip()
+
+
+def nas_app(root: Path) -> Path:
+    """Where finished images and database snapshots go: ASTROLAB_NAS_APP_DIR under the
+    root (default: the root itself)."""
+    return root / os.environ.get("ASTROLAB_NAS_APP_DIR", "").strip()

@@ -35,6 +35,7 @@ from pathlib import Path
 
 from server.catalog.db import connect as connect_catalog
 from server.catalog.triage import triage_pending
+from server.paths import nas_captures
 from server.telemetry import traced
 
 log = logging.getLogger(__name__)
@@ -224,7 +225,7 @@ def scrap_plan(
         nas_path = None
         if nas is not None and captures is not None:
             try:
-                nas_path = nas / "captures" / path.relative_to(captures)
+                nas_path = nas_captures(nas) / path.relative_to(captures)
             except ValueError:
                 nas_path = None
         prefix = folder + "/"

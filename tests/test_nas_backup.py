@@ -125,3 +125,14 @@ def test_resolve_finds_outputs_after_the_cache_moved(tmp_path: Path) -> None:
     ref = {"path": "/data/cache/abc/image.png", "node_hash": "abc"}
     assert _resolve(ref, tmp_path / "cache") == tmp_path / "cache" / "abc" / "image.png"
     assert _resolve({"path": "/gone/x.png", "node_hash": "zzz"}, tmp_path / "cache") is None
+
+
+def test_layout_follows_env(tmp_path: Path, monkeypatch) -> None:
+    from server.paths import nas_app, nas_captures
+
+    assert nas_captures(tmp_path) == tmp_path / "captures"
+    assert nas_app(tmp_path) == tmp_path
+    monkeypatch.setenv("ASTROLAB_NAS_CAPTURES_DIR", "Astronomy")
+    monkeypatch.setenv("ASTROLAB_NAS_APP_DIR", "astrolab")
+    assert nas_captures(tmp_path) == tmp_path / "Astronomy"
+    assert nas_app(tmp_path) == tmp_path / "astrolab"
