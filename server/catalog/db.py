@@ -599,6 +599,25 @@ def open_db(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+_held: dict[Path, sqlite3.Connection] = {}
+
+
+def keep_open(path: Path | None = None) -> None:
+    """Hold one idle connection to the catalog for the life of the process.
+
+    Code here opens a connection per call and closes it. When the last
+    connection to a WAL database closes, SQLite checkpoints the whole log
+    into the database (with fsyncs) and deletes it, and the next open
+    recreates it. A job saving an event per node paid that on every event,
+    ~45 ms each: 2.5 s of a 2.5 s fully cached rerun. One idle connection
+    keeps the log in place, and commits drop to under a millisecond.
+    Long-running processes (the API, the worker) call this once at start.
+    """
+    target = (path if path is not None else default_db_path()).resolve()
+    if target not in _held:
+        _held[target] = connect(target)
+
+
 def retry_on_locked(fn):
     """Retry a DB-touching callable on `OperationalError: database is locked`.
 

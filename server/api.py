@@ -66,7 +66,7 @@ from server import scope_plan, sky_thumbs, telemetry, weather
 from server.capture_loop import advise, measure_cached, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
-from server.catalog.db import default_db_path, open_db
+from server.catalog.db import default_db_path, keep_open, open_db
 from server.catalog.fits_reader import normalize_target
 from server.catalog.matching import match_bundle_darks
 from server.catalog.openngc import CatalogEntry
@@ -172,6 +172,11 @@ from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # One idle connection for the process: see keep_open().
+    try:
+        keep_open(job_manager.db_path)
+    except Exception:  # pragma: no cover
+        log.exception("could not hold the catalog open")
     # Pull persisted jobs and projects into memory so the UI lists them
     # and detail pages can replay events even after a server restart.
     try:

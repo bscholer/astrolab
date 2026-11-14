@@ -29,6 +29,7 @@ import nodes.basic  # noqa: F401
 
 from . import telemetry
 from .cache import ContentCache
+from .catalog.db import keep_open
 from .jobs import JobManager, JobWorker
 
 log = logging.getLogger("astrolab.worker")
@@ -101,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     telemetry.setup("astrolab-worker")
+    keep_open(args.db)
     worker = JobWorker(cache=ContentCache(), db_path=args.db)
     shutdown = _Shutdown()
     shutdown.install_handlers()
