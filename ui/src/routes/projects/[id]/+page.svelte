@@ -815,7 +815,7 @@
         disabled={undoDisabled}
         title="Undo (Cmd-Z)"
         aria-label="Undo"
-      >&#x21B6;</button>
+      ><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg></button>
       <button
         type="button"
         class="hbtn hbtn-icon"
@@ -823,7 +823,7 @@
         disabled={redoDisabled}
         title="Redo (Cmd-Shift-Z)"
         aria-label="Redo"
-      >&#x21B7;</button>
+      ><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg></button>
       {#if project && (project.latest_template_version ?? project.template_version) > project.template_version}
         <button
           type="button"
@@ -1311,9 +1311,16 @@
   }
   /* Icon-only variant: square-ish pill, no horizontal text padding. */
   .hbtn-icon {
-    padding: 0.25rem 0.55rem;
-    font-size: 1rem;
-    line-height: 1;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 8px;
+    color: var(--fg-mute);
+  }
+  .hbtn-icon:hover:not(:disabled) {
+    color: var(--fg);
   }
   .hbtn.warn {
     color: var(--warn, #fbbf24);
@@ -1782,7 +1789,9 @@
       font-size: 0.75rem;
     }
     .hbtn-icon {
-      padding: 0.25rem 0.45rem;
+      width: 28px;
+      height: 28px;
+      padding: 0;
     }
   }
 </style>

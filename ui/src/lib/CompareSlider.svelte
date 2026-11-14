@@ -112,9 +112,9 @@
   />
   <div class="divider" class:dragging style:left="{pos}%">
     <div class="handle" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="15 18 9 12 15 6" />
-        <polyline points="9 6 15 12 9 18" transform="translate(8,0)" />
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9.5 7 4.5 12 9.5 17" />
+        <polyline points="14.5 7 19.5 12 14.5 17" />
       </svg>
     </div>
   </div>
@@ -154,8 +154,8 @@
     bottom: 0;
     width: 2px;
     margin-left: -1px;
-    background: linear-gradient(180deg, var(--accent), var(--bad));
-    box-shadow: 0 0 12px rgba(94, 234, 212, 0.4);
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
     pointer-events: none;
   }
   .handle {
@@ -163,17 +163,17 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     border-radius: 999px;
-    background: linear-gradient(135deg, var(--accent), var(--bad));
-    color: var(--accent-ink);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow:
-      0 0 0 2px var(--bg),
-      0 0 16px rgba(94, 234, 212, 0.4);
+    background: rgba(12, 16, 28, 0.82);
+    border: 1.5px solid rgba(255, 255, 255, 0.85);
+    color: #fff;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .divider.dragging .handle {
