@@ -16,6 +16,7 @@ from typing import Any
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.openngc import enrich
 from server.curator import _sessions
+from server.masters import MIN_SESSION_S
 
 
 def _common_name(name: str | None) -> str | None:
@@ -104,11 +105,13 @@ def morning(
     targets = []
     for tid, sessions in by_target.items():
         kept = scrap = waiting = 0.0
+        longest_kept = 0.0
         frames_n = sum(s.good + s.rescued + s.untriaged for s in sessions)
         for s in sessions:
             verdict, usable = verdicts.get(s.id, (None, s.usable_s))
             if verdict == "keep":
                 kept += usable
+                longest_kept = max(longest_kept, usable)
             elif verdict == "scrap":
                 scrap += usable
             else:
@@ -126,6 +129,8 @@ def morning(
             state = "updated"
         elif waiting:
             state = "judging"
+        elif kept and masters.get(tid) and longest_kept < MIN_SESSION_S:
+            state = "short"
         elif kept and masters.get(tid):
             state = "queued"
         elif kept:

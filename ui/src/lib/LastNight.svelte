@@ -69,6 +69,8 @@
         return 'Still judging frames';
       case 'queued':
         return 'Joins its master once the night settles';
+      case 'short':
+        return 'Kept, too short to add to the master';
       case 'kept':
         return 'Kept';
       default:

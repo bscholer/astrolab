@@ -618,7 +618,7 @@ export interface MorningTarget {
   kept_s: number;
   scrap_s: number;
   judging_s: number;
-  state: 'updated' | 'judging' | 'queued' | 'kept' | 'scrap';
+  state: 'updated' | 'judging' | 'queued' | 'short' | 'kept' | 'scrap';
   masters: MorningMasterUpdate[];
 }
 

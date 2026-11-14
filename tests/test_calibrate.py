@@ -569,3 +569,27 @@ def test_calibrate_drops_input_symlinks_after_success(
     contents = sorted(p.name for p in (out_dir / "sequence").iterdir())
     assert all(name.startswith("pp_light_") for name in contents)
     assert not any(name.startswith("light_") for name in contents)
+
+
+def test_a_group_of_one_frame_uses_calibrate_single(tmp_path: Path) -> None:
+    """Siril won't read a one-image folder as a sequence; one frame takes calibrate_single."""
+    from nodes.basic.calibrate import _run_group_calibrate
+
+    frames = [tmp_path / f"f{i}.fit" for i in range(2)]
+    for f in frames:
+        f.write_bytes(b"FAKE")
+    dark = _make_master(tmp_path / "dark.fit")
+
+    def make_outputs(cmds, wd):
+        for link in Path(wd).glob("light_*.fit"):
+            (Path(wd) / f"pp_{link.name}").write_bytes(b"OUT")
+
+    for n, verb in ((1, "calibrate_single light_00001.fit "), (2, "calibrate light ")):
+        rt = FakeRuntime(on_run=make_outputs)
+        out = _run_group_calibrate(
+            group_dir=tmp_path / f"g{n}", frames=frames[:n], dark_path=dark,
+            params=CalibrateParams(), ctx=_ctx(tmp_path), runtime=rt,
+            flat_ref=None, bias_ref=None,
+        )
+        assert rt.calls[0]["commands"][1].startswith(verb)
+        assert len(out) == n

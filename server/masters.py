@@ -45,6 +45,10 @@ log = logging.getLogger(__name__)
 
 TEMPLATE_ID = "stack_per_night"
 NEW_WITHIN_DAYS = 45
+MIN_SESSION_S = 600.0
+"""Sessions with less usable exposure stay out of masters: a few frames rarely
+register on their own, a failed night fails the whole master job, and they
+add almost nothing."""
 EVERY_S = 600
 
 
@@ -107,6 +111,8 @@ def groups(conn: sqlite3.Connection, now: float | None = None) -> dict[str, Grou
         """
     ):
         if (r["exptime"] or 0) < MIN_EXPTIME_S or r["id"] not in frames:
+            continue
+        if (r["usable_s"] or 0) < MIN_SESSION_S:
             continue
         night = _night(r["started_at"])
         g = out.setdefault(_key(r), Group(_key(r), r["target_id"], r["target"], r["filter"]))
