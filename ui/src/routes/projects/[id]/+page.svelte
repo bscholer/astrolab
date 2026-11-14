@@ -38,6 +38,7 @@
   import CompareController from '$lib/projects/CompareController.svelte';
   import QuickSliders from '$lib/projects/QuickSliders.svelte';
   import MoreData from '$lib/MoreData.svelte';
+  import CropEditor from '$lib/CropEditor.svelte';
   import type { MasterAdviceRow } from '$lib/api';
   import SessionRow from '$lib/SessionRow.svelte';
   import Checkbox from '$lib/Checkbox.svelte';
@@ -53,6 +54,8 @@
 
   // Target masters only: what more hours would buy (server/capture_loop.py).
   let advice = $state<MasterAdviceRow | null>(null);
+  // Quick's "Adjust crop" swaps the picture for the crop editor.
+  let cropping = $state(false);
   let adviceFor = '';
   $effect(() => {
     const p = project;
@@ -787,9 +790,35 @@
     }
   }
 
+  let flushQueued = false;
   function handleNodeOverrideChange(nodeId: string, partial: Record<string, unknown>) {
     patchQueue.onNodeOverrideChange(nodeId, partial);
-    patchQueue.flush().then((updated) => { if (updated) onProjectUpdated(updated); });
+    // Flush on a microtask so a control that touches two nodes at once
+    // (Stars, HOO) lands as one history entry and one render.
+    if (flushQueued) return;
+    flushQueued = true;
+    queueMicrotask(() => {
+      flushQueued = false;
+      patchQueue.flush().then((updated) => { if (updated) onProjectUpdated(updated); });
+    });
+  }
+
+  // The crop box, as the crop node sees it; width 0 means auto-trim.
+  const cropBox = $derived.by(() => {
+    const o = (project?.current_overrides?.crop ?? {}) as Record<string, unknown>;
+    const w = Number(o.width ?? 0);
+    return w > 0
+      ? { x: Number(o.x ?? 0), y: Number(o.y ?? 0), width: w, height: Number(o.height ?? 1) }
+      : { x: 0, y: 0, width: 1, height: 1 };
+  });
+  const cropPreviewUrl = $derived.by(() => {
+    const up = upstreamHashFor('crop');
+    return up.hash ? api.previewUrlStretched(up.hash, up.port ?? 'image') : null;
+  });
+  function setCrop(next: { x: number; y: number; width: number; height: number } | null) {
+    const o = { ...((project?.current_overrides?.crop ?? {}) as Record<string, unknown>) };
+    delete o.x; delete o.y; delete o.width; delete o.height; delete o.enabled;
+    handleNodeOverrideChange('crop', next ? { ...o, ...next } : o);
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -938,7 +967,24 @@
 
     <div class="bench">
       <div class="bench-result">
-        {#if resultSrc}
+        {#if cropping}
+          <div class="crop-stage">
+            <CropEditor
+              previewUrl={cropPreviewUrl}
+              enabled={true}
+              x={cropBox.x}
+              y={cropBox.y}
+              width={cropBox.width}
+              height={cropBox.height}
+              onchange={(next) => setCrop({ x: next.x, y: next.y, width: next.width, height: next.height })}
+              onreset={() => setCrop(null)}
+            />
+            <div class="crop-bar">
+              <span class="muted small">Drag a box on the picture. Reset goes back to the automatic trim.</span>
+              <button type="button" class="hbtn" onclick={() => (cropping = false)}>Done</button>
+            </div>
+          </div>
+        {:else if resultSrc}
           <a class="result-frame" class:rendering href={resultSrc} target="_blank" rel="noopener" title="Open the current render">
             <img src={resultSrc} alt="Current render of {project.name}" />
             {#if rendering}<span class="result-badge">rendering…</span>{/if}
@@ -960,7 +1006,13 @@
         />
       </div>
       <div class="bench-side">
-        <QuickSliders {project} disabled={patchQueue.patching} onNodeOverrideChange={handleNodeOverrideChange} />
+        <QuickSliders
+          {project}
+          disabled={patchQueue.patching}
+          {cropping}
+          onCrop={() => (cropping = !cropping)}
+          onNodeOverrideChange={handleNodeOverrideChange}
+        />
         {#if project.master && advice}
           <MoreData row={advice} onUpdated={(r) => (advice = r)} />
         {/if}
@@ -1440,6 +1492,17 @@
     color: var(--fg-mute);
     border: 1px solid var(--border);
   }
+  .crop-stage {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .crop-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
   .bench-side {
     min-width: 0;
     position: sticky;
@@ -1522,7 +1585,7 @@
     .result-frame img {
       max-height: 36vh;
     }
-    .bench-result > :global(:not(.result-frame)) {
+    .bench-result > :global(:not(.result-frame):not(.crop-stage)) {
       display: none;
     }
     .history-mobile {

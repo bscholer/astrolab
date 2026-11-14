@@ -10,13 +10,12 @@
   type Props = {
     project: Project;
     disabled?: boolean;
-    /** Phones only: the current render, pinned above the sliders. */
-    resultSrc?: string | null;
-    rendering?: boolean;
+    /** The page is showing the crop editor in place of the picture. */
+    cropping?: boolean;
+    onCrop?: () => void;
     onNodeOverrideChange: (nodeId: string, snapshot: Record<string, unknown>) => void;
   };
-  let { project, disabled = false, resultSrc = null, rendering = false, onNodeOverrideChange }: Props =
-    $props();
+  let { project, disabled = false, cropping = false, onCrop, onNodeOverrideChange }: Props = $props();
 
   // Template defaults when the template doesn't set the param itself.
   const FALLBACK: Record<string, Record<string, unknown>> = {
@@ -26,6 +25,8 @@
     graxpert_denoise: { enabled: false, strength: 0.5 },
     color_balance: { enabled: true, amount: 0.85 },
     channel_map: { enabled: false, oiii_strength: 0.6 },
+    starnet_extract: { enabled: false },
+    starnet_recombine: { enabled: true, stars: 1 },
   };
 
   function templateParams(nodeId: string): Record<string, unknown> | null {
@@ -66,6 +67,7 @@
   let green = $state(0);
   let colour = $state(1);
   let oiii = $state(0.6);
+  let stars = $state(1);
   $effect(() => {
     brightness = Number(value('stretch', brightParam) ?? (brightParam === 'auto_object' ? 0.4 : 0.25));
     darkSky = Number(value('auto_bp_shift', 'clip_fraction') ?? 0.01) * 100;
@@ -73,7 +75,21 @@
     green = value('color_balance', 'enabled') === false ? 0 : Number(value('color_balance', 'amount') ?? 0.85);
     colour = Number(value('stretch', 'saturation') ?? 1);
     oiii = Number(value('channel_map', 'oiii_strength') ?? 0.6);
+    stars = value('starnet_extract', 'enabled') ? Number(value('starnet_recombine', 'stars') ?? 1) : 1;
   });
+  const customCrop = $derived(Number(value('crop', 'width') ?? 0) > 0);
+
+  // Stars at 1 skips StarNet entirely (it is the slow step); below 1 it
+  // splits the stars off and puts them back smaller, at 0 not at all.
+  function setStars(v: number) {
+    if (v >= 1) {
+      commit('starnet_extract', { enabled: false });
+      commit('starnet_recombine', { enabled: true, stars: 1 });
+    } else {
+      commit('starnet_extract', { enabled: true });
+      commit('starnet_recombine', { enabled: true, stars: v });
+    }
+  }
   const gradient = $derived(!!value('graxpert_bg', 'enabled'));
   const hooOn = $derived(!!value('channel_map', 'enabled'));
 
@@ -87,13 +103,6 @@
 {#if autostretch}
   <section class="quick" aria-label="Quick finishing">
     <h2 class="section-h">Quick</h2>
-    {#if resultSrc}
-      <!-- Phones: the picture stays in view while you work the sliders below. -->
-      <div class="mobile-result" class:rendering>
-        <img src={resultSrc} alt="Current render" />
-        {#if rendering}<span class="badge">rendering…</span>{/if}
-      </div>
-    {/if}
     <div class="grid">
       <label>
         <span class="name">Brightness <span class="val">{brightness.toFixed(2)}</span></span>
@@ -151,6 +160,14 @@
           <span class="hint">For duo-band nebulae: red H-alpha, teal OIII.</span>
         </label>
       {/if}
+      {#if has('starnet_extract') && has('starnet_recombine')}
+        <label>
+          <span class="name">Stars <span class="val">{stars >= 1 ? 'as shot' : stars === 0 ? 'none' : stars.toFixed(2)}</span></span>
+          <input type="range" min="0" max="1" step="0.05" bind:value={stars} {disabled}
+            onchange={() => setStars(Number(stars.toFixed(2)))} />
+          <span class="hint">Lower shrinks stars, faint ones first; 0 removes them. Adds StarNet to the render (slower).</span>
+        </label>
+      {/if}
       {#if has('graxpert_bg')}
         <label class="toggle">
           <input type="checkbox" checked={gradient} {disabled}
@@ -158,6 +175,14 @@
           <span class="name">Remove gradients</span>
           <span class="hint">GraXpert background extraction. Turn off if a nebula fills the frame.</span>
         </label>
+      {/if}
+      {#if has('crop') && onCrop}
+        <div class="crop-row">
+          <span class="name">Crop <span class="val">{customCrop ? 'custom' : 'auto'}</span></span>
+          <button type="button" class="crop-btn" class:on={cropping} {disabled} onclick={onCrop}>
+            {cropping ? 'Done cropping' : 'Adjust crop'}
+          </button>
+        </div>
       {/if}
     </div>
     <p class="export">
@@ -214,6 +239,31 @@
   .export a {
     color: var(--accent);
   }
+  .crop-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .crop-row .name {
+    flex: 1;
+  }
+  .crop-btn {
+    appearance: none;
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .crop-btn:hover:not(:disabled),
+  .crop-btn.on {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
   .toggle {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -226,42 +276,7 @@
   .toggle input {
     accent-color: var(--accent);
   }
-  .mobile-result {
-    display: none;
-  }
   @media (max-width: 700px) {
-    .mobile-result {
-      display: block;
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      margin: 0 -0.25rem 0.6rem;
-      background: var(--bg);
-      padding: 0.25rem;
-      border-radius: 10px;
-    }
-    .mobile-result img {
-      display: block;
-      width: 100%;
-      max-height: 38vh;
-      object-fit: contain;
-      border-radius: 8px;
-      background: #000;
-    }
-    .mobile-result.rendering img {
-      opacity: 0.6;
-    }
-    .badge {
-      position: absolute;
-      right: 0.75rem;
-      bottom: 0.75rem;
-      font-size: 0.75rem;
-      padding: 0.1rem 0.5rem;
-      border-radius: 999px;
-      background: var(--bg-elev);
-      color: var(--fg-mute);
-      border: 1px solid var(--border);
-    }
     .grid {
       grid-template-columns: 1fr;
       gap: 0.55rem;
