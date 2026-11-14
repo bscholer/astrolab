@@ -23,6 +23,10 @@ _UNSEEN = "<unseen>"
 FRAMES_PER_RUN = 200
 EXPOSURE_S = 15
 FAIL_STREAK = 10
+RESCUE_EVERY_S = 5 * 60
+"""How often to ask triage what share of the current target's failed frames are fine."""
+RESCUE_KEEPS = 0.5
+"""At least this share rescued and a rejection streak doesn't make us leave."""
 SKIP_AFTER_FAIL_S = 30 * 60
 SKIP_AFTER_ERROR_S = 15 * 60
 SKY_WAIT_S = 5 * 60
@@ -49,12 +53,19 @@ class Scheduler:
         load_progress: Callable[[], dict[str, float]] | None = None,
         save_progress: Callable[[dict[str, float]], None] | None = None,
         skymap: SkyMap | None = None,
+        rescue_share: Callable[[str], float | None] | None = None,
     ) -> None:
+        """rescue_share(target) is the share of the target's recent failed frames
+        our own triage finds good enough to stack (None while unknown). The scope
+        flags many usable frames as failed; this corrects the rejection streak,
+        the credited integration time and what the sky map learns."""
         self._get_client = get_client
         self._get_site = get_site
         self._get_targets = get_targets
         self._observer = observer
         self._skymap = skymap
+        self._rescue_share = rescue_share
+        self._rescue: dict[str, tuple[float, float]] = {}
         self._clock = clock
         self.interval_s = interval_s
         self._notify = notify or (lambda *_: None)
@@ -218,15 +229,37 @@ class Scheduler:
         name, last_c, last_f, streak = self._streak
         if name != target or captured < last_c:
             last_c = last_f = streak = 0
-        accepted = (captured - last_c) - (failed - last_f)
-        self._learn(target, accepted, failed - last_f)
-        if accepted > 0:
+        new_failed = failed - last_f
+        accepted = (captured - last_c) - new_failed
+        share = 0.0
+        if target and new_failed > 0:
+            share = self._share(target, force=streak + new_failed >= FAIL_STREAK)
+        rescued = round(new_failed * share)
+        self._learn(target, accepted + rescued, new_failed - rescued)
+        if accepted + rescued > 0:
+            self._credit(target, accepted + rescued)
+        if accepted > 0 or (new_failed > 0 and share >= RESCUE_KEEPS):
             streak = 0
-            self._credit(target, accepted)
         else:
-            streak += failed - last_f
+            streak += new_failed
         self._streak = (target, captured, failed, streak)
         return streak
+
+    def _share(self, target: str, force: bool = False) -> float:
+        """The target's last known rescue share, refreshed every RESCUE_EVERY_S."""
+        share, at = self._rescue.get(target, (0.0, -RESCUE_EVERY_S))
+        if self._rescue_share is None or (not force and self.mono() - at < RESCUE_EVERY_S):
+            return share
+        try:
+            fresh = self._rescue_share(target)
+        except Exception:
+            log.warning("rescue check for %s failed", target, exc_info=True)
+            fresh = None
+        if fresh is not None:
+            share = fresh
+            log.info("%s: triage finds %d%% of recent failed frames usable", target, fresh * 100)
+        self._rescue[target] = (share, self.mono())
+        return share
 
     def _learn(self, target: str | None, good: int, failed: int) -> None:
         """Note where in the sky these frames came out good or failed."""

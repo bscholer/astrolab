@@ -130,3 +130,21 @@ def test_triage_marks_unreadable_frames_once(tmp_path: Path) -> None:
         os.utime(cut, (1, 1))
         assert triage_pending(db)["unreadable"] == 1
         assert triage_pending(db)["sessions"] == 0
+
+
+def test_live_rescue_share_judges_fresh_frames(tmp_path: Path) -> None:
+    from server.catalog.triage import live_rescue_share
+
+    folder = tmp_path / "captures" / "M33"
+    good = [(f"g{i}.fits", "ok", _frame(60, seed=60 + i)) for i in range(4)]
+    failed = [(f"failed_{i}.fits", "failed", _frame(58, seed=70 + i)) for i in range(4)]
+    failed += [(f"failed_c{i}.fits", "failed", _frame(2, seed=80 + i)) for i in range(2)]
+    with open_db(tmp_path / "c.sqlite") as db:
+        _seed(db, folder, good + failed)
+        now = 2e9
+        db.execute("UPDATE frames SET mtime = ?", (now - 120,))  # two minutes old
+        db.commit()
+        assert live_rescue_share(db, "M 33", now=now) == 4 / 6
+        assert live_rescue_share(db, "Nowhere", now=now) is None
+        # An old session is no guide to tonight.
+        assert live_rescue_share(db, "M 33", now=now + 7200) is None

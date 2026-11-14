@@ -152,14 +152,18 @@ def _store(conn: sqlite3.Connection, frame_id: int, s: StarStats, rescued: int |
 
 def triage_session(
     conn: sqlite3.Connection, session_id: int, *, now: float | None = None,
-    deadline: float | None = None,
+    deadline: float | None = None, settle_s: float = SETTLE_S,
 ) -> dict[str, int]:
-    """Measure and judge the session's untriaged failed frames. Returns counts."""
+    """Measure and judge the session's untriaged failed frames. Returns counts.
+
+    Frames younger than `settle_s` (by file time) wait, in case the copy is
+    still being written; the scheduler's live check passes a short settle.
+    """
     now = time.time() if now is None else now
     rows = _session_frames(conn, session_id)
     pending = [
         r for r in rows
-        if r["quality"] == "failed" and r["rescued"] is None and now - (r["mtime"] or 0) >= SETTLE_S
+        if r["quality"] == "failed" and r["rescued"] is None and now - (r["mtime"] or 0) >= settle_s
     ]
     out = {"rescued": 0, "junk": 0, "unreadable": 0}
     if not pending:
@@ -245,3 +249,45 @@ if __name__ == "__main__":  # python -m server.catalog.triage: backfill everythi
     logging.basicConfig(level=logging.INFO)
     c = connect(default_db_path())
     print(json.dumps(triage_pending(c)))
+
+
+LIVE_WINDOW_S = 30 * 60
+LIVE_SETTLE_S = 60
+LIVE_MIN_JUDGED = 5
+
+
+def live_rescue_share(
+    conn: sqlite3.Connection, target: str, *, now: float | None = None, budget_s: float = 20
+) -> float | None:
+    """Share of `target`'s recent failed frames that are good enough to stack.
+
+    For the scheduler during capture: triage the newest session of `target`
+    on the spot (frames a minute old are enough), then look at its failed
+    frames from the last LIVE_WINDOW_S. None until LIVE_MIN_JUDGED of them
+    are judged, so the caller keeps its own rule meanwhile.
+    """
+    now = time.time() if now is None else now
+    row = conn.execute(
+        """
+        SELECT s.id, MAX(f.mtime) AS newest
+        FROM sessions s
+        JOIN targets t ON t.id = s.target_id
+        JOIN session_frames sf ON sf.session_id = s.id
+        JOIN frames f ON f.id = sf.frame_id
+        WHERE t.name = ? AND f.image_type = 'LIGHT'
+        GROUP BY s.id ORDER BY newest DESC LIMIT 1
+        """,
+        (target,),
+    ).fetchone()
+    if row is None or now - (row[1] or 0) > LIVE_WINDOW_S:
+        return None
+    triage_session(conn, row[0], now=now, deadline=time.time() + budget_s, settle_s=LIVE_SETTLE_S)
+    judged = [
+        r["rescued"] for r in _session_frames(conn, row[0])
+        if r["quality"] == "failed" and r["rescued"] is not None
+        and now - (r["mtime"] or 0) <= LIVE_WINDOW_S
+    ]
+    if len(judged) < LIVE_MIN_JUDGED:
+        return None
+    return sum(1 for x in judged if x == 1) / len(judged)
+

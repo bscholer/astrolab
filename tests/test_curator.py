@@ -179,3 +179,15 @@ def test_plan_skips_nested_folders(tmp_path: Path) -> None:
         decide(db, now=NOW)
         assert _verdicts(db) == {1: "scrap"}
         assert scrap_plan(db, c, None) == []
+
+
+def test_kept_usable_time_follows_new_frames_and_rescues(tmp_path: Path) -> None:
+    c = tmp_path / "captures"
+    with open_db(tmp_path / "c.sqlite") as db:
+        _session(db, c, 1, folder="DWARF_RAW_a", good=20, failed=10, rescued=None)
+        decide(db, now=NOW)
+        assert db.execute("SELECT usable_s FROM session_verdicts").fetchone()[0] == 600
+        db.execute("UPDATE frames SET rescued = 1 WHERE quality = 'failed'")
+        db.commit()
+        decide(db, now=NOW)
+        assert db.execute("SELECT usable_s FROM session_verdicts").fetchone()[0] == 900

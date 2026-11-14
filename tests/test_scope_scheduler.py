@@ -414,3 +414,21 @@ def test_frames_are_noted_on_the_sky_map_where_the_target_is():
     assert (cell["good"], cell["failed"]) == (4, 2)
     s._account("a", {"captured": 6, "failed": 2})
     assert skymap.cells()[cell_key(alt, az)]["good"] == 4
+
+
+def test_usable_failed_frames_keep_the_target_and_count_as_time():
+    saved = []
+    shares = {"a": 0.9}
+    s = Scheduler(
+        lambda: FakeClient(), lambda: LOC, lambda: [Candidate("a", 0, 0, exposure_s=30)],
+        FakeObserver(), save_progress=saved.append, rescue_share=lambda t: shares.get(t),
+    )
+    # Twelve frames the scope calls failed, but triage finds 90% usable:
+    # no streak, and the usable ones count toward the goal.
+    assert s._account("a", {"captured": 12, "failed": 12}) == 0
+    assert s._integrated["a"] == round(12 * 0.9) * 30
+    # When triage doesn't know yet, the scope's word stands.
+    shares.clear()
+    s2 = Scheduler(lambda: FakeClient(), lambda: LOC, lambda: [_target("b")], FakeObserver(),
+                   rescue_share=lambda t: None)
+    assert s2._account("b", {"captured": 12, "failed": 12}) == 12

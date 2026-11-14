@@ -159,6 +159,17 @@ def decide(conn: sqlite3.Connection, now: float | None = None) -> dict[str, int]
             (s.id, verdict, s.usable_s, now),
         )
         counts[verdict] += 1
+    # A session kept early (ten good minutes) goes on gaining frames and
+    # rescues; its usable time must follow, or the library, the last night
+    # card and the masters' hours stay stuck at the moment of the verdict.
+    for sid, stored in conn.execute(
+        "SELECT session_id, usable_s FROM session_verdicts WHERE verdict = 'keep'"
+    ).fetchall():
+        if sid in sessions and abs(sessions[sid].usable_s - stored) > 0.5:
+            conn.execute(
+                "UPDATE session_verdicts SET usable_s = ? WHERE session_id = ?",
+                (sessions[sid].usable_s, sid),
+            )
     conn.commit()
     return counts
 

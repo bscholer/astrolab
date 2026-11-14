@@ -80,6 +80,7 @@ from server.catalog.sky_match import (
     target_centroid,
     target_envelope,
 )
+from server.catalog.triage import live_rescue_share
 from server.curator import Curator, purged_names
 from server.endpoints import (
     StatusHint,
@@ -3730,7 +3731,13 @@ scope_scheduler = Scheduler(
     load_progress=lambda: get_setting(SETTING_SCOPE_PROGRESS, {}, db_path=job_manager.db_path),
     save_progress=lambda p: set_setting(SETTING_SCOPE_PROGRESS, p, db_path=job_manager.db_path),
     skymap=scope_skymap,
+    rescue_share=lambda target: _live_rescue_share(target),
 )
+
+
+def _live_rescue_share(target: str) -> float | None:
+    with _db() as conn:
+        return live_rescue_share(conn, target)
 
 
 class ScopeAlertRequest(BaseModel):
