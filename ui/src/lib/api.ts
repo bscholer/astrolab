@@ -587,6 +587,7 @@ export interface MasterAdviceRow {
   project_id: string;
   name: string;
   target: string;
+  common_name: string | null;
   filter: string | null;
   advice: MasterAdvice;
   plan: { name: string; goal_hours: number | null; shot_hours: number } | null;
@@ -615,6 +616,11 @@ export interface MorningTarget {
   sessions: number[];
   started_at: string;
   frames: number;
+  shot_s: number;
+  good_s: number;
+  rescued_s: number;
+  junk_s: number;
+  untriaged_s: number;
   kept_s: number;
   scrap_s: number;
   judging_s: number;
@@ -622,10 +628,21 @@ export interface MorningTarget {
   masters: MorningMasterUpdate[];
 }
 
+export interface MorningTotals {
+  shot_s: number;
+  good_s: number;
+  rescued_s: number;
+  junk_s: number;
+  untriaged_s: number;
+  kept_s: number;
+  scrap_s: number;
+}
+
 export interface MorningResponse {
   night: string | null;
   nights: string[];
   targets: MorningTarget[];
+  totals?: MorningTotals;
 }
 
 export type UpgradeTemplateResponse = Project & {

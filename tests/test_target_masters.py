@@ -207,6 +207,8 @@ def test_morning(tmp_path: Path) -> None:
         assert t["M 45"]["state"] == "judging"
         cal = t["NGC 1499"]
         assert cal["state"] == "updated" and cal["kept_s"] == 3600
+        assert (cal["shot_s"], cal["good_s"], cal["junk_s"]) == (3600, 3600, 0)
+        assert m["totals"]["shot_s"] == 3600 + 300 + 300
         [u] = cal["masters"]
         assert u["status"] == "running" and u["after"] is None
         assert u["before"] == {"hash": "before", "port": "image"}

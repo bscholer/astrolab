@@ -61,6 +61,8 @@ class _Session:
     good: int = 0
     rescued: int = 0
     untriaged: int = 0
+    junk: int = 0
+    """Failed frames triage judged unusable."""
     folders: set[str] = field(default_factory=set)
 
     @property
@@ -89,6 +91,8 @@ def _sessions(conn: sqlite3.Connection) -> dict[int, _Session]:
             s.rescued += 1
         elif r[5] is None:
             s.untriaged += 1
+        else:
+            s.junk += 1
     return out
 
 

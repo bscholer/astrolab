@@ -336,7 +336,10 @@
       <ul>
         {#each worth as row, i (row.project_id)}
           <li>
-            <a class="worth-name" href="/projects/{row.project_id}">{row.name}</a>
+            <a class="worth-name" href="/projects/{row.project_id}">
+              {row.common_name ?? row.name}
+              {#if row.common_name}<span class="worth-canon">{row.target}</span>{/if}
+            </a>
             <MoreData {row} compact onUpdated={(r) => (worth[i] = r)} />
           </li>
         {/each}
@@ -653,6 +656,13 @@
   .worth li {
     display: grid;
     gap: 0.2rem;
+  }
+  .worth-canon {
+    font-weight: 400;
+    font-size: 0.78rem;
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
+    margin-left: 0.4rem;
   }
   .worth-name {
     font-weight: 600;

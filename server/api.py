@@ -3495,10 +3495,12 @@ def _master_advice(conn: sqlite3.Connection, project) -> dict | None:
 
     in_plan = next((t for t in plan_targets if same_object(t)), None)
     shot = scope_scheduler.snapshot().get("integrated_s", {})
+    entry = openngc_enrich(canonical or name)
     return {
         "project_id": project.id,
         "name": project.name,
         "target": name,
+        "common_name": (entry.common_name if entry else None) or lookup_common_name(name),
         "filter": info["key"].split("|")[3] or None,
         "advice": advise(total_s, quality).as_dict(),
         "plan": (

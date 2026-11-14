@@ -110,6 +110,16 @@
         {#if totals.scrap > 0}· {formatIntegrationTime(totals.scrap)} scrap{/if}
       </span>
     </header>
+    {#if data.totals && data.totals.shot_s > 0}
+      {@const tt = data.totals}
+      <p class="split" title="Good: frames the scope accepted. Rescued: frames it called failed that our own star check found fine. Junk: failed frames that really are unusable.">
+        Shot {formatIntegrationTime(tt.shot_s)}:
+        <b>{formatIntegrationTime(tt.good_s) || '0 min'} good</b>
+        {#if tt.rescued_s > 0}· <b>{formatIntegrationTime(tt.rescued_s)} rescued</b> by triage{/if}
+        {#if tt.junk_s > 0}· {formatIntegrationTime(tt.junk_s)} junk ({pct(tt.junk_s / tt.shot_s)}){/if}
+        {#if tt.untriaged_s > 0}· {formatIntegrationTime(tt.untriaged_s)} still being checked{/if}
+      </p>
+    {/if}
 
     <ul>
       {#each data.targets as t (t.target_id ?? t.name)}
@@ -142,9 +152,11 @@
               <span class="state" data-state={m ? (m.status === 'completed' ? 'done' : m.status) : t.state}>{stateText(t, m)}</span>
             </div>
             <div class="facts">
-              {#if t.kept_s > 0}<span>{formatIntegrationTime(t.kept_s)} kept</span>{/if}
-              {#if t.scrap_s > 0}<span>{formatIntegrationTime(t.scrap_s)} scrap</span>{/if}
-              {#if t.judging_s > 0}<span>{formatIntegrationTime(t.judging_s)} judging</span>{/if}
+              <span>{formatIntegrationTime(t.shot_s) || '0 min'} shot</span>
+              {#if t.good_s > 0}<span>{formatIntegrationTime(t.good_s)} good</span>{/if}
+              {#if t.rescued_s > 0}<span>{formatIntegrationTime(t.rescued_s)} rescued</span>{/if}
+              {#if t.junk_s > 0}<span>{formatIntegrationTime(t.junk_s)} junk</span>{/if}
+              {#if t.untriaged_s > 0}<span>{formatIntegrationTime(t.untriaged_s)} being checked</span>{/if}
               <span>{t.frames} frames</span>
             </div>
             {#if m}
@@ -202,6 +214,15 @@
   .nav:disabled {
     opacity: 0.35;
     cursor: default;
+  }
+  .split {
+    margin: -0.2rem 0 0.6rem;
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+  }
+  .split b {
+    color: var(--fg);
+    font-weight: 600;
   }
   .sum {
     color: var(--fg-mute);

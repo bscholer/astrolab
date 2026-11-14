@@ -112,7 +112,13 @@ def morning(
     for tid, sessions in by_target.items():
         kept = scrap = waiting = 0.0
         longest_kept = 0.0
-        frames_n = sum(s.good + s.rescued + s.untriaged for s in sessions)
+        frames_n = sum(s.good + s.rescued + s.untriaged + s.junk for s in sessions)
+        time_split = {
+            "good_s": sum(s.good * (s.exptime or 0) for s in sessions),
+            "rescued_s": sum(s.rescued * (s.exptime or 0) for s in sessions),
+            "junk_s": sum(s.junk * (s.exptime or 0) for s in sessions),
+            "untriaged_s": sum(s.untriaged * (s.exptime or 0) for s in sessions),
+        }
         for s in sessions:
             verdict, usable = verdicts.get(s.id, (None, s.usable_s))
             if verdict == "keep":
@@ -150,6 +156,8 @@ def morning(
             "sessions": sorted(ids),
             "started_at": min((started.get(i) or "" for i in ids), default=""),
             "frames": frames_n,
+            **time_split,
+            "shot_s": sum(time_split.values()),
             "kept_s": kept,
             "scrap_s": scrap,
             "judging_s": waiting,
@@ -157,4 +165,6 @@ def morning(
             "masters": updates,
         })
     targets.sort(key=lambda t: t["started_at"])
-    return {"night": night, "nights": nights[-14:], "targets": targets}
+    keys = ("shot_s", "good_s", "rescued_s", "junk_s", "untriaged_s", "kept_s", "scrap_s")
+    totals = {k: sum(t[k] for t in targets) for k in keys}
+    return {"night": night, "nights": nights[-14:], "targets": targets, "totals": totals}
