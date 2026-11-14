@@ -371,8 +371,8 @@
       </div>
       <div class="sw-row">
         <div class="sw-text">
-          <div class="sw-title">Stack new sessions</div>
-          <div class="sw-sub">{scope.auto_stack ? 'On. Stacks a session 5 minutes after its last frame.' : 'Off. Stack by hand from Projects.'}</div>
+          <div class="sw-title">Keep target masters</div>
+          <div class="sw-sub">{scope.auto_stack ? 'On. Each target gets a master project; every kept night joins it once the night is over.' : 'Off. Stack by hand from Projects.'}</div>
         </div>
         <button
           type="button"

@@ -36,6 +36,7 @@
   import HistoryStrip from '$lib/projects/HistoryStrip.svelte';
   import PipelineRow from '$lib/projects/PipelineRow.svelte';
   import CompareController from '$lib/projects/CompareController.svelte';
+  import QuickSliders from '$lib/projects/QuickSliders.svelte';
   import SessionRow from '$lib/SessionRow.svelte';
   import Checkbox from '$lib/Checkbox.svelte';
 
@@ -863,6 +864,12 @@
   {#if project === null}
     <p class="muted">Loading...</p>
   {:else}
+    {#if project.master}
+      <p class="master-line small">
+        <span class="master-badge">Target master</span>
+        <span class="muted">Every kept night of this target joins automatically once the night is over. Your finishing edits carry over.</span>
+      </p>
+    {/if}
     <p class="capture-line muted small">
       {#if subscription.activeJob?.capture?.frame_count}
         <span>{subscription.activeJob.capture.frame_count} frame{subscription.activeJob.capture.frame_count === 1 ? '' : 's'}</span>
@@ -989,6 +996,10 @@
       </div>
     </details>
     </div>
+
+    {#if project}
+      <QuickSliders {project} disabled={patchQueue.patching} onNodeOverrideChange={handleNodeOverrideChange} />
+    {/if}
 
     {#if schema && project}
       {@const isCover = project.cover_seq === project.current_seq}
@@ -1291,6 +1302,21 @@
     background: rgba(139, 233, 253, 0.12);
   }
 
+  .master-line {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+    margin: 0.25rem 0;
+  }
+  .master-badge {
+    color: var(--accent);
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 0.05rem 0.55rem;
+    font-weight: 600;
+    font-size: 0.75rem;
+  }
   .capture-line {
     display: flex;
     gap: 0.5rem;

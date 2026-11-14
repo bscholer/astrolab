@@ -253,6 +253,8 @@ class ProjectManager:
         template: Template,
         base_job: Job,
         source_session_ids: list[str],
+        label: str = "initial render",
+        snapshot: dict[str, Any] | None = None,
     ) -> Project:
         """Create a Project and submit its initial job.
 
@@ -285,8 +287,9 @@ class ProjectManager:
             seq=0,
             job_id=job_id,
             overrides=initial_overrides,
-            label="initial render",
+            label=label,
             created_at=now,
+            snapshot=snapshot,
         )
         project.history.append(entry)
 
@@ -537,6 +540,7 @@ class ProjectManager:
         new_session_ids: list[str],
         snapshot: dict[str, Any],
         auto_render: bool = True,
+        label: str | None = None,
     ) -> tuple[Project, str | None]:
         """Replace the project's source session set with a fresh Job.
 
@@ -600,7 +604,7 @@ class ProjectManager:
 
         next_seq = max((h.seq for h in project.history), default=-1) + 1
         n = len(new_session_ids)
-        label = f"swap sessions ({n} session{'s' if n != 1 else ''})"
+        label = label or f"swap sessions ({n} session{'s' if n != 1 else ''})"
         entry = HistoryEntry(
             seq=next_seq,
             job_id=entry_job_id,

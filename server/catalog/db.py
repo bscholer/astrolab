@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 18
+CURRENT_SCHEMA_VERSION = 19
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -476,6 +476,24 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "INSERT INTO schema_version (version) VALUES (18)",
+    ],
+    19: [
+        # server/masters.py: one project per (target, instrument, camera,
+        # filter, gain, binning) that stacks every kept night. The row stays
+        # when the user deletes the project, so a deleted master isn't rebuilt.
+        # seen: session ids already offered to the master, so a night the user
+        # takes out by hand stays out.
+        """
+        CREATE TABLE target_masters (
+            key         TEXT PRIMARY KEY,
+            target_id   INTEGER NOT NULL,
+            project_id  TEXT NOT NULL,
+            recipe      TEXT,
+            seen        TEXT NOT NULL DEFAULT '[]',
+            created_at  REAL NOT NULL
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (19)",
     ],
 }
 

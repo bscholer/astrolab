@@ -96,9 +96,11 @@ from server.job_builder import (
     build_from_sessions,
 )
 from server.jobs import JobManager
+from server.masters import MasterKeeper, master_projects
 from server.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
 from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
+from server.morning import morning
 from server.nas_backup import NasBackup, nas_root
 from server.paths import astrolab_home
 from server.preview import PreviewError, render_output, render_preview
@@ -109,7 +111,6 @@ from server.quality import (
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
 from server.scope_alerts import make_notifier
-from server.scope_autostack import AutoStacker
 from server.scope_cleanup import Cleaner
 from server.scope_compass import CompassRefused, CompassRun
 from server.scope_control import ACTIONS as CONTROL_ACTIONS
@@ -186,7 +187,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             get_setting(SETTING_SCOPE_AUTO, False, db_path=job_manager.db_path)
         )
         scope_scheduler.start()
-        scope_autostack.start()
+        master_keeper.start()
         scope_cleaner.start()
         threading.Thread(target=_warm_scope_caches, name="astrolab-warm", daemon=True).start()
     curator.start()
@@ -2640,6 +2641,8 @@ def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     _attach_history_quality(payload, conn)
     session_ids = payload.get("source_session_ids") or []
     payload["capture"] = _capture_for_project(conn, session_ids).model_dump(mode="json")
+    # Target masters (server/masters.py) are kept up to date by the server.
+    payload["master"] = master_projects(conn).get(project.id)
     display = _display_for_project(conn, session_ids)
     payload["display"] = display.model_dump(mode="json") if display else None
     # Suggestions are sourced from the project's canonical_group; null when
@@ -3408,33 +3411,37 @@ def get_scope_pointing() -> list[dict]:
     return get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
 
 
-def _find_scope_session(folder: str) -> tuple[int, int] | None:
-    """Return (session_id, light count) for the catalog session that holds a mirrored folder."""
-    with _db() as conn:
-        row = conn.execute(
-            """
-            SELECT sf.session_id AS sid, COUNT(*) AS n
-            FROM session_frames sf JOIN frames f ON f.id = sf.frame_id
-            WHERE f.image_type = 'LIGHT' AND f.path LIKE ?
-            GROUP BY sf.session_id ORDER BY n DESC LIMIT 1
-            """,
-            (f"%/{folder}/%",),
-        ).fetchone()
-    return (row["sid"], row["n"]) if row else None
-
-
-def _submit_scope_stack(session_id: int) -> str:
-    template = load_template("calibrate_register_stack")
-    with _db() as conn:
-        job = build_from_session(conn, session_id, template)
-    return job_manager.submit(template, job)
-
-
-scope_autostack = AutoStacker(
+master_keeper = MasterKeeper(
+    job_manager.db_path or default_db_path(),
+    project_manager,
     lambda: bool(get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)),
-    _find_scope_session,
-    _submit_scope_stack,
 )
+
+
+@app.get("/api/masters")
+def get_masters() -> dict:
+    """Target masters: what the keeper would do now (a dry run) and its last pass."""
+    return {
+        "enabled": bool(
+            get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)
+        ),
+        "last": master_keeper.last,
+        "plan": [a.as_dict() for a in master_keeper.plan()],
+    }
+
+
+@app.post("/api/masters/run")
+def run_masters() -> dict:
+    """Create and extend target masters now instead of waiting for the next pass."""
+    return master_keeper.run()
+
+
+@app.get("/api/morning")
+def get_morning(conn: DBDep, night: str | None = None) -> dict:
+    """Last night (or `night`, YYYY-MM-DD): targets shot, what was kept, what each master gained."""
+    return morning(conn, project_manager.get, job_manager.get, night)
+
+
 def _purged_folders() -> set[str]:
     with _db() as conn:
         return purged_names(conn)
@@ -3489,7 +3496,6 @@ scope_mirror = Mirror(
         SETTING_SCOPE_MIRROR_BASELINE, names, db_path=job_manager.db_path
     ),
     on_copied=_scan_after_copy,
-    on_session_copied=scope_autostack.touch,
     get_purged=lambda: _purged_folders(),
 )
 

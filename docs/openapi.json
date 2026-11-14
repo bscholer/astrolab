@@ -3020,24 +3020,93 @@
     },
     "/api/masters": {
       "get": {
-        "operationId": "list_masters_api_masters_get",
+        "description": "Target masters: what the keeper would do now (a dry run) and its last pass.",
+        "operationId": "get_masters_api_masters_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MasterRow"
-                  },
-                  "title": "Response List Masters Api Masters Get",
-                  "type": "array"
+                  "additionalProperties": true,
+                  "title": "Response Get Masters Api Masters Get",
+                  "type": "object"
                 }
               }
             },
             "description": "Successful Response"
           }
         },
-        "summary": "List Masters"
+        "summary": "Get Masters"
+      }
+    },
+    "/api/masters/run": {
+      "post": {
+        "description": "Create and extend target masters now instead of waiting for the next pass.",
+        "operationId": "run_masters_api_masters_run_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Masters Api Masters Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Masters"
+      }
+    },
+    "/api/morning": {
+      "get": {
+        "description": "Last night (or `night`, YYYY-MM-DD): targets shot, what was kept, what each master gained.",
+        "operationId": "get_morning_api_morning_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "night",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Night"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Morning Api Morning Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Morning"
       }
     },
     "/api/nodes": {

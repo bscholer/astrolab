@@ -565,6 +565,46 @@ export interface Project {
   // to template_version when the project is on the latest; greater when
   // a template bump is available to upgrade into.
   latest_template_version?: number;
+  // Set when the server keeps this project up to date as a target master.
+  master?: { key: string; target_id: number; recipe: string | null } | null;
+}
+
+export interface PreviewRef {
+  hash: string;
+  port: string;
+}
+
+export interface MorningMasterUpdate {
+  project_id: string;
+  name: string;
+  seq: number;
+  label: string | null;
+  status: string;
+  after: PreviewRef | null;
+  before: PreviewRef | null;
+  before_seq: number | null;
+  added_s: number;
+  total_s: number;
+  noise_drop: number | null;
+}
+
+export interface MorningTarget {
+  target_id: number | null;
+  name: string;
+  sessions: number[];
+  started_at: string;
+  frames: number;
+  kept_s: number;
+  scrap_s: number;
+  judging_s: number;
+  state: 'updated' | 'judging' | 'queued' | 'kept' | 'scrap';
+  masters: MorningMasterUpdate[];
+}
+
+export interface MorningResponse {
+  night: string | null;
+  nights: string[];
+  targets: MorningTarget[];
 }
 
 export type UpgradeTemplateResponse = Project & {
@@ -962,6 +1002,8 @@ export const api = {
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
   listProjects: () => getJSON<Project[]>('/api/projects'),
+  getMorning: (night?: string) =>
+    getJSON<MorningResponse>(`/api/morning${night ? `?night=${encodeURIComponent(night)}` : ''}`),
   getProject: (id: string) => getJSON<Project>(`/api/projects/${id}`),
   createProjectFromSession: (req: CreateProjectFromSessionRequest) =>
     postJSON<Project>('/api/projects/from_session', req),
