@@ -155,6 +155,30 @@
     return named ?? (entries[0] ?? null);
   });
 
+  // The picture at the top of the page: this job's render, or the last good
+  // one while a new render is on its way.
+  const resultSrc = $derived(
+    finalOutput
+      ? api.previewUrl(finalOutput[1].node_hash, finalOutput[0])
+      : project?.preview_hash && project?.preview_port
+        ? api.previewUrl(project.preview_hash, project.preview_port)
+        : null
+  );
+  const rendering = $derived(
+    patchQueue.patching ||
+      subscription.activeJob?.status === 'running' ||
+      subscription.activeJob?.status === 'queued'
+  );
+
+  // The full pipeline is the Workshop: folded away unless you opened it last time.
+  const WORKSHOP_KEY = 'astrolab.project.workshop_open';
+  let workshopOpen = $state(
+    typeof localStorage !== 'undefined' && localStorage.getItem(WORKSHOP_KEY) === '1'
+  );
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(WORKSHOP_KEY, workshopOpen ? '1' : '0');
+  });
+
   const undoDisabled = $derived(
     !project || !project.history.some((h) => h.seq === (project!.current_seq - 1))
   );
@@ -879,13 +903,10 @@
   {#if project === null}
     <p class="muted">Loading...</p>
   {:else}
-    {#if project.master}
-      <p class="master-line small">
-        <span class="master-badge">Target master</span>
-        <span class="muted">Every kept night of this target joins automatically once the night is over. Your finishing edits carry over.</span>
-      </p>
-    {/if}
     <p class="capture-line muted small">
+      {#if project.master}
+        <span class="master-badge" title="Every kept night of this target joins automatically once the night is over. Your finishing edits carry over.">Target master</span>
+      {/if}
       {#if subscription.activeJob?.capture?.frame_count}
         <span>{subscription.activeJob.capture.frame_count} frame{subscription.activeJob.capture.frame_count === 1 ? '' : 's'}</span>
       {/if}
@@ -915,7 +936,114 @@
       {/if}
     </p>
 
+    <div class="bench">
+      <div class="bench-result">
+        {#if resultSrc}
+          <a class="result-frame" class:rendering href={resultSrc} target="_blank" rel="noopener" title="Open the current render">
+            <img src={resultSrc} alt="Current render of {project.name}" />
+            {#if rendering}<span class="result-badge">rendering…</span>{/if}
+          </a>
+        {:else}
+          <div class="result-frame empty">{rendering ? 'rendering…' : 'no render yet'}</div>
+        {/if}
+        <HistoryStrip
+          {project}
+          compareA={compare.compareA}
+          compareB={compare.compareB}
+          compareLoading={compare.compareLoading}
+          {publishBusy}
+          onRevert={revertTo}
+          onToggleCompareSlot={compare.toggleCompareSlot}
+          onTogglePublished={togglePublished}
+          onOpenCompare={() => { compare.compareOpen = true; }}
+          onClearCompare={compare.clear}
+        />
+      </div>
+      <div class="bench-side">
+        <QuickSliders {project} disabled={patchQueue.patching} onNodeOverrideChange={handleNodeOverrideChange} />
+        {#if project.master && advice}
+          <MoreData row={advice} onUpdated={(r) => (advice = r)} />
+        {/if}
+      </div>
+    </div>
+    <div class="history-mobile">
+      <HistoryStrip
+        {project}
+        compareA={compare.compareA}
+        compareB={compare.compareB}
+        compareLoading={compare.compareLoading}
+        {publishBusy}
+        onRevert={revertTo}
+        onToggleCompareSlot={compare.toggleCompareSlot}
+        onTogglePublished={togglePublished}
+        onOpenCompare={() => { compare.compareOpen = true; }}
+        onClearCompare={compare.clear}
+      />
+    </div>
+    {#if schema && project}
+      {@const isCover = project.cover_seq === project.current_seq}
+      {#snippet pipelineRow(nschema: TemplateSchema['nodes'][number])}
+        {@const nid = nschema.node_id}
+        {@const upstream = upstreamHashFor(nid)}
+        <PipelineRow
+          {nschema}
+          project={project!}
+          status={pipeline.nodeStatus[nid] ?? 'pending'}
+          progress={pipeline.nodeProgress[nid]}
+          hash={pipeline.nodeHash[nid]}
+          port={pipeline.nodePort[nid] ?? 'image'}
+          kind={pipeline.nodeKind[nid] ?? nschema.kind ?? nid}
+          warnings={pipeline.nodeWarnings[nid] ?? []}
+          previewLoaded={pipeline.previewLoaded[nid] ?? false}
+          isOutput={nid === outputNodeId}
+          isExpanded={expandedNodes.has(nid)}
+          upstreamHash={upstream.hash}
+          upstreamPort={upstream.port}
+          durationMs={pipeline.nodeDurationMs[nid]}
+          {isCover}
+          {coverBusy}
+          onToggle={() => toggleNode(nid)}
+          onPreviewLoad={() => pipeline.onPreviewLoad(nid)}
+          onPreviewError={() => pipeline.onPreviewError(nid)}
+          onNodeOverrideChange={handleNodeOverrideChange}
+          onToggleEnabled={toggleNodeEnabled}
+          onToggleCover={toggleCover}
+          finalOutputPort={nid === outputNodeId && finalOutput ? finalOutput[0] : undefined}
+          finalOutputRef={nid === outputNodeId && finalOutput ? finalOutput[1] : undefined}
+          jobQuality={nid === outputNodeId ? (subscription.activeJob?.quality ?? null) : null}
+        />
+      {/snippet}
+      <details class="workshop" bind:open={workshopOpen}>
+        <summary class="section-h">Workshop <span class="muted">every step of the pipeline, {schema.nodes.length} steps</span></summary>
+      <section class="nodes">
+        {#if prepNodes.length > 0}
+          <ol class="node-prep-strip" aria-label="Prep steps">
+            {#each prepNodes as nschema (nschema.node_id)}
+              {@render pipelineRow(nschema)}
+            {/each}
+          </ol>
+        {/if}
+        {#if mainNodes.length > 0}
+          <ol class="node-list">
+            {#each mainNodes as nschema (nschema.node_id)}
+              {@render pipelineRow(nschema)}
+            {/each}
+          </ol>
+        {/if}
+      </section>
+      </details>
+    {/if}
+
+    {#if subscription.activeJob?.error}
+      <section class="error-box">
+        <h2 class="section-h">Error</h2>
+        <pre>{subscription.activeJob.error}</pre>
+      </section>
+    {/if}
+
     {@const sessionCount = project.source_session_ids.length}
+    <details class="details-block">
+      <summary class="section-h">Notes and sessions <span class="muted">{sessionCount} session{sessionCount === 1 ? '' : 's'}{project.description ? ' · has notes' : ''}</span></summary>
     <div class="notes-sources">
       <!-- Notes card: same border/header chrome as the Sessions used
            card so the two columns line up on wide viewports. The
@@ -1012,99 +1140,7 @@
     </details>
     </div>
 
-    {#if project?.master && advice}
-      <MoreData row={advice} onUpdated={(r) => (advice = r)} />
-    {/if}
-
-    {#if project}
-      <QuickSliders
-        {project}
-        disabled={patchQueue.patching}
-        resultSrc={finalOutput
-          ? api.previewUrl(finalOutput[1].node_hash, finalOutput[0])
-          : project.preview_hash && project.preview_port
-            ? api.previewUrl(project.preview_hash, project.preview_port)
-            : null}
-        rendering={patchQueue.patching ||
-          subscription.activeJob?.status === 'running' ||
-          subscription.activeJob?.status === 'queued'}
-        onNodeOverrideChange={handleNodeOverrideChange}
-      />
-    {/if}
-
-    {#if schema && project}
-      {@const isCover = project.cover_seq === project.current_seq}
-      {#snippet pipelineRow(nschema: TemplateSchema['nodes'][number])}
-        {@const nid = nschema.node_id}
-        {@const upstream = upstreamHashFor(nid)}
-        <PipelineRow
-          {nschema}
-          project={project!}
-          status={pipeline.nodeStatus[nid] ?? 'pending'}
-          progress={pipeline.nodeProgress[nid]}
-          hash={pipeline.nodeHash[nid]}
-          port={pipeline.nodePort[nid] ?? 'image'}
-          kind={pipeline.nodeKind[nid] ?? nschema.kind ?? nid}
-          warnings={pipeline.nodeWarnings[nid] ?? []}
-          previewLoaded={pipeline.previewLoaded[nid] ?? false}
-          isOutput={nid === outputNodeId}
-          isExpanded={expandedNodes.has(nid)}
-          upstreamHash={upstream.hash}
-          upstreamPort={upstream.port}
-          durationMs={pipeline.nodeDurationMs[nid]}
-          {isCover}
-          {coverBusy}
-          onToggle={() => toggleNode(nid)}
-          onPreviewLoad={() => pipeline.onPreviewLoad(nid)}
-          onPreviewError={() => pipeline.onPreviewError(nid)}
-          onNodeOverrideChange={handleNodeOverrideChange}
-          onToggleEnabled={toggleNodeEnabled}
-          onToggleCover={toggleCover}
-          finalOutputPort={nid === outputNodeId && finalOutput ? finalOutput[0] : undefined}
-          finalOutputRef={nid === outputNodeId && finalOutput ? finalOutput[1] : undefined}
-          jobQuality={nid === outputNodeId ? (subscription.activeJob?.quality ?? null) : null}
-        />
-      {/snippet}
-      <section class="nodes">
-        <h2 class="section-h">Pipeline</h2>
-        {#if prepNodes.length > 0}
-          <ol class="node-prep-strip" aria-label="Prep steps">
-            {#each prepNodes as nschema (nschema.node_id)}
-              {@render pipelineRow(nschema)}
-            {/each}
-          </ol>
-        {/if}
-        {#if mainNodes.length > 0}
-          <ol class="node-list">
-            {#each mainNodes as nschema (nschema.node_id)}
-              {@render pipelineRow(nschema)}
-            {/each}
-          </ol>
-        {/if}
-      </section>
-    {/if}
-
-    {#if subscription.activeJob?.error}
-      <section class="error-box">
-        <h2 class="section-h">Error</h2>
-        <pre>{subscription.activeJob.error}</pre>
-      </section>
-    {/if}
-
-    {#if project}
-      <HistoryStrip
-        {project}
-        compareA={compare.compareA}
-        compareB={compare.compareB}
-        compareLoading={compare.compareLoading}
-        {publishBusy}
-        onRevert={revertTo}
-        onToggleCompareSlot={compare.toggleCompareSlot}
-        onTogglePublished={togglePublished}
-        onOpenCompare={() => { compare.compareOpen = true; }}
-        onClearCompare={compare.clear}
-      />
-    {/if}
+    </details>
   {/if}
 </div>
 
@@ -1354,6 +1390,141 @@
     padding: 0.05rem 0.55rem;
     font-weight: 600;
     font-size: 0.75rem;
+  }
+  .bench {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+    gap: 1.25rem;
+    align-items: start;
+    margin: 0.75rem 0 1.5rem;
+  }
+  .bench-result {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .result-frame {
+    position: relative;
+    display: block;
+    border-radius: var(--radius-card, 12px);
+    overflow: hidden;
+    background: #000;
+    border: 1px solid var(--border);
+  }
+  .result-frame img {
+    display: block;
+    width: 100%;
+    max-height: 72vh;
+    object-fit: contain;
+  }
+  .result-frame.rendering img {
+    opacity: 0.6;
+  }
+  .result-frame.empty {
+    aspect-ratio: 3 / 2;
+    display: grid;
+    place-items: center;
+    color: var(--fg-mute);
+  }
+  .result-badge {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    font-size: 0.75rem;
+    padding: 0.1rem 0.55rem;
+    border-radius: 999px;
+    background: var(--bg-elev);
+    color: var(--fg-mute);
+    border: 1px solid var(--border);
+  }
+  .bench-side {
+    min-width: 0;
+    position: sticky;
+    top: 0.75rem;
+    max-height: calc(100vh - 1.5rem);
+    overflow-y: auto;
+  }
+  .bench-side :global(.quick),
+  .bench-side :global(.more) {
+    margin-top: 0;
+  }
+  /* Quick and More data are components with their own big h2; in the side
+     column they read as section labels like History and Workshop. */
+  .bench-side :global(h2) {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-mute);
+    margin: 0 0 0.5rem;
+  }
+  .workshop,
+  .details-block {
+    margin: 1rem 0;
+    border-top: 1px solid var(--border);
+    padding-top: 0.75rem;
+  }
+  .workshop > summary,
+  .details-block > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .workshop > summary::-webkit-details-marker,
+  .details-block > summary::-webkit-details-marker {
+    display: none;
+  }
+  .workshop > summary::before,
+  .details-block > summary::before {
+    content: '▸';
+    color: var(--fg-mute);
+    transition: transform 120ms;
+  }
+  .workshop[open] > summary::before,
+  .details-block[open] > summary::before {
+    transform: rotate(90deg);
+  }
+  .workshop > summary .muted,
+  .details-block > summary .muted {
+    font-size: 0.8rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  @media (max-width: 900px) {
+    .bench {
+      grid-template-columns: 1fr;
+    }
+    .bench-side {
+      position: static;
+      max-height: none;
+      overflow: visible;
+    }
+  }
+  @media (max-width: 700px) {
+    /* Phones: the picture stays in view while you work the sliders. */
+    .bench-result {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: var(--bg);
+      padding-bottom: 0.4rem;
+    }
+    .result-frame img {
+      max-height: 36vh;
+    }
+    .bench-result > :global(:not(.result-frame)) {
+      display: none;
+    }
+    .history-mobile {
+      display: block;
+    }
+  }
+  .history-mobile {
+    display: none;
   }
   .capture-line {
     display: flex;
@@ -1780,6 +1951,12 @@
 
   /* On narrow viewports tighten header button padding and the gap so
      the title + undo/redo + Reprocess all fit on one line. */
+  @media (max-width: 700px) {
+    /* The title gets its own row; version, undo/redo and the actions wrap below. */
+    .title-block {
+      flex: 1 1 100%;
+    }
+  }
   @media (max-width: 480px) {
     .header {
       gap: 0.4rem;
