@@ -5062,8 +5062,20 @@
     },
     "/api/target-masters/advice": {
       "get": {
-        "description": "Every target master with its noise and what more hours would buy, best gains first.",
+        "description": "Every target master with its noise and what more hours would buy, best gains first.\n\nneeds_time: only masters worth more time that don't already have an hour\nor more planned in the scheduler (Tonight's list).",
         "operationId": "get_master_advice_api_target_masters_advice_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "needs_time",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Needs Time",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5079,6 +5091,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Master Advice"

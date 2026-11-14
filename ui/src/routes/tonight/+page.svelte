@@ -12,8 +12,8 @@
   // Masters that gain the most from more time (server/capture_loop.py).
   let worth = $state<MasterAdviceRow[]>([]);
   onMount(() => {
-    api.getMasterAdvice().then(
-      (rows) => (worth = rows.filter((r) => r.advice.verdict !== 'diminishing').slice(0, 4)),
+    api.getMasterAdvice(true).then(
+      (rows) => (worth = rows.slice(0, 4)),
       () => (worth = [])
     );
   });

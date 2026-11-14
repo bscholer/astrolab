@@ -49,8 +49,11 @@
   <div class="plan">
     {#if row.plan}
       {`In the scheduler: ${hrs(row.plan.shot_hours)} shot` +
-        (row.plan.goal_hours ? ` of a ${row.plan.goal_hours} h goal` : '') +
-        (row.plan.goal_hours && row.plan.shot_hours >= row.plan.goal_hours ? ', goal reached' : '')}
+        (row.plan.goal_hours ? ` of a ${row.plan.goal_hours} h goal` : ', no goal set') +
+        (row.plan.remaining_hours === 0 ? ', goal reached' : '')}
+      {#if row.plan.remaining_hours && row.plan.remaining_noise_drop}
+        <br /><b class="planned">Already planned: {hrs(row.plan.remaining_hours)} more, noise −{pct(row.plan.remaining_noise_drop)} when done.</b>
+      {/if}
     {:else}
       Not in the scheduler's targets; adding time puts it there.
     {/if}
@@ -80,6 +83,10 @@
   }
   [data-verdict='diminishing'] b {
     color: var(--fg-mute);
+  }
+  .planned {
+    color: var(--fg);
+    font-weight: 500;
   }
   .opts {
     display: flex;

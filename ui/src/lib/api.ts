@@ -590,7 +590,13 @@ export interface MasterAdviceRow {
   common_name: string | null;
   filter: string | null;
   advice: MasterAdvice;
-  plan: { name: string; goal_hours: number | null; shot_hours: number } | null;
+  plan: {
+    name: string;
+    goal_hours: number | null;
+    shot_hours: number;
+    remaining_hours: number | null;
+    remaining_noise_drop: number | null;
+  } | null;
 }
 
 export interface MorningMasterUpdate {
@@ -1040,7 +1046,8 @@ export const api = {
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
   listProjects: () => getJSON<Project[]>('/api/projects'),
-  getMasterAdvice: () => getJSON<MasterAdviceRow[]>('/api/target-masters/advice'),
+  getMasterAdvice: (needsTime = false) =>
+    getJSON<MasterAdviceRow[]>(`/api/target-masters/advice${needsTime ? '?needs_time=true' : ''}`),
   queueMoreData: (projectId: string, hours: number) =>
     postJSON<{ target: Record<string, unknown>; advice: MasterAdviceRow }>(
       `/api/target-masters/${projectId}/more`, { hours }),

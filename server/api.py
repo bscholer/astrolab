@@ -63,7 +63,7 @@ import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
 from server import scope_plan, sky_thumbs, telemetry, weather
-from server.capture_loop import advise, measure_cached, queue_more
+from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
 from server.catalog.db import default_db_path, keep_open, open_db
@@ -3508,14 +3508,22 @@ def _master_advice(conn: sqlite3.Connection, project) -> dict | None:
         "common_name": (entry.common_name if entry else None) or lookup_common_name(name),
         "filter": info["key"].split("|")[3] or None,
         "advice": advise(total_s, quality).as_dict(),
-        "plan": (
-            {
-                "name": in_plan["name"],
-                "goal_hours": in_plan.get("goal_hours"),
-                "shot_hours": shot.get(in_plan["name"], 0.0) / 3600,
-            }
-            if in_plan
-            else None
+        "plan": _plan_status(in_plan, shot, total_s) if in_plan else None,
+    }
+
+
+def _plan_status(target: dict, shot: dict, total_s: float) -> dict:
+    """Where a master's target stands in the scheduler, and what the rest of its goal buys."""
+    shot_h = shot.get(target["name"], 0.0) / 3600
+    goal = target.get("goal_hours")
+    remaining_h = max(0.0, goal - shot_h) if goal else None
+    return {
+        "name": target["name"],
+        "goal_hours": goal,
+        "shot_hours": shot_h,
+        "remaining_hours": remaining_h,
+        "remaining_noise_drop": (
+            noise_drop(total_s, remaining_h * 3600) if remaining_h else None
         ),
     }
 
@@ -3542,14 +3550,22 @@ def export_project(project_id: str, kind: Literal["image", "stacked"] = "image")
 
 
 @app.get("/api/target-masters/advice")
-def get_master_advice(conn: DBDep) -> list[dict]:
-    """Every target master with its noise and what more hours would buy, best gains first."""
+def get_master_advice(conn: DBDep, needs_time: bool = False) -> list[dict]:
+    """Every target master with its noise and what more hours would buy, best gains first.
+
+    needs_time: only masters worth more time that don't already have an hour
+    or more planned in the scheduler (Tonight's list).
+    """
     out = []
     for project in project_manager.list():
         a = _master_advice(conn, project)
         if a is not None:
             out.append(a)
     out.sort(key=lambda a: -a["advice"]["options"][1]["noise_drop"])
+    if needs_time:
+        # Already planned for a good while (no goal counts as open-ended):
+        # suggesting more would only repeat the plan.
+        out = [a for a in out if needs_more_time(a["advice"]["verdict"], a["plan"])]
     return out
 
 

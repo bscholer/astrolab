@@ -137,6 +137,24 @@ def advise(total_s: float, quality: Quality | None) -> Advice:
     return Advice(hours, snr, options, verdict, headline, third_h)
 
 
+PLANNED_ENOUGH_H = 1.0
+"""A target with at least this much of its scheduler goal left is already covered."""
+
+
+def needs_more_time(verdict: str, plan: dict | None) -> bool:
+    """Worth suggesting more time: not diminishing, and not already planned.
+
+    A target in the scheduler with no goal is open-ended, so it is covered;
+    one with an hour or more of its goal left is too.
+    """
+    if verdict == "diminishing":
+        return False
+    if plan is None:
+        return True
+    remaining = plan.get("remaining_hours")
+    return remaining is not None and remaining < PLANNED_ENOUGH_H
+
+
 SCOPE_FILTERS = {"HAOIII": "duo", "DUO": "duo", "ASTRO": "astro", "VIS": "vis"}
 
 

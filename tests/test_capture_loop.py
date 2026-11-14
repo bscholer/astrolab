@@ -57,3 +57,14 @@ def test_queue_more_raises_or_adds() -> None:
     with pytest.raises(ValueError):
         queue_more([], {}, name="Nowhere", more_h=1, ra_deg=None, dec_deg=None,
                    object_type=None, filter_name=None, exposure_s=30, common_name=None)
+
+
+def test_only_targets_not_already_planned_need_more_time() -> None:
+    from server.capture_loop import needs_more_time
+
+    assert needs_more_time("worth_it", None)  # not in the scheduler
+    assert not needs_more_time("worth_it", {"remaining_hours": 4.8})  # IC 1396: 12 min of 5 h
+    assert needs_more_time("worth_it", {"remaining_hours": 0.3})  # nearly done
+    assert needs_more_time("slowing", {"remaining_hours": 0.0})  # goal reached
+    assert not needs_more_time("worth_it", {"remaining_hours": None})  # no goal: open-ended
+    assert not needs_more_time("diminishing", None)
