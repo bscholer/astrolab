@@ -48,8 +48,9 @@
   </div>
   <div class="plan">
     {#if row.plan}
-      In the scheduler: {hrs(row.plan.shot_hours)} shot{#if row.plan.goal_hours} of a {row.plan.goal_hours} h goal{/if}
-      {#if row.plan.goal_hours && row.plan.shot_hours >= row.plan.goal_hours} (goal reached){/if}
+      {`In the scheduler: ${hrs(row.plan.shot_hours)} shot` +
+        (row.plan.goal_hours ? ` of a ${row.plan.goal_hours} h goal` : '') +
+        (row.plan.goal_hours && row.plan.shot_hours >= row.plan.goal_hours ? ', goal reached' : '')}
     {:else}
       Not in the scheduler's targets; adding time puts it there.
     {/if}
