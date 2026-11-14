@@ -213,5 +213,13 @@ def test_morning(tmp_path: Path) -> None:
         assert u["noise_drop"] == pytest.approx(1 - 0.5 ** 0.5)
         assert json.dumps(m)
 
+        # A later re-render of the master is what the card shows.
+        p = projects.get(pid)
+        p.history.append(Entry(2, f"{pid}-j2", "re-render"))
+        job(f"{pid}-j2", "after")
+        [u] = morning(db, projects.get, jobs.get)["targets"][0]["masters"]
+        assert u["status"] == "completed" and u["after"] == {"hash": "after", "port": "image"}
+        assert u["before"] == {"hash": "before", "port": "image"}
+
         # An earlier night can be asked for by date.
         assert morning(db, projects.get, jobs.get, "2026-11-12")["targets"][0]["state"] == "updated"

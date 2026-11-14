@@ -40,7 +40,12 @@ def _master_update(
         added = {int(s) for s in (entry.snapshot or {}).get("added", [])}
         if not added & session_ids:
             continue
-        record = get_job(entry.job_id)
+        # The newest render since the night joined: later edits and re-renders
+        # count, so the card shows the master as it is now.
+        record = get_job(history[-1].job_id)
+        after = _preview(record)
+        for later in reversed(history[i:]):
+            after = after or _preview(get_job(later.job_id))
         before = None
         for prev in reversed(history[:i]):
             before = _preview(get_job(prev.job_id))
@@ -58,7 +63,7 @@ def _master_update(
             "seq": entry.seq,
             "label": entry.label,
             "status": record.status if record else "unknown",
-            "after": _preview(record),
+            "after": after,
             "before": before,
             "before_seq": history[i - 1].seq if i > 0 else None,
             "recipe": snap.get("recipe"),
