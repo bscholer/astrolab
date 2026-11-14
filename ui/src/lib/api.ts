@@ -583,6 +583,7 @@ export interface MorningMasterUpdate {
   after: PreviewRef | null;
   before: PreviewRef | null;
   before_seq: number | null;
+  recipe: string | null;
   added_s: number;
   total_s: number;
   noise_drop: number | null;
@@ -591,6 +592,7 @@ export interface MorningMasterUpdate {
 export interface MorningTarget {
   target_id: number | null;
   name: string;
+  common_name: string | null;
   sessions: number[];
   started_at: string;
   frames: number;

@@ -84,6 +84,13 @@
     };
   });
 
+  const RECIPES: Record<string, string> = {
+    nebula: 'nebula',
+    'nebula-duo': 'duo-band nebula',
+    galaxy: 'galaxy',
+    stars: 'star field',
+  };
+
   function pct(x: number): string {
     return `${Math.round(x * 100)}%`;
   }
@@ -105,7 +112,8 @@
     <ul>
       {#each data.targets as t (t.target_id ?? t.name)}
         {@const m = t.masters[0]}
-        <li class:scrap={t.state === 'scrap'}>
+        <li class:scrap={t.state === 'scrap'} class:compact={!m && t.state !== 'judging'}>
+          {#if m || t.state === 'judging'}
           <div class="pic">
             {#if m?.after && m?.before}
               <CompareSlider
@@ -121,12 +129,14 @@
               <img class="stale" src={api.previewUrl(m.before.hash, m.before.port)} alt="{t.name} before this night" loading="lazy" />
               <span class="overlay">{m.status === 'failed' ? 'failed' : 'stacking…'}</span>
             {:else}
-              <div class="empty">{t.state === 'scrap' ? 'scrap' : m ? 'stacking…' : 'no master yet'}</div>
+              <div class="empty">{m ? 'stacking…' : 'judging…'}</div>
             {/if}
           </div>
+          {/if}
           <div class="info">
             <div class="name">
-              {#if m}<a href="/projects/{m.project_id}">{t.name}</a>{:else}{t.name}{/if}
+              {#if m}<a href="/projects/{m.project_id}">{t.common_name ?? t.name}</a>{:else}{t.common_name ?? t.name}{/if}
+              {#if t.common_name}<span class="canon">{t.name}</span>{/if}
               <span class="state" data-state={m ? (m.status === 'completed' ? 'done' : m.status) : t.state}>{stateText(t, m)}</span>
             </div>
             <div class="facts">
@@ -137,7 +147,7 @@
             </div>
             {#if m}
               <div class="gain">
-                <b>{m.label}</b>
+                <b>{m.before_seq === null ? `New master${m.recipe ? `, ${RECIPES[m.recipe] ?? m.recipe} recipe` : ''}` : m.label}</b>
                 <span>master now {formatIntegrationTime(m.total_s)}</span>
                 {#if m.noise_drop}<span title="Expected from integration time: noise falls with its square root">noise −{pct(m.noise_drop)}</span>{/if}
               </div>
@@ -182,6 +192,9 @@
     cursor: pointer;
     font-size: 1rem;
     line-height: 1;
+    display: grid;
+    place-items: center;
+    padding: 0 0 2px;
   }
   .nav:disabled {
     opacity: 0.35;
@@ -199,7 +212,7 @@
   }
   li {
     display: grid;
-    grid-template-columns: minmax(180px, 320px) 1fr;
+    grid-template-columns: minmax(180px, 280px) 1fr;
     gap: 1rem;
     padding: 0.7rem 0;
     border-top: 1px solid var(--border);
@@ -209,6 +222,16 @@
   }
   li.scrap {
     opacity: 0.6;
+  }
+  li.compact {
+    grid-template-columns: 1fr;
+    padding: 0.45rem 0;
+  }
+  .canon {
+    font-weight: 400;
+    font-size: 0.78rem;
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
   }
   @media (max-width: 640px) {
     li {

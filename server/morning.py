@@ -13,7 +13,14 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
+from server.catalog.common_names import lookup as lookup_common_name
+from server.catalog.openngc import enrich
 from server.curator import _sessions
+
+
+def _common_name(name: str | None) -> str | None:
+    entry = enrich(name)
+    return (entry.common_name if entry else None) or lookup_common_name(name)
 
 
 def _preview(record: Any) -> dict[str, str] | None:
@@ -54,6 +61,7 @@ def _master_update(
             "after": _preview(record),
             "before": before,
             "before_seq": history[i - 1].seq if i > 0 else None,
+            "recipe": snap.get("recipe"),
             "added_s": gained,
             "total_s": total,
             "noise_drop": noise,
@@ -122,6 +130,7 @@ def morning(
         targets.append({
             "target_id": tid,
             "name": names.get(tid, "Unknown target"),
+            "common_name": _common_name(names.get(tid)),
             "sessions": sorted(ids),
             "started_at": min((started.get(i) or "" for i in ids), default=""),
             "frames": frames_n,
