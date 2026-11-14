@@ -3020,44 +3020,24 @@
     },
     "/api/masters": {
       "get": {
-        "description": "Target masters: what the keeper would do now (a dry run) and its last pass.",
-        "operationId": "get_masters_api_masters_get",
+        "operationId": "list_masters_api_masters_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Masters Api Masters Get",
-                  "type": "object"
+                  "items": {
+                    "$ref": "#/components/schemas/MasterRow"
+                  },
+                  "title": "Response List Masters Api Masters Get",
+                  "type": "array"
                 }
               }
             },
             "description": "Successful Response"
           }
         },
-        "summary": "Get Masters"
-      }
-    },
-    "/api/masters/run": {
-      "post": {
-        "description": "Create and extend target masters now instead of waiting for the next pass.",
-        "operationId": "run_masters_api_masters_run_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Run Masters Api Masters Run Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Run Masters"
+        "summary": "List Masters"
       }
     },
     "/api/morning": {
@@ -4989,6 +4969,48 @@
           }
         },
         "summary": "Get System"
+      }
+    },
+    "/api/target-masters": {
+      "get": {
+        "description": "Target masters: what the keeper would do now (a dry run) and its last pass.",
+        "operationId": "get_masters_api_target_masters_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Masters Api Target Masters Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Masters"
+      }
+    },
+    "/api/target-masters/run": {
+      "post": {
+        "description": "Create and extend target masters now instead of waiting for the next pass.",
+        "operationId": "run_masters_api_target_masters_run_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Masters Api Target Masters Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Masters"
       }
     },
     "/api/targets": {

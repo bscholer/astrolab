@@ -3418,7 +3418,7 @@ master_keeper = MasterKeeper(
 )
 
 
-@app.get("/api/masters")
+@app.get("/api/target-masters")
 def get_masters() -> dict:
     """Target masters: what the keeper would do now (a dry run) and its last pass."""
     return {
@@ -3430,7 +3430,7 @@ def get_masters() -> dict:
     }
 
 
-@app.post("/api/masters/run")
+@app.post("/api/target-masters/run")
 def run_masters() -> dict:
     """Create and extend target masters now instead of waiting for the next pass."""
     return master_keeper.run()
