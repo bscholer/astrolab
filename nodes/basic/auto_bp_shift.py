@@ -57,6 +57,14 @@ class AutoBpShiftParams(BaseModel):
             ),
         },
     )
+    neutral_sky: bool = Field(
+        default=True,
+        description="Shift each colour channel by its own black point so the sky "
+        "comes out the same level in all three. A faint target's signal sits a "
+        "few ten-thousandths above the black point, so a channel offset of "
+        "0.00002 turns into a strong colour cast after the stretch.",
+        json_schema_extra={"ui_section": "advanced"},
+    )
     clip_fraction: float = Field(
         default=0.01,
         ge=0.0,
@@ -79,7 +87,7 @@ class AutoBpShiftParams(BaseModel):
 @register("auto_bp_shift")
 class AutoBpShiftNode(Node[AutoBpShiftParams]):
     id = "auto_bp_shift"
-    version = 1
+    version = 2
     tier = "keep"
     uses_siril = True
 
@@ -106,6 +114,10 @@ class AutoBpShiftNode(Node[AutoBpShiftParams]):
             ctx.progress(0.5, "auto_bp_shift: disabled - passing through")
             shutil.copy(src, out_image)
             ctx.progress(1.0, "auto_bp_shift: wrote pass-through")
+            return {"image": image_ref(out_image)}
+
+        if params.neutral_sky and _neutral_shift(src, out_image, params.clip_fraction, ctx):
+            ctx.progress(1.0, "auto_bp_shift: wrote neutral-sky shift")
             return {"image": image_ref(out_image)}
 
         bp = _compute_bp(src, params.clip_fraction)
@@ -174,3 +186,60 @@ def _compute_bp(src: Path, clip_fraction: float) -> float:
     if bp >= 1.0:
         bp = 0.999999
     return bp
+
+
+SKY_PERCENTILE = 10
+
+
+def _sky(channel: np.ndarray, lit: np.ndarray, block: int = 8) -> float:
+    """A channel's sky level: a low percentile of 8x8 block medians.
+
+    Block medians cut the noise eightfold and erase stars, so the percentile
+    sits on the sky itself whether a nebula covers a tenth of the frame or
+    half of it; a percentile of raw pixels lands at a different point in
+    the noise depending on how much of the channel is nebula.
+    """
+    h, w = (channel.shape[0] // block) * block, (channel.shape[1] // block) * block
+    c = channel[:h, :w].reshape(h // block, block, w // block, block).swapaxes(1, 2)
+    m = lit[:h, :w].reshape(h // block, block, w // block, block).swapaxes(1, 2)
+    full = m.reshape(h // block, w // block, -1).all(axis=2)
+    meds = np.median(c.reshape(h // block, w // block, -1), axis=2)[full]
+    return float(np.percentile(meds, SKY_PERCENTILE)) if meds.size else 0.0
+
+
+def _neutral_shift(src: Path, out_image: Path, clip_fraction: float, ctx: RunContext) -> bool:
+    """Per-channel black point that leaves the sky equal in every channel.
+
+    The shared black point is the `clip_fraction` quantile of all pixels, as
+    in the plain path; each channel then moves by how far its own sky
+    (see _sky) sits from the mean sky, so the sky lands at the same level
+    everywhere. Zero pixels (registration
+    border) stay zero. Returns False for data this doesn't apply to (mono,
+    or not float in [0, 1]), and the caller takes the Siril path.
+    """
+    with fits.open(src, memmap=False) as hdul:
+        data, header = hdul[0].data, hdul[0].header.copy()
+    if data is None or data.ndim != 3 or data.shape[0] != 3:
+        return False
+    data = data.astype(np.float32)
+    if float(np.nanmax(data)) > 1.01:
+        return False
+    lit = (data != 0).any(axis=0)
+    if not lit.any():
+        return False
+    sample = data[:, lit][:, ::7]
+    bp = float(np.quantile(sample, clip_fraction))
+    sky = np.array([_sky(data[c], lit) for c in range(3)])
+    bps = np.clip(bp + (sky - sky.mean()), 0.0, 0.999999)
+    out = np.empty_like(data)
+    for c in range(3):
+        out[c] = np.clip((data[c] - bps[c]) / (1.0 - bps[c]), 0.0, 1.0)
+    out[:, ~lit] = 0.0
+    ctx.progress(
+        0.6,
+        f"auto_bp_shift: black points R {bps[0]:.5f} G {bps[1]:.5f} B {bps[2]:.5f}"
+        " (sky made neutral)",
+    )
+    fits.PrimaryHDU(out, header=header).writeto(out_image, overwrite=True)
+    return True
+

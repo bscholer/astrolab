@@ -331,3 +331,30 @@ def test_combine_trims_to_the_well_covered_area(tmp_path: Path) -> None:
     assert 0.4 < kept < 0.6
     assert (out[:, :320] == 0).all() and (out[:, -320:] == 0).all()  # bands blanked
     assert (out[448:576, 704:832] != 0).all()  # the bright core stays
+
+
+def test_black_point_leaves_the_sky_neutral(tmp_path: Path) -> None:
+    import logging
+
+    import numpy as np
+    from astropy.io import fits
+
+    from nodes.basic.auto_bp_shift import _neutral_shift
+    from server.models import RunContext
+
+    rng = np.random.default_rng(4)
+    # California-like: a pedestal of 0.014, the nebula 0.0003 above it, and
+    # green/blue skies 0.00003 brighter than red.
+    rgb = 0.014 + rng.normal(0, 0.00002, (3, 300, 400)).astype(np.float32)
+    rgb[1:] += 0.00003
+    rgb[0, :, 200:] += 0.0003
+    rgb[:, :, :8] = 0.0  # registration border
+    src, out = tmp_path / "in.fit", tmp_path / "out.fit"
+    fits.PrimaryHDU(rgb).writeto(src)
+    ctx = RunContext(tmpdir=tmp_path, progress=lambda f, m: None, log=logging.getLogger("t"))
+    assert _neutral_shift(src, out, 0.01, ctx)
+    o = fits.getdata(out)
+    sky = [np.percentile(o[c][:, 8:200], 50) for c in range(3)]
+    assert max(sky) - min(sky) < 0.1 * max(sky)  # equal skies, not 2x apart
+    assert o[0][:, 200:].mean() > 5 * o[1][:, 200:].mean()  # the nebula is still red
+    assert (o[:, :, :8] == 0).all()

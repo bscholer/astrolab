@@ -60,12 +60,15 @@ class ChannelMapParams(BaseModel):
 
 
 def _spread(c: np.ndarray) -> tuple[float, float]:
+    """(sky, signal above sky). Sky is a low percentile, not the median: when a
+    nebula fills half the frame its light lifts the median, and matching
+    medians would leave the two channels' skies apart."""
     sample = c[::4, ::4]
     sample = sample[np.isfinite(sample) & (sample > 0)]
     if sample.size == 0:
         return 0.0, 0.0
-    med = float(np.median(sample))
-    return med, float(np.percentile(sample, 99.5)) - med
+    sky = float(np.percentile(sample, 20))
+    return sky, float(np.percentile(sample, 99.5)) - sky
 
 
 def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
@@ -83,7 +86,7 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
 @register("channel_map")
 class ChannelMapNode(Node[ChannelMapParams]):
     id = "channel_map"
-    version = 1
+    version = 2
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
