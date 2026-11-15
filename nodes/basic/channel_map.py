@@ -7,7 +7,7 @@ Through a duo-band (H-alpha + OIII) filter, a colour camera records
 H-alpha in red and OIII in green and blue. 'hoo' maps red to H-alpha and
 green and blue to OIII, the classic teal-and-red look. OIII is usually much
 fainter, so it is scaled to H-alpha's spread (99.5th percentile above the
-median) times `oiii_strength`; boosting it to full strength also boosts
+sky, stars erased) times `oiii_strength`; boosting it to full strength also boosts
 its noise, so short integrations look cleaner below 1.
 
 This is the cheap path on the finished stack. The narrowband template
@@ -60,15 +60,26 @@ class ChannelMapParams(BaseModel):
 
 
 def _spread(c: np.ndarray) -> tuple[float, float]:
-    """(sky, signal above sky). Sky is a low percentile, not the median: when a
-    nebula fills half the frame its light lifts the median, and matching
-    medians would leave the two channels' skies apart."""
-    sample = c[::4, ::4]
-    sample = sample[np.isfinite(sample) & (sample > 0)]
-    if sample.size == 0:
+    """(sky, nebula signal above sky), with stars erased.
+
+    Measured on an 8x8 block median, which removes stars and keeps extended
+    light. Stars are relatively bright in OIII (a wider band and more
+    pixels), so matching raw percentiles turned the nebula's OIII down: on
+    the Rosette the raw spreads gave OIII x0.66, the star-free ones x0.91.
+    Sky is a low percentile, not the median: when a nebula fills half the
+    frame its light lifts the median.
+    """
+    s = np.nan_to_num(c[::2, ::2])
+    h, w = (s.shape[0] // 8) * 8, (s.shape[1] // 8) * 8
+    if h == 0 or w == 0:
         return 0.0, 0.0
-    sky = float(np.percentile(sample, 20))
-    return sky, float(np.percentile(sample, 99.5)) - sky
+    blocks = s[:h, :w].reshape(h // 8, 8, w // 8, 8).swapaxes(1, 2).reshape(h // 8, w // 8, 64)
+    smooth = np.median(blocks, axis=2)
+    smooth = smooth[smooth > 0]
+    if smooth.size == 0:
+        return 0.0, 0.0
+    sky = float(np.percentile(smooth, 20))
+    return sky, float(np.percentile(smooth, 99.5)) - sky
 
 
 def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
@@ -86,7 +97,7 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
 @register("channel_map")
 class ChannelMapNode(Node[ChannelMapParams]):
     id = "channel_map"
-    version = 2
+    version = 3
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}

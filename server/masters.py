@@ -48,9 +48,10 @@ DUO_TEMPLATE_ID = "stack_per_night_duo"
 """Duo-band (H-alpha + OIII) masters split the channels before debayering;
 see templates/stack_per_night_duo.yaml for why."""
 TEMPLATE_IDS = (TEMPLATE_ID, DUO_TEMPLATE_ID)
-DUO_RESET_NODES = ("channel_map", "color_balance")
-"""Moving onto the duo template drops these edits so HOO comes on and SCNR
-green removal goes off, as that template sets them."""
+DUO_RESET_NODES = ("channel_map", "color_balance", "crop")
+"""Moving onto the duo template drops these edits: HOO comes on and SCNR
+green removal goes off, as that template sets them, and a crop box drawn on
+the old combined frame would point somewhere else on the new one."""
 NEW_WITHIN_DAYS = 45
 MIN_SESSION_S = 600.0
 """Sessions with less usable exposure stay out of masters: a few frames rarely

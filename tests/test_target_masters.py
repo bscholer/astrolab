@@ -330,7 +330,7 @@ def test_keeper_moves_duo_masters_to_the_split_template(tmp_path: Path) -> None:
     p.template = load_template("stack_per_night")  # made before the duo template existed
     keeper = MasterKeeper(db_path, projects, lambda: True)
     assert keeper.upgrade() == [pid]
-    assert switched == [(pid, "stack_per_night_duo", ("channel_map", "color_balance"))]
+    assert switched == [(pid, "stack_per_night_duo", ("channel_map", "color_balance", "crop"))]
     p.template = load_template("stack_per_night_duo")
     assert keeper.upgrade() == []
 
