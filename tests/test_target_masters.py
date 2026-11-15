@@ -406,8 +406,9 @@ def test_footprint_coverage_ignores_a_bright_nebula(tmp_path: Path) -> None:
     combined += rng.normal(0, 1, (h, w)).astype(np.float32) * np.sqrt(nebula) * 0.05
     fits.PrimaryHDU(combined).writeto(out)
 
-    cov = footprint_coverage(work, out)
+    cov, top = footprint_coverage(work, out)
     assert cov is not None
+    assert top == pytest.approx(1 / 3, abs=0.05)
     assert cov[:, -2].min() == pytest.approx(1.0)  # the nebula side is fully covered
     assert abs(cov[:, 1].max() - 1 / 3) < 0.05  # the left band has one night of three
 
@@ -415,3 +416,28 @@ def test_footprint_coverage_ignores_a_bright_nebula(tmp_path: Path) -> None:
     kept = fits.getdata(out)
     assert kept[250, 800] != 0  # the nebula survives the trim
     assert kept[250, 100] == 0  # the one-night band does not
+
+
+def test_trim_keeps_the_strongest_nights_footprint(tmp_path: Path) -> None:
+    """Two nights of similar weight framed apart: the trim must keep either
+    night's whole footprint, not just their overlap."""
+    import numpy as np
+    from astropy.io import fits
+
+    from nodes.basic.combine_stacks import footprint_coverage, mask_low_coverage
+
+    rng = np.random.default_rng(6)
+    h, w = 512, 1024
+    work = tmp_path / "w"
+    work.mkdir()
+    for i, (y0, y1) in enumerate(((0, 400), (112, 512)), start=1):
+        d = np.zeros((h, w), np.float32)
+        d[y0:y1] = 0.01 + rng.normal(0, 0.001, (y1 - y0, w)).astype(np.float32)
+        fits.PrimaryHDU(d).writeto(work / f"r_night_{i:05d}.fit")
+    out = tmp_path / "out.fit"
+    fits.PrimaryHDU(0.01 + rng.normal(0, 0.0007, (h, w)).astype(np.float32)).writeto(out)
+    cov, top = footprint_coverage(work, out)
+    assert top == pytest.approx(0.5, abs=0.05)
+    mask_low_coverage(out, min(0.7, 0.95 * top), cov)
+    kept = fits.getdata(out)
+    assert (kept[:, 500] != 0).mean() > 0.9  # nearly the full height survives

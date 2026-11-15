@@ -228,7 +228,7 @@ class StretchParams(BaseModel):
 @register("stretch")
 class StretchNode(Node[StretchParams]):
     id = "stretch"
-    version = 1
+    version = 2
     tier = "keep"
     uses_siril = True
     preview_display_ready = True
@@ -340,7 +340,11 @@ def auto_mtf(
     """
     lum = data.mean(axis=0) if data.ndim == 3 and data.shape[0] in (3, 4) else data
     lum = np.asarray(lum, dtype=np.float32)[::4, ::4]
-    finite = lum[np.isfinite(lum)]
+    # Empty canvas (zero) is not sky: a union of offset nights or a mosaic
+    # can be mostly empty, and counting it dragged the sky level down.
+    finite = lum[np.isfinite(lum) & (lum > 0)]
+    if finite.size == 0:
+        finite = lum[np.isfinite(lum)]
     sky = float(np.median(finite))
     noise = float(1.4826 * np.median(np.abs(finite - sky)))
     h, w = (lum.shape[0] // 8) * 8, (lum.shape[1] // 8) * 8

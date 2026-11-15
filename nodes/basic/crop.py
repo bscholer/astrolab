@@ -151,7 +151,7 @@ class CropParams(BaseModel):
 @register("crop")
 class CropNode(Node[CropParams]):
     id = "crop"
-    version = 3
+    version = 4
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
@@ -221,9 +221,10 @@ class CropNode(Node[CropParams]):
         else:
             # Auto-trim: compute bounding box of signal above threshold.
             ctx.progress(0.3, "crop: auto-detecting signal bbox")
+            # Only rows and columns with no data at all go: offset nights and
+            # mosaics leave partly covered edges, and those are real data the
+            # user frames (or not) themselves.
             x, y, w, h = _bbox_of_signal(data, params.threshold)
-            if w > 0 and h > 0:
-                x, y, w, h = _shrink_to_data(_signal_mask(data, params.threshold), x, y, w, h)
 
             if w <= 0 or h <= 0:
                 # Nothing above threshold — keep the original rather than emitting

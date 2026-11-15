@@ -46,13 +46,14 @@ class CombineStacksParams(BaseModel):
         json_schema_extra={"ui_section": "advanced"},
     )
     min_coverage: float = Field(
-        default=0.7,
+        default=0.0,
         ge=0.0,
         le=1.0,
-        description="Trim to the area that got at least this share of the "
-        "exposure, judged from local noise. Nights framed differently leave "
-        "bands only some of them cover; those are noisier and step in "
-        "brightness at each night's edge. 0 keeps everything.",
+        description="0 (default) keeps every night's whole area, the union: "
+        "you frame the picture yourself, and a mosaic and single-frame nights "
+        "combine onto one canvas. Above 0, trims to the area that got at least "
+        "this share of the exposure (never into the strongest night's own "
+        "footprint).",
         json_schema_extra={"hash_precision": 3, "ui_section": "advanced"},
     )
     framing: Literal["max", "min", "first"] = Field(
@@ -66,7 +67,7 @@ class CombineStacksParams(BaseModel):
 @register("combine_stacks")
 class CombineStacksNode(Node[CombineStacksParams]):
     id = "combine_stacks"
-    version = 3
+    version = 4
     tier = "keep"
     uses_siril = True
 
@@ -135,8 +136,12 @@ class CombineStacksNode(Node[CombineStacksParams]):
             raise RuntimeError("combine_stacks: could not align the stacks\n" + "\n".join(errors))
 
         if params.min_coverage > 0:
-            cov = footprint_coverage(work, out_image)
-            kept = mask_low_coverage(out_image, params.min_coverage, cov)
+            cov, top_share = footprint_coverage(work, out_image)
+            # Never trim into the strongest night's own footprint: two nights
+            # of similar weight framed a little apart each cover ~50%, and a
+            # 0.7 cut kept only their overlap (the Rosette lost its top).
+            threshold = min(params.min_coverage, 0.95 * top_share)
+            kept = mask_low_coverage(out_image, threshold, cov)
             ctx.progress(0.95, f"combine_stacks: {kept:.0%} of the frame is well covered")
         shutil.rmtree(work, ignore_errors=True)
         ctx.progress(1.0, f"combine_stacks: combined {len(images)} stacks")
@@ -199,7 +204,7 @@ def _sky_noise(lum: np.ndarray, lit: np.ndarray) -> float:
     return sigma or 1.0
 
 
-def footprint_coverage(work: Path, out_image: Path) -> np.ndarray | None:
+def footprint_coverage(work: Path, out_image: Path) -> tuple[np.ndarray | None, float]:
     """Coverage per block from where each registered night has data.
 
     Each night counts by its noise weight (1 / background variance, as the
@@ -207,20 +212,22 @@ def footprint_coverage(work: Path, out_image: Path) -> np.ndarray | None:
     each block. Unlike the noise map this is blind to the image itself:
     a bright narrowband nebula raises local noise and used to read as
     poorly covered, which trimmed the California Nebula out of its own
-    frame. None when the registered nights are not on the output canvas.
+    frame. Also returns the strongest night's share of the total weight
+    (1.0 when unknown). None when the nights are not on the output canvas.
     """
     with fits.open(out_image, memmap=False) as hdul:
         shape = hdul[0].data.shape[-2:]
     nights = sorted(work.glob("r_night_*.fit*"))
     if len(nights) < 2:
-        return None
+        return None, 1.0
     total = np.zeros(shape, np.float32)
     weights = 0.0
+    top = 0.0
     for p in nights:
         with fits.open(p, memmap=False) as hdul:
             d = hdul[0].data
         if d is None or d.shape[-2:] != shape:
-            return None
+            return None, 1.0
         lum = np.nan_to_num(d.mean(axis=0) if d.ndim == 3 else d).astype(np.float32)
         lit = lum != 0
         if not lit.any():
@@ -229,9 +236,10 @@ def footprint_coverage(work: Path, out_image: Path) -> np.ndarray | None:
         w = 1.0 / sigma**2
         total += w * lit
         weights += w
+        top = max(top, w)
     if weights == 0:
-        return None
-    return _block_mean(total / weights)
+        return None, 1.0
+    return _block_mean(total / weights), top / weights
 
 
 def mask_low_coverage(

@@ -288,8 +288,10 @@ def test_crop_auto_trim_default_params() -> None:
 
 
 def test_crop_node_version_bumped() -> None:
-    """Version 3: auto-trim also shrinks off zero-filled wedges."""
-    assert CropNode.version == 3
+    """Version 4: auto-trim drops only fully empty rows and columns again;
+    partly covered edges (offset nights, mosaics) are kept for the user to
+    frame. _shrink_to_data stays as a helper (tested below)."""
+    assert CropNode.version == 4
 
 
 # ---------------------------------------------------------------------------

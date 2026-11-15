@@ -156,11 +156,17 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
     ob = _smooth(np.clip(_blocks(oiii) - osky, 0, None) * scale)
     signal = hb + ob
     share = ob / np.maximum(signal, 1e-12)
+    # Statistics only from blocks wholly inside the image: a union of offset
+    # nights or a mosaic leaves empty canvas, which is not sky.
+    inside = _blocks(lit.astype(np.float32)) > 0.99
     # Colour only on nebula: none below the median block (sky), full from the
     # 90th percentile up.
-    floor, ref = (np.percentile(signal, [50, 90]) if signal.size else (0.0, 0.0))
+    if inside.sum() >= 10:
+        floor, ref = np.percentile(signal[inside], [50, 90])
+    else:
+        floor, ref = 0.0, 0.0
     if ref > floor:
-        weight = np.clip((signal - floor) / (ref - floor), 0, 1)
+        weight = np.clip((signal - floor) / (ref - floor), 0, 1) * inside
     else:
         weight = np.zeros_like(signal)
     nebula = weight > 0.5
@@ -188,7 +194,7 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
 @register("channel_map")
 class ChannelMapNode(Node[ChannelMapParams]):
     id = "channel_map"
-    version = 5
+    version = 6
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}

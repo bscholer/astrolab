@@ -22,6 +22,7 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from astropy.io import fits
 from pydantic import BaseModel, Field
 
@@ -139,7 +140,7 @@ def _gpu_available() -> bool:
 @register("graxpert")
 class GraxpertNode(Node[GraxpertParams]):
     id = "graxpert"
-    version = 2
+    version = 3
     tier = "keep"
     preview_display_ready = True
 
@@ -241,6 +242,7 @@ class GraxpertNode(Node[GraxpertParams]):
                     f"{result.stdout[-2000:]}"
                 )
 
+        restore_nodata(src, out_image)
         # Drop the staged input copy so the cache entry only holds the output.
         with contextlib.suppress(FileNotFoundError):
             staged.unlink()
@@ -262,6 +264,34 @@ def _locate_binary() -> Path | None:
 
     found = shutil.which("graxpert") or shutil.which("GraXpert")
     return Path(found) if found else None
+
+
+def restore_nodata(src: Path, out: Path) -> int:
+    """Put back the input's empty canvas (zero in every channel) as zero.
+
+    GraXpert fills nodata with made-up values (about 0.006 on the Rosette),
+    which downstream steps then read as dark sky: the HOO colour and the
+    stretch measured the sky off the filled border and came out garish.
+    Returns the number of pixels restored.
+    """
+    with fits.open(src, memmap=False) as hdul:
+        src_data = hdul[0].data
+    with fits.open(out, memmap=False) as hdul:
+        data, header = hdul[0].data, hdul[0].header.copy()
+    if src_data is None or data is None:
+        return 0
+    empty = src_data == 0
+    if src_data.ndim == 3:
+        empty = empty.all(axis=0)
+    if not empty.any() or data.shape[-2:] != empty.shape:
+        return 0
+    data = np.array(data, dtype=np.float32)
+    if data.ndim == 3:
+        data[:, empty] = 0
+    else:
+        data[empty] = 0
+    fits.PrimaryHDU(data=data, header=header).writeto(out, overwrite=True)
+    return int(empty.sum())
 
 
 def _passthrough_fits(src: Path, dst: Path) -> None:

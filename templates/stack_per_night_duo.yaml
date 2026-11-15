@@ -1,5 +1,5 @@
 id: stack_per_night_duo
-version: 2
+version: 3
 description: |
   Stack per night for duo-band (H-alpha + OIII) data on a colour camera.
   Each night is calibrated without debayering, split into H-alpha (red
@@ -215,10 +215,24 @@ nodes:
     # disappears when extract is off.
     ui_depends_on: starnet_replace
 
+  - id: frame
+    kind: crop
+    # Your framing, applied to the finished picture. The early crop only
+    # trims the empty registration border, so GraXpert, the HOO colour and
+    # the stretch always measure the whole field: cropping tightly around
+    # the nebula used to change what they took for sky, and the colours
+    # with it (the Rosette turned into red and blue blotches). Off until a
+    # box is set (Quick's Adjust crop turns it on): auto-trim would take
+    # the black sky of a finished picture for nodata.
+    params:
+      enabled: false
+    inputs:
+      image: starnet_recombine.image
+
   - id: save
     kind: save_image
     inputs:
-      image: starnet_recombine.image
+      image: frame.image
 
 outputs:
   image: save.image

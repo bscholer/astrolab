@@ -27,6 +27,7 @@
     channel_map: { enabled: false, oiii_strength: 1.4 },
     starnet_extract: { enabled: false },
     starnet_recombine: { enabled: true, stars: 1 },
+    frame: { enabled: false, width: 0 },
   };
 
   function templateParams(nodeId: string): Record<string, unknown> | null {
@@ -77,7 +78,8 @@
     oiii = Number(value('channel_map', 'oiii_strength') ?? 1.4);
     stars = value('starnet_extract', 'enabled') ? Number(value('starnet_recombine', 'stars') ?? 1) : 1;
   });
-  const customCrop = $derived(Number(value('crop', 'width') ?? 0) > 0);
+  const cropNode = $derived(has('frame') ? 'frame' : 'crop');
+  const customCrop = $derived(Number(value(cropNode, 'width') ?? 0) > 0);
 
   // Stars at 1 skips StarNet entirely (it is the slow step); below 1 it
   // splits the stars off and puts them back smaller, at 0 not at all.
@@ -176,9 +178,9 @@
           <span class="hint">GraXpert background extraction. Turn off if a nebula fills the frame.</span>
         </label>
       {/if}
-      {#if has('crop') && onCrop}
+      {#if (has('frame') || has('crop')) && onCrop}
         <div class="crop-row">
-          <span class="name">Crop <span class="val">{customCrop ? 'custom' : 'auto'}</span></span>
+          <span class="name">Crop <span class="val">{customCrop ? 'custom' : cropNode === 'frame' ? 'full frame' : 'auto'}</span></span>
           <button type="button" class="crop-btn" class:on={cropping} {disabled} onclick={onCrop}>
             {cropping ? 'Done cropping' : 'Adjust crop'}
           </button>

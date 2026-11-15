@@ -803,22 +803,30 @@
     });
   }
 
-  // The crop box, as the crop node sees it; width 0 means auto-trim.
+  // Framing: templates with a final `frame` step crop the finished picture
+  // (colour and stretch then measure the whole field); older ones use the
+  // early crop node. Width 0 means no box (auto-trim on the early crop).
+  const cropNode = $derived(project?.template.nodes.some((n) => n.id === 'frame') ? 'frame' : 'crop');
   const cropBox = $derived.by(() => {
-    const o = (project?.current_overrides?.crop ?? {}) as Record<string, unknown>;
+    const o = (project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>;
     const w = Number(o.width ?? 0);
     return w > 0
       ? { x: Number(o.x ?? 0), y: Number(o.y ?? 0), width: w, height: Number(o.height ?? 1) }
       : { x: 0, y: 0, width: 1, height: 1 };
   });
   const cropPreviewUrl = $derived.by(() => {
-    const up = upstreamHashFor('crop');
-    return up.hash ? api.previewUrlStretched(up.hash, up.port ?? 'image') : null;
+    const up = upstreamHashFor(cropNode);
+    if (!up.hash) return null;
+    // The frame step sees the finished picture, already stretched.
+    return cropNode === 'frame'
+      ? api.previewUrl(up.hash, up.port ?? 'image')
+      : api.previewUrlStretched(up.hash, up.port ?? 'image');
   });
   function setCrop(next: { x: number; y: number; width: number; height: number } | null) {
-    const o = { ...((project?.current_overrides?.crop ?? {}) as Record<string, unknown>) };
+    const o = { ...((project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>) };
     delete o.x; delete o.y; delete o.width; delete o.height; delete o.enabled;
-    handleNodeOverrideChange('crop', next ? { ...o, ...next } : o);
+    const on = cropNode === 'frame' ? { enabled: true } : {};
+    handleNodeOverrideChange(cropNode, next ? { ...o, ...next, ...on } : o);
   }
 
   function onKeydown(e: KeyboardEvent) {
