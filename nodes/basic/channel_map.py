@@ -100,12 +100,19 @@ def _upsample(s: np.ndarray, shape: tuple[int, int], k: int = BLOCK) -> np.ndarr
 
 
 def _smooth(s: np.ndarray, r: int = 2) -> np.ndarray:
+    """Median over each (2r+1)^2 neighbourhood of blocks.
+
+    A median, not a mean: a block a bright star dominates is an outlier
+    among its neighbours and drops out, instead of spreading into a square
+    patch of colour around the star.
+    """
     p = np.pad(s, r, mode="edge")
-    out = np.zeros_like(s)
-    for dy in range(-r, r + 1):
-        for dx in range(-r, r + 1):
-            out += p[r + dy : r + dy + s.shape[0], r + dx : r + dx + s.shape[1]]
-    return out / (2 * r + 1) ** 2
+    stack = [
+        p[r + dy : r + dy + s.shape[0], r + dx : r + dx + s.shape[1]]
+        for dy in range(-r, r + 1)
+        for dx in range(-r, r + 1)
+    ]
+    return np.median(np.stack(stack), axis=0).astype(np.float32)
 
 
 def _grow(m: np.ndarray, r: int) -> np.ndarray:
@@ -181,7 +188,7 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
 @register("channel_map")
 class ChannelMapNode(Node[ChannelMapParams]):
     id = "channel_map"
-    version = 4
+    version = 5
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
