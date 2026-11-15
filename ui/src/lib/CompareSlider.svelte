@@ -4,9 +4,10 @@
   in-place history-version compares.
 
   Both images render absolutely-positioned at object-fit: contain so they
-  share the same painted box regardless of source dimensions. The B
-  layer is clipped from the right via inline clip-path, so dragging the
-  divider right reveals more of A.
+  share the same painted box regardless of source dimensions. A is
+  clipped to the left of the divider and B to the right, so dragging the
+  divider right reveals more of A, and differently cropped images never
+  show through each other's margins.
 
   Pointer handlers cover mouse + touch (PointerEvent unifies both);
   arrow keys nudge by 2% (or 10% with shift); Home/End jump to the
@@ -102,10 +103,18 @@
   onpointercancel={onPointerUp}
   onkeydown={onKeyDown}
 >
-  <img class="layer" src={aSrc} alt="A: {aLabel}" draggable="false" />
+  <!-- Each image is clipped to its own side, so when the two are cropped
+       or shaped differently neither shows through the other's margins. -->
   <img
-    class="layer top"
+    class="layer"
     style:clip-path="inset(0 {100 - pos}% 0 0)"
+    src={aSrc}
+    alt="A: {aLabel}"
+    draggable="false"
+  />
+  <img
+    class="layer"
+    style:clip-path="inset(0 0 0 {pos}%)"
     src={bSrc}
     alt="B: {bLabel}"
     draggable="false"

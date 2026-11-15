@@ -4,15 +4,29 @@ Input port  : image (IMAGE_FITS) - a linear, background-extracted RGB stack
 Output port : image (IMAGE_FITS) - the remapped RGB stack, still linear
 
 Through a duo-band (H-alpha + OIII) filter, a colour camera records
-H-alpha in red and OIII in green and blue. 'hoo' maps red to H-alpha and
-green and blue to OIII, the classic teal-and-red look. OIII is usually much
-fainter, so it is scaled to H-alpha's spread (99.5th percentile above the
-sky, stars erased) times `oiii_strength`; boosting it to full strength also boosts
-its noise, so short integrations look cleaner below 1.
+H-alpha in red and OIII in green and blue (stack_per_night_duo splits them
+properly before debayering and packs them that way). 'hoo' renders them in
+the classic look: H-alpha red, OIII blue-teal.
 
-This is the cheap path on the finished stack. The narrowband template
-extracts H-alpha and OIII from the raw CFA instead, which is cleaner but
-means stacking each channel separately.
+Mixing the channels pixel by pixel does not get there on this data. OIII
+is fainter and noisier, stars are much brighter in it (a wider band, three
+quarters of the pixels), and a linked stretch keeps its nebula dim next to
+its stars: the Rosette came out red with cyan stars at any OIII scale.
+What the data does show is where OIII is relatively strong: on the Rosette
+the OIII/H-alpha ratio is high in the core and low in the outer ring.
+
+So colour and brightness are taken separately, still in linear space:
+- brightness: H-alpha plus OIII (OIII scaled to H-alpha's nebula spread),
+  which keeps every bit of structure either channel has;
+- colour: the OIII share of the nebula, measured on 8x8 block medians
+  (stars erased) and smoothed, mapped from red (H-alpha) to blue (OIII).
+  The share is spread over its own 10th-90th percentile range, so the
+  colour shows where OIII is stronger or weaker than usual for this target.
+  `oiii_strength` shifts the balance (1 as measured, higher bluer; the
+  default 1.4 gives the blue core of the usual HOO Rosette).
+  The sky and stars stay neutral: colour fades in with nebula signal and
+  out on anything much brighter than its surroundings.
+The stretch and its saturation then work as on any colour image.
 
 Pure numpy; no Siril round trip.
 """
@@ -43,61 +57,131 @@ class ChannelMapParams(BaseModel):
     )
     palette: Literal["hoo"] = Field(
         default="hoo",
-        description="'hoo': red is H-alpha, green and blue are OIII.",
+        description="'hoo': H-alpha red, OIII blue-teal, coloured by where OIII "
+        "is relatively strong.",
         json_schema_extra={"ui_section": "advanced"},
     )
     oiii_strength: float = Field(
-        default=0.6,
+        default=1.4,
         ge=0.0,
         le=2.0,
-        description="OIII relative to H-alpha after matching their spreads. 1 is "
-        "equal; lower keeps OIII noise down on short integrations.",
+        description="Red-blue balance. 1 colours the nebula by its measured OIII "
+        "share; higher turns more of it blue, lower more of it red.",
         json_schema_extra={
             "hash_precision": 3,
-            "agent_hint": "Raise for more teal OIII; lower if green/blue looks noisy.",
+            "agent_hint": "Raise for more blue OIII in the core; lower for a redder nebula.",
         },
     )
 
 
-def _spread(c: np.ndarray) -> tuple[float, float]:
-    """(sky, nebula signal above sky), with stars erased.
+BLOCK = 8
+RED = np.array([1.0, 0.18, 0.12], np.float32)
+BLUE = np.array([0.30, 0.62, 1.0], np.float32)
 
-    Measured on an 8x8 block median, which removes stars and keeps extended
-    light. Stars are relatively bright in OIII (a wider band and more
-    pixels), so matching raw percentiles turned the nebula's OIII down: on
-    the Rosette the raw spreads gave OIII x0.66, the star-free ones x0.91.
-    Sky is a low percentile, not the median: when a nebula fills half the
-    frame its light lifts the median.
+
+def _blocks(c: np.ndarray, k: int = BLOCK) -> np.ndarray:
+    """Median of each k x k block: stars erased, extended light kept."""
+    h, w = (c.shape[0] // k) * k, (c.shape[1] // k) * k
+    tiles = c[:h, :w].reshape(h // k, k, w // k, k).swapaxes(1, 2)
+    return np.median(tiles.reshape(h // k, w // k, -1), axis=2)
+
+
+def _upsample(s: np.ndarray, shape: tuple[int, int], k: int = BLOCK) -> np.ndarray:
+    """Bilinear from block centres back to full size."""
+    h, w = shape
+    ys = np.clip((np.arange(h) + 0.5) / k - 0.5, 0, s.shape[0] - 1)
+    xs = np.clip((np.arange(w) + 0.5) / k - 0.5, 0, s.shape[1] - 1)
+    y0, x0 = np.floor(ys).astype(int), np.floor(xs).astype(int)
+    y1, x1 = np.minimum(y0 + 1, s.shape[0] - 1), np.minimum(x0 + 1, s.shape[1] - 1)
+    fy, fx = (ys - y0)[:, None], (xs - x0)[None, :]
+    top = s[y0][:, x0] * (1 - fx) + s[y0][:, x1] * fx
+    bottom = s[y1][:, x0] * (1 - fx) + s[y1][:, x1] * fx
+    return (top * (1 - fy) + bottom * fy).astype(np.float32)
+
+
+def _smooth(s: np.ndarray, r: int = 2) -> np.ndarray:
+    p = np.pad(s, r, mode="edge")
+    out = np.zeros_like(s)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            out += p[r + dy : r + dy + s.shape[0], r + dx : r + dx + s.shape[1]]
+    return out / (2 * r + 1) ** 2
+
+
+def _grow(m: np.ndarray, r: int) -> np.ndarray:
+    """Max filter (square, radius r): widen the star mask over the halos."""
+    out = m.copy()
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            out = np.maximum(out, np.roll(np.roll(m, dy, 0), dx, 1))
+    return out
+
+
+def _spread(c: np.ndarray) -> tuple[float, float]:
+    """(sky, nebula signal above sky) on block medians, stars erased.
+
+    Stars are relatively bright in OIII, so raw percentiles would match the
+    stars and turn the nebula's OIII down (x0.66 instead of x0.91 on the
+    Rosette). Sky is a low percentile: a nebula filling half the frame lifts
+    the median.
     """
-    s = np.nan_to_num(c[::2, ::2])
-    h, w = (s.shape[0] // 8) * 8, (s.shape[1] // 8) * 8
-    if h == 0 or w == 0:
+    b = _blocks(np.nan_to_num(c))
+    b = b[b > 0]
+    if b.size == 0:
         return 0.0, 0.0
-    blocks = s[:h, :w].reshape(h // 8, 8, w // 8, 8).swapaxes(1, 2).reshape(h // 8, w // 8, 64)
-    smooth = np.median(blocks, axis=2)
-    smooth = smooth[smooth > 0]
-    if smooth.size == 0:
-        return 0.0, 0.0
-    sky = float(np.percentile(smooth, 20))
-    return sky, float(np.percentile(smooth, 99.5)) - sky
+    sky = float(np.percentile(b, 10))
+    return sky, float(np.percentile(b, 99.5)) - sky
 
 
 def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
-    """(3, H, W) RGB -> HOO, with OIII matched to H-alpha's spread."""
-    ha = data[0].astype(np.float32)
-    oiii = 0.5 * (data[1].astype(np.float32) + data[2].astype(np.float32))
-    hm, hs = _spread(ha)
-    om, osp = _spread(oiii)
-    scale = (hs / osp if osp > 0 else 1.0) * oiii_strength
+    """(3, H, W) RGB with H-alpha in red and OIII in green/blue -> HOO, linear."""
+    ha = np.nan_to_num(data[0].astype(np.float32))
+    oiii = np.nan_to_num(0.5 * (data[1].astype(np.float32) + data[2].astype(np.float32)))
+    lit = (ha > 0) & (oiii > 0)
+    hsky, hspread = _spread(ha)
+    osky, ospread = _spread(oiii)
+    scale = hspread / ospread if ospread > 0 else 1.0
+    h_lin = np.clip(ha - hsky, 0, None)
+    o_lin = np.clip(oiii - osky, 0, None) * scale
+    lum = h_lin + o_lin
+
+    hb = _smooth(np.clip(_blocks(ha) - hsky, 0, None))
+    ob = _smooth(np.clip(_blocks(oiii) - osky, 0, None) * scale)
+    signal = hb + ob
+    share = ob / np.maximum(signal, 1e-12)
+    # Colour only on nebula: none below the median block (sky), full from the
+    # 90th percentile up.
+    floor, ref = (np.percentile(signal, [50, 90]) if signal.size else (0.0, 0.0))
+    if ref > floor:
+        weight = np.clip((signal - floor) / (ref - floor), 0, 1)
+    else:
+        weight = np.zeros_like(signal)
+    nebula = weight > 0.5
+    if nebula.sum() >= 10:
+        lo, hi = np.percentile(share[nebula], [10, 90])
+    else:
+        lo, hi = 0.0, 1.0
+    t = np.clip((share - lo) / max(hi - lo, 1e-6) + 0.3 * (oiii_strength - 1.0), 0, 1)
+
+    shape = ha.shape
+    tf = _upsample(t, shape)
+    wf = _upsample(weight, shape)
+    # Stars stay white: colour fades out where a pixel is far above its block.
+    local = _upsample(_blocks(lum), shape)
+    star = _grow(np.clip((lum / np.maximum(local, 1e-9) - 1.3) / 0.7, 0, 1), 3)
+    amount = wf * (1 - star)
+    col = (1 - tf)[None] * RED[:, None, None] + tf[None] * BLUE[:, None, None]
+    col = col / col.mean(axis=0, keepdims=True)
+    col = 1 + amount[None] * (col - 1)
+    out = lum[None] * col + max(hsky, 0.0)
     # Zero stays zero so the registration border is still nodata downstream.
-    mapped = np.where(oiii > 0, (oiii - om) * scale + hm, 0.0).astype(np.float32)
-    return np.clip(np.stack([ha, mapped, mapped]), 0.0, 1.0)
+    return np.where(lit[None], np.clip(out, 0.0, 1.0), 0.0).astype(np.float32)
 
 
 @register("channel_map")
 class ChannelMapNode(Node[ChannelMapParams]):
     id = "channel_map"
-    version = 3
+    version = 4
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}

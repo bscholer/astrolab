@@ -24,7 +24,7 @@
     graxpert_bg: { enabled: false },
     graxpert_denoise: { enabled: false, strength: 0.5 },
     color_balance: { enabled: true, amount: 0.85 },
-    channel_map: { enabled: false, oiii_strength: 0.6 },
+    channel_map: { enabled: false, oiii_strength: 1.4 },
     starnet_extract: { enabled: false },
     starnet_recombine: { enabled: true, stars: 1 },
   };
@@ -66,7 +66,7 @@
   let noise = $state(0);
   let green = $state(0);
   let colour = $state(1);
-  let oiii = $state(0.6);
+  let oiii = $state(1.4);
   let stars = $state(1);
   $effect(() => {
     brightness = Number(value('stretch', brightParam) ?? (brightParam === 'auto_object' ? 0.4 : 0.25));
@@ -74,7 +74,7 @@
     noise = value('graxpert_denoise', 'enabled') ? Number(value('graxpert_denoise', 'strength') ?? 0.5) : 0;
     green = value('color_balance', 'enabled') === false ? 0 : Number(value('color_balance', 'amount') ?? 0.85);
     colour = Number(value('stretch', 'saturation') ?? 1);
-    oiii = Number(value('channel_map', 'oiii_strength') ?? 0.6);
+    oiii = Number(value('channel_map', 'oiii_strength') ?? 1.4);
     stars = value('starnet_extract', 'enabled') ? Number(value('starnet_recombine', 'stars') ?? 1) : 1;
   });
   const customCrop = $derived(Number(value('crop', 'width') ?? 0) > 0);
@@ -137,10 +137,10 @@
       </label>
       {#if has('channel_map') && hooOn}
         <label>
-          <span class="name">OIII strength <span class="val">{oiii.toFixed(2)}</span></span>
-          <input type="range" min="0.1" max="1.5" step="0.05" bind:value={oiii} {disabled}
+          <span class="name">Red–blue balance <span class="val">{oiii.toFixed(2)}</span></span>
+          <input type="range" min="0" max="2" step="0.05" bind:value={oiii} {disabled}
             onchange={() => commit('channel_map', { oiii_strength: Number(oiii.toFixed(2)) })} />
-          <span class="hint">Teal OIII against red H-alpha; lower if it looks noisy.</span>
+          <span class="hint">How much of the nebula shows OIII blue; higher is bluer.</span>
         </label>
       {/if}
       {#if has('color_balance') && !hooOn}

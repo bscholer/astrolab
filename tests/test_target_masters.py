@@ -271,19 +271,16 @@ def test_hoo_and_colour_strength(tmp_path: Path) -> None:
     from nodes.basic.channel_map import hoo
     from nodes.basic.stretch import saturate_fits
 
+    # How HOO colours the nebula is covered in tests/test_channel_map.py.
     rng = np.random.default_rng(2)
     rgb = rng.normal(0.01, 0.0005, (3, 200, 200)).astype(np.float32)
     rgb[0, 50:150, 50:150] += 0.02  # H-alpha nebula, strong
     rgb[1:, 80:120, 80:120] += 0.004  # OIII core, faint
     rgb[:, :, :10] = 0.0  # registration border
-    out = hoo(rgb, 1.0)
-    assert np.array_equal(out[1], out[2])  # green and blue are both OIII
-    assert np.allclose(out[0], rgb[0])  # red is H-alpha untouched
-    core = out[1, 80:120, 80:120].mean() - np.median(out[1])
-    assert core > 0.01  # faint OIII lifted toward H-alpha's spread
+    out = hoo(rgb, 1.4)
     assert (out[:, :, :10] == 0).all()  # border stays nodata
-    weak = hoo(rgb, 0.5)
-    assert weak[1, 80:120, 80:120].mean() < out[1, 80:120, 80:120].mean()
+    core, edge = (slice(85, 115), slice(85, 115)), (slice(55, 70), slice(55, 70))
+    assert out[2][core].mean() / out[0][core].mean() > out[2][edge].mean() / out[0][edge].mean()
 
     p = tmp_path / "s.fit"
     img = np.stack([np.full((4, 4), 0.6), np.full((4, 4), 0.4), np.full((4, 4), 0.2)])
@@ -382,3 +379,39 @@ def test_black_point_leaves_the_sky_neutral(tmp_path: Path) -> None:
     assert max(sky) - min(sky) < 0.1 * max(sky)  # equal skies, not 2x apart
     assert o[0][:, 200:].mean() > 5 * o[1][:, 200:].mean()  # the nebula is still red
     assert (o[:, :, :8] == 0).all()
+
+
+def test_footprint_coverage_ignores_a_bright_nebula(tmp_path: Path) -> None:
+    """Coverage comes from where each registered night has data, so a bright
+    narrowband nebula (high photon noise) is not mistaken for thin coverage."""
+    import numpy as np
+    from astropy.io import fits
+
+    from nodes.basic.combine_stacks import footprint_coverage, mask_low_coverage
+
+    rng = np.random.default_rng(5)
+    h, w = 512, 1024
+    work = tmp_path / "w"
+    work.mkdir()
+    nebula = np.zeros((h, w), np.float32)
+    nebula[100:400, 600:1000] = 0.2  # bright, on the right, where all nights overlap
+    # Night 1 covers everything; nights 2 and 3 only the right two thirds.
+    for i, x0 in enumerate((0, 340, 340), start=1):
+        d = 0.01 + nebula + rng.normal(0, 0.001, (h, w)).astype(np.float32)
+        d += rng.normal(0, 1, (h, w)).astype(np.float32) * np.sqrt(nebula) * 0.05
+        d[:, :x0] = 0
+        fits.PrimaryHDU(d).writeto(work / f"r_night_{i:05d}.fit")
+    out = tmp_path / "out.fit"
+    combined = 0.01 + nebula + rng.normal(0, 0.0006, (h, w)).astype(np.float32)
+    combined += rng.normal(0, 1, (h, w)).astype(np.float32) * np.sqrt(nebula) * 0.05
+    fits.PrimaryHDU(combined).writeto(out)
+
+    cov = footprint_coverage(work, out)
+    assert cov is not None
+    assert cov[:, -2].min() == pytest.approx(1.0)  # the nebula side is fully covered
+    assert abs(cov[:, 1].max() - 1 / 3) < 0.05  # the left band has one night of three
+
+    mask_low_coverage(out, 0.7, cov)
+    kept = fits.getdata(out)
+    assert kept[250, 800] != 0  # the nebula survives the trim
+    assert kept[250, 100] == 0  # the one-night band does not

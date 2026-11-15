@@ -66,7 +66,7 @@ class CombineStacksParams(BaseModel):
 @register("combine_stacks")
 class CombineStacksNode(Node[CombineStacksParams]):
     id = "combine_stacks"
-    version = 2
+    version = 3
     tier = "keep"
     uses_siril = True
 
@@ -135,7 +135,8 @@ class CombineStacksNode(Node[CombineStacksParams]):
             raise RuntimeError("combine_stacks: could not align the stacks\n" + "\n".join(errors))
 
         if params.min_coverage > 0:
-            kept = mask_low_coverage(out_image, params.min_coverage)
+            cov = footprint_coverage(work, out_image)
+            kept = mask_low_coverage(out_image, params.min_coverage, cov)
             ctx.progress(0.95, f"combine_stacks: {kept:.0%} of the frame is well covered")
         shutil.rmtree(work, ignore_errors=True)
         ctx.progress(1.0, f"combine_stacks: combined {len(images)} stacks")
@@ -146,6 +147,10 @@ COVERAGE_BLOCK = 64
 EDGE_LOW_SHARE = 0.1
 """A rectangle edge may cross this share of poorly covered blocks (a bright
 star or a galaxy core reads as low coverage too)."""
+
+
+def coverage_map_shape(shape: tuple[int, ...], block: int = COVERAGE_BLOCK) -> tuple[int, int]:
+    return shape[0] // block, (shape[1] - 1) // block
 
 
 def coverage_map(lum: np.ndarray, block: int = COVERAGE_BLOCK) -> np.ndarray:
@@ -174,7 +179,64 @@ def coverage_map(lum: np.ndarray, block: int = COVERAGE_BLOCK) -> np.ndarray:
     return (ref / sig) ** 2
 
 
-def mask_low_coverage(out_image: Path, min_coverage: float) -> float:
+def _block_mean(m: np.ndarray, block: int = COVERAGE_BLOCK) -> np.ndarray:
+    h, w = (m.shape[0] // block) * block, ((m.shape[1] - 1) // block) * block
+    return m[:h, :w].reshape(h // block, block, w // block, block).mean(axis=(1, 3))
+
+
+def _sky_noise(lum: np.ndarray, lit: np.ndarray) -> float:
+    """Noise of the sky: neighbour differences where both pixels are among the
+    darker 40% (nebula and stars excluded, they add photon noise)."""
+    vals = lum[lit]
+    cut = float(np.percentile(vals[:: max(1, vals.size // 200_000)], 40))
+    a, b = lum[:, 1:], lum[:, :-1]
+    sky = (a != 0) & (b != 0) & (a <= cut) & (b <= cut)
+    diff = (a - b)[sky]
+    if diff.size < 100:
+        return 1.0
+    diff = diff[:: max(1, diff.size // 400_000)]
+    sigma = float(np.median(np.abs(diff - np.median(diff)))) / 0.6745 / np.sqrt(2)
+    return sigma or 1.0
+
+
+def footprint_coverage(work: Path, out_image: Path) -> np.ndarray | None:
+    """Coverage per block from where each registered night has data.
+
+    Each night counts by its noise weight (1 / background variance, as the
+    stack weights it), so the map is the share of the total weight behind
+    each block. Unlike the noise map this is blind to the image itself:
+    a bright narrowband nebula raises local noise and used to read as
+    poorly covered, which trimmed the California Nebula out of its own
+    frame. None when the registered nights are not on the output canvas.
+    """
+    with fits.open(out_image, memmap=False) as hdul:
+        shape = hdul[0].data.shape[-2:]
+    nights = sorted(work.glob("r_night_*.fit*"))
+    if len(nights) < 2:
+        return None
+    total = np.zeros(shape, np.float32)
+    weights = 0.0
+    for p in nights:
+        with fits.open(p, memmap=False) as hdul:
+            d = hdul[0].data
+        if d is None or d.shape[-2:] != shape:
+            return None
+        lum = np.nan_to_num(d.mean(axis=0) if d.ndim == 3 else d).astype(np.float32)
+        lit = lum != 0
+        if not lit.any():
+            continue
+        sigma = _sky_noise(lum, lit)
+        w = 1.0 / sigma**2
+        total += w * lit
+        weights += w
+    if weights == 0:
+        return None
+    return _block_mean(total / weights)
+
+
+def mask_low_coverage(
+    out_image: Path, min_coverage: float, cov: np.ndarray | None = None
+) -> float:
     """Blank the combined image outside the largest well-covered rectangle.
 
     The rectangle shrinks from the bounding box, emptiest edge first, until
@@ -188,7 +250,8 @@ def mask_low_coverage(out_image: Path, min_coverage: float) -> float:
     with fits.open(out_image, memmap=False) as hdul:
         data, header = hdul[0].data, hdul[0].header.copy()
     lum = np.nan_to_num(data.mean(axis=0) if data.ndim == 3 else data).astype(np.float32)
-    cov = coverage_map(lum)
+    if cov is None or cov.shape != coverage_map_shape(lum.shape):
+        cov = coverage_map(lum)
     if cov.size == 0 or np.all(np.isnan(cov)):
         return 1.0
     good = np.nan_to_num(cov, nan=0.0) >= min_coverage
