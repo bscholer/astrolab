@@ -1,5 +1,5 @@
 id: stack_per_night_duo
-version: 1
+version: 2
 description: |
   Stack per night for duo-band (H-alpha + OIII) data on a colour camera.
   Each night is calibrated without debayering, split into H-alpha (red
@@ -60,11 +60,13 @@ nodes:
   - id: extract
     per_session: true
     kind: narrowband_extract
-    # Split into H-alpha and OIII, register and stack each, shift-align the
-    # two stacks. The expensive step; cached per night.
+    # Split into H-alpha and OIII, register the OIII frames (they have the
+    # stars) and apply the same transforms to H-alpha, then stack both. The
+    # expensive step; cached per night.
     params:
       input_basename: pp_light
       fitseq: false
+      shared_registration: true
     inputs:
       sequence: offset.sequence
 

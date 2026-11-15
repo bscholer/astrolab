@@ -68,6 +68,18 @@ class NarrowbandExtractParams(BaseModel):
         "matching the upstream sequence layout makes input staging simpler.",
         json_schema_extra={"ui_hidden": True},
     )
+    shared_registration: bool = Field(
+        default=False,
+        description="Register only the OIII frames and apply the same transforms "
+        "to H-alpha. Each frame's two channels come from one exposure, so they "
+        "share its geometry; OIII (green and blue pixels, three quarters of the "
+        "sensor) has the stars to match, while half-resolution H-alpha on a "
+        "short night may not (7 stars a frame on a 37-frame Rosette night, and "
+        "no frame registered). Both stacks land on one grid, so the fragile "
+        "stack-to-stack shift alignment is skipped; narrowband_pack fixes the "
+        "sub-pixel Bayer offset that remains.",
+        json_schema_extra={"ui_hidden": True},
+    )
 
 
 @register("narrowband_extract")
@@ -113,21 +125,23 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
                 f"the Bayer pattern."
             )
 
-        commands = _build_extract_commands(params.input_basename, work_dir)
-
         ctx.progress(0.1, "narrowband_extract: extracting Ha/OIII and aligning")
         runtime = SirilRuntime()
-        # Six progress-emitting Siril sub-commands: seqextract_HaOIII,
-        # register Ha, stack r_Ha, register OIII, stack r_OIII, register
-        # results. The interleaved load/save and `link` calls don't emit
-        # progress, so they don't count. phases must match this exactly or
-        # the bar rewinds when a later sub-command opens at 0%.
-        result = runtime.run(
-            commands,
-            working_dir=work_dir,
-            on_log=make_progress_handler(ctx, phases=6),
-            cancel=ctx.cancel,
-        )
+        if params.shared_registration:
+            result = _run_shared(runtime, params.input_basename, work_dir, ctx)
+        else:
+            commands = _build_extract_commands(params.input_basename, work_dir)
+            # Six progress-emitting Siril sub-commands: seqextract_HaOIII,
+            # register Ha, stack r_Ha, register OIII, stack r_OIII, register
+            # results. The interleaved load/save and `link` calls don't emit
+            # progress, so they don't count. phases must match this exactly or
+            # the bar rewinds when a later sub-command opens at 0%.
+            result = runtime.run(
+                commands,
+                working_dir=work_dir,
+                on_log=make_progress_handler(ctx, phases=6),
+                cancel=ctx.cancel,
+            )
         if result.returncode != 0:
             raise RuntimeError(
                 f"narrowband_extract: siril exited {result.returncode}\n"
@@ -160,6 +174,54 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
             "ha": Ref(node_hash="", port="ha", path=ha_out, type=PortType.IMAGE_FITS),
             "oiii": Ref(node_hash="", port="oiii", path=oiii_out, type=PortType.IMAGE_FITS),
         }
+
+
+def copy_registration(src: Path, dst: Path, name: str) -> None:
+    """Give sequence `dst` the selection and registration of `src`.
+
+    Keeps src's header (counts, reference image) under dst's name and drops
+    the cached statistics (M lines), which belong to the other channel's
+    pixels; Siril recomputes them for normalization.
+    """
+    out = []
+    for line in src.read_text().splitlines():
+        if line.startswith("M"):
+            continue
+        if line.startswith("S '"):
+            line = f"S '{name}'" + line[line.index("'", 3) + 1 :]
+        out.append(line)
+    dst.write_text("\n".join(out) + "\n")
+
+
+def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContext):
+    """Extract, register OIII, copy its transforms to H-alpha, apply and stack both."""
+    cd = f"cd {quote(work_dir.resolve())}"
+    first = runtime.run(
+        [cd, f"seqextract_HaOIII {base} -resample=ha", f"register OIII_{base} -2pass"],
+        working_dir=work_dir,
+        on_log=make_progress_handler(ctx, low=0.1, high=0.5, phases=2),
+        cancel=ctx.cancel,
+    )
+    if first.returncode != 0:
+        return first
+    oiii = next(iter(sorted(work_dir.glob(f"OIII_{base}*.seq"))), None)
+    ha = next(iter(sorted(work_dir.glob(f"Ha_{base}*.seq"))), None)
+    if oiii is None or ha is None:
+        raise RuntimeError(f"narrowband_extract: no Ha/OIII sequence files in {work_dir}")
+    copy_registration(oiii, ha, ha.stem)
+    stack = "rej 3 3 -norm=addscale -output_norm -32b"
+    return runtime.run(
+        [
+            cd,
+            f"seqapplyreg OIII_{base}",
+            f"seqapplyreg Ha_{base}",
+            f"stack r_OIII_{base} {stack} -out=r_results_oiii",
+            f"stack r_Ha_{base} {stack} -out=r_results_ha",
+        ],
+        working_dir=work_dir,
+        on_log=make_progress_handler(ctx, low=0.5, high=0.95, phases=4),
+        cancel=ctx.cancel,
+    )
 
 
 def _build_extract_commands(input_basename: str, work_dir: Path) -> list[str]:
