@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import nodes.basic  # noqa: F401  registers node kinds
-from nodes.basic.narrowband_extract import copy_registration
+from nodes.basic.narrowband_extract import copy_registration, transfer_registration
 from nodes.basic.narrowband_pack import measure_shift, pack, shift
 from server.masters import DUO_TEMPLATE_ID, TEMPLATE_ID, template_for
 from server.templates import load_template
@@ -74,3 +74,35 @@ def test_copy_registration_renames_and_drops_stats(tmp_path) -> None:
     assert "S 'Ha_pp_light_' 1 3 2 5 1 6 0 0 0" in lines
     assert "I 2 0" in lines and any(x.startswith("R0 7 18") for x in lines)
     assert not any(x.startswith("M") for x in lines)
+
+
+def test_transfer_registration_moves_debayered_transforms_to_a_split_sequence(tmp_path) -> None:
+    db = tmp_path / "db_pp_light_.seq"
+    db.write_text(
+        "#Siril sequence file\n"
+        "S 'db_pp_light_' 1 3 2 5 1 6 0 0 0\n"
+        "L 3\nI 1 1\nI 2 0\nI 3 1\n"
+        "R1 5.4 5.4 0.57 0 0.01 19 H 1 0 0 0 -1 2179 0 0 1\n"
+        "R1 0 0 0 0 0 0 H 0 0 0 0 0 0 0 0 0\n"
+        "R1 5.3 5.3 0.57 0 0.01 7 H 1.0007 0.001 -117.5 0.001 -1.0003 2203.3 0 0 1\n"
+        "M1-0 1 2 3\n"
+    )
+    oiii = tmp_path / "OIII_pp_light_.seq"
+    oiii.write_text("#Siril sequence file\nS 'OIII_pp_light_' 1 3 3 5 0 6 0 0 0\nL 1\nI 1 1\nI 2 1\nI 3 1\nM0-0 9 9 9\n")
+    transfer_registration(db, oiii)
+    lines = oiii.read_text().splitlines()
+    assert "S 'OIII_pp_light_' 1 3 2 5 1 6 0 0 0" in lines  # selection and reference from db
+    assert "L 1" in lines and "I 2 0" in lines
+    r = [x for x in lines if x.startswith("R")]
+    assert len(r) == 3 and all(x.startswith("R0 ") for x in r)
+    assert "-117.5" in r[2]
+    assert not any(x.startswith("M") for x in lines)
+
+
+def test_transfer_registration_refuses_mismatched_sequences(tmp_path) -> None:
+    db = tmp_path / "db.seq"
+    db.write_text("S 'db_' 1 3 3 5 0 6 0 0 0\nL 3\n")
+    ha = tmp_path / "ha.seq"
+    ha.write_text("S 'Ha_' 1 4 4 5 0 6 0 0 0\nL 1\n")
+    with pytest.raises(RuntimeError):
+        transfer_registration(db, ha)

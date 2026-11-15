@@ -70,14 +70,14 @@ class NarrowbandExtractParams(BaseModel):
     )
     shared_registration: bool = Field(
         default=False,
-        description="Register only the OIII frames and apply the same transforms "
-        "to H-alpha. Each frame's two channels come from one exposure, so they "
-        "share its geometry; OIII (green and blue pixels, three quarters of the "
-        "sensor) has the stars to match, while half-resolution H-alpha on a "
-        "short night may not (7 stars a frame on a 37-frame Rosette night, and "
-        "no frame registered). Both stacks land on one grid, so the fragile "
-        "stack-to-stack shift alignment is skipped; narrowband_pack fixes the "
-        "sub-pixel Bayer offset that remains.",
+        description="Register once, on a plate-solved debayered copy of the "
+        "frames, and apply the same transforms to the H-alpha and OIII splits. "
+        "Each frame's two channels come from one exposure and share its "
+        "geometry, but split 15 s frames have too few real stars to match on "
+        "their own (identity transforms on a whole California night; no frame "
+        "at all on a short Rosette night). Both stacks land on one grid, so the "
+        "fragile stack-to-stack shift alignment is skipped; narrowband_pack "
+        "fixes the sub-pixel Bayer offset that remains.",
         json_schema_extra={"ui_hidden": True},
     )
 
@@ -85,7 +85,7 @@ class NarrowbandExtractParams(BaseModel):
 @register("narrowband_extract")
 class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
     id = "narrowband_extract"
-    version = 1
+    version = 2
     tier = "keep"
     uses_siril = True
 
@@ -176,13 +176,40 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
         }
 
 
-def copy_registration(src: Path, dst: Path, name: str) -> None:
-    """Give sequence `dst` the selection and registration of `src`.
+def transfer_registration(src: Path, dst: Path) -> None:
+    """Give sequence `dst` the frame selection and transforms of `src`.
 
-    Keeps src's header (counts, reference image) under dst's name and drops
-    the cached statistics (M lines), which belong to the other channel's
-    pixels; Siril recomputes them for normalization.
+    `src` is the plate-solved debayered copy of the same frames (its R lines
+    are per colour layer, eg R1); `dst` is a mono split sequence (Ha_ or
+    OIII_), so the transforms are written as layer 0. dst keeps its name and
+    image count; the selection count and reference image come from src.
+    Cached statistics (M lines) are dropped; Siril recomputes them.
     """
+    src_lines = src.read_text().splitlines()
+    dst_lines = dst.read_text().splitlines()
+    s_src = next(x for x in src_lines if x.startswith("S '"))
+    s_dst = next(x for x in dst_lines if x.startswith("S '"))
+    name = s_dst[: s_dst.index("'", 3) + 1]
+    f_src = s_src[s_src.index("'", 3) + 1 :].split()
+    f_dst = s_dst[s_dst.index("'", 3) + 1 :].split()
+    if f_src[1] != f_dst[1]:
+        raise RuntimeError(
+            f"narrowband_extract: {src.name} has {f_src[1]} images, {dst.name} {f_dst[1]}"
+        )
+    f_dst[2] = f_src[2]  # selected
+    f_dst[4] = f_src[4]  # reference image
+    out = [x for x in dst_lines if x.startswith("#")]
+    out.append(f"{name} " + " ".join(f_dst))
+    out.append("L 1")
+    out += [x for x in src_lines if x.startswith("I ")]
+    for x in src_lines:
+        if x.startswith("R") and len(x) > 1 and x[1].isdigit():
+            out.append("R0" + x[x.index(" ") :])
+    dst.write_text("\n".join(out) + "\n")
+
+
+def copy_registration(src: Path, dst: Path, name: str) -> None:
+    """Give sequence `dst` the selection and registration of `src` (same layout)."""
     out = []
     for line in src.read_text().splitlines():
         if line.startswith("M"):
@@ -194,27 +221,57 @@ def copy_registration(src: Path, dst: Path, name: str) -> None:
 
 
 def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContext):
-    """Extract, register OIII, copy its transforms to H-alpha, apply and stack both."""
+    """Register once on a debayered copy, apply to both split channels, stack.
+
+    Single 15 s duo-band frames split into H-alpha and OIII have too few real
+    stars to match: star matching locked onto leftover hot pixels and
+    returned identity transforms for a whole 2.3 h California night, which
+    smeared every star out of the stack. A debayered copy of the same frames
+    plate-solves (as stack_per_night registers them); its transforms fit the
+    split frames, which share the geometry.
+    """
     cd = f"cd {quote(work_dir.resolve())}"
     first = runtime.run(
-        [cd, f"seqextract_HaOIII {base} -resample=ha", f"register OIII_{base} -2pass"],
+        [
+            cd,
+            f"calibrate {base} -debayer -prefix=db_",
+            f"seqplatesolve db_{base} -nocache -force",
+            f"seqextract_HaOIII {base} -resample=ha",
+        ],
         working_dir=work_dir,
-        on_log=make_progress_handler(ctx, low=0.1, high=0.5, phases=2),
+        on_log=make_progress_handler(ctx, low=0.1, high=0.5, phases=3),
         cancel=ctx.cancel,
     )
     if first.returncode != 0:
-        return first
+        # The reference frame didn't solve (Siril then fails the whole
+        # sequence): star-match the debayered copy instead, which has the
+        # signal the split frames lack.
+        ctx.progress(0.3, "narrowband_extract: plate solving failed, matching stars")
+        first = runtime.run(
+            [
+                cd,
+                f"register db_{base} -2pass",
+                f"seqextract_HaOIII {base} -resample=ha",
+            ],
+            working_dir=work_dir,
+            on_log=make_progress_handler(ctx, low=0.3, high=0.5, phases=2),
+            cancel=ctx.cancel,
+        )
+        if first.returncode != 0:
+            return first
+    db = next(iter(sorted(work_dir.glob(f"db_{base}*.seq"))), None)
     oiii = next(iter(sorted(work_dir.glob(f"OIII_{base}*.seq"))), None)
     ha = next(iter(sorted(work_dir.glob(f"Ha_{base}*.seq"))), None)
-    if oiii is None or ha is None:
-        raise RuntimeError(f"narrowband_extract: no Ha/OIII sequence files in {work_dir}")
-    copy_registration(oiii, ha, ha.stem)
+    if db is None or oiii is None or ha is None:
+        raise RuntimeError(f"narrowband_extract: missing sequence files in {work_dir}")
+    transfer_registration(db, oiii)
+    transfer_registration(db, ha)
     stack = "rej 3 3 -norm=addscale -output_norm -32b"
     return runtime.run(
         [
             cd,
-            f"seqapplyreg OIII_{base}",
-            f"seqapplyreg Ha_{base}",
+            f"seqapplyreg OIII_{base} -framing=max",
+            f"seqapplyreg Ha_{base} -framing=max",
             f"stack r_OIII_{base} {stack} -out=r_results_oiii",
             f"stack r_Ha_{base} {stack} -out=r_results_ha",
         ],
