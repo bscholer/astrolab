@@ -177,29 +177,31 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
 
 
 def transfer_registration(src: Path, dst: Path) -> None:
-    """Give sequence `dst` the frame selection and transforms of `src`.
+    """Write sequence `dst` with the frame selection and transforms of `src`.
 
     `src` is the plate-solved debayered copy of the same frames (its R lines
     are per colour layer, eg R1); `dst` is a mono split sequence (Ha_ or
-    OIII_), so the transforms are written as layer 0. dst keeps its name and
-    image count; the selection count and reference image come from src.
-    Cached statistics (M lines) are dropped; Siril recomputes them.
+    OIII_), so the transforms are written as layer 0. Siril only writes a
+    sequence's .seq file when a command first opens it, so right after
+    seqextract_HaOIII there is none: dst is built from src under its own
+    name (taken from the file name, eg OIII_pp_light_.seq). If Siril did
+    write one, its image count must match. Statistics (M lines) are left
+    out; Siril recomputes them.
     """
     src_lines = src.read_text().splitlines()
-    dst_lines = dst.read_text().splitlines()
     s_src = next(x for x in src_lines if x.startswith("S '"))
-    s_dst = next(x for x in dst_lines if x.startswith("S '"))
-    name = s_dst[: s_dst.index("'", 3) + 1]
     f_src = s_src[s_src.index("'", 3) + 1 :].split()
-    f_dst = s_dst[s_dst.index("'", 3) + 1 :].split()
-    if f_src[1] != f_dst[1]:
-        raise RuntimeError(
-            f"narrowband_extract: {src.name} has {f_src[1]} images, {dst.name} {f_dst[1]}"
-        )
-    f_dst[2] = f_src[2]  # selected
-    f_dst[4] = f_src[4]  # reference image
-    out = [x for x in dst_lines if x.startswith("#")]
-    out.append(f"{name} " + " ".join(f_dst))
+    if dst.exists():
+        s_dst = next((x for x in dst.read_text().splitlines() if x.startswith("S '")), None)
+        if s_dst is not None:
+            f_dst = s_dst[s_dst.index("'", 3) + 1 :].split()
+            if f_dst[1] != f_src[1]:
+                raise RuntimeError(
+                    f"narrowband_extract: {src.name} has {f_src[1]} images, "
+                    f"{dst.name} {f_dst[1]}"
+                )
+    out = [x for x in src_lines if x.startswith("#")]
+    out.append(f"S '{dst.stem}' " + " ".join(f_src))
     out.append("L 1")
     out += [x for x in src_lines if x.startswith("I ")]
     for x in src_lines:
@@ -260,12 +262,13 @@ def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContex
         if first.returncode != 0:
             return first
     db = next(iter(sorted(work_dir.glob(f"db_{base}*.seq"))), None)
-    oiii = next(iter(sorted(work_dir.glob(f"OIII_{base}*.seq"))), None)
-    ha = next(iter(sorted(work_dir.glob(f"Ha_{base}*.seq"))), None)
-    if db is None or oiii is None or ha is None:
-        raise RuntimeError(f"narrowband_extract: missing sequence files in {work_dir}")
-    transfer_registration(db, oiii)
-    transfer_registration(db, ha)
+    if db is None:
+        raise RuntimeError(f"narrowband_extract: no registered debayered sequence in {work_dir}")
+    seq = db.name.removeprefix("db_")  # eg pp_light_.seq
+    for channel in ("OIII", "Ha"):
+        if not (work_dir / f"{channel}_{seq.removesuffix('.seq')}00001.fit").exists():
+            raise RuntimeError(f"narrowband_extract: seqextract_HaOIII wrote no {channel} frames")
+        transfer_registration(db, work_dir / f"{channel}_{seq}")
     stack = "rej 3 3 -norm=addscale -output_norm -32b"
     return runtime.run(
         [

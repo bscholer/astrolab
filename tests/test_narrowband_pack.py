@@ -87,8 +87,7 @@ def test_transfer_registration_moves_debayered_transforms_to_a_split_sequence(tm
         "R1 5.3 5.3 0.57 0 0.01 7 H 1.0007 0.001 -117.5 0.001 -1.0003 2203.3 0 0 1\n"
         "M1-0 1 2 3\n"
     )
-    oiii = tmp_path / "OIII_pp_light_.seq"
-    oiii.write_text("#Siril sequence file\nS 'OIII_pp_light_' 1 3 3 5 0 6 0 0 0\nL 1\nI 1 1\nI 2 1\nI 3 1\nM0-0 9 9 9\n")
+    oiii = tmp_path / "OIII_pp_light_.seq"  # not written yet, as after seqextract
     transfer_registration(db, oiii)
     lines = oiii.read_text().splitlines()
     assert "S 'OIII_pp_light_' 1 3 2 5 1 6 0 0 0" in lines  # selection and reference from db
