@@ -19,6 +19,7 @@
   import { page } from '$app/stores';
   import {
     api,
+    FRAMING_KEYS,
     type CalibrationStatus,
     type DarkPreviewResponse,
     type Project,
@@ -803,30 +804,32 @@
     });
   }
 
-  // Framing: templates with a final `frame` step crop the finished picture
-  // (colour and stretch then measure the whole field); older ones use the
-  // early crop node. Width 0 means no box (auto-trim on the early crop).
+  // Framing: the crop node right after the stack (older duo projects had a
+  // `frame` step at the end; their template upgrade removes it).
   const cropNode = $derived(project?.template.nodes.some((n) => n.id === 'frame') ? 'frame' : 'crop');
-  const cropBox = $derived.by(() => {
-    const o = (project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>;
-    const w = Number(o.width ?? 0);
-    return w > 0
-      ? { x: Number(o.x ?? 0), y: Number(o.y ?? 0), width: w, height: Number(o.height ?? 1) }
-      : { x: 0, y: 0, width: 1, height: 1 };
+  const cropParams = $derived.by(() => {
+    const spec = project?.template.nodes.find((n) => n.id === cropNode);
+    return {
+      ...((spec?.params ?? {}) as Record<string, unknown>),
+      ...((project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>)
+    };
   });
+  const cropInput = $derived(upstreamHashFor(cropNode));
   const cropPreviewUrl = $derived.by(() => {
-    const up = upstreamHashFor(cropNode);
+    const up = cropInput;
     if (!up.hash) return null;
     // The frame step sees the finished picture, already stretched.
     return cropNode === 'frame'
       ? api.previewUrl(up.hash, up.port ?? 'image')
       : api.previewUrlStretched(up.hash, up.port ?? 'image');
   });
-  function setCrop(next: { x: number; y: number; width: number; height: number } | null) {
+  function setCrop(next: Record<string, number> | null) {
     const o = { ...((project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>) };
-    delete o.x; delete o.y; delete o.width; delete o.height; delete o.enabled;
-    const on = cropNode === 'frame' ? { enabled: true } : {};
-    handleNodeOverrideChange(cropNode, next ? { ...o, ...next, ...on } : o);
+    for (const key of [...FRAMING_KEYS, 'enabled']) delete o[key];
+    // Zero is every framing key's default: leave it out of the overrides.
+    const set = Object.fromEntries(Object.entries(next ?? {}).filter(([, v]) => v !== 0));
+    const on = cropNode === 'frame' && next ? { enabled: true } : {};
+    handleNodeOverrideChange(cropNode, { ...o, ...set, ...on });
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -979,16 +982,13 @@
           <div class="crop-stage">
             <CropEditor
               previewUrl={cropPreviewUrl}
-              enabled={true}
-              x={cropBox.x}
-              y={cropBox.y}
-              width={cropBox.width}
-              height={cropBox.height}
-              onchange={(next) => setCrop({ x: next.x, y: next.y, width: next.width, height: next.height })}
-              onreset={() => setCrop(null)}
+              hash={cropInput.hash}
+              port={cropInput.port ?? 'image'}
+              params={cropParams}
+              onparams={setCrop}
             />
             <div class="crop-bar">
-              <span class="muted small">Drag a box on the picture. Reset goes back to the automatic trim.</span>
+              <span class="muted small">Drag a box, turn it by the knob. It stays on the same sky as nights are added; Reset goes back to the whole frame.</span>
               <button type="button" class="hbtn" onclick={() => (cropping = false)}>Done</button>
             </div>
           </div>

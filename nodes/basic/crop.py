@@ -1,44 +1,38 @@
-"""crop: rectangular crop, with auto-trim fallback when no user box is set.
+"""crop: frame the picture - a box on the sky, any angle, or the empty border trimmed.
 
-Input port  : image (IMAGE_FITS) - typically the output of seq_stack or
-              narrowband_compose (placed right after the stack/compose step,
-              before stretch).
-Output port : image (IMAGE_FITS) - same FITS, sliced to the requested rect.
+Input port  : image (IMAGE_FITS) - the combined stack (placed right after it,
+              before GraXpert, colour and the stretch, so they measure only
+              what is framed).
+Output port : image (IMAGE_FITS) - the framed image, WCS carried over.
 
-Two operating modes
--------------------
-Auto-trim (default, no user box)
-    When width == 0 (the sentinel for "no user override yet"), the node
-    computes the bounding box of pixels above `threshold` and crops to that
-    box, optionally padded by `padding` pixels. The pedestal_offset step
-    pushes real signal ~0.01 above zero, so a 0.001 cutoff cleanly separates
-    the registration zero-fill border from real data.
+Three modes, first match wins
+-----------------------------
+Sky box (sky_width > 0)
+    Centre RA/Dec, width and height in arcminutes, and the position angle
+    of the picture's up direction (0 = north up). The node maps it onto
+    this canvas through the plate solve, so the framing stays on the same
+    sky when a new night grows or shifts the combined canvas. An image
+    without a plate solve fails loudly rather than guessing.
 
-    Then the box shrinks until its edges are real data: frames from several
-    nights (or a drifting night) are shifted and slightly rotated, so their
-    union leaves zero-filled wedges inside the bounding box, which GraXpert
-    and the stretch turn into a bright band around the picture.
+Canvas box (width > 0)
+    x/y/width/height in [0,1] of the image as displayed (Siril's
+    convention, FITS row 0 at the bottom: y is measured from the top of
+    the preview) and `rotation` in degrees clockwise. For images with no
+    plate solve.
 
-User crop (explicit bbox)
-    When the user drags a rectangle in the UI crop picker, the parent page
-    calls onchange which PATCHes x/y/width/height (normalized to [0,1]) and
-    sets enabled=True. On subsequent run() calls, the node uses those explicit
-    coords instead of the auto-trim path.
+Auto-trim (neither set)
+    Only rows and columns with no data at all are cut (pixels at or below
+    `threshold`); partly covered edges are real data you frame yourself.
 
-Coordinates are stored in [0,1] (normalized to the input frame's spatial
-dims) so the dragged rectangle in the UI stays valid even after upstream
-nodes change the resolution (e.g. toggling draft mode on/off).
-The runtime maps normalized -> pixels at run time.
-
-WCS keys CRPIX1/CRPIX2 (if present) are shifted so a future plate-solve on
-the cropped frame stays consistent.
+Rotated boxes are resampled with cubic convolution; straight boxes on whole
+pixels are sliced. Area outside the canvas comes out as 0 (nodata).
 
 Pure numpy/astropy; no Siril round-trip.
 """
 
 from __future__ import annotations
 
-import contextlib
+import math
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +40,7 @@ from astropy.io import fits
 from pydantic import BaseModel, Field, model_validator
 
 from nodes.base import Node
+from nodes.basic.framing import CanvasBox, SkyBox, celestial_wcs, cut, cut_header, sky_to_canvas
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -82,7 +77,8 @@ class CropParams(BaseModel):
         ge=0.0,
         le=1.0,
         description="Top edge of the crop rectangle, normalized to the input "
-        "image height (0 = top, 1 = bottom). "
+        "image height as displayed (0 = top of the preview, FITS row 0 at the "
+        "bottom). "
         "Ignored when height == 0 (auto-trim mode).",
         json_schema_extra={"hash_precision": 4, "ui_hidden": True},
     )
@@ -102,6 +98,48 @@ class CropParams(BaseModel):
         description="Height of the crop rectangle, normalized to the input "
         "image height. 0 is the sentinel matching width == 0 for auto-trim.",
         json_schema_extra={"hash_precision": 4, "ui_hidden": True},
+    )
+    rotation: float = Field(
+        default=0.0,
+        ge=-360.0,
+        le=360.0,
+        description="Turn of the canvas box, degrees clockwise on the "
+        "preview, about its centre.",
+        json_schema_extra={"hash_precision": 3, "ui_hidden": True},
+    )
+    ra: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=360.0,
+        description="Sky box: right ascension of the centre, degrees.",
+        json_schema_extra={"hash_precision": 6, "ui_hidden": True},
+    )
+    dec: float = Field(
+        default=0.0,
+        ge=-90.0,
+        le=90.0,
+        description="Sky box: declination of the centre, degrees.",
+        json_schema_extra={"hash_precision": 6, "ui_hidden": True},
+    )
+    sky_width: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Sky box: width in arcminutes. 0 means no sky box.",
+        json_schema_extra={"hash_precision": 3, "ui_hidden": True},
+    )
+    sky_height: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Sky box: height in arcminutes.",
+        json_schema_extra={"hash_precision": 3, "ui_hidden": True},
+    )
+    angle: float = Field(
+        default=0.0,
+        ge=-360.0,
+        le=360.0,
+        description="Sky box: position angle of the picture's up direction, "
+        "degrees east of north (0 = north up, 90 = east up).",
+        json_schema_extra={"hash_precision": 3, "ui_hidden": True},
     )
     threshold: float = Field(
         default=1e-3,
@@ -139,8 +177,9 @@ class CropParams(BaseModel):
 
     @model_validator(mode="after")
     def _check_box(self) -> CropParams:
-        # Only clamp when the user has explicitly set a box (width > 0).
-        if self.width > 0:
+        # Only clamp a straight box the user set (width > 0); a turned box
+        # may reach past the canvas corners (that area comes out empty).
+        if self.width > 0 and self.rotation % 360 == 0:
             if self.x + self.width > 1.0 + 1e-6:
                 object.__setattr__(self, "width", max(1e-3, 1.0 - self.x))
             if self.y + self.height > 1.0 + 1e-6:
@@ -151,7 +190,7 @@ class CropParams(BaseModel):
 @register("crop")
 class CropNode(Node[CropParams]):
     id = "crop"
-    version = 4
+    version = 5
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
@@ -194,77 +233,87 @@ class CropNode(Node[CropParams]):
 
         full_h, full_w = _spatial_shape(data)
 
-        # Decide which crop rectangle to use.
-        user_box = params.width > 0  # sentinel: 0 means "auto-trim"
-
-        if user_box:
-            # User dragged an explicit box in the UI.
-            x = int(round(params.x * full_w))
-            y = int(round(params.y * full_h))
-            w = int(round(params.width * full_w))
-            h = int(round(params.height * full_h))
-
-            # Clamp into bounds; drop to a 1-pixel min so we never produce a
-            # zero-area FITS (which would crash downstream stretch/save).
-            x = max(0, min(full_w - 1, x))
-            y = max(0, min(full_h - 1, y))
-            w = max(1, min(full_w - x, w))
-            h = max(1, min(full_h - y, h))
-
-            if x == 0 and y == 0 and w == full_w and h == full_h:
-                ctx.progress(0.9, "crop: full-frame user box — passing through")
-                fits.PrimaryHDU(data=data, header=header).writeto(out_image, overwrite=True)
-                ctx.progress(1.0, "crop: done")
-                return _result(out_image)
-
-            ctx.progress(0.8, f"crop: user box {full_w}x{full_h} -> {w}x{h}")
+        if params.sky_width > 0 and params.sky_height > 0:
+            wcs = celestial_wcs(header)
+            if wcs is None:
+                raise RuntimeError(
+                    "crop: the framing is set on the sky, but this image has no "
+                    "plate solve to place it with"
+                )
+            box = sky_to_canvas(
+                wcs,
+                SkyBox(params.ra, params.dec, params.sky_width, params.sky_height, params.angle),
+            )
+            what = (
+                f"sky box {params.sky_width:.0f}'x{params.sky_height:.0f}' "
+                f"at PA {params.angle:.0f}"
+            )
+        elif params.width > 0:
+            box = CanvasBox(
+                (params.x + params.width / 2) * full_w,
+                full_h - (params.y + params.height / 2) * full_h,
+                params.width * full_w,
+                params.height * full_h,
+                -math.radians(params.rotation),
+            )
+            what = "user box"
         else:
-            # Auto-trim: compute bounding box of signal above threshold.
+            # Auto-trim: only rows and columns with no data at all go.
+            # Offset nights and mosaics leave partly covered edges, and those
+            # are real data the user frames (or not) themselves.
             ctx.progress(0.3, "crop: auto-detecting signal bbox")
-            # Only rows and columns with no data at all go: offset nights and
-            # mosaics leave partly covered edges, and those are real data the
-            # user frames (or not) themselves.
             x, y, w, h = _bbox_of_signal(data, params.threshold)
-
             if w <= 0 or h <= 0:
-                # Nothing above threshold — keep the original rather than emitting
-                # a zero-area FITS that would crash downstream.
                 ctx.progress(0.9, "crop: no signal detected, passing through")
-                fits.PrimaryHDU(data=data, header=header).writeto(out_image, overwrite=True)
-                ctx.progress(1.0, "crop: wrote pass-through")
-                return _result(out_image)
-
+                return _write(out_image, data, header)
             if params.padding > 0:
                 pad = params.padding
-                x = max(0, x - pad)
-                y = max(0, y - pad)
-                w = min(full_w - x, w + 2 * pad)
-                h = min(full_h - y, h + 2 * pad)
+                x, y = max(0, x - pad), max(0, y - pad)
+                w, h = min(full_w - x, w + 2 * pad), min(full_h - y, h + 2 * pad)
+            box = CanvasBox(x + w / 2, y + h / 2, w, h)
+            what = "auto-trim"
 
-            if x == 0 and y == 0 and w == full_w and h == full_h:
-                ctx.progress(0.9, f"crop: nothing to trim ({full_w}x{full_h})")
-                fits.PrimaryHDU(data=data, header=header).writeto(out_image, overwrite=True)
-                ctx.progress(1.0, "crop: wrote pass-through")
-                return _result(out_image)
+        out_w, out_h = max(1, round(box.width)), max(1, round(box.height))
+        full = CanvasBox(full_w / 2, full_h / 2, full_w, full_h)
+        if (
+            abs(math.sin(box.theta)) < 1e-9
+            and math.cos(box.theta) > 0
+            and (out_w, out_h) == (full_w, full_h)
+            and abs(box.cx - full.cx) < 0.5
+            and abs(box.cr - full.cr) < 0.5
+        ):
+            ctx.progress(0.9, f"crop: {what} covers the whole frame - passing through")
+            return _write(out_image, data, header)
 
-            ctx.progress(
-                0.8,
-                f"crop: auto-trim {full_w}x{full_h} -> {w}x{h} "
-                f"(trimmed {full_w - w}x{full_h - h})",
-            )
-
-        cropped = _slice_spatial(data, x, y, w, h)
-
-        # Shift WCS reference pixel so plate-solve metadata stays consistent.
-        # 1-based FITS convention: CRPIX1/2 reference the (1,1)-origin pixel.
-        for key, off in (("CRPIX1", x), ("CRPIX2", y)):
-            if key in header:
-                with contextlib.suppress(TypeError, ValueError):
-                    header[key] = float(header[key]) - off
-
-        fits.PrimaryHDU(data=cropped, header=header).writeto(out_image, overwrite=True)
+        ctx.progress(0.5, f"crop: {what} {full_w}x{full_h} -> {out_w}x{out_h}")
+        planes, layout = _to_planes(data)
+        cropped = _from_planes(cut(planes, box), layout)
+        _write(out_image, cropped, cut_header(header, box, out_w, out_h))
         ctx.progress(1.0, "crop: done")
         return _result(out_image)
+
+
+def _to_planes(arr: np.ndarray) -> tuple[np.ndarray, str]:
+    if arr.ndim == 2:
+        return arr[None], "2d"
+    if arr.ndim == 3 and arr.shape[0] in (3, 4):
+        return arr, "chw"
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        return np.moveaxis(arr, -1, 0), "hwc"
+    raise RuntimeError(f"crop: unsupported FITS shape {arr.shape}")
+
+
+def _from_planes(planes: np.ndarray, layout: str) -> np.ndarray:
+    if layout == "2d":
+        return planes[0]
+    if layout == "hwc":
+        return np.moveaxis(planes, 0, -1)
+    return planes
+
+
+def _write(out_image: Path, data: np.ndarray, header: fits.Header) -> dict[str, Ref]:
+    fits.PrimaryHDU(data=data, header=header).writeto(out_image, overwrite=True)
+    return _result(out_image)
 
 
 # ---------------------------------------------------------------------------
@@ -281,16 +330,6 @@ def _spatial_shape(arr: np.ndarray) -> tuple[int, int]:
         return int(arr.shape[1]), int(arr.shape[2])
     if arr.ndim == 3 and arr.shape[-1] in (3, 4):
         return int(arr.shape[0]), int(arr.shape[1])
-    raise RuntimeError(f"crop: unsupported FITS shape {arr.shape}")
-
-
-def _slice_spatial(arr: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
-    if arr.ndim == 2:
-        return arr[y : y + h, x : x + w]
-    if arr.ndim == 3 and arr.shape[0] in (3, 4):
-        return arr[:, y : y + h, x : x + w]
-    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-        return arr[y : y + h, x : x + w, :]
     raise RuntimeError(f"crop: unsupported FITS shape {arr.shape}")
 
 

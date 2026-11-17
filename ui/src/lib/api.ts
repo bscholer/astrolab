@@ -210,6 +210,23 @@ async function _readErrorDetail(r: Response): Promise<string> {
   return text || `${r.status} ${r.statusText}`;
 }
 
+/** A crop box on the displayed canvas, in full-size image pixels; angle is
+ *  degrees clockwise. */
+export type FramingBox = { cx: number; cy: number; width: number; height: number; angle: number };
+
+export type FramingInfo = {
+  width: number;
+  height: number;
+  solved: boolean;
+  /** Where north points on the display, degrees clockwise from up. */
+  north_angle: number | null;
+  arcsec_per_px: number | null;
+  box: FramingBox | null;
+};
+
+/** Crop params that place the box; a new box replaces all of them. */
+export const FRAMING_KEYS = ['x', 'y', 'width', 'height', 'rotation', 'ra', 'dec', 'sky_width', 'sky_height', 'angle'];
+
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) {
@@ -1192,6 +1209,14 @@ export const api = {
       }
     };
     return ws;
+  },
+  /** Where the crop params put the box on this canvas (see CropEditor). */
+  framing(nodeHash: string, port: string, params: Record<string, unknown>): Promise<FramingInfo> {
+    return postJSON(`/api/framing/${nodeHash}/${encodeURIComponent(port)}`, { params });
+  },
+  /** The crop params to store for a box drawn on this canvas (on the sky when solved). */
+  framingParams(nodeHash: string, port: string, box: FramingBox): Promise<Record<string, number>> {
+    return postJSON(`/api/framing/${nodeHash}/${encodeURIComponent(port)}/box`, box);
   },
   previewUrl(nodeHash: string, port: string): string {
     // Cache-buster: previously we promised previews were `immutable` for 24h,

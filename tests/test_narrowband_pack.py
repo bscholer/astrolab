@@ -40,13 +40,14 @@ def test_duo_template_splits_before_debayer_and_shares_finishing() -> None:
     assert nodes["combine"].inputs == {"images": "pack.image"}
     assert nodes["channel_map"].params["enabled"] is True
     assert nodes["color_balance"].params["enabled"] is False
-    # Finishing node ids match, so a master's edits carry across the switch;
-    # the duo template adds a final framing step before save.
+    # Finishing node ids match, so a master's edits carry across the switch.
+    # Framing is the early crop again (v4), on the sky: one crop step.
     finishing = [n.id for n in plain.nodes if not n.per_session]
     duo_finishing = [n.id for n in duo.nodes if not n.per_session]
-    assert duo_finishing == finishing[:-1] + ["frame", "save"]
-    assert nodes["frame"].params["enabled"] is False
-    assert nodes["save"].inputs == {"image": "frame.image"}
+    assert duo_finishing == finishing
+    assert [n.kind for n in duo.nodes].count("crop") == 1
+    assert nodes["crop"].inputs == {"image": "combine.image"}
+    assert nodes["save"].inputs == {"image": "starnet_recombine.image"}
 
 
 def test_moving_to_duo_v3_drops_the_early_crop_box() -> None:
@@ -60,9 +61,16 @@ def test_moving_to_duo_v3_drops_the_early_crop_box() -> None:
     out, _ = migrate_param_overrides(duo, 2, overrides)
     assert "crop" not in out
     assert out["channel_map"] == {"oiii_strength": 1.35}
-    # Already on v3: a crop box is the user's and stays.
-    kept, _ = migrate_param_overrides(duo, 3, {"frame": {"enabled": True, "x": 0.1, "width": 0.5}})
-    assert kept["frame"]["width"] == 0.5
+    # From v3: the end `frame` box was on another canvas (and a mirrored
+    # preview); it goes. A crop box set on v3 is the user's and stays.
+    kept, _ = migrate_param_overrides(
+        duo, 3, {"frame": {"enabled": True, "x": 0.1, "width": 0.5}, "crop": {"width": 0.5}}
+    )
+    assert "frame" not in kept
+    assert kept["crop"] == {"width": 0.5}
+    # On v4 a sky box is kept as is.
+    sky = {"crop": {"ra": 83.1, "dec": 5.0, "sky_width": 90.0, "sky_height": 60.0, "angle": 30.0}}
+    assert migrate_param_overrides(duo, 4, sky)[0] == sky
 
 
 def test_pack_moves_oiii_onto_ha_by_a_subpixel_offset() -> None:

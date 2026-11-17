@@ -291,7 +291,7 @@ def test_crop_node_version_bumped() -> None:
     """Version 4: auto-trim drops only fully empty rows and columns again;
     partly covered edges (offset nights, mosaics) are kept for the user to
     frame. _shrink_to_data stays as a helper (tested below)."""
-    assert CropNode.version == 4
+    assert CropNode.version == 5
 
 
 # ---------------------------------------------------------------------------

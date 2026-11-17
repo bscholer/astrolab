@@ -9,7 +9,7 @@
 <script lang="ts">
   import { fade, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
-  import { api, type Project, type TemplateNodeSchema, type JobQuality, type NodeWarning } from '$lib/api';
+  import { api, FRAMING_KEYS, type Project, type TemplateNodeSchema, type JobQuality, type NodeWarning } from '$lib/api';
   import { isTogglable, nodeDisplayName } from '$lib/graph';
   import NodeParamsForm from '$lib/NodeParamsForm.svelte';
   import CropEditor from '$lib/CropEditor.svelte';
@@ -424,23 +424,18 @@
         {/if}
       {:else}
         {#if kind === 'crop'}
-          {@const eff = (k: string) => (k in overrides ? overrides[k] : fullDefaults[k])}
           <div class="stage-params crop-host">
             <CropEditor
               previewUrl={upstreamPreviewUrl}
-              enabled={Boolean(eff('enabled'))}
-              x={Number(eff('x') ?? 0)}
-              y={Number(eff('y') ?? 0)}
-              width={Number(eff('width') ?? 1)}
-              height={Number(eff('height') ?? 1)}
-              onchange={(next) => {
-                const partial: Record<string, unknown> = {};
-                for (const [k, v] of Object.entries(next)) {
-                  if (fullDefaults[k] !== v) partial[k] = v;
-                }
-                onNodeOverrideChange(nid, partial);
+              hash={upstreamHash}
+              port={upstreamPort ?? 'image'}
+              params={{ ...fullDefaults, ...overrides }}
+              onparams={(next) => {
+                const o: Record<string, unknown> = { ...overrides };
+                for (const key of FRAMING_KEYS) delete o[key];
+                for (const [key, v] of Object.entries(next ?? {})) if (v !== 0) o[key] = v;
+                onNodeOverrideChange(nid, o);
               }}
-              onreset={() => onNodeOverrideChange(nid, {})}
             />
           </div>
         {:else if Object.keys(schemaProps).length > 0}

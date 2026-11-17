@@ -96,10 +96,16 @@ def _duo_framing_moved(
     """stack_per_night_duo v3 moved framing to a final `frame` step. A box set
     on the early crop was drawn in another image's coordinates, so it is
     dropped (the early crop goes back to trimming the empty border) rather
-    than carried somewhere it would point at the wrong part of the sky."""
-    if old >= 3:
-        return overrides
+    than carried somewhere it would point at the wrong part of the sky.
+
+    v4 moved it back to the early crop, stored on the sky. The `frame` box
+    was drawn on the finished picture (a different canvas, and on a preview
+    mirrored top to bottom), so it is dropped too: frame once more."""
     out = dict(overrides)
+    if old < 4:
+        out.pop("frame", None)
+    if old >= 3:
+        return out
     box = ("x", "y", "width", "height")
     crop = {k: v for k, v in (out.get("crop") or {}).items() if k not in box}
     if crop:

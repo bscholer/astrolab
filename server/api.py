@@ -4777,6 +4777,67 @@ def get_output(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
+# Framing (the crop editor)
+# ---------------------------------------------------------------------------
+
+
+class FramingQuery(BaseModel):
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class FramingBox(BaseModel):
+    cx: float
+    cy: float
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    angle: float = 0.0
+
+
+def _framing_canvas(node_hash: str, port: str) -> tuple[Any, int, int]:
+    """Header and (height, width) of the image the crop node frames."""
+    from astropy.io import fits
+
+    from nodes.basic.crop import _spatial_shape
+    from server.preview import _locate_artifact
+
+    entry = job_manager.cache.lookup(node_hash)
+    target = _locate_artifact(entry, port) if entry is not None else None
+    if target is None or target.suffix.lower() not in (".fit", ".fits"):
+        raise HTTPException(status_code=404, detail="no image for this node output")
+    with fits.open(target, memmap=True) as hdul:
+        hdu = next((h for h in hdul if h.data is not None), None)
+        if hdu is None:
+            raise HTTPException(status_code=404, detail="no image data")
+        header = hdu.header.copy()
+        height, width = _spatial_shape(hdu.data)
+    return header, height, width
+
+
+@app.post("/api/framing/{node_hash}/{port}")
+def get_framing(node_hash: str, port: str, body: FramingQuery) -> dict[str, Any]:
+    """Where the crop params in `body` put the box on this canvas.
+
+    For the crop editor: the canvas size, whether it is plate-solved, where
+    north points on the display (degrees clockwise from up), and the stored
+    box in display pixels (`cx, cy, width, height, angle`), or null.
+    """
+    from nodes.basic.framing import canvas_info
+
+    header, height, width = _framing_canvas(node_hash, port)
+    return canvas_info(header, height, width, body.params)
+
+
+@app.post("/api/framing/{node_hash}/{port}/box")
+def framing_params(node_hash: str, port: str, body: FramingBox) -> dict[str, Any]:
+    """The crop params to store for a box drawn on this canvas: on the sky
+    when the canvas is plate-solved, else as fractions of the canvas."""
+    from nodes.basic.framing import params_for_box
+
+    header, height, width = _framing_canvas(node_hash, port)
+    return params_for_box(header, height, width, body.model_dump())
+
+
+# ---------------------------------------------------------------------------
 # Static UI (SvelteKit static build)
 # ---------------------------------------------------------------------------
 # Serves the prebuilt UI from ui/build/ when present. On macOS dev we usually

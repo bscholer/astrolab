@@ -10,6 +10,13 @@ plate solving fails), then stacked with additive+scale normalization and noise
 weighting, so a long or 30 s night counts for more than a short or 15 s one.
 Rejection only runs with enough stacks to judge outliers; satellites and planes
 were already rejected within each night.
+
+The output is always plate-solved and the right way round (north up, east
+left as displayed): the crop frames the picture on the sky, and that needs a
+solve. One night passes through and star matching keeps the first night's
+grid, so those are solved here; per-night duo stacks come out mirrored, and
+Siril's solve turns them over. An image that cannot be solved fails the run
+rather than going on unsolved.
 """
 
 from __future__ import annotations
@@ -67,7 +74,7 @@ class CombineStacksParams(BaseModel):
 @register("combine_stacks")
 class CombineStacksNode(Node[CombineStacksParams]):
     id = "combine_stacks"
-    version = 4
+    version = 5
     tier = "keep"
     uses_siril = True
 
@@ -87,12 +94,14 @@ class CombineStacksNode(Node[CombineStacksParams]):
         out_image = out_dir_path / "image.fit"
         if not images:
             raise RuntimeError("combine_stacks: no stacks to combine")
-        if len(images) == 1:
-            shutil.copyfile(images[0].path, out_image)
-            return {"image": image_ref(out_image)}
-
         work = out_dir_path / "_combine"
         work.mkdir(parents=True, exist_ok=True)
+        if len(images) == 1:
+            shutil.copyfile(images[0].path, out_image)
+            ensure_solved(out_image, work, ctx)
+            shutil.rmtree(work, ignore_errors=True)
+            return {"image": image_ref(out_image)}
+
         for i, ref in enumerate(images):
             # Ends in a letter so Siril doesn't read it as frame i of a sequence.
             (work / f"in{i:04d}x.fit").symlink_to(Path(ref.path).resolve())
@@ -143,9 +152,51 @@ class CombineStacksNode(Node[CombineStacksParams]):
             threshold = min(params.min_coverage, 0.95 * top_share)
             kept = mask_low_coverage(out_image, threshold, cov)
             ctx.progress(0.95, f"combine_stacks: {kept:.0%} of the frame is well covered")
+        # After the coverage mask: that compares against the nights' grid.
+        ensure_solved(out_image, work, ctx)
         shutil.rmtree(work, ignore_errors=True)
         ctx.progress(1.0, f"combine_stacks: combined {len(images)} stacks")
         return {"image": image_ref(out_image)}
+
+
+def solved_upright(path: Path) -> bool:
+    """Plate-solved, with the sky's own parity (east left of north as
+    displayed, i.e. a negative CD determinant)."""
+    from nodes.basic.framing import celestial_wcs
+
+    w = celestial_wcs(fits.getheader(path))
+    return w is not None and float(np.linalg.det(w.pixel_scale_matrix)) < 0
+
+
+def ensure_solved(out_image: Path, work: Path, ctx: RunContext) -> None:
+    """Plate-solve `out_image` in place unless it already is, upright.
+
+    Siril's platesolve turns a mirrored image over ("Flipping image and
+    updating astrometry data"), which per-night duo stacks need.
+    """
+    if solved_upright(out_image):
+        return
+    ctx.progress(0.9, "combine_stacks: plate solving the result")
+    src = work / "solve_inx.fit"
+    shutil.copyfile(out_image, src)
+    result = SirilRuntime().run(
+        [
+            f"cd {quote(work.resolve())}",
+            "load solve_inx",
+            "platesolve -force -nocache",
+            "save solve_outx",
+        ],
+        working_dir=work,
+        on_log=make_progress_handler(ctx),
+        cancel=ctx.cancel,
+    )
+    solved = work / "solve_outx.fit"
+    if result.returncode != 0 or not solved.exists() or not solved_upright(solved):
+        raise RuntimeError(
+            "combine_stacks: could not plate-solve the combined image; the "
+            "framing is placed on the sky and needs a solve\n" + result.stdout[-2000:]
+        )
+    shutil.move(solved, out_image)
 
 
 COVERAGE_BLOCK = 64

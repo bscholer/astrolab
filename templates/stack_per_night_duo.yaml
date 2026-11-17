@@ -1,5 +1,5 @@
 id: stack_per_night_duo
-version: 3
+version: 4
 description: |
   Stack per night for duo-band (H-alpha + OIII) data on a colour camera.
   Each night is calibrated without debayering, split into H-alpha (red
@@ -85,13 +85,12 @@ nodes:
 
   - id: crop
     kind: crop
-    # Auto-trims the zero-fill registration border on first run (width == 0
-    # sentinel triggers the signal-bbox auto-detect). Once the user drags a
-    # rectangle in the project page UI the explicit coords take over.
-    # Threshold + padding live in advanced and control the auto-trim only.
-    # Sits right after the stack so all downstream linear ops (GraXpert,
-    # color_balance, auto_bp_shift) and the autostretch histogram only see
-    # real-data pixels.
+    # Your framing, right after the stack so GraXpert, the HOO colour and the
+    # stretch measure only what you framed. Set in the editor, stored on the
+    # sky (centre, size, angle) and placed through the plate solve, so it
+    # keeps framing the same nebula when a new night grows or shifts the
+    # combined canvas. With no box set it only trims rows and columns with no
+    # data at all.
     params:
       enabled: true
       threshold: 0.001
@@ -215,24 +214,10 @@ nodes:
     # disappears when extract is off.
     ui_depends_on: starnet_replace
 
-  - id: frame
-    kind: crop
-    # Your framing, applied to the finished picture. The early crop only
-    # trims the empty registration border, so GraXpert, the HOO colour and
-    # the stretch always measure the whole field: cropping tightly around
-    # the nebula used to change what they took for sky, and the colours
-    # with it (the Rosette turned into red and blue blotches). Off until a
-    # box is set (Quick's Adjust crop turns it on): auto-trim would take
-    # the black sky of a finished picture for nodata.
-    params:
-      enabled: false
-    inputs:
-      image: starnet_recombine.image
-
   - id: save
     kind: save_image
     inputs:
-      image: frame.image
+      image: starnet_recombine.image
 
 outputs:
   image: save.image

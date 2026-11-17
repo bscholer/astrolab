@@ -79,7 +79,9 @@
     stars = value('starnet_extract', 'enabled') ? Number(value('starnet_recombine', 'stars') ?? 1) : 1;
   });
   const cropNode = $derived(has('frame') ? 'frame' : 'crop');
-  const customCrop = $derived(Number(value(cropNode, 'width') ?? 0) > 0);
+  const customCrop = $derived(
+    Number(value(cropNode, 'width') ?? 0) > 0 || Number(value(cropNode, 'sky_width') ?? 0) > 0
+  );
 
   // Stars at 1 skips StarNet entirely (it is the slow step); below 1 it
   // splits the stars off and puts them back smaller, at 0 not at all.

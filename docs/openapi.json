@@ -389,6 +389,52 @@
         "title": "ErrorBody",
         "type": "object"
       },
+      "FramingBox": {
+        "properties": {
+          "angle": {
+            "default": 0.0,
+            "title": "Angle",
+            "type": "number"
+          },
+          "cx": {
+            "title": "Cx",
+            "type": "number"
+          },
+          "cy": {
+            "title": "Cy",
+            "type": "number"
+          },
+          "height": {
+            "exclusiveMinimum": 0.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "width": {
+            "exclusiveMinimum": 0.0,
+            "title": "Width",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cx",
+          "cy",
+          "width",
+          "height"
+        ],
+        "title": "FramingBox",
+        "type": "object"
+      },
+      "FramingQuery": {
+        "properties": {
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "title": "FramingQuery",
+        "type": "object"
+      },
       "GalleryEntry": {
         "additionalProperties": false,
         "description": "One render in the gallery: a successful project history entry,\nsurfaced as a flat row so the UI doesn't have to fan out per\nproject.",
@@ -2615,6 +2661,128 @@
           }
         },
         "summary": "Set Scrap Purge"
+      }
+    },
+    "/api/framing/{node_hash}/{port}": {
+      "post": {
+        "description": "Where the crop params in `body` put the box on this canvas.\n\nFor the crop editor: the canvas size, whether it is plate-solved, where\nnorth points on the display (degrees clockwise from up), and the stored\nbox in display pixels (`cx, cy, width, height, angle`), or null.",
+        "operationId": "get_framing_api_framing__node_hash___port__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_hash",
+            "required": true,
+            "schema": {
+              "title": "Node Hash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "title": "Port",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FramingQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Framing Api Framing  Node Hash   Port  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Framing"
+      }
+    },
+    "/api/framing/{node_hash}/{port}/box": {
+      "post": {
+        "description": "The crop params to store for a box drawn on this canvas: on the sky\nwhen the canvas is plate-solved, else as fractions of the canvas.",
+        "operationId": "framing_params_api_framing__node_hash___port__box_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_hash",
+            "required": true,
+            "schema": {
+              "title": "Node Hash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "title": "Port",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FramingBox"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Framing Params Api Framing  Node Hash   Port  Box Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Framing Params"
       }
     },
     "/api/gallery": {
