@@ -76,6 +76,7 @@ class Scheduler:
         self.mono: Callable[[], float] = time.monotonic
         self._progress: tuple[str | None, int, float] = (None, -1, 0.0)
         self._streak: tuple[str | None, int, int, int] = (None, 0, 0, 0)
+        self._streak_job: object = None
         self._save_progress = save_progress or (lambda _p: None)
         self._load_progress = load_progress or dict
         self._loaded: dict[str, float] | None = None
@@ -224,11 +225,28 @@ class Scheduler:
     def _account(self, target: str | None, job: dict) -> int:
         """Track rejected frames in a row and credit accepted frames as integration time.
 
-        Any accepted frame since the last tick resets the streak. Returns the streak."""
+        Any accepted frame since the last tick resets the streak. Returns the streak.
+
+        Only frames of a job shot for `target` count. Right after a switch the
+        scope still reports the previous target's finished job; its frames
+        are the baseline, not new ones. Counting from zero there credited
+        that whole job to the new target on every retry (a cloudy night of
+        failed calibrations gave M 78 an hour with no frames at all).
+        """
         captured, failed = job.get("captured") or 0, job.get("failed") or 0
+        job_id = job.get("id")
         name, last_c, last_f, streak = self._streak
-        if name != target or captured < last_c:
-            last_c = last_f = streak = 0
+        new_job = captured < last_c or (
+            job_id is not None and self._streak_job is not None and job_id != self._streak_job
+        )
+        if new_job:
+            last_c = last_f = 0
+            if name != target:
+                streak = 0
+        elif name is not None and name != target:
+            # Same job, new target: the old target's frames.
+            last_c, last_f, streak = captured, failed, 0
+        self._streak_job = job_id
         new_failed = failed - last_f
         accepted = (captured - last_c) - new_failed
         share = 0.0

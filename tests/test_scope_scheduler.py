@@ -432,3 +432,29 @@ def test_usable_failed_frames_keep_the_target_and_count_as_time():
     s2 = Scheduler(lambda: FakeClient(), lambda: LOC, lambda: [_target("b")], FakeObserver(),
                    rescue_share=lambda t: None)
     assert s2._account("b", {"captured": 12, "failed": 12}) == 12
+
+
+def test_switching_target_does_not_credit_the_previous_targets_job():
+    """After a switch the scope still reports the last target's finished job.
+    Its frames are not the new target's: retries on a cloudy night credited
+    that job again and again (M 78 got an hour with no frames)."""
+    s = Scheduler(
+        lambda: FakeClient(), lambda: LOC,
+        lambda: [Candidate("a", 0, 0, exposure_s=30), Candidate("b", 0, 0, exposure_s=30)],
+        FakeObserver(),
+    )
+    s._account("a", {"id": "j1", "captured": 100, "failed": 0})
+    assert s._integrated["a"] == 100 * 30
+    # Calibrating "b" fails, then "a" again, then "b": still job j1 each time.
+    for target in ("b", "a", "b"):
+        s._account(target, {"id": "j1", "captured": 100, "failed": 0})
+    assert s._integrated.get("b", 0) == 0
+    assert s._integrated["a"] == 100 * 30
+    # B's own job starts: its frames count from zero.
+    s._account("b", {"id": "j2", "captured": 4, "failed": 0})
+    assert s._integrated["b"] == 4 * 30
+    # Without job ids, a count that drops still marks a new job.
+    s._account("a", {"captured": 100, "failed": 0})
+    s._account("b", {"captured": 100, "failed": 0})
+    s._account("b", {"captured": 2, "failed": 0})
+    assert s._integrated["b"] == 6 * 30
