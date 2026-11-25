@@ -3764,7 +3764,21 @@ scope_scheduler = Scheduler(
     save_progress=lambda p: set_setting(SETTING_SCOPE_PROGRESS, p, db_path=job_manager.db_path),
     skymap=scope_skymap,
     rescue_share=lambda target: _live_rescue_share(target),
+    sky_credit=lambda c: _sky_credit(c),
 )
+
+_SKY_CREDIT_S = 600
+_sky_credit_cache: dict[str, Any] = {"at": -_SKY_CREDIT_S, "sessions": []}
+
+
+def _sky_credit(c: Candidate) -> float:
+    """Kept seconds over a target from sessions shot under other names. Its
+    own sessions are what the scheduler already credits by name."""
+    if time.monotonic() - _sky_credit_cache["at"] > _SKY_CREDIT_S:
+        with _db() as conn:
+            _sky_credit_cache["sessions"] = coverage.kept_sessions(conn)
+        _sky_credit_cache["at"] = time.monotonic()
+    return coverage.shot_at(_sky_credit_cache["sessions"], c.ra_deg, c.dec_deg, skip_target=c.name)
 
 
 def _live_rescue_share(target: str) -> float | None:
@@ -4531,6 +4545,9 @@ class TonightEntry(BaseModel):
     """Minor axis of the object, from OpenNGC."""
     pa_deg: float | None = None
     """Position angle of the major axis in degrees, north through east."""
+    shot_s: float = 0.0
+    """Kept exposure of every session whose frames cover the object's centre,
+    whatever target they were shot under (mosaic panels included)."""
     score: float = 0.0
     """Rank in 0..1. Entries arrive sorted by this, highest first."""
     image_version: str | None = None
@@ -4763,6 +4780,7 @@ def get_tonight(
             "last_session_at": row["last_session_at"],
         }
 
+    shot = coverage.kept_sessions(conn)
     image_versions = {
         r["canonical"]: r["updated_at"]
         for r in conn.execute("SELECT canonical, updated_at FROM target_images").fetchall()
@@ -4838,6 +4856,7 @@ def get_tonight(
                 size_arcmin=entry.size_arcmin,
                 minor_arcmin=entry.minor_arcmin,
                 pa_deg=entry.pa_deg,
+                shot_s=coverage.shot_at(shot, float(entry.ra_deg), float(entry.dec_deg)),
                 score=sky.target_score(
                     entry.object_type,
                     showpieces.fraction(entry.canonical),

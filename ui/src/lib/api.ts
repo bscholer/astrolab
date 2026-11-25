@@ -1003,6 +1003,9 @@ export interface TonightEntry {
   minor_arcmin: number | null;
   // Position angle of the major axis, north through east.
   pa_deg: number | null;
+  // Kept seconds of every session whose frames cover the object's centre,
+  // whatever target they were shot under (mosaic panels included).
+  shot_s: number;
   score: number;
   image_version: string | null;
   alt_now_deg: number;

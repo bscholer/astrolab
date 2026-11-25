@@ -125,6 +125,54 @@ def overlaps(a: Footprint, b: Footprint, min_share: float = MIN_OVERLAP) -> bool
     ) * (a.height_deg + b.height_deg) / 2
 
 
+def contains(f: Footprint, ra_deg: float, dec_deg: float) -> bool:
+    """True when the point falls inside the box."""
+    if abs(f.dec_deg - dec_deg) > f.height_deg:
+        return False
+    dx, dy = offset_deg(f, Footprint(ra_deg, dec_deg, 0.0, 0.0))
+    return abs(dx) <= f.width_deg / 2 and abs(dy) <= f.height_deg / 2
+
+
+@dataclass(frozen=True)
+class ShotSession:
+    footprint: Footprint
+    target: str
+    usable_s: float
+
+
+def kept_sessions(conn: sqlite3.Connection) -> list[ShotSession]:
+    """Every kept session with a position, with its kept exposure time."""
+    feet = footprints(conn)
+    if not feet:
+        return []
+    out = []
+    for sid, target, usable in conn.execute(
+        """
+        SELECT s.id, t.name, v.usable_s
+        FROM sessions s
+        JOIN targets t ON t.id = s.target_id
+        JOIN session_verdicts v ON v.session_id = s.id AND v.verdict = 'keep'
+        """
+    ):
+        if sid in feet and usable:
+            out.append(ShotSession(feet[sid], target, float(usable)))
+    return out
+
+
+def shot_at(
+    sessions: list[ShotSession], ra_deg: float, dec_deg: float, skip_target: str | None = None
+) -> float:
+    """Kept seconds of every session whose frames cover this point, whatever
+    target they were shot under: a Heart and Soul mosaic panel counts for the
+    Heart if it covers the Heart. `skip_target` leaves out one target's own
+    sessions, for callers that count those another way."""
+    return sum(
+        s.usable_s
+        for s in sessions
+        if s.target != skip_target and contains(s.footprint, ra_deg, dec_deg)
+    )
+
+
 def base_name(target: str) -> str:
     """The mosaic's name for a panel target, or the name itself."""
     return target.split(PANEL_MARK, 1)[0]

@@ -106,3 +106,16 @@ export function suggestGrid(e: TonightEntry): Grid {
 export function mosaicName(name: string): string {
   return name.replace(/[^A-Za-z0-9 +.-]+/g, ' ').split(/\s+/).filter(Boolean).join(' ');
 }
+
+/** True when the point falls inside a north-up box. */
+export function inBox(b: SkyBox, ra: number, dec: number): boolean {
+  if (Math.abs(b.dec - dec) > b.h) return false;
+  const dra = ((((ra - b.ra + 540) % 360) + 360) % 360) - 180;
+  const dx = dra * Math.cos((((b.dec + dec) / 2) * Math.PI) / 180);
+  return Math.abs(dx) <= b.w / 2 && Math.abs(dec - b.dec) <= b.h / 2;
+}
+
+export function fmtHours(s: number): string {
+  const h = s / 3600;
+  return h >= 10 ? `${Math.round(h)} h` : h >= 0.1 ? `${h.toFixed(1)} h` : `${Math.round(s / 60)} min`;
+}

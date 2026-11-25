@@ -3,7 +3,7 @@
   map moves it. Saving puts the panels on the auto list.
 -->
 <script lang="ts">
-  import { MOSAIC_MAX_SIDE, MOSAIC_OVERLAP, mosaicSize, type Grid } from './atlas';
+  import { fmtHours, MOSAIC_MAX_SIDE, MOSAIC_OVERLAP, mosaicSize, type Grid } from './atlas';
 
   let {
     name,
@@ -11,6 +11,7 @@
     compact = false,
     busy = false,
     replacing = false,
+    inside = [],
     onchange,
     onsave,
     oncancel,
@@ -21,6 +22,8 @@
     busy?: boolean;
     /** True when this mosaic is already on the auto list. */
     replacing?: boolean;
+    /** Named objects inside the grid, with the time already shot on each. */
+    inside?: { name: string; common: string | null; shot_s: number }[];
     onchange: (g: Grid) => void;
     onsave: () => void;
     oncancel: () => void;
@@ -55,11 +58,24 @@
     {/each}
   </div>
 
+  {#if inside.length}
+    <ul class="inside" aria-label="Already shot inside the grid">
+      {#each inside as o (o.name)}
+        <li>
+          <span class="o-name">{o.common ?? o.name}</span>
+          <span class="o-time mono" class:none={o.shot_s <= 0}>
+            {o.shot_s > 0 ? `${fmtHours(o.shot_s)} shot` : 'not shot yet'}
+          </span>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
   {#if !compact}
     <p class="hint">
-      Drag the map to move the grid. The panels go on the auto list and take turns, the ones
-      with the least time first. Every panel stacks with anything else you have shot where it
-      overlaps.
+      Drag the map to move the grid. The panels go on the auto list and take turns, the one
+      with the least time under it first, counting everything already shot there. Every panel
+      stacks with anything else you have shot where it overlaps.
     </p>
   {/if}
 
@@ -117,6 +133,26 @@
     min-width: 1.2rem;
     text-align: center;
     font-size: 1rem;
+  }
+  .inside {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.2rem;
+    font-size: 0.84rem;
+  }
+  .inside li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .o-time {
+    color: #c4b5fd;
+    font-size: 0.78rem;
+  }
+  .o-time.none {
+    color: var(--fg-mute);
   }
   .hint {
     margin: 0;

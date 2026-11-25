@@ -183,3 +183,20 @@ def test_panel_names_round_trip() -> None:
     assert name == "IC 1805 panel 3 of 6"
     assert coverage.base_name(name) == "IC 1805"
     assert coverage.base_name("M 31") == "M 31"
+
+
+def test_time_counts_wherever_the_frames_cover(tmp_path: Path) -> None:
+    with open_db(tmp_path / "c.sqlite") as db:
+        shoot(db, 1, "IC 1805", 38.2, 61.45, "2026-11-12T20:00:00", frames=120)
+        # A Heart and Soul panel whose frame reaches over the Heart's centre.
+        shoot(db, 2, "Heart and Soul panel 2 of 2", 40.0, 61.2, "2026-11-13T20:00:00", frames=60)
+        shoot(db, 3, "NGC 7000", 314.7, 44.3, "2026-11-13T23:00:00")
+        sessions = coverage.kept_sessions(db)
+    heart = coverage.shot_at(sessions, 38.2, 61.45)
+    assert heart == 120 * 30 + 60 * 30
+    # Its own sessions left out, as the scheduler counts those by name.
+    assert coverage.shot_at(sessions, 38.2, 61.45, skip_target="IC 1805") == 60 * 30
+    # The panel's frame reaches the Soul's centre too.
+    assert coverage.shot_at(sessions, 42.8, 60.4) == 60 * 30
+    # Further east, past both frames, nothing yet.
+    assert coverage.shot_at(sessions, 45.0, 60.4) == 0

@@ -6,7 +6,7 @@
   import { api, type TonightEntry, type TonightResponse } from '$lib/api';
   import { displayName, upWindow } from '$lib/tonight';
   import { horizon, radec, toAltAz } from './sky';
-  import { TELE_FOV_DEG } from './atlas';
+  import { fmtHours, TELE_FOV_DEG } from './atlas';
 
   let {
     entry,
@@ -163,7 +163,11 @@
         {:else}
           Stays below {data.min_alt_deg.toFixed(0)}° tonight
         {/if}
-        {#if entry.session_count > 0}
+        {#if entry.shot_s > 0}
+          <span class="captured" title="Kept time from every session whose frames cover it, mosaic panels included">
+            · {fmtHours(entry.shot_s)} shot
+          </span>
+        {:else if entry.session_count > 0}
           <span class="captured">· captured {entry.session_count}×</span>
         {/if}
       </p>

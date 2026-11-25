@@ -373,6 +373,7 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
             "size_arcmin",
             "minor_arcmin",
             "pa_deg",
+            "shot_s",
             "score",
             "image_version",
             "alt_now_deg",

@@ -24,6 +24,7 @@
   } from './sky';
   import {
     importance,
+    inBox,
     planMosaic,
     TELE_FOV_DEG,
     type Constellations,
@@ -470,57 +471,111 @@
     return !!p && p.z > 0 && p.x > -m && p.x < width + m && p.y > -m && p.y < height + m;
   }
 
-  function boxLabel(ctx: CanvasRenderingContext2D, view: View, center: Vec3, text: string, color: string) {
-    const p = view.project(center);
-    if (!p) return;
-    ctx.font = '600 12px Inter, system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(2, 3, 10, 0.8)';
-    ctx.strokeText(text, p.x, p.y);
-    ctx.fillStyle = color;
-    ctx.fillText(text, p.x, p.y);
+  function hoursAt(ra: number, dec: number): number {
+    let h = 0;
+    for (const b of covered) if (inBox(b, ra, dec)) h += b.hours;
+    return h;
   }
 
   function drawCovered(ctx: CanvasRenderingContext2D, view: View) {
+    // Quieter while a mosaic is laid out, so the grid reads first.
+    const k = mosaicGrid ? 0.55 : 1;
     for (const b of covered) {
       const c = radec(b.ra, b.dec);
       if (!onScreen(view, c, Math.max(b.w, b.h))) continue;
       const pts = boxPath(c, b.w, b.h);
-      ctx.fillStyle = `rgba(167, 139, 250, ${Math.min(0.06 + b.hours * 0.04, 0.24)})`;
+      ctx.fillStyle = `rgba(167, 139, 250, ${k * Math.min(0.06 + b.hours * 0.04, 0.24)})`;
       fillBox(ctx, view, pts);
-      ctx.strokeStyle = 'rgba(167, 139, 250, 0.45)';
+      ctx.strokeStyle = `rgba(167, 139, 250, ${k * 0.45})`;
       ctx.lineWidth = 1;
       strokeCurve(ctx, view, pts);
     }
   }
 
+  /** A panel number in a dark round badge, with the hours already shot there. */
+  function badge(ctx: CanvasRenderingContext2D, view: View, center: Vec3, text: string, hours: number, color: string) {
+    const p = view.project(center);
+    if (!p) return;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(2, 3, 10, 0.85)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    ctx.font = '700 12px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.fillText(text, p.x, p.y + 0.5);
+    if (hours >= 0.05) {
+      const label = hours >= 10 ? `${Math.round(hours)} h shot` : `${hours.toFixed(1)} h shot`;
+      ctx.font = '600 11px Inter, system-ui, sans-serif';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(2, 3, 10, 0.85)';
+      ctx.strokeText(label, p.x, p.y + 24);
+      ctx.fillStyle = 'rgba(196, 181, 253, 0.95)';
+      ctx.fillText(label, p.x, p.y + 24);
+    }
+  }
+
+  /** Stroke a box with a dark halo under the line, so it reads over bright sky. */
+  function strokeBox(ctx: CanvasRenderingContext2D, view: View, pts: Vec3[], color: string, w: number) {
+    ctx.lineWidth = w + 2.5;
+    ctx.strokeStyle = 'rgba(2, 3, 10, 0.7)';
+    strokeCurve(ctx, view, pts);
+    ctx.lineWidth = w;
+    ctx.strokeStyle = color;
+    strokeCurve(ctx, view, pts);
+  }
+
   function drawPlanned(ctx: CanvasRenderingContext2D, view: View) {
-    ctx.setLineDash([6, 4]);
     for (const b of planned) {
       const c = radec(b.ra, b.dec);
       if (!onScreen(view, c, Math.max(b.w, b.h))) continue;
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.8)';
-      ctx.lineWidth = 1.25;
-      strokeCurve(ctx, view, boxPath(c, b.w, b.h));
-      if (view.pxPerDeg * b.h > 50) boxLabel(ctx, view, c, b.label, 'rgba(251, 191, 36, 0.9)');
+      ctx.setLineDash([6, 4]);
+      strokeBox(ctx, view, boxPath(c, b.w, b.h), 'rgba(251, 191, 36, 0.85)', 1.25);
+      ctx.setLineDash([]);
+      if (view.pxPerDeg * b.h > 50) badge(ctx, view, c, b.label, hoursAt(b.ra, b.dec), 'rgba(251, 191, 36, 0.95)');
     }
-    ctx.setLineDash([]);
+  }
+
+  let dimCanvas: HTMLCanvasElement | null = null;
+
+  /** Darken everything outside the panels. */
+  function dimOutside(ctx: CanvasRenderingContext2D, view: View, boxes: Vec3[][]) {
+    dimCanvas ??= document.createElement('canvas');
+    dimCanvas.width = overlay.width;
+    dimCanvas.height = overlay.height;
+    const d = dimCanvas.getContext('2d');
+    if (!d) return;
+    const dpr = overlay.width / width;
+    d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    d.fillStyle = 'rgba(2, 3, 10, 0.5)';
+    d.fillRect(0, 0, width, height);
+    d.globalCompositeOperation = 'destination-out';
+    d.fillStyle = '#000';
+    for (const pts of boxes) fillBox(d, view, pts);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(dimCanvas, 0, 0);
+    ctx.restore();
   }
 
   function drawMosaic(ctx: CanvasRenderingContext2D, view: View, center: Vec3, grid: Grid) {
     const rd = toRaDec(center);
     const panels = planMosaic(rd.ra, rd.dec, grid);
-    ctx.fillStyle = 'rgba(94, 234, 212, 0.07)';
-    for (const b of panels) fillBox(ctx, view, boxPath(radec(b.ra, b.dec), b.w, b.h));
-    ctx.strokeStyle = 'rgba(94, 234, 212, 0.95)';
-    ctx.lineWidth = 1.5;
-    panels.forEach((b, i) => {
-      const c = radec(b.ra, b.dec);
-      strokeCurve(ctx, view, boxPath(c, b.w, b.h));
-      if (view.pxPerDeg * b.h > 36) boxLabel(ctx, view, c, String(i + 1), 'rgba(94, 234, 212, 0.95)');
-    });
+    const paths = panels.map((b) => boxPath(radec(b.ra, b.dec), b.w, b.h));
+    dimOutside(ctx, view, paths);
+    // A faint fill, so where panels overlap shows a little brighter.
+    ctx.fillStyle = 'rgba(94, 234, 212, 0.05)';
+    for (const pts of paths) fillBox(ctx, view, pts);
+    for (const pts of paths) strokeBox(ctx, view, pts, 'rgba(94, 234, 212, 0.95)', 1.75);
+    if (view.pxPerDeg * TELE_FOV_DEG[1] > 36) {
+      panels.forEach((b, i) => {
+        badge(ctx, view, radec(b.ra, b.dec), String(i + 1), hoursAt(b.ra, b.dec), 'rgba(94, 234, 212, 0.95)');
+      });
+    }
   }
 
   function drawFrameBox(ctx: CanvasRenderingContext2D, view: View, center: Vec3) {

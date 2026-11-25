@@ -17,8 +17,10 @@
     framingFov,
     importance,
     isFeatured,
+    inBox,
     mosaicName,
     mosaicSize,
+    planMosaic,
     suggestGrid,
     TELE_FOV_DEG,
     type Constellations,
@@ -98,13 +100,14 @@
   );
   const planned = $derived(
     (scope?.targets ?? [])
-      .filter((t) => t.mosaic)
+      // The mosaic being edited shows as the new grid only, not its old panels too.
+      .filter((t) => t.mosaic && !(mosaicGrid && t.mosaic === selectedMosaic))
       .map((t) => ({
         ra: t.ra_deg,
         dec: t.dec_deg,
         w: TELE_FOV_DEG[0],
         h: TELE_FOV_DEG[1],
-        label: t.name.split(' panel ')[1] ?? '',
+        label: (t.name.split(' panel ')[1] ?? '').split(' of ')[0],
       })),
   );
   const selectedMosaic = $derived(selectedEntry ? mosaicName(displayName(selectedEntry)) : null);
@@ -183,7 +186,7 @@
   }
 
   function select(name: string | null) {
-    if (name !== selected) mosaicGrid = null;
+    if (name !== selected && mosaicGrid) endMosaic();
     selected = name;
     sheetOpen = false;
     setUrl(name);
@@ -258,8 +261,30 @@
     const [w, h] = mosaicSize(grid);
     const fov = Math.min(140, Math.max(w, h * 1.6) * 1.9);
     const center = queuedCenter() ?? { ra: e.ra_deg, dec: e.dec_deg };
+    // North up is how the scope's frames come out, so the panels sit square.
+    frameBeforeMosaic ??= frame;
+    frame = 'equatorial';
     sky?.flyTo(center.ra, center.dec, fov);
   }
+
+  let frameBeforeMosaic: 'horizon' | 'equatorial' | null = null;
+
+  function endMosaic() {
+    mosaicGrid = null;
+    if (frameBeforeMosaic) frame = frameBeforeMosaic;
+    frameBeforeMosaic = null;
+  }
+
+  /** Named objects whose centres fall inside the grid, with the time shot on each. */
+  const insideMosaic = $derived.by(() => {
+    if (!mosaicGrid || !readout) return [];
+    const panels = planMosaic(readout.ra, readout.dec, mosaicGrid);
+    return entries
+      .filter((e) => (e.messier || e.common_name || e.name === selected) && panels.some((b) => inBox(b, e.ra_deg, e.dec_deg)))
+      .sort((a, b) => importance(b) - importance(a))
+      .slice(0, 4)
+      .map((e) => ({ name: displayName(e), common: e.common_name, shot_s: e.shot_s }));
+  });
 
   function queuedPanelsOf(name: string | null) {
     return (scope?.targets ?? []).filter((t) => name && t.mosaic === name);
@@ -303,7 +328,7 @@
           ? `Added ${n} panels of ${displayName(e)} to the auto list.`
           : `Added ${n} panels of ${displayName(e)}. The auto list is off; turn it on from the Scope page.`,
       );
-      mosaicGrid = null;
+      endMosaic();
       await refreshScope();
     } catch (err) {
       toast.error((err as Error).message);
@@ -418,11 +443,11 @@
 
 {#snippet viewControls()}
   <div class="seg" role="group" aria-label="Map orientation">
-    <button type="button" class:active={frame === 'horizon'} onclick={() => (frame = 'horizon')} title="Zenith up, as you see it from the yard">
-      Horizon
+    <button type="button" class:active={frame === 'horizon'} onclick={() => (frame = 'horizon')} title="Straight up is the top of the screen, as you see the sky from the yard">
+      As seen
     </button>
-    <button type="button" class:active={frame === 'equatorial'} onclick={() => (frame = 'equatorial')} title="North up, like a star chart">
-      Star chart
+    <button type="button" class:active={frame === 'equatorial'} onclick={() => (frame = 'equatorial')} title="North at the top, east to the left: how the scope's frames come out, so mosaic panels sit square">
+      North up
     </button>
   </div>
   <div class="layer-list">
@@ -518,7 +543,8 @@
                 replacing={queuedPanels > 0}
                 onchange={(g) => (mosaicGrid = g)}
                 onsave={() => saveMosaic(selectedEntry)}
-                oncancel={() => (mosaicGrid = null)}
+                oncancel={endMosaic}
+                inside={insideMosaic}
               />
             </div>
           {:else if selectedEntry && data}
@@ -574,7 +600,8 @@
               replacing={queuedPanels > 0}
               onchange={(g) => (mosaicGrid = g)}
               onsave={() => saveMosaic(selectedEntry)}
-              oncancel={() => (mosaicGrid = null)}
+              oncancel={endMosaic}
+              inside={insideMosaic}
             />
           </section>
         {:else if selectedEntry && data}

@@ -54,6 +54,7 @@ class Scheduler:
         save_progress: Callable[[dict[str, float]], None] | None = None,
         skymap: SkyMap | None = None,
         rescue_share: Callable[[str], float | None] | None = None,
+        sky_credit: Callable[[Candidate], float] | None = None,
     ) -> None:
         """rescue_share(target) is the share of the target's recent failed frames
         our own triage finds good enough to stack (None while unknown). The scope
@@ -65,6 +66,7 @@ class Scheduler:
         self._observer = observer
         self._skymap = skymap
         self._rescue_share = rescue_share
+        self._sky_credit = sky_credit
         self._rescue: dict[str, tuple[float, float]] = {}
         self._clock = clock
         self.interval_s = interval_s
@@ -304,6 +306,22 @@ class Scheduler:
         self._integrated[cand.name] = self._integrated.get(cand.name, 0.0) + frames * exposure
         self._save_progress(dict(self._integrated))
 
+    def _time_on(self, targets: list[Candidate]) -> dict[str, float]:
+        """Seconds each target already has: what this scheduler shot under its
+        name, plus kept time from other sessions whose frames cover it (a
+        mosaic panel over the Heart counts for the Heart, and the other way
+        round), so the night goes where the stack is thinnest."""
+        out = {}
+        for c in targets:
+            extra = 0.0
+            if self._sky_credit is not None:
+                try:
+                    extra = self._sky_credit(c)
+                except Exception:
+                    log.warning("could not look up time shot over %s", c.name, exc_info=True)
+            out[c.name] = self._integrated.get(c.name, 0.0) + extra
+        return out
+
     def _goal_reached(self) -> set[str]:
         return {
             c.name
@@ -389,13 +407,14 @@ class Scheduler:
             client.call("stopCapture")
             self._set(state="switching", reason=f"leaving {current}")
             return
+        targets = self._get_targets()
         pick = scope_plan.pick_target(
-            self._get_targets(),
+            targets,
             loc,
             now,
             skip=frozenset(self._active_skips() | self._goal_reached()),
             blocked=blocked,
-            integrated=dict(self._integrated),
+            integrated=self._time_on(targets),
         )
         if pick is None:
             self._set(state="waiting", reason="no usable target, retrying")

@@ -2586,6 +2586,11 @@
             "title": "Session Count",
             "type": "integer"
           },
+          "shot_s": {
+            "default": 0.0,
+            "title": "Shot S",
+            "type": "number"
+          },
           "size_arcmin": {
             "anyOf": [
               {

@@ -458,3 +458,31 @@ def test_switching_target_does_not_credit_the_previous_targets_job():
     s._account("b", {"captured": 100, "failed": 0})
     s._account("b", {"captured": 2, "failed": 0})
     assert s._integrated["b"] == 6 * 30
+
+
+def test_time_shot_under_other_names_counts_where_it_covers():
+    """Two mosaic panels at the same height: the one over the Heart, which has
+    hours from earlier Heart nights, gives way to the one over the bare Soul."""
+    heart, soul = _target("Heart panel 1 of 2"), _target("Heart panel 2 of 2")
+    credit = {heart.name: 8 * 3600.0, soul.name: 0.0}
+    obs = FakeObserver()
+    s = Scheduler(
+        lambda: FakeClient(), lambda: LOC, lambda: [heart, soul], obs,
+        clock=lambda: NIGHT, sky_credit=lambda c: credit[c.name],
+    )
+    s.enabled = True
+    s.tick()
+    assert obs.started == [soul.name]
+    assert s._time_on([heart, soul]) == {heart.name: 8 * 3600.0, soul.name: 0.0}
+
+
+def test_a_broken_sky_lookup_falls_back_to_time_by_name():
+    def broken(_c):
+        raise RuntimeError("db gone")
+
+    obs = FakeObserver()
+    s = Scheduler(lambda: FakeClient(), lambda: LOC, lambda: [_target("a")], obs,
+                  clock=lambda: NIGHT, sky_credit=broken)
+    s.enabled = True
+    s.tick()
+    assert obs.started == ["a"]
