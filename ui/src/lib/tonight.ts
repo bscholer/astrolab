@@ -40,20 +40,38 @@ export function matchesSearch(e: TonightEntry, query: string): boolean {
   });
 }
 
-/** First and last curve samples at or above `minAlt`, as UTC instants. */
+/**
+ * First and last curve samples at or above `minAlt`, as UTC instants. With
+ * `skyline` (the altitude the target must clear at each sample, from the
+ * scope's panorama), samples behind houses and trees do not count.
+ */
 export function upWindow(
   curve: number[] | null,
   minAlt: number,
   duskUtc: string | null,
   stepMin: number,
+  skyline: number[] | null = null,
 ): { start: Date; end: Date } | null {
   if (!curve || !duskUtc) return null;
-  const first = curve.findIndex((alt) => alt >= minAlt);
+  const clear = (alt: number, i: number) => alt >= minAlt && (!skyline || alt >= (skyline[i] ?? -90));
+  const first = curve.findIndex(clear);
   if (first === -1) return null;
-  const last = curve.findLastIndex((alt) => alt >= minAlt);
+  const last = curve.findLastIndex(clear);
   const dusk = new Date(duskUtc).getTime();
   return {
     start: new Date(dusk + first * stepMin * 60_000),
     end: new Date(dusk + last * stepMin * 60_000),
   };
+}
+
+/**
+ * SVG polygon points for what blocks the sky under a target's path: the
+ * skyline curve filled down to the bottom of a sparkline `w` x `h`, with
+ * `y` mapping altitude to the box. Empty without a skyline.
+ */
+export function skylineArea(skyline: number[] | null, w: number, h: number, y: (alt: number) => number): string {
+  if (!skyline || skyline.length < 2) return '';
+  const dx = w / (skyline.length - 1);
+  const pts = skyline.map((alt, i) => `${(i * dx).toFixed(1)},${(alt <= -90 ? h : y(alt)).toFixed(1)}`);
+  return `0,${h} ${pts.join(' ')} ${w},${h}`;
 }

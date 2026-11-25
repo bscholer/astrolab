@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from astropy.coordinates import EarthLocation
 
 from server import scope_plan, sky
+from server.pano_sky import Skyline
 from server.scope_observe import Observer
 from server.scope_plan import Candidate
 from server.scope_service import ScopeServiceClient, ScopeServiceError
@@ -55,6 +56,7 @@ class Scheduler:
         skymap: SkyMap | None = None,
         rescue_share: Callable[[str], float | None] | None = None,
         sky_credit: Callable[[Candidate], float] | None = None,
+        skyline: Callable[[], Skyline | None] | None = None,
     ) -> None:
         """rescue_share(target) is the share of the target's recent failed frames
         our own triage finds good enough to stack (None while unknown). The scope
@@ -67,6 +69,7 @@ class Scheduler:
         self._skymap = skymap
         self._rescue_share = rescue_share
         self._sky_credit = sky_credit
+        self._skyline = skyline or (lambda: None)
         self._rescue: dict[str, tuple[float, float]] = {}
         self._clock = clock
         self.interval_s = interval_s
@@ -361,8 +364,25 @@ class Scheduler:
         else:
             self._skip_target(target, SKIP_AFTER_ERROR_S)
 
+    def _blocked(self):
+        """What stands in the way: patches learned from failed frames, and the skyline the
+        panorama traced (houses, trees). Either one rules a direction out."""
+        checks = []
+        if self._skymap:
+            checks.append(self._skymap.blocked)
+        try:
+            line = self._skyline()
+        except Exception:
+            log.exception("could not read the skyline")
+            line = None
+        if line is not None:
+            checks.append(line.blocks)
+        if not checks:
+            return None
+        return lambda alt, az: any(check(alt, az) for check in checks)
+
     def _step(self, client, loc, now, job, capturing) -> None:
-        blocked = self._skymap.blocked if self._skymap else None
+        blocked = self._blocked()
         obs = self._observer.snapshot()
         current = obs.get("target")
         streak = self._account(current, job) if current else 0

@@ -323,9 +323,13 @@ class PanoScanner:
     def _stitch(self, folder: Path, latitude: float | None) -> None:
         self._set(step="stitching")
         try:
+            before = pano_sky.world_frame_of(folder)
             result = run_stitch(folder, latitude)
             self._set(step="finding the sky")
             try:
+                after = pano_sky.world_frame_of(folder)
+                if before is not None and after is not None:
+                    pano_sky.remap_edits(folder, before, after)
                 pano_sky.detect(folder, float(result["alt_top"]))
                 pano_sky.save_horizon(folder, result)
             except Exception:  # the panorama is still worth having without it

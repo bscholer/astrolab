@@ -336,7 +336,8 @@ def night_transits_and_hours(
     dusk_utc: datetime,
     dawn_utc: datetime,
     min_alt_deg: float,
-) -> tuple[list[datetime | None], np.ndarray, np.ndarray]:
+    skyline=None,
+) -> tuple[list[datetime | None], np.ndarray, np.ndarray, np.ndarray | None]:
     """Vectorized transit + hours-above + alt curve for many targets.
 
     The Tonight planner walks ~1500 candidates per request; calling the
@@ -352,6 +353,10 @@ def night_transits_and_hours(
       - ndarray (n_targets, n_sparkline_samples) of altitudes in degrees,
         sampled at SPARKLINE_STEP_MIN cadence from dusk to dawn. Empty
         last axis when the window is degenerate.
+      - with a `skyline` (server.pano_sky.Skyline: houses and trees seen
+        by the scope), the altitude each target must clear at each of
+        those samples, given where it stands in azimuth then; else None.
+        Hours above then count only time clear of the skyline too.
 
     Internal sampling cadence (5 min) and transit interpolation match
     the per-target helpers, so a switch from this batch path to the
@@ -362,9 +367,10 @@ def night_transits_and_hours(
     dawn = _ensure_utc(dawn_utc)
     n_targets = len(ra_deg)
     if n_targets == 0:
-        return [], np.zeros(0), np.zeros((0, 0))
+        return [], np.zeros(0), np.zeros((0, 0)), None
     if dawn <= dusk:
-        return [None] * n_targets, np.zeros(n_targets), np.zeros((n_targets, 0))
+        empty = np.zeros((n_targets, 0))
+        return [None] * n_targets, np.zeros(n_targets), empty, empty if skyline else None
 
     step_min = 5
     n_samples = int(math.ceil((dawn - dusk).total_seconds() / 60 / step_min)) + 1
@@ -377,10 +383,15 @@ def night_transits_and_hours(
     # column-shaped SkyCoord plus a row-shaped Time as a Cartesian
     # product across the obstime grid.
     altaz_frame = AltAz(obstime=times, location=loc)
-    alts = np.asarray(
-        targets[:, None].transform_to(altaz_frame).alt.to(u.deg).value  # type: ignore[union-attr]
-    )
-    above_counts = (alts >= min_alt_deg).sum(axis=1)
+    altaz = targets[:, None].transform_to(altaz_frame)
+    alts = np.asarray(altaz.alt.to(u.deg).value)  # type: ignore[union-attr]
+    clear = alts >= min_alt_deg
+    limit_curves = None
+    if skyline is not None:
+        limits = skyline.limit(np.asarray(altaz.az.to(u.deg).value))  # type: ignore[union-attr]
+        clear &= alts >= limits
+        limit_curves = limits[:, ::_SPARKLINE_STRIDE]
+    above_counts = clear.sum(axis=1)
     hours = above_counts.astype(float) * (step_min / 60.0)
     # Stride-slice the alt grid for the per-row sparkline so the UI gets
     # an even sample spacing without paying for a second AltAz transform.
@@ -416,7 +427,7 @@ def night_transits_and_hours(
             transits.append(
                 dusk + timedelta(minutes=step_min) * (found_idx + float(frac))
             )
-    return transits, hours, alt_curves
+    return transits, hours, alt_curves, limit_curves
 
 
 # Object types that give no picture worth pointing a camera at.

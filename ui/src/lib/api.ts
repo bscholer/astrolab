@@ -1024,6 +1024,10 @@ export interface TonightEntry {
   // at alt_curve_step_min cadence. Null when the night window is
   // degenerate (polar day with no twilight).
   alt_curve_deg: number[] | null;
+  // At the same samples, the altitude the target must clear where it is
+  // then (houses and trees from the scope's panorama, -90 where unseen).
+  // Null without a panorama that has a compass.
+  skyline_curve_deg?: number[] | null;
 }
 
 export interface TonightResponse {
@@ -1040,6 +1044,8 @@ export interface TonightResponse {
   // alt_curve_deg. Constant within a response so the UI reconstructs the
   // time axis as dusk_utc + i * step.
   alt_curve_step_min: number;
+  // The panorama scan whose skyline was applied, or null.
+  skyline_scan?: string | null;
   entries: TonightEntry[];
 }
 
@@ -1091,6 +1097,18 @@ export type ScopePano = {
   error?: string;
   rotation_limits?: [number, number];
   result?: ScopePanoResult | null;
+  /** Changes whenever pano.jpg is written again. */
+  image_version?: number;
+};
+
+/** Walking the tele along the skyline: point done of total, and where it is now. */
+export type ScopeTrace = {
+  state: 'idle' | 'running' | 'done' | 'stopped' | 'failed';
+  done?: number;
+  total?: number;
+  az?: number;
+  alt?: number;
+  error?: string;
 };
 
 /** What blocks the sky: altitude per step of azimuth (north 0, east 90), null where unseen. */
@@ -1243,6 +1261,10 @@ export const api = {
     if (!r.ok) throw new ApiError(r.status, await _readErrorDetail(r));
     return (await r.json()) as { horizon: ScopeHorizon };
   },
+  startScopeTrace: (teleCovered = false) =>
+    postJSON<{ points: number }>(`/api/scope/pano/trace?tele_covered=${teleCovered}`, {}),
+  getScopeTrace: () => getJSON<ScopeTrace>('/api/scope/pano/trace'),
+  stopScopeTrace: () => postJSON<ScopeTrace>('/api/scope/pano/trace/stop', {}),
   getScopeHorizon: (compassOnly = true) =>
     getJSON<ScopeHorizon>(`/api/scope/horizon?compass_only=${compassOnly}`),
   getScopeSkymapPatches: () =>

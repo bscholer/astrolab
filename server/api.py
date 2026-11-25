@@ -137,6 +137,7 @@ from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceClient, ScopeServiceError
 from server.scope_skymap import SkyMap, skymap_svg
 from server.scope_skymap import verdict as skymap_verdict
+from server.scope_trace import HorizonTrace, TraceRefused
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
@@ -3751,6 +3752,11 @@ scope_skymap = SkyMap(
     lambda cells: set_setting(SETTING_SCOPE_SKYMAP, cells, db_path=job_manager.db_path),
 )
 
+def _skyline():
+    """Houses and trees from the panorama, when its scan has a compass."""
+    return pano_sky.load_skyline(scope_pano.folder())
+
+
 scope_scheduler = Scheduler(
     _scope_client,
     _scope_site,
@@ -3763,6 +3769,7 @@ scope_scheduler = Scheduler(
     load_progress=lambda: get_setting(SETTING_SCOPE_PROGRESS, {}, db_path=job_manager.db_path),
     save_progress=lambda p: set_setting(SETTING_SCOPE_PROGRESS, p, db_path=job_manager.db_path),
     skymap=scope_skymap,
+    skyline=lambda: _skyline(),
     rescue_share=lambda target: _live_rescue_share(target),
     sky_credit=lambda c: _sky_credit(c),
 )
@@ -4109,6 +4116,8 @@ def start_scope_pano(tele_covered: bool = False) -> dict:
         raise HTTPException(status_code=400, detail=detail)
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night before a scan")
+    if scope_trace.busy():
+        raise HTTPException(status_code=409, detail="the scope is tracing the horizon")
     try:
         scan = scope_pano.start(client, loc, latitude=float(loc.lat.deg), tele_covered=tele_covered)
     except PanoRefused as exc:
@@ -4118,8 +4127,64 @@ def start_scope_pano(tele_covered: bool = False) -> dict:
 
 @app.get("/api/scope/pano")
 def get_scope_pano() -> dict:
-    """The scan: running (with progress), stitching, done (with how the stitch went), failed."""
-    return scope_pano.snapshot()
+    """The scan: running (with progress), stitching, done (with how the stitch went), failed.
+
+    image_version changes whenever the panorama is written again, so a page asks for the new
+    one instead of reusing the picture it already holds for the same scan.
+    """
+    snap = scope_pano.snapshot()
+    path = scope_pano.pano_path()
+    if path is not None:
+        snap["image_version"] = int(path.stat().st_mtime_ns // 1_000_000)
+    return snap
+
+
+scope_trace = HorizonTrace()
+
+
+@app.post("/api/scope/pano/trace", status_code=202)
+def start_scope_trace(tele_covered: bool = False) -> dict:
+    """Walk the tele along the panorama's skyline, pausing at each point, to watch live.
+
+    A rough end-to-end check: if the tele frame follows the rooflines and treetops, the
+    panorama, its compass and the horizon agree with the scope. Needs the Sun down or the
+    tele covered; points near the Sun are skipped either way.
+    """
+    client = _scope_client()
+    loc = _scope_site()
+    folder = scope_pano.folder()
+    if client is None or loc is None:
+        raise HTTPException(status_code=400, detail="scope service and site location are needed")
+    if folder is None or not (folder / "fit.json").is_file():
+        raise HTTPException(status_code=404, detail="no panorama to trace")
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night first")
+    if scope_pano.snapshot()["state"] == "running":
+        raise HTTPException(status_code=409, detail="the scope is scanning")
+    try:
+        status = client.call("getStatus") or {}
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if status.get("busy_elsewhere") or (status.get("job") or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="the scope is capturing, stop it first")
+    try:
+        points = scope_trace.start(client, folder, loc, tele_covered=tele_covered)
+    except TraceRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"points": points}
+
+
+@app.get("/api/scope/pano/trace")
+def get_scope_trace() -> dict:
+    """The trace: running (point done/total, and where it is), done, stopped, failed."""
+    return scope_trace.snapshot()
+
+
+@app.post("/api/scope/pano/trace/stop")
+def stop_scope_trace() -> dict:
+    """Stop after the current point."""
+    scope_trace.stop()
+    return scope_trace.snapshot()
 
 
 @app.post("/api/scope/pano/stitch", status_code=202)
@@ -4280,7 +4345,7 @@ def start_scope_control(req: ControlIn) -> dict:
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night first")
     busy = scope_observer.snapshot().get("state") == "running"
-    busy = busy or scope_pano.snapshot()["state"] == "running"
+    busy = busy or scope_pano.snapshot()["state"] == "running" or scope_trace.busy()
     busy = busy or scope_compass.snapshot()["state"] == "running"
     if busy:
         raise HTTPException(status_code=409, detail="the scope is working on something else")
@@ -4568,6 +4633,11 @@ class TonightEntry(BaseModel):
     `dawn_utc` at `alt_curve_step_min` cadence (top-level field). Null
     when the night window is degenerate (polar day with no usable
     twilight). The UI renders this as a per-row sparkline."""
+    skyline_curve_deg: list[float] | None = None
+    """At the same samples, the altitude the target must clear where it
+    stands then: the houses and trees the scope's panorama found, plus a
+    margin for the tele frame (-90 where the scan did not reach). Null
+    without a panorama with a compass. Hours up count only time above it."""
 
 
 class TonightResponse(BaseModel):
@@ -4588,6 +4658,8 @@ class TonightResponse(BaseModel):
     """Spacing in minutes between consecutive samples in each entry's
     `alt_curve_deg` array. Constant within a response so the UI can
     reconstruct the time axis as dusk_utc + i * step."""
+    skyline_scan: str | None = None
+    """The panorama scan whose skyline was applied, or null."""
     entries: list[TonightEntry]
 
 
@@ -4696,6 +4768,7 @@ def get_tonight(
     min_alt: float = 20.0,
     max_mag: float = 12.0,
     all_sky: bool = False,
+    use_skyline: bool = True,
 ) -> TonightResponse:
     """List visible deep-sky targets for the configured site at time `at`.
 
@@ -4714,6 +4787,9 @@ def get_tonight(
 
     `all_sky` keeps the targets that stay below `min_alt` all night too,
     with a score of zero, for the sky atlas.
+
+    With a panorama that has a compass, time behind the houses and trees
+    it found does not count as up (`use_skyline=false` turns that off).
     """
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
@@ -4823,10 +4899,12 @@ def get_tonight(
     transits: list[datetime | None] = [None] * len(candidates)
     hours_arr = np.zeros(len(candidates))
     alt_curves = np.zeros((len(candidates), 0))
+    limit_curves = None
+    skyline = _skyline() if use_skyline else None
     night_hours = 0.0
     if has_night:
-        transits, hours_arr, alt_curves = sky.night_transits_and_hours(
-            ra_arr, dec_arr, loc, dusk_utc, dawn_utc, min_alt
+        transits, hours_arr, alt_curves, limit_curves = sky.night_transits_and_hours(
+            ra_arr, dec_arr, loc, dusk_utc, dawn_utc, min_alt, skyline=skyline
         )
         night_hours = (dawn_utc - dusk_utc).total_seconds() / 3600
     if all_sky:
@@ -4846,6 +4924,11 @@ def get_tonight(
         # tighter precision. Drop the curve entirely when the night window
         # was degenerate (zero columns) so the UI just hides the column.
         curve = [round(float(v), 1) for v in alt_curves[k]] if alt_curves.shape[1] > 0 else None
+        blocked_curve = (
+            [round(float(v), 1) for v in limit_curves[k]]
+            if limit_curves is not None and limit_curves.shape[1] > 0
+            else None
+        )
         out.append(
             TonightEntry(
                 name=entry.canonical,
@@ -4878,6 +4961,7 @@ def get_tonight(
                 session_count=int(cap["session_count"]) if cap else 0,
                 last_session_at=cap["last_session_at"] if cap else None,
                 alt_curve_deg=curve,
+                skyline_curve_deg=blocked_curve,
             )
         )
 
@@ -4894,6 +4978,7 @@ def get_tonight(
         dusk_utc=dusk_utc.isoformat() if dusk_utc else None,
         dawn_utc=dawn_utc.isoformat() if dawn_utc else None,
         alt_curve_step_min=sky.SPARKLINE_STEP_MIN,
+        skyline_scan=skyline.scan if skyline else None,
         entries=out,
     )
 

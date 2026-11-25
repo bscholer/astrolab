@@ -13,9 +13,12 @@
 
   let {
     scan,
+    version,
     result,
   }: {
     scan: string;
+    /** pano.jpg's write time. A restitch changes it, so the old picture is never reused. */
+    version: number;
     result: ScopePanoResult;
   } = $props();
 
@@ -397,7 +400,7 @@
     observer.observe(wrap);
     try {
       const [im, a, ed, sm, hz] = await Promise.all([
-        loadImage(`/api/scope/pano/image?t=${scan}`),
+        loadImage(`/api/scope/pano/image?scan=${scan}&v=${version}`),
         loadMask('auto'),
         loadMask('edits'),
         api.getScopeSkymapPatches().catch(() => null),

@@ -213,3 +213,87 @@ def load_horizon(folder: Path) -> dict | None:
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
+
+
+def world_frame_of(folder: Path) -> np.ndarray | None:
+    """The stitch's east, north and up (rows, as mount-frame vectors), from fit.json."""
+    try:
+        return np.array(json.loads((folder / "fit.json").read_text())["world_rows_enu"])
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def remap_edits(folder: Path, old: np.ndarray, new: np.ndarray) -> bool:
+    """Carry the hand fixes from an earlier stitch's sky to this one's.
+
+    A restitch may level the panorama differently or find north elsewhere. The fixes belong
+    to things in the yard, so each one moves with the mount, not with the picture. Returns
+    whether anything moved.
+    """
+    path = folder / "sky_edits.png"
+    edits = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) if path.is_file() else None
+    if edits is None or not edits.any():
+        return False
+    if np.allclose(old, new, atol=1e-4):
+        return False
+    h, w = edits.shape
+    az = (np.arange(w) + 0.5) / w * 2 * np.pi
+    alt = np.pi / 2 - (np.arange(h) + 0.5) / h * np.pi
+    ca = np.cos(alt)[:, None]
+    world = np.stack(
+        [ca * np.sin(az)[None, :], ca * np.cos(az)[None, :], np.repeat(np.sin(alt)[:, None], w, 1)],
+        -1,
+    )
+    before = (world @ new) @ old.T  # this sky -> mount -> the earlier stitch's sky
+    oaz = np.arctan2(before[..., 0], before[..., 1]) % (2 * np.pi)
+    oalt = np.arcsin(np.clip(before[..., 2], -1, 1))
+    x = np.clip((oaz / (2 * np.pi) * w).astype(int), 0, w - 1)
+    y = np.clip(((np.pi / 2 - oalt) / np.pi * h).astype(int), 0, h - 1)
+    save_edits(folder, edits[y, x])
+    return True
+
+
+# The tele frame is 2.95 x 1.67 degrees: keep its centre this far above whatever is in the way.
+HORIZON_MARGIN_DEG = 2.0
+
+
+class Skyline:
+    """The lowest altitude the scope sees over, at any azimuth, from the panorama's horizon."""
+
+    def __init__(self, alt: list[float | None], step_deg: float = 1.0, scan: str = "") -> None:
+        self.alt = np.array([np.nan if a is None else a for a in alt], float)
+        self.step_deg = step_deg
+        self.scan = scan
+
+    def limit(self, az_deg) -> np.ndarray:
+        """Altitude a target must clear at these azimuths. -90 where the scan did not reach."""
+        bins = np.floor(np.asarray(az_deg, float) % 360 / self.step_deg).astype(int)
+        idx = bins % len(self.alt)
+        top = self.alt[idx]
+        return np.where(np.isnan(top), -90.0, np.maximum(top, 0.0) + HORIZON_MARGIN_DEG)
+
+    def blocks(self, alt_deg: float, az_deg: float) -> bool:
+        return bool(alt_deg < self.limit(az_deg))
+
+
+_skyline_cache: dict[str, tuple[float, Skyline | None]] = {}
+
+
+def load_skyline(folder: Path | None) -> Skyline | None:
+    """The scan's skyline, when it has a compass. Without one the azimuths are not the sky's."""
+    if folder is None:
+        return None
+    path = folder / "horizon.json"
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return None
+    hit = _skyline_cache.get(str(path))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    data = load_horizon(folder)
+    line = None
+    if data and data.get("compass") and data.get("alt"):
+        line = Skyline(data["alt"], float(data.get("step_deg", 1.0)), data.get("scan", folder.name))
+    _skyline_cache[str(path)] = (stamp, line)
+    return line

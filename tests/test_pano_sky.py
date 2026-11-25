@@ -68,3 +68,59 @@ def test_a_patch_floating_in_the_sky_is_not_a_horizon_unless_painted():
     keep = np.zeros_like(m, bool)
     keep[100:200, 500:700] = True
     assert horizon_profile(m, keep=keep)[95] > 70
+
+
+def test_hand_fixes_follow_the_yard_when_a_restitch_levels_differently(tmp_path):
+    import json
+    import math
+
+    import cv2
+
+    from server.pano_sky import load_edits, remap_edits
+
+    # The first stitch had up along the mount's X; the second along its Z.
+    old = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])  # east, north, up
+    new = np.eye(3)
+    edits = np.zeros((1024, 2048), np.uint8)
+    # A tree painted where the first stitch put mount direction (0, 0.6, 0.8).
+    d_old = old @ np.array([0.0, 0.6, 0.8])
+    az = math.atan2(d_old[0], d_old[1]) % (2 * math.pi)
+    alt = math.asin(d_old[2])
+    x, y = int(az / (2 * math.pi) * 2048), int((math.pi / 2 - alt) / math.pi * 1024)
+    edits[y - 5 : y + 5, x - 5 : x + 5] = 2
+    cv2.imwrite(str(tmp_path / "sky_edits.png"), edits)
+    (tmp_path / "fit.json").write_text(json.dumps({"world_rows_enu": new.tolist()}))
+    assert remap_edits(tmp_path, old, new)
+    moved = load_edits(tmp_path, (1024, 2048))
+    d_new = new @ np.array([0.0, 0.6, 0.8])
+    az = math.atan2(d_new[0], d_new[1]) % (2 * math.pi)
+    alt = math.asin(d_new[2])
+    x, y = int(az / (2 * math.pi) * 2048), int((math.pi / 2 - alt) / math.pi * 1024)
+    assert moved[y, x] == 2
+    assert not remap_edits(tmp_path, new, new)  # same frame: nothing to do
+
+
+def test_skyline_limit_adds_a_margin_and_lets_unseen_azimuths_be():
+    from server.pano_sky import HORIZON_MARGIN_DEG, Skyline
+
+    line = Skyline([None] * 90 + [30.0] * 90 + [-5.0] * 180)
+    assert line.limit(45.0) == -90.0  # not seen: no limit beyond the flat minimum
+    assert line.limit(100.0) == 30.0 + HORIZON_MARGIN_DEG
+    assert line.limit(200.0) == HORIZON_MARGIN_DEG  # open to below the horizon
+    assert line.blocks(31.0, 100.0) and not line.blocks(33.0, 100.0)
+    assert list(line.limit([100.0, 460.0])) == [32.0, 32.0]  # azimuth wraps
+
+
+def test_only_a_scan_with_a_compass_gives_a_skyline(tmp_path):
+    import json
+
+    from server.pano_sky import load_skyline
+
+    (tmp_path / "horizon.json").write_text(json.dumps({"alt": [10.0] * 360, "compass": False}))
+    assert load_skyline(tmp_path) is None
+    (tmp_path / "horizon.json").write_text(json.dumps({"alt": [10.0] * 360, "compass": True}))
+    import os
+
+    os.utime(tmp_path / "horizon.json", (2e9, 2e9))
+    assert load_skyline(tmp_path).limit(5.0) == 12.0
+    assert load_skyline(None) is None

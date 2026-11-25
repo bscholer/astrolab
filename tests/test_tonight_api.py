@@ -383,6 +383,7 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
             "session_count",
             "last_session_at",
             "alt_curve_deg",
+            "skyline_curve_deg",
         }
         assert expected_entry == set(sample.keys())
         # When the night window is well-defined, the sparkline must be a
@@ -552,3 +553,27 @@ def test_upload_rejects_a_file_that_is_not_an_image(client: TestClient) -> None:
 
 def test_upload_rejects_an_unknown_target(client: TestClient) -> None:
     assert client.put("/api/tonight/image?name=Nope", content=_png()).status_code == 404
+
+
+def test_houses_and_trees_from_the_panorama_cut_the_hours_up(client: TestClient, monkeypatch) -> None:
+    import server.api as api_mod
+    from server.pano_sky import HORIZON_MARGIN_DEG, Skyline
+
+    _set_site(client)
+    url = "/api/tonight?at=2024-10-15T04:00:00Z"
+    open_sky = {e["name"]: e for e in client.get(url).json()["entries"]}
+    m31 = "M 31" if "M 31" in open_sky else "NGC 224"
+    assert open_sky[m31]["skyline_curve_deg"] is None
+    # A wall 50 degrees high everywhere but north.
+    wall = Skyline([None if az < 10 or az > 350 else 50.0 for az in range(360)], scan="s1")
+    monkeypatch.setattr(api_mod, "_skyline", lambda: wall)
+    body = client.get(url).json()
+    assert body["skyline_scan"] == "s1"
+    walled = {e["name"]: e for e in body["entries"]}
+    assert walled[m31]["hours_above_min_alt"] < open_sky[m31]["hours_above_min_alt"]
+    limits = walled[m31]["skyline_curve_deg"]
+    assert len(limits) == len(walled[m31]["alt_curve_deg"])
+    assert set(limits) <= {50.0 + HORIZON_MARGIN_DEG, -90.0}
+    # And it can be turned off.
+    off = {e["name"]: e for e in client.get(url + "&use_skyline=false").json()["entries"]}
+    assert off[m31]["hours_above_min_alt"] == open_sky[m31]["hours_above_min_alt"]

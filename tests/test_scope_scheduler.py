@@ -505,3 +505,21 @@ def test_time_under_other_names_counts_towards_the_goal_and_shows():
     s.tick()
     assert obs.started == [soul.name]
     assert s.snapshot()["time_on_s"] == {heart.name: 6.6 * 3600, soul.name: 0.0}
+
+
+def test_the_skyline_and_learned_patches_both_block():
+    from server.pano_sky import Skyline
+    from server.scope_scheduler import Scheduler
+
+    class Patches:
+        def blocked(self, alt, az):
+            return 60 <= alt < 65 and 200 <= az < 205
+
+    wall = Skyline([40.0] * 180 + [None] * 180)
+    s = Scheduler(lambda: None, lambda: None, lambda: [], None, skymap=Patches(), skyline=lambda: wall)
+    blocked = s._blocked()
+    assert blocked(30.0, 90.0)  # behind the wall
+    assert not blocked(50.0, 90.0)
+    assert blocked(62.0, 202.0)  # a learned blocked patch
+    assert not blocked(30.0, 270.0)  # the scan never saw there
+    assert Scheduler(lambda: None, lambda: None, lambda: [], None)._blocked() is None

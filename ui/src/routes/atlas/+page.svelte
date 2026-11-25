@@ -373,7 +373,7 @@
 
   function fmtUp(e: TonightEntry): string {
     if (!data) return '';
-    const w = upWindow(e.alt_curve_deg, data.min_alt_deg, data.dusk_utc, data.alt_curve_step_min);
+    const w = upWindow(e.alt_curve_deg, data.min_alt_deg, data.dusk_utc, data.alt_curve_step_min, e.skyline_curve_deg);
     if (!w) return 'Not up tonight';
     return `${fmtTime(w.start.getTime())} – ${fmtTime(w.end.getTime())}`;
   }

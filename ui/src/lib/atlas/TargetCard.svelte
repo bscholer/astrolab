@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { api, type TonightEntry, type TonightResponse } from '$lib/api';
-  import { displayName, upWindow } from '$lib/tonight';
+  import { displayName, skylineArea, upWindow } from '$lib/tonight';
   import { horizon, radec, toAltAz } from './sky';
   import { fmtHours, TELE_FOV_DEG } from './atlas';
 
@@ -72,7 +72,9 @@
     return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
-  const upWin = $derived(upWindow(entry.alt_curve_deg, data.min_alt_deg, data.dusk_utc, data.alt_curve_step_min));
+  const upWin = $derived(
+    upWindow(entry.alt_curve_deg, data.min_alt_deg, data.dusk_utc, data.alt_curve_step_min, entry.skyline_curve_deg),
+  );
   const peak = $derived(entry.alt_curve_deg?.length ? Math.max(...entry.alt_curve_deg) : null);
 
   /** How the object sits in the tele frame, against its short side. */
@@ -175,6 +177,9 @@
         <svg class="spark" viewBox="0 0 {W} {H}" preserveAspectRatio="none" aria-hidden="true">
           <line class="limit" x1="0" x2={W} y1={y(data.min_alt_deg)} y2={y(data.min_alt_deg)} />
           <polygon class="fill" points="0,{H} {line} {W},{H}" />
+          {#if entry.skyline_curve_deg}
+            <polygon class="blocked" points={skylineArea(entry.skyline_curve_deg, W, H, y)} />
+          {/if}
           <polyline class="curve" points={line} />
           {#if marker !== null}<line class="mark" x1={marker} x2={marker} y1="0" y2={H} />{/if}
         </svg>
@@ -317,6 +322,12 @@
     width: 100%;
     height: 54px;
     display: block;
+  }
+  .spark .blocked {
+    fill: rgba(236, 72, 153, 0.28);
+    stroke: rgba(236, 72, 153, 0.7);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
   }
   .spark .fill {
     fill: var(--accent-soft);

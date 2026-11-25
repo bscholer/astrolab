@@ -18,7 +18,7 @@
       () => (worth = [])
     );
   });
-  import { displayName, matchesSearch, typeGroup, upWindow, type TypeGroup } from '$lib/tonight';
+  import { displayName, matchesSearch, skylineArea, typeGroup, upWindow, type TypeGroup } from '$lib/tonight';
 
   let data = $state<TonightResponse | null>(null);
   let loading = $state(false);
@@ -228,8 +228,8 @@
   }
 
   function fmtUp(e: TonightEntry, d: TonightResponse): string {
-    const w = upWindow(e.alt_curve_deg, d.min_alt_deg, d.dusk_utc, d.alt_curve_step_min);
-    if (!w) return `${e.alt_now_deg.toFixed(0)}° now`;
+    const w = upWindow(e.alt_curve_deg, d.min_alt_deg, d.dusk_utc, d.alt_curve_step_min, e.skyline_curve_deg);
+    if (!w) return e.skyline_curve_deg ? 'Behind the trees or house tonight' : `${e.alt_now_deg.toFixed(0)}° now`;
     const peak = Math.max(...(e.alt_curve_deg ?? [0]));
     return `${fmtTime(w.start)} – ${fmtTime(w.end)} · peak ${peak.toFixed(0)}°`;
   }
@@ -515,6 +515,14 @@
                     y2={thresholdY(data.min_alt_deg)}
                   />
                   <polygon class="spark-fill" points={sparkArea(entry.alt_curve_deg)} />
+                  {#if entry.skyline_curve_deg}
+                    <polygon
+                      class="spark-blocked"
+                      points={skylineArea(entry.skyline_curve_deg, SPARK_W, SPARK_H, thresholdY)}
+                    >
+                      <title>Houses and trees along its path, from the scope's panorama</title>
+                    </polygon>
+                  {/if}
                   <polyline class="spark-line" points={sparkPoints(entry.alt_curve_deg)} />
                   {#if nowFraction(data) !== null}
                     <line
@@ -918,6 +926,12 @@
     width: 100%;
     height: 44px;
     overflow: visible;
+  }
+  .spark-blocked {
+    fill: rgba(236, 72, 153, 0.28);
+    stroke: rgba(236, 72, 153, 0.7);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
   }
   .spark-threshold {
     stroke: var(--fg-mute);

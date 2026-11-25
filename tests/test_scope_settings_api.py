@@ -386,3 +386,13 @@ def test_scope_url_and_site_seed_from_the_environment_once(client, monkeypatch):
     monkeypatch.setenv("ASTROLAB_SCOPE_URL_DEFAULT", "http://other")
     api._bootstrap_scope_settings()
     assert get_setting(SETTING_SCOPE_URL, None, db_path=db) == "http://fakescope:9902"
+
+
+def test_a_restitch_gives_the_image_a_new_version(client, tmp_path, monkeypatch):
+    import os
+
+    folder = _pano_scan(tmp_path, monkeypatch, compass=True)
+    first = client.get("/api/scope/pano").json()["image_version"]
+    stamp = (folder / "pano.jpg").stat().st_mtime_ns + 5_000_000_000
+    os.utime(folder / "pano.jpg", ns=(stamp, stamp))  # written again by a restitch
+    assert client.get("/api/scope/pano").json()["image_version"] > first

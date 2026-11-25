@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, type ScopePano, type ScopeAutoTarget, type ScopeState } from '$lib/api';
+  import { api, type ScopePano, type ScopeTrace, type ScopeAutoTarget, type ScopeState } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import LiveFeed from '$lib/scope/LiveFeed.svelte';
   import PanoViewer from '$lib/scope/PanoViewer.svelte';
@@ -144,6 +144,35 @@
   let teleCovered = $state(false);
   const panoBusy = $derived(pano?.state === 'running');
 
+  let trace = $state<ScopeTrace | null>(null);
+  const tracing = $derived(trace?.state === 'running');
+
+  async function refreshTrace() {
+    try {
+      trace = await api.getScopeTrace();
+    } catch {
+      trace = null;
+    }
+  }
+
+  async function startTrace() {
+    try {
+      await api.startScopeTrace(teleCovered);
+      await refreshTrace();
+      document.querySelector('.gallery')?.scrollIntoView({ behavior: 'smooth' });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function stopTrace() {
+    try {
+      trace = await api.stopScopeTrace();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function restitchPano() {
     try {
       await api.restitchScopePano();
@@ -259,12 +288,14 @@
     refresh();
     refreshWeather();
     refreshPano();
+    refreshTrace();
     refreshSkymap();
     refreshCompass();
     refreshControl();
     pollTimer = setInterval(() => {
       refresh();
       if (panoBusy) refreshPano();
+      if (tracing) refreshTrace();
       if (compass?.state === 'running') refreshCompass();
       if (control?.state === 'running') refreshControl();
     }, 5000);
@@ -552,8 +583,8 @@
       </div>
       {#if compass?.state === 'failed'}<p class="muted small">{compass.error}</p>{/if}
       {#if pano?.state === 'done' && pano.id && pano.result}
-        {#key pano.id + pano.result.width + pano.result.median_px}
-          <PanoViewer scan={pano.id} result={pano.result} />
+        {#key `${pano.id}-${pano.image_version}`}
+          <PanoViewer scan={pano.id} version={pano.image_version ?? 0} result={pano.result} />
         {/key}
         <p class="muted small">
           {pano.result.used} frames, matched to {pano.result.median_px} px.
@@ -568,6 +599,33 @@
             Stitch again
           </button>
         </p>
+        {#if pano.result.compass}
+          <div class="sw-row">
+            <div class="sw-text">
+              <div class="sw-title">Trace the horizon</div>
+              <div class="sw-sub">
+                {#if tracing}
+                  Point {(trace?.done ?? 0) + 1} of {trace?.total} · az {trace?.az?.toFixed(0)}°,
+                  alt {trace?.alt?.toFixed(0)}°. Watch the tele above: it should sit on the
+                  rooflines and treetops.
+                {:else if trace?.state === 'failed'}
+                  Stopped: {trace.error}
+                {:else}
+                  Walks the tele along the yellow line, a few seconds at each point, so the live
+                  tele shows whether the skyline, the compass and the scope agree. After dark, or
+                  with the tele lens covered.
+                {/if}
+              </div>
+            </div>
+            {#if tracing}
+              <button type="button" class="btn" onclick={stopTrace}>Stop</button>
+            {:else}
+              <button type="button" class="btn" disabled={panoBusy || !!sched?.enabled} onclick={startTrace}>
+                Trace
+              </button>
+            {/if}
+          </div>
+        {/if}
       {/if}
       {#if skymap}
         <div class="sw-title">What the scope can see</div>

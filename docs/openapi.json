@@ -2602,6 +2602,20 @@
             ],
             "title": "Size Arcmin"
           },
+          "skyline_curve_deg": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skyline Curve Deg"
+          },
           "transit_utc": {
             "anyOf": [
               {
@@ -2684,6 +2698,17 @@
           "site_longitude": {
             "title": "Site Longitude",
             "type": "number"
+          },
+          "skyline_scan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skyline Scan"
           }
         },
         "required": [
@@ -4914,7 +4939,7 @@
     },
     "/api/scope/pano": {
       "get": {
-        "description": "The scan: running (with progress), stitching, done (with how the stitch went), failed.",
+        "description": "The scan: running (with progress), stitching, done (with how the stitch went), failed.\n\nimage_version changes whenever the panorama is written again, so a page asks for the new\none instead of reusing the picture it already holds for the same scan.",
         "operationId": "get_scope_pano_api_scope_pano_get",
         "responses": {
           "200": {
@@ -5089,6 +5114,89 @@
           }
         },
         "summary": "Restitch Scope Pano"
+      }
+    },
+    "/api/scope/pano/trace": {
+      "get": {
+        "description": "The trace: running (point done/total, and where it is), done, stopped, failed.",
+        "operationId": "get_scope_trace_api_scope_pano_trace_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Trace Api Scope Pano Trace Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Scope Trace"
+      },
+      "post": {
+        "description": "Walk the tele along the panorama's skyline, pausing at each point, to watch live.\n\nA rough end-to-end check: if the tele frame follows the rooflines and treetops, the\npanorama, its compass and the horizon agree with the scope. Needs the Sun down or the\ntele covered; points near the Sun are skipped either way.",
+        "operationId": "start_scope_trace_api_scope_pano_trace_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tele_covered",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Tele Covered",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Scope Trace Api Scope Pano Trace Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Scope Trace"
+      }
+    },
+    "/api/scope/pano/trace/stop": {
+      "post": {
+        "description": "Stop after the current point.",
+        "operationId": "stop_scope_trace_api_scope_pano_trace_stop_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stop Scope Trace Api Scope Pano Trace Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stop Scope Trace"
       }
     },
     "/api/scope/pointing": {
@@ -5880,7 +5988,7 @@
     },
     "/api/tonight": {
       "get": {
-        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets must clear `min_alt` degrees at\nsome point between dusk and dawn, or at `at` when the site has no\nnight window, so the list reads the same at noon as at midnight. They\nmust also be brighter than `max_mag` V-band. A named object with no\ncatalog magnitude stays in, because large nebulae often lack one.\nEntries are sorted by `sky.target_score`.\n\n`all_sky` keeps the targets that stay below `min_alt` all night too,\nwith a score of zero, for the sky atlas.",
+        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets must clear `min_alt` degrees at\nsome point between dusk and dawn, or at `at` when the site has no\nnight window, so the list reads the same at noon as at midnight. They\nmust also be brighter than `max_mag` V-band. A named object with no\ncatalog magnitude stays in, because large nebulae often lack one.\nEntries are sorted by `sky.target_score`.\n\n`all_sky` keeps the targets that stay below `min_alt` all night too,\nwith a score of zero, for the sky atlas.\n\nWith a panorama that has a compass, time behind the houses and trees\nit found does not count as up (`use_skyline=false` turns that off).",
         "operationId": "get_tonight_api_tonight_get",
         "parameters": [
           {
@@ -5926,6 +6034,16 @@
             "schema": {
               "default": false,
               "title": "All Sky",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "use_skyline",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Use Skyline",
               "type": "boolean"
             }
           }

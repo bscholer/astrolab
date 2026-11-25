@@ -212,7 +212,7 @@ def test_night_transits_and_hours_matches_per_target() -> None:
     ra = np.array([M31_RA, 56.6, 83.6, 270.0])
     dec = np.array([M31_DEC, 31.5, -5.4, 30.0])
 
-    transits, hours, alt_curves = sky.night_transits_and_hours(
+    transits, hours, alt_curves, _limits = sky.night_transits_and_hours(
         ra, dec, loc, dusk, dawn, 20.0
     )
     assert len(transits) == 4
