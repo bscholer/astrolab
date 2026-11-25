@@ -133,3 +133,59 @@ def test_observer_still_captures_when_angles_cannot_be_read():
     obs.start(Svc(), "M31", 10.7, 41.3, 30, 15)
     obs.join(5)
     assert obs.snapshot()["state"] == "done" and seen == []
+
+
+def _recording_service(fail_focus: bool = False, temp: float = 18.5):
+    from server.scope_service import ScopeServiceError
+
+    class Svc:
+        def __init__(self):
+            self.ops = []
+
+        def has(self, cap):
+            return True
+
+        def call(self, op, payload=None, timeout=None):
+            self.ops.append(op)
+            if op == "autofocusScope" and fail_focus:
+                raise ScopeServiceError("autofocus failed, code -15100", code="scope_error")
+            if op == "getStatus":
+                return {"pitch": 140.0, "rotation": 158.0, "tele_sensor_temperature_c": temp}
+            return {}
+
+    return Svc()
+
+
+def test_observer_autofocuses_on_the_target_before_capturing():
+    from server.scope_observe import Observer
+
+    svc = _recording_service()
+    obs = Observer()
+    obs.start(svc, "NGC 1499", 60.2, 36.4, 30, 15)
+    obs.join(5)
+    ops = [op for op in svc.ops if op != "getStatus"]
+    assert ops == ["prepareScope", "calibrateScope", "gotoTarget", "autofocusScope", "startCapture"]
+    snap = obs.snapshot()
+    assert snap["state"] == "done" and snap["focus_temp_c"] == 18.5 and snap["focus_error"] is None
+
+
+def test_observer_captures_anyway_when_autofocus_fails():
+    from server.scope_observe import Observer
+
+    svc = _recording_service(fail_focus=True)
+    obs = Observer()
+    obs.start(svc, "NGC 1499", 60.2, 36.4, 30, 15)
+    obs.join(5)
+    snap = obs.snapshot()
+    assert snap["state"] == "done" and "-15100" in snap["focus_error"]
+    assert svc.ops[-1] == "startCapture"
+
+
+def test_refocus_only_skips_setup_and_the_slew():
+    from server.scope_observe import Observer
+
+    svc = _recording_service()
+    obs = Observer()
+    obs.start(svc, "NGC 1499", 60.2, 36.4, 30, 15, refocus_only=True)
+    obs.join(5)
+    assert [op for op in svc.ops if op != "getStatus"] == ["autofocusScope", "startCapture"]

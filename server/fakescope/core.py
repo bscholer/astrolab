@@ -28,7 +28,9 @@ from astropy.time import Time
 from server.fakescope.scene import Scene
 
 SPEC_VERSION = "0.1"
-CAPABILITIES = ["status", "setup", "goto", "capture", "files", "delete", "preview", "pointing"]
+CAPABILITIES = [
+    "status", "setup", "focus", "goto", "capture", "files", "delete", "preview", "pointing",
+]
 PITCH_ZENITH = 172.5
 PITCH_CLOSED = 12.5  # where the real firmware settles after closing
 ROTATION_OFFSET = 37.0
@@ -40,6 +42,7 @@ SUN_LIMIT_DEG = 30.0
 LATENCY_S = {
     "prepare": 20,
     "calibrate": 45,
+    "autofocus": 70,
     "goto": 25,
     "point": 5,
     "close": 8,
@@ -153,6 +156,7 @@ class FakeScope:
         self.rotation = 180.0
         self.target: tuple[str, float, float] | None = None  # name, ra, dec while tracking
         self.calibrated = False
+        self.focus_temp: float | None = None
         self.job: dict | None = None
         self.sessions: dict[str, list[Shot]] = {}
         self._fits_cache: dict[str, bytes] = {}
@@ -202,7 +206,13 @@ class FakeScope:
                 "tele_darks": 18,
                 "wide_darks": 3,
                 "sd_free_gb": round(100.0 - sum(len(s) for s in self.sessions.values()) * 0.016, 2),
+                "tele_sensor_temperature_c": self.sensor_temperature(),
             }
+
+    def sensor_temperature(self, at: datetime | None = None) -> float:
+        """Sensor temperature: cools as the Sun sinks, about 9 C from dusk to midnight."""
+        sun_alt = sun_alt_az(self.loc, at or self.clock.now())[0]
+        return round(24.0 + 0.15 * max(sun_alt, -60.0), 1)
 
     def prepare(self) -> dict:
         with self.lock:
@@ -226,6 +236,17 @@ class FakeScope:
                 raise ScopeError(f"calibration failed, code -11504, pitch {self.pitch:.1f}")
             self.calibrated = True
             return {"message": "calibrated"}
+
+    def autofocus(self) -> dict:
+        with self.lock:
+            self.calls.append("autofocusScope")
+            self._refuse_while_capturing()
+            self._wait("autofocus")
+            now = self.clock.now()
+            if not self.scene.frame_ok(*self.pointing(now), now, -1):
+                raise ScopeError("autofocus failed, code -15100")
+            self.focus_temp = self.sensor_temperature(now)
+            return {"message": "focused"}
 
     def goto(self, name: str, ra_hours: float, dec_degrees: float) -> dict:
         with self.lock:

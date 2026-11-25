@@ -1,4 +1,4 @@
-"""Run one manual scope action in the background: prepare, calibrate, or close the barrel."""
+"""Run one manual scope action in the background: prepare, calibrate, autofocus, or close."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from server.telemetry import fail, note, traced
 ACTIONS = {
     "prepare": ("prepareScope", 90, "Preparing"),
     "calibrate": ("calibrateScope", 330, "Calibrating"),
+    "focus": ("autofocusScope", 330, "Focusing on stars"),
     "close": ("closeBarrel", 90, "Closing the barrel"),
 }
 

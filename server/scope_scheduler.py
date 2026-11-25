@@ -38,6 +38,9 @@ STUCK_S = 45 * 60
 STALL_S = 10 * 60
 WEATHER_EVERY_S = 30 * 60
 BARREL_OPEN_PITCH = 30.0
+REFOCUS_COOLING_C = 2.0
+"""Refocus once the tele sensor is this much cooler than at the last focus.
+The focuser's best position moves as the tube cools; DWARF users refocus every 2-3 C."""
 
 
 class Scheduler:
@@ -92,6 +95,8 @@ class Scheduler:
         self._sky_wait_until = 0.0
         self._handled_failure: str | None = None
         self._parked = False
+        self._sensor_temp: float | None = None
+        self._refocus: str | None = None
         self._handled_job: str | None = _UNSEEN
         self._owns_capture = False
         self._fault_alerted: str | None = None
@@ -156,6 +161,7 @@ class Scheduler:
             job = status.get("job") or {}
             self._check_weather(status)
             self._check_disk(status)
+            self._sensor_temp = status.get("tele_sensor_temperature_c")
             capturing = job.get("state") == "running"
             if capturing:
                 self._owns_capture = True
@@ -185,6 +191,14 @@ class Scheduler:
             if self.state.get("state") != "error":
                 self._notify("Scope error", str(exc))
             self._set(state="error", reason=str(exc))
+
+    def _cooled(self, obs: dict, target: str | None) -> float | None:
+        """Degrees the sensor cooled since the last focus on this target, once due."""
+        then, now = obs.get("focus_temp_c"), self._sensor_temp
+        if obs.get("target") != target or then is None or now is None:
+            return None
+        cooled = float(then) - float(now)
+        return cooled if cooled >= REFOCUS_COOLING_C else None
 
     def _check_disk(self, status: dict) -> None:
         """Alert once when the scope SD card runs low. A full card refuses every capture."""
@@ -419,6 +433,16 @@ class Scheduler:
                 or scope_plan.usable(cand, loc, now, blocked=blocked) is None
             )
             if not bad:
+                cooled = self._cooled(obs, current)
+                if cooled is not None:
+                    # Stop now, focus on the next tick once the relay has let go of the capture.
+                    log.info("%s: sensor %.1f C cooler than at focus, refocusing", current, cooled)
+                    note(refocus_target=current, cooled_c=cooled)
+                    client.call("stopCapture")
+                    self._refocus = current
+                    self._set(state="switching", target=current,
+                              reason=f"refocusing: sensor {cooled:.1f} C cooler")
+                    return
                 self._set(state="observing", target=current, reason="capturing")
                 return
             if rejecting or stalled:
@@ -431,6 +455,17 @@ class Scheduler:
             self._set(state="switching", reason=f"leaving {current}")
             return
         targets = self._get_targets()
+        if self._refocus is not None:
+            name, self._refocus = self._refocus, None
+            cand = next((c for c in targets if c.name == name), None)
+            if cand is not None and scope_plan.usable(cand, loc, now, blocked=blocked) is not None:
+                cs = scope_plan.capture_settings(cand, self._capture_options)
+                self._observer.start(
+                    client, cand.name, cand.ra_deg, cand.dec_deg, FRAMES_PER_RUN,
+                    cs.exposure_s, cs.gain, cs.filter, refocus_only=True,
+                )
+                self._set(state="observing", target=cand.name, reason="refocusing")
+                return
         pick = scope_plan.pick_target(
             targets,
             loc,

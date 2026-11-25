@@ -4646,7 +4646,7 @@
         "summary": "Get Scope Control"
       },
       "post": {
-        "description": "Run a manual action: prepare, calibrate, or close the barrel.",
+        "description": "Run a manual action: prepare, calibrate, autofocus, or close the barrel.",
         "operationId": "start_scope_control_api_scope_control_post",
         "requestBody": {
           "content": {

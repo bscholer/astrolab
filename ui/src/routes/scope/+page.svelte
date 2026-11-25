@@ -4,7 +4,14 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, type ScopePano, type ScopeTrace, type ScopeAutoTarget, type ScopeState } from '$lib/api';
+  import {
+    api,
+    type ScopePano,
+    type ScopeTrace,
+    type ScopeAutoTarget,
+    type ScopeState,
+    type ScopeControlAction,
+  } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import LiveFeed from '$lib/scope/LiveFeed.svelte';
   import PanoViewer from '$lib/scope/PanoViewer.svelte';
@@ -95,7 +102,14 @@
     }
   }
 
-  async function runControl(action: 'prepare' | 'calibrate' | 'close') {
+  const controlButtons = $derived<[ScopeControlAction, string][]>([
+    ['prepare', 'Prepare'],
+    ['calibrate', 'Calibrate'],
+    ...(scope?.capabilities?.includes('focus') ? [['focus', 'Autofocus'] as [ScopeControlAction, string]] : []),
+    ['close', 'Close barrel'],
+  ]);
+
+  async function runControl(action: ScopeControlAction) {
     try {
       control = await api.runScopeControl(action);
     } catch (e) {
@@ -363,12 +377,12 @@
     <section class="panel">
       <h2>Controls</h2>
       <div class="controls">
-        {#each [['prepare', 'Prepare'], ['calibrate', 'Calibrate'], ['close', 'Close barrel']] as [action, label] (action)}
+        {#each controlButtons as [action, label] (action)}
           <button
             type="button"
             class="btn"
             disabled={control?.state === 'running' || job?.state === 'running' || !!sched?.enabled}
-            onclick={() => runControl(action as 'prepare' | 'calibrate' | 'close')}
+            onclick={() => runControl(action)}
           >
             {label}
           </button>
@@ -382,7 +396,9 @@
         {:else if control?.state === 'done'}
           Done.
         {:else}
-          Prepare homes the scope. Calibrate focuses and plate solves. Run all night must be off.
+          Prepare homes the scope. Calibrate moves the focuser to infinity and plate solves.
+          {#if scope.capabilities?.includes('focus')}Autofocus sweeps focus on the stars in view.{/if}
+          Run all night must be off.
         {/if}
       </p>
     </section>

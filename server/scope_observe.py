@@ -1,4 +1,4 @@
-"""Run a scope observation in the background: prepare, calibrate, slew, capture."""
+"""Run a scope observation in the background: prepare, calibrate, slew, focus, capture."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 PREPARE_TIMEOUT_S = 90
 CALIBRATE_TIMEOUT_S = 450
+AUTOFOCUS_TIMEOUT_S = 330
 
 
 class ObserveBusy(Exception):
@@ -38,15 +39,19 @@ class Observer:
 
     def start(
         self, client: ScopeServiceClient, name: str, ra_deg: float, dec_deg: float, frames: int,
-        exposure_s: int, gain: int = 60, filter_name: str = "astro",
+        exposure_s: int, gain: int = 60, filter_name: str = "astro", refocus_only: bool = False,
     ) -> None:
+        """Observe a target. `refocus_only` is for a target the scope already tracks: skip
+        prepare, calibrate and the slew, autofocus, and capture again."""
         with self._lock:
             if self.state.get("state") == "running":
                 raise ObserveBusy(f"already observing {self.state.get('target')}")
             self.state = {"state": "running", "step": "starting", "target": name, "error": None}
         self._thread = threading.Thread(
             target=self._run,
-            args=(client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name),
+            args=(
+                client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name, refocus_only
+            ),
             name="astrolab-observe",
             daemon=True,
         )
@@ -74,22 +79,50 @@ class Observer:
         except Exception:
             log.warning("could not record the pointing of %s", name, exc_info=True)
 
-    @traced("scope.observe")
-    def _run(self, client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name) -> None:
-        note(target=name, frames=frames, exposure_s=exposure_s, gain=gain, filter=filter_name)
+    def _focus(self, client, name) -> None:
+        """Star-based autofocus on the target field, when the service has it.
+
+        Calibration only moves the focuser to its infinity preset, which drifts as the
+        night cools. A failed autofocus (cloud, too few stars) keeps that focus and
+        captures anyway: soft frames beat none. The sensor temperature at this point is
+        kept so the scheduler can refocus after the night cools.
+        """
+        if not client.has("focus"):
+            return
+        self._set(step="focusing")
         try:
-            if client.has("setup"):
-                self._set(step="preparing")
-                client.call("prepareScope", timeout=PREPARE_TIMEOUT_S)
-                self._set(step="calibrating")
-                client.call("calibrateScope", timeout=CALIBRATE_TIMEOUT_S)
-            self._set(step="slewing")
-            client.call(
-                "gotoTarget",
-                {"name": name, "ra_hours": ra_deg / 15, "dec_degrees": dec_deg},
-                timeout=SLEW_TIMEOUT_S,
-            )
-            self._record_pointing(client, name, ra_deg, dec_deg)
+            client.call("autofocusScope", timeout=AUTOFOCUS_TIMEOUT_S)
+            self._set(focus_error=None)
+        except ScopeServiceError as exc:
+            log.warning("autofocus on %s failed, capturing with the current focus: %s", name, exc)
+            self._set(focus_error=str(exc))
+        try:
+            temp = (client.call("getStatus") or {}).get("tele_sensor_temperature_c")
+        except ScopeServiceError:
+            temp = None
+        self._set(focus_temp_c=temp, focused_at=time.time())
+
+    @traced("scope.observe")
+    def _run(
+        self, client, name, ra_deg, dec_deg, frames, exposure_s, gain, filter_name, refocus_only
+    ) -> None:
+        note(target=name, frames=frames, exposure_s=exposure_s, gain=gain, filter=filter_name,
+             refocus_only=refocus_only)
+        try:
+            if not refocus_only:
+                if client.has("setup"):
+                    self._set(step="preparing")
+                    client.call("prepareScope", timeout=PREPARE_TIMEOUT_S)
+                    self._set(step="calibrating")
+                    client.call("calibrateScope", timeout=CALIBRATE_TIMEOUT_S)
+                self._set(step="slewing")
+                client.call(
+                    "gotoTarget",
+                    {"name": name, "ra_hours": ra_deg / 15, "dec_degrees": dec_deg},
+                    timeout=SLEW_TIMEOUT_S,
+                )
+                self._record_pointing(client, name, ra_deg, dec_deg)
+            self._focus(client, name)
             self._set(step="starting capture")
             client.call(
                 "startCapture",

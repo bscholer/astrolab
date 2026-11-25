@@ -96,6 +96,10 @@ def create_app(scope: FakeScope | None = None) -> FastAPI:
     def calibrate() -> dict:
         return scope.calibrate()
 
+    @app.post("/api/autofocus", operation_id="autofocusScope")
+    def autofocus() -> dict:
+        return scope.autofocus()
+
     @app.post("/api/goto", operation_id="gotoTarget")
     def goto(p: GotoIn) -> dict:
         return scope.goto(p.name, p.ra_hours, p.dec_degrees)

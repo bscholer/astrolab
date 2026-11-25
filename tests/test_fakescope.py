@@ -175,3 +175,18 @@ def test_the_sky_map_learns_a_tree_and_the_planner_then_skips_targets_behind_it(
             )
     assert pick_target([hit], loc, t, min_alt=0) is not None
     assert pick_target([hit], loc, t, min_alt=0, blocked=report.skymap.blocked) is None
+
+
+def test_the_scheduler_refocuses_as_the_night_cools(monkeypatch):
+    # A 15 s run of 200 frames lasts under an hour, about 2 C of cooling, so lower
+    # the threshold to see refocuses inside runs and not only at their starts.
+    monkeypatch.setattr("server.scope_scheduler.REFOCUS_COOLING_C", 0.7)
+    targets = [Candidate("NGC 224", *M31, "Galaxy", goal_hours=20)]
+    start = datetime(2026, 11, 13, 0, 0, tzinfo=UTC)  # late afternoon, before dusk
+    report = run_nights(CLEAR, targets, start, nights=0.6, tick_s=120)
+    calls = report.scope.calls
+    focuses, calibrations = calls.count("autofocusScope"), calls.count("calibrateScope")
+    # Every run starts with an autofocus; the extra ones refocus in place, without
+    # calibrating or slewing again.
+    assert focuses >= calibrations + 3, (focuses, calibrations)
+    assert sum(n.good for n in report.nights) > 1000

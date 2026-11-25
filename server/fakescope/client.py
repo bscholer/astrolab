@@ -16,6 +16,7 @@ class InProcessClient:
             "getStatus": lambda p: s.status(),
             "prepareScope": lambda p: s.prepare(),
             "calibrateScope": lambda p: s.calibrate(),
+            "autofocusScope": lambda p: s.autofocus(),
             "gotoTarget": lambda p: s.goto(p["name"], p["ra_hours"], p["dec_degrees"]),
             "pointScope": lambda p: s.point(p["pitch"], p.get("rotation")),
             "closeBarrel": lambda p: s.close_barrel(),

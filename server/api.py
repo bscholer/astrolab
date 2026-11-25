@@ -4353,7 +4353,7 @@ class ControlIn(BaseModel):
 
 @app.post("/api/scope/control", status_code=202)
 def start_scope_control(req: ControlIn) -> dict:
-    """Run a manual action: prepare, calibrate, or close the barrel."""
+    """Run a manual action: prepare, calibrate, autofocus, or close the barrel."""
     if req.action not in CONTROL_ACTIONS:
         raise HTTPException(status_code=400, detail=f"unknown action: {req.action}")
     client = _scope_client()
