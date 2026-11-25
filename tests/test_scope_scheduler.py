@@ -486,3 +486,22 @@ def test_a_broken_sky_lookup_falls_back_to_time_by_name():
     s.enabled = True
     s.tick()
     assert obs.started == ["a"]
+
+
+def test_time_under_other_names_counts_towards_the_goal_and_shows():
+    """A panel over the Heart's earlier nights already meets its goal; the
+    panel over the Soul is the one that gets shot."""
+    up = _target("x")
+    heart = Candidate("Heart panel 1 of 2", up.ra_deg, up.dec_deg, goal_hours=4)
+    soul = Candidate("Heart panel 2 of 2", up.ra_deg, up.dec_deg, goal_hours=4)
+    credit = {heart.name: 6.6 * 3600, soul.name: 0.0}
+    obs = FakeObserver()
+    s = Scheduler(
+        lambda: FakeClient(), lambda: LOC, lambda: [heart, soul], obs,
+        clock=lambda: NIGHT, sky_credit=lambda c: credit[c.name],
+    )
+    s.enabled = True
+    assert s._goal_reached() == {heart.name}
+    s.tick()
+    assert obs.started == [soul.name]
+    assert s.snapshot()["time_on_s"] == {heart.name: 6.6 * 3600, soul.name: 0.0}

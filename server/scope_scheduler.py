@@ -104,12 +104,14 @@ class Scheduler:
         return self._loaded
 
     def snapshot(self) -> dict:
+        time_on = self._time_on(self._get_targets())
         with self._lock:
             return {
                 **self.state,
                 "enabled": self.enabled,
                 "skipped": sorted(self._active_skips()),
                 "integrated_s": dict(self._integrated),
+                "time_on_s": time_on,
             }
 
     def _set(self, **kw) -> None:
@@ -323,11 +325,11 @@ class Scheduler:
         return out
 
     def _goal_reached(self) -> set[str]:
-        return {
-            c.name
-            for c in self._get_targets()
-            if c.goal_hours and self._integrated.get(c.name, 0.0) >= c.goal_hours * 3600
-        }
+        """Targets with their goal in hand, counting time shot under other names
+        that covers them: a mosaic panel over 6 hours of Heart nights is done."""
+        targets = [c for c in self._get_targets() if c.goal_hours]
+        time_on = self._time_on(targets)
+        return {c.name for c in targets if time_on[c.name] >= (c.goal_hours or 0) * 3600}
 
     def _park(self, client) -> None:
         """Close the barrel once per day. A service without the operation stays as it is."""

@@ -854,6 +854,9 @@ export interface ScopeState {
     target?: string;
     reason?: string;
     integrated_s?: Record<string, number>;
+    // Seconds per target counting kept sessions shot under other names that
+    // cover it (a mosaic panel over earlier Heart nights).
+    time_on_s?: Record<string, number>;
   };
   targets?: ScopeAutoTarget[];
   alert_url_set?: boolean;

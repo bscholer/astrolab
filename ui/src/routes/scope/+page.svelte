@@ -187,9 +187,53 @@
     return h < 1 ? `${Math.round(seconds / 60)} min` : `${h.toFixed(1)} h`;
   }
 
-  function editTarget(name: string, patch: Partial<ScopeAutoTarget>) {
-    const targets = (scope?.targets ?? []).map((t) => (t.name === name ? { ...t, ...patch } : t));
+  /** A row of the auto list: one target, or every panel of one mosaic. */
+  interface QueueRow {
+    key: string;
+    first: ScopeAutoTarget;
+    names: string[];
+    panels: ScopeAutoTarget[] | null;
+  }
+
+  const queueRows = $derived.by(() => {
+    const rows: QueueRow[] = [];
+    const byMosaic = new Map<string, QueueRow>();
+    for (const t of scope?.targets ?? []) {
+      if (!t.mosaic) {
+        rows.push({ key: t.name, first: t, names: [t.name], panels: null });
+        continue;
+      }
+      let row = byMosaic.get(t.mosaic);
+      if (!row) {
+        row = { key: `mosaic:${t.mosaic}`, first: t, names: [], panels: [] };
+        byMosaic.set(t.mosaic, row);
+        rows.push(row);
+      }
+      row.names.push(t.name);
+      row.panels!.push(t);
+    }
+    return rows;
+  });
+
+  /** Time on a target, counting other sessions that cover it. */
+  function timeOn(name: string): number {
+    return sched?.time_on_s?.[name] ?? sched?.integrated_s?.[name] ?? 0;
+  }
+
+  function panelNumber(t: ScopeAutoTarget): string {
+    return (t.name.split(' panel ')[1] ?? '').split(' of ')[0];
+  }
+
+  /** Change a setting on a row: one target, or every panel of a mosaic. */
+  function editRow(row: QueueRow, patch: Partial<ScopeAutoTarget>) {
+    const names = new Set(row.names);
+    const targets = (scope?.targets ?? []).map((t) => (names.has(t.name) ? { ...t, ...patch } : t));
     return setAuto(!!sched?.enabled, targets);
+  }
+
+  function removeRow(row: QueueRow) {
+    const names = new Set(row.names);
+    return setAuto(!!sched?.enabled, scope?.targets?.filter((o) => !names.has(o.name)));
   }
 
   async function stopCapture() {
@@ -324,28 +368,38 @@
     <div class="subhead">Targets, in order</div>
     {#if scope.targets?.length}
       <ul class="queue">
-        {#each scope.targets as t, i (t.name)}
-          <li class:running={obs?.target === t.name}>
+        {#each queueRows as row, i (row.key)}
+          {@const t = row.first}
+          {@const running = row.names.includes(obs?.target ?? '')}
+          <li class:running>
             <span class="num">{i + 1}</span>
             <span class="tname">
-              {t.common_name ?? t.display_name ?? t.name}
-              {#if t.common_name}<span class="muted small">{t.display_name ?? t.name}</span>{/if}
-              {#if t.goal_hours}
-                <span class="muted small"
-                  >{fmtHours(sched?.integrated_s?.[t.name] ?? 0)} / {fmtHours(t.goal_hours * 3600)}</span
-                >
-              {:else if sched?.integrated_s?.[t.name]}
-                <span class="muted small">{fmtHours(sched.integrated_s[t.name])}</span>
+              {t.common_name ?? t.mosaic ?? t.display_name ?? t.name}
+              {#if row.panels}
+                <span class="muted small">{t.mosaic} mosaic, {row.panels.length} panels</span>
+              {:else if t.common_name}
+                <span class="muted small">{t.display_name ?? t.name}</span>
+              {/if}
+              {#if row.panels}
+                <span class="muted small">
+                  {#if t.goal_hours}goal {fmtHours(t.goal_hours * 3600)} each{/if}
+                </span>
+              {:else if t.goal_hours}
+                <span class="muted small">{fmtHours(timeOn(t.name))} / {fmtHours(t.goal_hours * 3600)}</span>
+              {:else if timeOn(t.name)}
+                <span class="muted small">{fmtHours(timeOn(t.name))}</span>
               {/if}
             </span>
-            {#if obs?.target === t.name}<span class="tag">now</span>{/if}
+            {#if running}
+              <span class="tag">now{#if row.panels} · panel {panelNumber(row.panels.find((p) => p.name === obs?.target) ?? t)}{/if}</span>
+            {/if}
             <span class="opts">
             <select
               class="opt"
               aria-label="Filter for {t.name}"
               disabled={savingAuto}
               value={t.filter ?? ''}
-              onchange={(e) => editTarget(t.name, { filter: e.currentTarget.value || null } as Partial<ScopeAutoTarget>)}
+              onchange={(e) => editRow(row, { filter: e.currentTarget.value || null } as Partial<ScopeAutoTarget>)}
             >
               <option value="">Filter: auto</option>
               <option value="duo">Duo-band</option>
@@ -357,7 +411,7 @@
               aria-label="Exposure for {t.name}"
               disabled={savingAuto}
               value={t.exposure_s ?? ''}
-              onchange={(e) => editTarget(t.name, { exposure_s: (Number(e.currentTarget.value) || null) as ScopeAutoTarget['exposure_s'] })}
+              onchange={(e) => editRow(row, { exposure_s: (Number(e.currentTarget.value) || null) as ScopeAutoTarget['exposure_s'] })}
             >
               <option value="">15 s</option>
               <option value="30">30 s</option>
@@ -368,11 +422,11 @@
               type="number"
               min="0"
               step="0.5"
-              aria-label="Integration goal in hours for {t.name}"
-              placeholder="goal h"
+              aria-label="Integration goal in hours for {row.panels ? 'each panel of ' : ''}{t.name}"
+              placeholder={row.panels ? 'goal h each' : 'goal h'}
               disabled={savingAuto}
               value={t.goal_hours ?? ''}
-              onchange={(e) => editTarget(t.name, { goal_hours: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null })}
+              onchange={(e) => editRow(row, { goal_hours: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null })}
             />
             <input
               class="opt gain"
@@ -382,17 +436,29 @@
               placeholder="gain 60"
               disabled={savingAuto}
               value={t.gain ?? ''}
-              onchange={(e) => editTarget(t.name, { gain: e.currentTarget.value === '' ? null : Number(e.currentTarget.value) })}
+              onchange={(e) => editRow(row, { gain: e.currentTarget.value === '' ? null : Number(e.currentTarget.value) })}
             />
             <button
               type="button"
               class="x"
-              aria-label="Remove {t.name}"
+              aria-label="Remove {row.panels ? `the ${t.mosaic} mosaic` : t.name}"
               disabled={savingAuto}
-              onclick={() => setAuto(!!sched?.enabled, scope?.targets?.filter((o) => o.name !== t.name))}
+              onclick={() => removeRow(row)}
               >×</button
             >
             </span>
+            {#if row.panels}
+              <span class="panels" aria-label="Time per panel">
+                {#each row.panels as p (p.name)}
+                  {@const done = !!p.goal_hours && timeOn(p.name) >= p.goal_hours * 3600}
+                  <span class="panel" class:done class:now={obs?.target === p.name}
+                    title="{p.name}: {fmtHours(timeOn(p.name))}, counting every kept session over it"
+                  >
+                    {panelNumber(p)}<span class="ptime">{fmtHours(timeOn(p.name))}</span>
+                  </span>
+                {/each}
+              </span>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -802,6 +868,35 @@
   .queue .opt {
     font-size: 0.78rem;
     padding: 0.1rem 0.3rem;
+  }
+  .queue .panels {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0.35rem 0 0 1.9rem;
+  }
+  .queue .panel {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .queue .panel .ptime {
+    color: var(--fg-mute);
+  }
+  .queue .panel.done {
+    border-color: var(--good);
+  }
+  .queue .panel.done .ptime {
+    color: var(--good);
+  }
+  .queue .panel.now {
+    border-color: var(--accent);
   }
   .queue .opt.gain {
     width: 5.5rem;
