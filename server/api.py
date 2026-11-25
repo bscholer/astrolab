@@ -62,7 +62,7 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import scope_plan, sky_thumbs, telemetry, weather
+from server import coverage, scope_plan, sky_thumbs, telemetry, weather
 from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
@@ -3791,6 +3791,8 @@ class ScopeTarget(BaseModel):
     goal_hours: float | None = Field(None, gt=0)
     display_name: str | None = None
     common_name: str | None = None
+    mosaic: str | None = None
+    """Name of the mosaic this target is a panel of."""
 
 
 class ScopeAutoRequest(BaseModel):
@@ -3820,6 +3822,146 @@ def put_scope_auto(req: ScopeAutoRequest) -> dict:
         ),
         "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
     }
+
+
+class MosaicPanel(BaseModel):
+    index: int
+    ra_deg: float
+    dec_deg: float
+
+
+class MosaicPlan(BaseModel):
+    panels: list[MosaicPanel]
+    width_deg: float
+    """East-west extent of the whole mosaic."""
+    height_deg: float
+    frame_width_deg: float
+    frame_height_deg: float
+
+
+_MAX_PANELS_PER_SIDE = 6
+
+
+def _mosaic_plan(ra_deg: float, dec_deg: float, cols: int, rows: int, overlap: float) -> MosaicPlan:
+    try:
+        panels = coverage.plan_mosaic(ra_deg, dec_deg, cols, rows, overlap)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    w, h = coverage.TELE_W_DEG, coverage.TELE_H_DEG
+    return MosaicPlan(
+        panels=[MosaicPanel(index=p.index, ra_deg=p.ra_deg, dec_deg=p.dec_deg) for p in panels],
+        width_deg=w + (cols - 1) * w * (1 - overlap),
+        height_deg=h + (rows - 1) * h * (1 - overlap),
+        frame_width_deg=w,
+        frame_height_deg=h,
+    )
+
+
+class MosaicRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    """The mosaic's name; panels are named '<name> · panel i/n'."""
+    ra_deg: float = Field(ge=0, lt=360)
+    dec_deg: float = Field(ge=-90, le=90)
+    cols: int = Field(ge=1, le=_MAX_PANELS_PER_SIDE)
+    rows: int = Field(ge=1, le=_MAX_PANELS_PER_SIDE)
+    overlap: float = Field(0.2, ge=0.1, le=0.5)
+    object_type: str | None = None
+    """Picks the filter, as for a single target: a nebula's panels shoot duo-band."""
+    common_name: str | None = None
+
+
+def _without_mosaic(rows: list[dict], name: str) -> list[dict]:
+    return [r for r in rows if r.get("mosaic") != name]
+
+
+@app.put("/api/scope/mosaic", responses={400: {"description": "the grid does not fit"}})
+def put_scope_mosaic(req: MosaicRequest) -> dict:
+    """Put a mosaic's panels on the auto list, replacing an earlier grid of the
+    same name. The scheduler shoots them like any target, so panels with the
+    least time come first. Their nights stack with every other session that
+    overlaps them (server/masters.py)."""
+    if req.cols * req.rows < 2:
+        raise HTTPException(status_code=400, detail="a mosaic needs at least two panels")
+    name = coverage.safe_name(req.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="the mosaic needs a name in plain letters")
+    plan = _mosaic_plan(req.ra_deg, req.dec_deg, req.cols, req.rows, req.overlap)
+    n = len(plan.panels)
+    panels = [
+        ScopeTarget(
+            name=coverage.panel_name(name, p.index, n),
+            ra_deg=p.ra_deg,
+            dec_deg=p.dec_deg,
+            object_type=req.object_type,
+            display_name=coverage.panel_name(name, p.index, n),
+            common_name=req.common_name,
+            mosaic=name,
+        ).model_dump()
+        for p in plan.panels
+    ]
+    rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    rows = _without_mosaic(rows, name) + panels
+    set_setting(SETTING_SCOPE_TARGETS, rows, db_path=job_manager.db_path)
+    return {"targets": rows, "plan": plan.model_dump()}
+
+
+@app.delete("/api/scope/mosaic")
+def delete_scope_mosaic(name: str) -> dict:
+    """Take a mosaic's panels off the auto list. Frames already shot stay."""
+    rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    kept = _without_mosaic(rows, name)
+    set_setting(SETTING_SCOPE_TARGETS, kept, db_path=job_manager.db_path)
+    return {"targets": kept, "removed": len(rows) - len(kept)}
+
+
+class CoverageEntry(BaseModel):
+    session_id: int
+    target: str
+    filter: str | None
+    night: str
+    ra_deg: float
+    dec_deg: float
+    width_deg: float
+    height_deg: float
+    usable_s: float
+    """Kept exposure time; 0 until the curator has judged the session."""
+
+
+@app.get("/api/sky/coverage", response_model=list[CoverageEntry])
+def get_sky_coverage(conn: DBDep) -> list[CoverageEntry]:
+    """Where every session's frames landed on the sky, for the atlas."""
+    feet = coverage.footprints(conn)
+    if not feet:
+        return []
+    usable = {
+        r[0]: r[1] or 0.0
+        for r in conn.execute(
+            "SELECT session_id, usable_s FROM session_verdicts WHERE verdict = 'keep'"
+        )
+    }
+    out = []
+    for r in conn.execute(
+        "SELECT s.id, t.name, s.filter, s.started_at"
+        " FROM sessions s JOIN targets t ON t.id = s.target_id"
+    ):
+        f = feet.get(r[0])
+        if f is None:
+            continue
+        out.append(
+            CoverageEntry(
+                session_id=r[0],
+                target=r[1],
+                filter=r[2],
+                night=(r[3] or "")[:10],
+                ra_deg=f.ra_deg,
+                dec_deg=f.dec_deg,
+                width_deg=f.width_deg,
+                height_deg=f.height_deg,
+                usable_s=usable.get(r[0], 0.0),
+            )
+        )
+    return out
 
 
 def _scope_state() -> dict:

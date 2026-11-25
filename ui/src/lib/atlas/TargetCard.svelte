@@ -20,6 +20,9 @@
     ontoggleauto,
     onclose,
     onexpand,
+    queuedMosaic = null,
+    onmosaic,
+    onremovemosaic,
   }: {
     entry: TonightEntry;
     data: TonightResponse;
@@ -32,6 +35,10 @@
     ontoggleauto: () => void;
     onclose?: () => void;
     onexpand?: () => void;
+    /** Panels of this target's mosaic on the auto list, when there is one. */
+    queuedMosaic?: number | null;
+    onmosaic?: () => void;
+    onremovemosaic?: () => void;
   } = $props();
 
   let thumbFailed = $state(false);
@@ -132,8 +139,21 @@
     <button type="button" class:on={onAuto} disabled={busy} onclick={ontoggleauto}>
       {onAuto ? '✓ On the auto list' : '+ Auto list'}
     </button>
+    {#if onmosaic}
+      <button type="button" disabled={busy} onclick={onmosaic}>
+        {queuedMosaic ? 'Edit mosaic' : 'Mosaic'}
+      </button>
+    {/if}
     <a class="link" href="/tonight?q={encodeURIComponent(entry.messier ?? entry.name)}">In Tonight</a>
   </div>
+  {#if queuedMosaic}
+    <p class="queued">
+      Mosaic of {queuedMosaic} panels on the auto list.
+      {#if onremovemosaic}
+        <button type="button" class="text" disabled={busy} onclick={onremovemosaic}>Remove</button>
+      {/if}
+    </p>
+  {/if}
 
   {#if !compact}
     <div class="tonight">
@@ -257,6 +277,19 @@
   .actions .on {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  .queued {
+    margin: -0.3rem 0 0;
+    font-size: 0.82rem;
+    color: var(--warn);
+  }
+  .text {
+    border: none;
+    background: none;
+    padding: 0 0.2rem;
+    font-size: 0.82rem;
+    color: var(--fg-mute);
+    text-decoration: underline;
   }
   .link {
     font-size: 0.85rem;

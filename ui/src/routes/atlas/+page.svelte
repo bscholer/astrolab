@@ -12,7 +12,20 @@
   import { displayName, matchesSearch, typeGroup, upWindow, type TypeGroup } from '$lib/tonight';
   import SkyView from '$lib/atlas/SkyView.svelte';
   import TargetCard from '$lib/atlas/TargetCard.svelte';
-  import { framingFov, importance, isFeatured, type Constellations, type Layers } from '$lib/atlas/atlas';
+  import MosaicEditor from '$lib/atlas/MosaicEditor.svelte';
+  import {
+    framingFov,
+    importance,
+    isFeatured,
+    mosaicName,
+    mosaicSize,
+    suggestGrid,
+    TELE_FOV_DEG,
+    type Constellations,
+    type Grid,
+    type Layers,
+  } from '$lib/atlas/atlas';
+  import type { CoverageEntry } from '$lib/api';
 
   const GROUPS: { id: TypeGroup; label: string }[] = [
     { id: 'nebulae', label: 'Nebulae' },
@@ -32,7 +45,17 @@
   let search = $state('');
   let searchOpen = $state(false);
   let frame = $state<'horizon' | 'equatorial'>('horizon');
-  let layers = $state<Layers>({ grid: false, constellations: true, labels: true, frame: true, ground: true });
+  let layers = $state<Layers>({
+    captured: true,
+    grid: false,
+    constellations: true,
+    labels: true,
+    frame: true,
+    ground: true,
+  });
+  let coverage = $state<CoverageEntry[]>([]);
+  // The mosaic being laid out for the selected object, or null.
+  let mosaicGrid = $state<Grid | null>(null);
   let busy = $state(false);
   let sheetOpen = $state(false);
   let menuOpen = $state(false);
@@ -68,6 +91,24 @@
   const selectedEntry = $derived(selected ? (entries.find((e) => e.name === selected) ?? null) : null);
   const site = $derived(data ? { lat: data.site_latitude, lon: data.site_longitude } : null);
   const autoNames = $derived(new Set((scope?.targets ?? []).map((t) => t.name)));
+  const covered = $derived(
+    coverage.map((c) => ({ ra: c.ra_deg, dec: c.dec_deg, w: c.width_deg, h: c.height_deg, hours: c.usable_s / 3600 })),
+  );
+  const planned = $derived(
+    (scope?.targets ?? [])
+      .filter((t) => t.mosaic)
+      .map((t) => ({
+        ra: t.ra_deg,
+        dec: t.dec_deg,
+        w: TELE_FOV_DEG[0],
+        h: TELE_FOV_DEG[1],
+        label: t.name.split(' panel ')[1] ?? '',
+      })),
+  );
+  const selectedMosaic = $derived(selectedEntry ? mosaicName(displayName(selectedEntry)) : null);
+  const queuedPanels = $derived(
+    selectedMosaic ? (scope?.targets ?? []).filter((t) => t.mosaic === selectedMosaic).length : 0,
+  );
 
   const best = $derived(
     mapEntries.filter((e) => e.score > 0).slice(0, mobile ? 16 : 30),
@@ -112,6 +153,10 @@
   onMount(() => {
     load();
     refreshScope();
+    api.getSkyCoverage().then(
+      (c) => (coverage = c),
+      () => {},
+    );
     fetch('/atlas/constellations.json')
       .then((r) => (r.ok ? r.json() : null))
       .then((c) => (constellations = c))
@@ -132,6 +177,7 @@
   }
 
   function select(name: string | null) {
+    if (name !== selected) mosaicGrid = null;
     selected = name;
     sheetOpen = false;
     setUrl(name);
@@ -197,6 +243,83 @@
     }
   }
 
+  // ----- mosaics
+
+  function startMosaic(e: TonightEntry) {
+    const grid = queuedPanels ? gridOfQueued() ?? suggestGrid(e) : suggestGrid(e);
+    mosaicGrid = grid;
+    sheetOpen = false;
+    const [w, h] = mosaicSize(grid);
+    const fov = Math.min(140, Math.max(w, h * 1.6) * 1.9);
+    const center = queuedCenter() ?? { ra: e.ra_deg, dec: e.dec_deg };
+    sky?.flyTo(center.ra, center.dec, fov);
+  }
+
+  function queuedPanelsOf(name: string | null) {
+    return (scope?.targets ?? []).filter((t) => name && t.mosaic === name);
+  }
+
+  /** Grid of the queued mosaic: panels in one row share a declination. */
+  function gridOfQueued(): Grid | null {
+    const panels = queuedPanelsOf(selectedMosaic);
+    if (panels.length < 2) return null;
+    const rows = new Set(panels.map((p) => p.dec_deg.toFixed(4))).size;
+    return { cols: Math.round(panels.length / rows), rows };
+  }
+
+  function queuedCenter(): { ra: number; dec: number } | null {
+    const panels = queuedPanelsOf(selectedMosaic);
+    if (!panels.length) return null;
+    const ref = panels[0].ra_deg;
+    const dra = panels.map((p) => ((p.ra_deg - ref + 540) % 360) - 180);
+    const ra = (ref + (Math.min(...dra) + Math.max(...dra)) / 2 + 360) % 360;
+    const decs = panels.map((p) => p.dec_deg);
+    return { ra, dec: (Math.min(...decs) + Math.max(...decs)) / 2 };
+  }
+
+  async function saveMosaic(e: TonightEntry) {
+    if (!mosaicGrid || !sky) return;
+    busy = true;
+    try {
+      const c = sky.center();
+      await api.putScopeMosaic({
+        name: displayName(e),
+        ra_deg: c.ra,
+        dec_deg: c.dec,
+        cols: mosaicGrid.cols,
+        rows: mosaicGrid.rows,
+        object_type: e.object_type,
+        common_name: e.common_name,
+      });
+      const n = mosaicGrid.cols * mosaicGrid.rows;
+      toast.success(
+        scope?.scheduler?.enabled
+          ? `Added ${n} panels of ${displayName(e)} to the auto list.`
+          : `Added ${n} panels of ${displayName(e)}. The auto list is off; turn it on from the Scope page.`,
+      );
+      mosaicGrid = null;
+      await refreshScope();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeMosaic() {
+    if (!selectedMosaic) return;
+    busy = true;
+    try {
+      const r = await api.deleteScopeMosaic(selectedMosaic);
+      toast.success(`Took ${r.removed} panels off the auto list.`);
+      await refreshScope();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      busy = false;
+    }
+  }
+
   // ----- time slider: minutes from an hour before dusk to an hour after dawn
 
   const span = $derived.by(() => {
@@ -238,6 +361,7 @@
   }
 
   const LAYER_LABELS: [keyof Layers, string][] = [
+    ['captured', 'Already shot'],
     ['constellations', 'Constellations'],
     ['labels', 'Labels'],
     ['frame', 'Scope frame'],
@@ -355,6 +479,9 @@
         minAlt={MIN_ALT}
         {autoNames}
         {constellations}
+        {covered}
+        {planned}
+        {mosaicGrid}
         onselect={select}
         onviewchange={(r) => (readout = r)}
       />
@@ -374,7 +501,20 @@
           </div>
         {/if}
         <div class="m-bottom">
-          {#if selectedEntry && data}
+          {#if selectedEntry && mosaicGrid}
+            <div class="sheet">
+              <MosaicEditor
+                name={displayName(selectedEntry)}
+                grid={mosaicGrid}
+                compact
+                busy={busy}
+                replacing={queuedPanels > 0}
+                onchange={(g) => (mosaicGrid = g)}
+                onsave={() => saveMosaic(selectedEntry)}
+                oncancel={() => (mosaicGrid = null)}
+              />
+            </div>
+          {:else if selectedEntry && data}
             <div class="sheet" class:open={sheetOpen}>
               <button type="button" class="grip" aria-label={sheetOpen ? 'Show less' : 'Show more'} onclick={() => (sheetOpen = !sheetOpen)}></button>
               <TargetCard
@@ -389,6 +529,9 @@
                 ontoggleauto={() => toggleAuto(selectedEntry)}
                 onclose={() => select(null)}
                 onexpand={() => (sheetOpen = !sheetOpen)}
+                queuedMosaic={queuedPanels || null}
+                onmosaic={() => startMosaic(selectedEntry)}
+                onremovemosaic={removeMosaic}
               />
             </div>
           {:else if best.length}
@@ -415,7 +558,19 @@
       <aside class="side">
         {@render searchBox()}
         {@render chips()}
-        {#if selectedEntry && data}
+        {#if selectedEntry && mosaicGrid}
+          <section class="panel">
+            <MosaicEditor
+              name={displayName(selectedEntry)}
+              grid={mosaicGrid}
+              busy={busy}
+              replacing={queuedPanels > 0}
+              onchange={(g) => (mosaicGrid = g)}
+              onsave={() => saveMosaic(selectedEntry)}
+              oncancel={() => (mosaicGrid = null)}
+            />
+          </section>
+        {:else if selectedEntry && data}
           <section class="panel">
             <TargetCard
               entry={selectedEntry}
@@ -427,6 +582,9 @@
               onshoot={() => shoot(selectedEntry)}
               ontoggleauto={() => toggleAuto(selectedEntry)}
               onclose={() => select(null)}
+              queuedMosaic={queuedPanels || null}
+              onmosaic={() => startMosaic(selectedEntry)}
+              onremovemosaic={removeMosaic}
             />
           </section>
         {/if}

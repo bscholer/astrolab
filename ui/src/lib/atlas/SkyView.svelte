@@ -22,7 +22,15 @@
     type Horizon,
     type Vec3,
   } from './sky';
-  import { importance, TELE_FOV_DEG, type Constellations, type Layers } from './atlas';
+  import {
+    importance,
+    planMosaic,
+    TELE_FOV_DEG,
+    type Constellations,
+    type Grid,
+    type Layers,
+    type SkyBox,
+  } from './atlas';
 
   type Frame = 'horizon' | 'equatorial';
 
@@ -36,6 +44,9 @@
     minAlt = 20,
     autoNames = new Set<string>(),
     constellations = null,
+    covered = [],
+    planned = [],
+    mosaicGrid = null,
     onselect,
     onviewchange,
   }: {
@@ -48,6 +59,12 @@
     minAlt?: number;
     autoNames?: Set<string>;
     constellations?: Constellations | null;
+    /** Where captured sessions landed; hours set how strongly each is filled. */
+    covered?: (SkyBox & { hours: number })[];
+    /** Mosaic panels waiting on the auto list. */
+    planned?: (SkyBox & { label: string })[];
+    /** A mosaic being laid out: drawn around the centre of the view. */
+    mosaicGrid?: Grid | null;
     onselect: (name: string | null) => void;
     onviewchange?: (v: { altDeg: number | null; azDeg: number | null; ra: number; dec: number; fov: number }) => void;
   } = $props();
@@ -188,6 +205,11 @@
     invalidate();
   }
 
+  /** RA and Dec at the centre of the view. */
+  export function center(): { ra: number; dec: number } {
+    return toRaDec(centerVec(horizonNow()));
+  }
+
   export function zoomBy(factor: number) {
     zoomAt(fov * factor, width / 2, height / 2);
   }
@@ -238,6 +260,10 @@
     void minAlt;
     void autoNames;
     void constellations;
+    void covered;
+    void planned;
+    void mosaicGrid;
+    void layers.captured;
     invalidate();
   });
 
@@ -378,9 +404,8 @@
     return pts;
   }
 
-  function drawFrameBox(ctx: CanvasRenderingContext2D, view: View, center: Vec3) {
-    const [w, hgt] = TELE_FOV_DEG;
-    // Long side east-west: the tele frame on an equatorial mount.
+  /** Outline of a north-up box on the sky, as points along its edges. */
+  function boxPath(center: Vec3, w: number, hgt: number): Vec3[] {
     const corner = (sx: number, sy: number): Vec3 => {
       const east = (sx * w) / 2;
       const north = (sy * hgt) / 2;
@@ -391,12 +416,91 @@
     for (let i = 1; i < path.length; i++) {
       const [x0, y0] = path[i - 1];
       const [x1, y1] = path[i];
-      for (let t = 0; t <= 1; t += 0.125) pts.push(corner(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
+      for (let t = 0; t < 1; t += 0.125) pts.push(corner(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
     }
+    pts.push(pts[0]);
+    return pts;
+  }
+
+  function fillBox(ctx: CanvasRenderingContext2D, view: View, pts: Vec3[]) {
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const p = view.project(pts[i]);
+      if (!p || p.z < 0) return;
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.fill();
+  }
+
+  function onScreen(view: View, v: Vec3, marginDeg: number): boolean {
+    const p = view.project(v);
+    const m = marginDeg * view.pxPerDeg;
+    return !!p && p.z > 0 && p.x > -m && p.x < width + m && p.y > -m && p.y < height + m;
+  }
+
+  function boxLabel(ctx: CanvasRenderingContext2D, view: View, center: Vec3, text: string, color: string) {
+    const p = view.project(center);
+    if (!p) return;
+    ctx.font = '600 12px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(2, 3, 10, 0.8)';
+    ctx.strokeText(text, p.x, p.y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, p.x, p.y);
+  }
+
+  function drawCovered(ctx: CanvasRenderingContext2D, view: View) {
+    for (const b of covered) {
+      const c = radec(b.ra, b.dec);
+      if (!onScreen(view, c, Math.max(b.w, b.h))) continue;
+      const pts = boxPath(c, b.w, b.h);
+      ctx.fillStyle = `rgba(167, 139, 250, ${Math.min(0.06 + b.hours * 0.04, 0.24)})`;
+      fillBox(ctx, view, pts);
+      ctx.strokeStyle = 'rgba(167, 139, 250, 0.45)';
+      ctx.lineWidth = 1;
+      strokeCurve(ctx, view, pts);
+    }
+  }
+
+  function drawPlanned(ctx: CanvasRenderingContext2D, view: View) {
+    ctx.setLineDash([6, 4]);
+    for (const b of planned) {
+      const c = radec(b.ra, b.dec);
+      if (!onScreen(view, c, Math.max(b.w, b.h))) continue;
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.8)';
+      ctx.lineWidth = 1.25;
+      strokeCurve(ctx, view, boxPath(c, b.w, b.h));
+      if (view.pxPerDeg * b.h > 50) boxLabel(ctx, view, c, b.label, 'rgba(251, 191, 36, 0.9)');
+    }
+    ctx.setLineDash([]);
+  }
+
+  function drawMosaic(ctx: CanvasRenderingContext2D, view: View, center: Vec3, grid: Grid) {
+    const rd = toRaDec(center);
+    const panels = planMosaic(rd.ra, rd.dec, grid);
+    ctx.fillStyle = 'rgba(94, 234, 212, 0.07)';
+    for (const b of panels) fillBox(ctx, view, boxPath(radec(b.ra, b.dec), b.w, b.h));
     ctx.strokeStyle = 'rgba(94, 234, 212, 0.95)';
     ctx.lineWidth = 1.5;
-    strokeCurve(ctx, view, pts);
-    const label = view.project(corner(-1, 1));
+    panels.forEach((b, i) => {
+      const c = radec(b.ra, b.dec);
+      strokeCurve(ctx, view, boxPath(c, b.w, b.h));
+      if (view.pxPerDeg * b.h > 36) boxLabel(ctx, view, c, String(i + 1), 'rgba(94, 234, 212, 0.95)');
+    });
+  }
+
+  function drawFrameBox(ctx: CanvasRenderingContext2D, view: View, center: Vec3) {
+    const [w, hgt] = TELE_FOV_DEG;
+    ctx.strokeStyle = 'rgba(94, 234, 212, 0.95)';
+    ctx.lineWidth = 1.5;
+    strokeCurve(ctx, view, boxPath(center, w, hgt));
+    // Top-left corner: east of north, so a negative east offset.
+    const label = view.project(
+      offset(center, (Math.atan2(-w / 2, hgt / 2) * 180) / Math.PI, Math.hypot(w / 2, hgt / 2)),
+    );
     if (label && view.pxPerDeg * hgt > 40) {
       ctx.font = '500 11px Inter, system-ui, sans-serif';
       ctx.textAlign = 'left';
@@ -492,12 +596,15 @@
     ctx.clearRect(0, 0, width, height);
     if (layers.grid) drawGrid(ctx, view, h);
     if (layers.constellations && constellations) drawConstellations(ctx, view, constellations);
+    if (layers.captured) drawCovered(ctx, view);
     if (h) drawHorizon(ctx, view, h);
+    drawPlanned(ctx, view);
     drawObjects(ctx, view, h);
-    const sel = selected ? entries.find((e) => e.name === selected) : null;
-    if (layers.frame && sel) drawFrameBox(ctx, view, radec(sel.ra_deg, sel.dec_deg));
-
     const c = centerVec(h);
+    const sel = selected ? entries.find((e) => e.name === selected) : null;
+    if (mosaicGrid) drawMosaic(ctx, view, c, mosaicGrid);
+    else if (layers.frame && sel) drawFrameBox(ctx, view, radec(sel.ra_deg, sel.dec_deg));
+
     const rd = toRaDec(c);
     const aa = h ? toAltAz(h, c) : null;
     onviewchange?.({ altDeg: aa?.alt ?? null, azDeg: aa?.az ?? null, ra: rd.ra, dec: rd.dec, fov });

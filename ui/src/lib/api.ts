@@ -814,6 +814,8 @@ export interface ScopeAutoTarget {
   goal_hours?: number | null;
   display_name?: string | null;
   common_name?: string | null;
+  // Name of the mosaic this target is a panel of.
+  mosaic?: string | null;
 }
 
 export interface ScopeJob {
@@ -958,6 +960,32 @@ export interface SystemSnapshot {
   gpu: SystemGpu | null;
   jobs: SystemJobs;
   sampled_at: number;
+}
+
+// ----- sky atlas: mosaics and coverage -----------------------------------
+
+export interface MosaicRequest {
+  name: string;
+  ra_deg: number;
+  dec_deg: number;
+  cols: number;
+  rows: number;
+  overlap?: number;
+  object_type?: string | null;
+  common_name?: string | null;
+}
+
+// Where one session's frames landed on the sky.
+export interface CoverageEntry {
+  session_id: number;
+  target: string;
+  filter: string | null;
+  night: string;
+  ra_deg: number;
+  dec_deg: number;
+  width_deg: number;
+  height_deg: number;
+  usable_s: number;
 }
 
 // ----- tonight ----------------------------------------------------------
@@ -1166,6 +1194,13 @@ export const api = {
   getScopeWeather: () =>
     getJSON<{ max_cloud_pct: number; mean_cloud_pct: number; precip_mm: number; snow_cm: number; warn: boolean; reason: string | null }>('/api/scope/weather'),
   getScope: () => getJSON<ScopeState>('/api/scope'),
+  putScopeMosaic: (req: MosaicRequest) =>
+    putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/mosaic', req),
+  deleteScopeMosaic: (name: string) =>
+    deleteJSON<{ targets: ScopeAutoTarget[]; removed: number }>(
+      `/api/scope/mosaic?name=${encodeURIComponent(name)}`,
+    ),
+  getSkyCoverage: () => getJSON<CoverageEntry[]>('/api/sky/coverage'),
   putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),
   getSystem: () => getJSON<SystemSnapshot>('/api/system'),
   tonightThumbUrl: (name: string, version: string | null) =>

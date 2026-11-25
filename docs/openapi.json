@@ -98,6 +98,66 @@
         "title": "ControlIn",
         "type": "object"
       },
+      "CoverageEntry": {
+        "properties": {
+          "dec_deg": {
+            "title": "Dec Deg",
+            "type": "number"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "height_deg": {
+            "title": "Height Deg",
+            "type": "number"
+          },
+          "night": {
+            "title": "Night",
+            "type": "string"
+          },
+          "ra_deg": {
+            "title": "Ra Deg",
+            "type": "number"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "usable_s": {
+            "title": "Usable S",
+            "type": "number"
+          },
+          "width_deg": {
+            "title": "Width Deg",
+            "type": "number"
+          }
+        },
+        "required": [
+          "session_id",
+          "target",
+          "filter",
+          "night",
+          "ra_deg",
+          "dec_deg",
+          "width_deg",
+          "height_deg",
+          "usable_s"
+        ],
+        "title": "CoverageEntry",
+        "type": "object"
+      },
       "CreateProjectFromSessionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -764,6 +824,79 @@
           "hours"
         ],
         "title": "MoreDataRequest",
+        "type": "object"
+      },
+      "MosaicRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cols": {
+            "maximum": 6.0,
+            "minimum": 1.0,
+            "title": "Cols",
+            "type": "integer"
+          },
+          "common_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Common Name"
+          },
+          "dec_deg": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Dec Deg",
+            "type": "number"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "overlap": {
+            "default": 0.2,
+            "maximum": 0.5,
+            "minimum": 0.1,
+            "title": "Overlap",
+            "type": "number"
+          },
+          "ra_deg": {
+            "exclusiveMaximum": 360.0,
+            "minimum": 0.0,
+            "title": "Ra Deg",
+            "type": "number"
+          },
+          "rows": {
+            "maximum": 6.0,
+            "minimum": 1.0,
+            "title": "Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "ra_deg",
+          "dec_deg",
+          "cols",
+          "rows"
+        ],
+        "title": "MosaicRequest",
         "type": "object"
       },
       "NodeSpec": {
@@ -1693,6 +1826,17 @@
               }
             ],
             "title": "Goal Hours"
+          },
+          "mosaic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mosaic"
           },
           "name": {
             "title": "Name",
@@ -4580,6 +4724,90 @@
         "summary": "Scope Frame"
       }
     },
+    "/api/scope/mosaic": {
+      "delete": {
+        "description": "Take a mosaic's panels off the auto list. Frames already shot stay.",
+        "operationId": "delete_scope_mosaic_api_scope_mosaic_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Scope Mosaic Api Scope Mosaic Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Scope Mosaic"
+      },
+      "put": {
+        "description": "Put a mosaic's panels on the auto list, replacing an earlier grid of the\nsame name. The scheduler shoots them like any target, so panels with the\nleast time come first. Their nights stack with every other session that\noverlaps them (server/masters.py).",
+        "operationId": "put_scope_mosaic_api_scope_mosaic_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MosaicRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Scope Mosaic Api Scope Mosaic Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "the grid does not fit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Scope Mosaic"
+      }
+    },
     "/api/scope/observe": {
       "post": {
         "description": "Start prepare, calibrate, slew, and capture in the background.",
@@ -5137,6 +5365,29 @@
           }
         },
         "summary": "Patch Settings"
+      }
+    },
+    "/api/sky/coverage": {
+      "get": {
+        "description": "Where every session's frames landed on the sky, for the atlas.",
+        "operationId": "get_sky_coverage_api_sky_coverage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CoverageEntry"
+                  },
+                  "title": "Response Get Sky Coverage Api Sky Coverage Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Sky Coverage"
       }
     },
     "/api/sky/hips/{path}": {

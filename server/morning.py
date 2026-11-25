@@ -7,6 +7,7 @@ night, its render and the render before it, for a before/after compare).
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections import defaultdict
@@ -97,9 +98,21 @@ def morning(
         for r in conn.execute("SELECT session_id, verdict, usable_s FROM session_verdicts")
     }
     names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM targets")}
-    masters = defaultdict(list)
-    for r in conn.execute("SELECT target_id, project_id FROM target_masters"):
-        masters[r[0]].append(r[1])
+    # A target's masters: those named for it, and those holding any of its
+    # sessions (a master covers a patch of sky, so a mosaic panel or a
+    # neighbour's nights can sit in another target's master).
+    sessions_of: dict[int, set[int]] = defaultdict(set)
+    for sid, tid in conn.execute("SELECT id, target_id FROM sessions"):
+        sessions_of[tid].add(sid)
+    masters: dict[int | None, list[str]] = defaultdict(list)
+    for tid, pid, seen in conn.execute("SELECT target_id, project_id, seen FROM target_masters"):
+        project = get_project(pid)
+        held = {int(s) for s in json.loads(seen or "[]")}
+        if project is not None:
+            held |= {int(s) for s in project.source_session_ids}
+        for t, ids in sessions_of.items():
+            if t == tid or ids & held:
+                masters[t].append(pid)
     started = {
         r[0]: r[1] for r in conn.execute("SELECT id, started_at FROM sessions")
     }

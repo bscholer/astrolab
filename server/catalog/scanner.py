@@ -475,6 +475,12 @@ def merge_duplicate_targets(conn: sqlite3.Connection) -> list[tuple[str, str]]:
             for key, in conn.execute(
                 "SELECT key FROM target_masters WHERE target_id = ?", (m["id"],)
             ).fetchall():
+                if not key.startswith(f"{m['id']}|"):
+                    # Keyed by its patch of sky, not the target: only the name moves.
+                    conn.execute(
+                        "UPDATE target_masters SET target_id = ? WHERE key = ?", (keep["id"], key)
+                    )
+                    continue
                 new_key = f"{keep['id']}|{key.split('|', 1)[1]}"
                 taken = conn.execute("SELECT 1 FROM target_masters WHERE key = ?", (new_key,))
                 if taken.fetchone():
