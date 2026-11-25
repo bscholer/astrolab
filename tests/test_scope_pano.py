@@ -150,3 +150,23 @@ def test_restart_finds_the_last_scan(tmp_path):
     assert snap["state"] == "done" and snap["id"] == "scan1"
     assert snap["result"] == {"alt_top": 90}
     assert PanoScanner(tmp_path / "none").snapshot() == {"state": "idle"}
+
+
+def test_a_stitch_that_uses_too_much_memory_is_stopped(monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(scope_pano, "STITCH_MEMORY_BYTES", 100 * 1024**2)
+    monkeypatch.setattr(scope_pano, "WATCH_S", 0.05)
+    hog = "import time; x = bytearray(400 * 1024**2); time.sleep(30)"
+    proc = subprocess.Popen([sys.executable, "-c", hog])
+    assert "memory" in scope_pano._watch(proc)
+    assert proc.returncode is not None
+
+
+def test_a_stitch_within_its_limits_is_left_alone():
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", "x = bytearray(10 * 1024**2)"])
+    assert scope_pano._watch(proc) is None and proc.returncode == 0

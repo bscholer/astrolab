@@ -13,9 +13,9 @@ import json
 import logging
 import math
 import os
-import resource
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+import psutil
 from astropy.coordinates import AltAz, EarthLocation, get_sun
 from astropy.time import Time
 
@@ -38,9 +39,13 @@ RETRY_WAIT_S = 5.0
 POINT_TIMEOUT_S = 120
 FRAME_TIMEOUT_S = 60
 STITCH_TIMEOUT_S = 1800
-# The pod has 4 GB. A stitch of 100 frames peaks near 1.7 GB; past the cap it fails alone
-# instead of taking the API (and everything else in the pod) down with it.
-STITCH_MEMORY_BYTES = 3 * 1024**3
+# A stitch of 80 to 100 frames peaks near 1.7 GB of real memory. One that runs away is
+# stopped at this, so it fails alone instead of starving the API and the pipeline jobs.
+# (A cap on address space does not work: OpenCV reserves far more than it uses, one malloc
+# arena per thread, and the box has 32 cores.)
+STITCH_MEMORY_BYTES = 8 * 1024**3
+STITCH_THREADS = 8
+WATCH_S = 0.5
 
 # The wide frame is 46 x 27 degrees. Pitch 175 is as close to the rotation axis as the wide
 # camera gets, and below pitch 50 it looks into the scope's own base.
@@ -112,31 +117,57 @@ def read_result(folder: Path) -> dict | None:
         return None
 
 
-def _limit_memory() -> None:  # runs in the child, before the stitcher starts
-    resource.setrlimit(resource.RLIMIT_AS, (STITCH_MEMORY_BYTES, STITCH_MEMORY_BYTES))
-
-
 def run_stitch(folder: Path, latitude: float | None) -> dict:
-    """Stitch in a child process. OpenCV and the fit use every core for a minute or two."""
+    """Stitch in a child process, watched for memory. Returns pano.json."""
     cmd = [sys.executable, "-m", "server.pano_stitch", str(folder)]
     if latitude is not None:
         cmd += ["--latitude", str(latitude)]
-    env = dict(os.environ, OMP_NUM_THREADS="4", OPENBLAS_NUM_THREADS="4")
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=STITCH_TIMEOUT_S,
-        env=env,
-        preexec_fn=_limit_memory,
+    threads = str(STITCH_THREADS)
+    env = dict(
+        os.environ,
+        OMP_NUM_THREADS=threads,
+        OPENBLAS_NUM_THREADS=threads,
+        ASTROLAB_STITCH_THREADS=threads,
     )
+    with tempfile.TemporaryFile("w+") as out:
+        proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, text=True, env=env)
+        reason = _watch(proc)
+        out.seek(0)
+        lines = out.read().strip().splitlines()
+    if reason:
+        raise RuntimeError(f"stitching failed: {reason}")
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or ["no output"]
-        raise RuntimeError(f"stitching failed: {tail[0]}")
+        last = next((x for x in reversed(lines) if x.strip()), "no output")
+        log.warning("pano stitch failed (%s):\n%s", proc.returncode, "\n".join(lines[-20:]))
+        raise RuntimeError(f"stitching failed: {last}")
     result = read_result(folder)
     if result is None:
         raise RuntimeError("stitching wrote no result")
     return result
+
+
+def _watch(proc: subprocess.Popen) -> str | None:
+    """Wait for the stitch. Stop it when it runs too long or uses too much memory."""
+    deadline = time.monotonic() + STITCH_TIMEOUT_S
+    try:
+        child = psutil.Process(proc.pid)
+    except psutil.Error:
+        child = None
+    while proc.poll() is None:
+        if time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            return f"took longer than {STITCH_TIMEOUT_S // 60} minutes"
+        try:
+            rss = child.memory_info().rss if child else 0
+        except psutil.Error:
+            rss = 0
+        if rss > STITCH_MEMORY_BYTES:
+            proc.kill()
+            proc.wait()
+            return f"used more than {STITCH_MEMORY_BYTES // 1024**3} GB of memory"
+        time.sleep(WATCH_S)
+    return None
 
 
 class PanoScanner:

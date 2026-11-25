@@ -48,6 +48,7 @@ MAX_BRIGHTNESS_SAMPLES = 20000
 POLAR_TOLERANCE_DEG = 10.0
 CLEAR_LIFT = 15.0  # grey levels brighter above than below, for "there is a bright side"
 UP_CONE_DEG = 40.0
+PLAUSIBLE_TILT_DEG = 10.0
 
 
 @dataclass(frozen=True)
@@ -549,9 +550,10 @@ def estimate_up(
 ) -> Level:
     """Zenith from vertical edges, with the brighter side (sky, ceiling lights) as up.
 
-    brightness is (directions, luminance) samples of the frames in the mount frame. Latitude
-    does not steer the search, since the scope may sit on a level tripod. It only adds a
-    compass when the axis turns out to lean as a polar-aligned axis would.
+    brightness is (directions, luminance) samples of the frames in the mount frame. With a
+    latitude, up must be where one of the scope's two setups puts it: along the axis (level
+    tripod) or 90 - |latitude| from it (on the wedge, polar aligned); the second also gives
+    the compass.
     """
     axis = np.array([0.0, 0.0, 1.0])
     cand = _fibonacci(20000)
@@ -577,13 +579,26 @@ def estimate_up(
             above = lum @ up_ / np.maximum(up_.sum(0), 1)
             below = lum @ down / np.maximum(down.sum(0), 1)
             lift[k : k + 500] = above - below
-        bright = cand[int(np.argmax(lift))]
         if lift.max() > CLEAR_LIFT:
-            # A clear bright side (daylight, ceiling lights): up lies near it. Siding and fence
-            # rails make vanishing points as strong as the vertical one, and only this tells
-            # them apart. At night there is no such side and the lines decide alone.
-            score = np.where(cand @ bright > math.cos(math.radians(UP_CONE_DEG)), score, 0.0)
+            # There is a bright side (sky by day, ceiling lights indoors), so up is brighter
+            # above than below. That rules out the horizontal vanishing points of siding and
+            # fence rails, which have as much line support as the vertical one.
+            allowed = lift > 0
+            if latitude is None:
+                # Nothing else to go on: stay near the brightest direction.
+                bright = cand[int(np.argmax(lift))]
+                allowed &= cand @ bright > math.cos(math.radians(UP_CONE_DEG))
+            score = np.where(allowed, score, 0.0)
         score = score / (1 + np.exp(-lift / 8.0))
+    if latitude is not None:
+        # The scope stands level (up along its axis) or on its wedge, with the axis at the
+        # pole (up 90 - |latitude| from it). Nothing else is possible, and an overcast sky
+        # is too even to tell up from a fence-rail vanishing point by brightness alone.
+        tilt = np.degrees(np.arccos(np.clip(cand @ axis, -1, 1)))
+        polar = np.abs(tilt - (90.0 - abs(latitude))) < PLAUSIBLE_TILT_DEG
+        plausible = (tilt < PLAUSIBLE_TILT_DEG) | polar
+        if (score * plausible).max() > 2e-3:
+            score = np.where(plausible, score, 0.0)
     best = cand[int(np.argmax(score))]
     best_support = float(support[int(np.argmax(score))])
     method = "lines"
@@ -858,6 +873,10 @@ def _brightness_samples(grays, rots, lens, step: int = 40):
 
 def main() -> None:
     import argparse
+    import os
+
+    # Every core by default: 32 threads on the server, each with its own memory arena.
+    cv2.setNumThreads(int(os.environ.get("ASTROLAB_STITCH_THREADS", "8")))
 
     ap = argparse.ArgumentParser(description="Stitch a wide-camera scan folder into pano.jpg")
     ap.add_argument("folder", type=Path)
