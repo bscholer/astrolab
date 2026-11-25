@@ -20,6 +20,7 @@
     ontoggleauto,
     onclose,
     onexpand,
+    onlist,
     queuedMosaic = null,
     onmosaic,
     onremovemosaic,
@@ -35,7 +36,9 @@
     ontoggleauto: () => void;
     onclose?: () => void;
     onexpand?: () => void;
-    /** Panels of this target's mosaic on the auto list, when there is one. */
+    /** Show this object in the page's list view. */
+    onlist?: () => void;
+    /** Panels of this target's mosaic in the plan, when there is one. */
     queuedMosaic?: number | null;
     onmosaic?: () => void;
     onremovemosaic?: () => void;
@@ -139,18 +142,20 @@
       <button type="button" class="primary" disabled={busy} onclick={onshoot}>Point and shoot</button>
     {/if}
     <button type="button" class:on={onAuto} disabled={busy} onclick={ontoggleauto}>
-      {onAuto ? '✓ On the auto list' : '+ Auto list'}
+      {onAuto ? '✓ In the plan' : '+ Plan'}
     </button>
     {#if onmosaic}
       <button type="button" disabled={busy} onclick={onmosaic}>
         {queuedMosaic ? 'Edit mosaic' : 'Mosaic'}
       </button>
     {/if}
-    <a class="link" href="/tonight?q={encodeURIComponent(entry.messier ?? entry.name)}">In Tonight</a>
+    {#if onlist}
+      <button type="button" class="link" onclick={onlist}>In the list</button>
+    {/if}
   </div>
   {#if queuedMosaic}
     <p class="queued">
-      Mosaic of {queuedMosaic} panels on the auto list.
+      Mosaic of {queuedMosaic} panels in the plan.
       {#if onremovemosaic}
         <button type="button" class="text" disabled={busy} onclick={onremovemosaic}>Remove</button>
       {/if}
@@ -300,12 +305,16 @@
     color: var(--fg-mute);
     text-decoration: underline;
   }
-  .link {
+  .actions .link {
+    border: none;
+    background: none;
+    padding: 0.4rem 0;
+    text-decoration: underline;
     font-size: 0.85rem;
     color: var(--fg-mute);
     margin-left: auto;
   }
-  .link:hover {
+  .actions .link:hover {
     color: var(--fg);
   }
   .tonight p {

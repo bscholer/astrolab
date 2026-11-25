@@ -1,81 +1,202 @@
 <!--
-  Tonight: what is worth pointing at from the configured site. The server
-  ranks the targets, and each row opens to show the altitude curve.
+  Tonight: what is worth pointing at from the configured site, and the plan
+  Run all night works through. One set of targets, one selection, three
+  views of it: the ranked list, the sky map, and the plan. Picking an object
+  in one view picks it in the others. The URL keeps the view and the object
+  (?view=map&target=NGC 224), so links and reloads land in the same place.
 -->
 <script lang="ts">
-  import { api, type ScopeState, type TonightEntry, type TonightResponse } from '$lib/api';
+  import { onMount, tick } from 'svelte';
+  import { page } from '$app/stores';
+  import { replaceState } from '$app/navigation';
+  import {
+    api,
+    type MasterAdviceRow,
+    type ScopeAutoTarget,
+    type ScopeState,
+    type TonightEntry,
+    type TonightResponse,
+  } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import MoreData from '$lib/MoreData.svelte';
-  import type { MasterAdviceRow } from '$lib/api';
-  import { onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import TonightList from '$lib/TonightList.svelte';
+  import AutoPlan from '$lib/AutoPlan.svelte';
+  import AtlasMap from '$lib/atlas/AtlasMap.svelte';
+  import { mosaicName } from '$lib/atlas/atlas';
+  import { displayName, matchesSearch, typeGroup, type TypeGroup } from '$lib/tonight';
 
-  // Masters that gain the most from more time (server/capture_loop.py).
-  let worth = $state<MasterAdviceRow[]>([]);
-  onMount(() => {
-    api.getMasterAdvice(true).then(
-      (rows) => (worth = rows.slice(0, 4)),
-      () => (worth = [])
-    );
-  });
-  import { displayName, matchesSearch, skylineArea, typeGroup, upWindow, type TypeGroup } from '$lib/tonight';
-
-  let data = $state<TonightResponse | null>(null);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
-
-  // Clearing a number input gives null. load() skips the fetch until the
-  // value is valid again.
-  let minAlt = $state<number | null>(20);
-  let maxMag = $state<number | null>(12);
-
-  type View = 'recommended' | 'auto' | 'captured';
-  const VIEWS: { id: View; label: string }[] = [
-    { id: 'recommended', label: 'Recommended' },
-    { id: 'auto', label: 'Auto list' },
-    { id: 'captured', label: 'Captured' },
-  ];
+  type View = 'list' | 'map' | 'plan';
+  const VIEWS: View[] = ['list', 'map', 'plan'];
   const GROUPS: { id: TypeGroup; label: string }[] = [
     { id: 'nebulae', label: 'Nebulae' },
     { id: 'galaxies', label: 'Galaxies' },
     { id: 'clusters', label: 'Clusters' },
   ];
-  const PAGE_SIZE = 40;
 
-  let view = $state<View>('recommended');
+  const params = $page.url.searchParams;
+  let view = $state<View>(VIEWS.includes(params.get('view') as View) ? (params.get('view') as View) : 'list');
+  let selected = $state<string | null>(params.get('target'));
+  // Older links put the object in ?q=.
+  let search = $state(params.get('q') ?? '');
   let group = $state<TypeGroup | null>(null);
-  // The atlas links here with ?q= to show one target.
-  let search = $state($page.url.searchParams.get('q') ?? '');
+  let shotOnly = $state(false);
   let showFilters = $state(false);
-  let limit = $state(PAGE_SIZE);
-  let expanded = $state<string | null>(null);
-  let failedThumbs = $state<Record<string, true | undefined>>({});
+  // Clearing a number input gives null. load() skips the fetch until the
+  // value is valid again.
+  let minAlt = $state<number | null>(20);
+  let maxMag = $state<number | null>(12);
 
+  let data = $state<TonightResponse | null>(null);
+  let loading = $state(false);
+  let error = $state<string | null>(null);
   let scope = $state<ScopeState | null>(null);
-  let queuing = $state<string | null>(null);
+  // Masters that gain the most from more time (server/capture_loop.py).
+  let worth = $state<MasterAdviceRow[]>([]);
+
+  let map = $state<AtlasMap | null>(null);
+  // The map is heavy; it mounts the first time it is shown, then stays.
+  let mapMounted = $state(false);
+  $effect(() => {
+    if (view === 'map') mapMounted = true;
+  });
+
+  // The map goes edge to edge under the top bar.
+  $effect(() => {
+    document.body.classList.toggle('atlas-page', view === 'map');
+    return () => document.body.classList.remove('atlas-page');
+  });
+
+  // Keep the view and the object in the URL.
+  $effect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('q');
+    if (view === 'list') url.searchParams.delete('view');
+    else url.searchParams.set('view', view);
+    if (selected) url.searchParams.set('target', selected);
+    else url.searchParams.delete('target');
+    if (url.href === window.location.href) return;
+    try {
+      replaceState(url, {});
+    } catch {
+      // Before the router is ready; the URL is cosmetic.
+    }
+  });
+
+  async function load() {
+    const min = minAlt;
+    const max = maxMag;
+    // Skip the refetch while either input is empty or mid-edit; the effect
+    // fires again once the value is a number.
+    if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) return;
+    loading = true;
+    try {
+      // The whole sky, so the map can show what is down too. The list keeps
+      // what clears the altitude limit.
+      data = await api.getTonight({ all_sky: true, min_alt: min, max_mag: max });
+      error = null;
+      // A ?target= that is not a catalog id: find it by name.
+      if (selected && !data.entries.some((e) => e.name === selected)) {
+        const want = selected;
+        selected = data.entries.find((e) => matchesSearch(e, want))?.name ?? null;
+      }
+    } catch (e) {
+      error = (e as Error).message;
+      toast.error(error);
+    } finally {
+      loading = false;
+    }
+  }
+
+  $effect(() => {
+    void minAlt;
+    void maxMag;
+    load();
+  });
+
+  async function refreshScope() {
+    try {
+      scope = await api.getScope();
+    } catch {
+      // The next poll retries.
+    }
+  }
+
+  onMount(() => {
+    refreshScope();
+    api.getMasterAdvice(true).then(
+      (rows) => (worth = rows.slice(0, 4)),
+      () => (worth = []),
+    );
+    const t = setInterval(refreshScope, 5000);
+    return () => clearInterval(t);
+  });
+
   const canQueue = $derived(
-    !!scope?.reachable &&
-      !!scope.capabilities?.includes('goto') &&
-      !!scope.capabilities?.includes('capture'),
+    !!scope?.reachable && !!scope.capabilities?.includes('goto') && !!scope.capabilities?.includes('capture'),
+  );
+  const obs = $derived(scope?.observe ?? null);
+  const job = $derived(scope?.status?.job ?? null);
+  const observing = $derived(obs?.state === 'running');
+  const planned = $derived(new Set((scope?.targets ?? []).map((t) => t.name)));
+
+  /** Rows in the plan: one per target, one per mosaic. */
+  const planCount = $derived(
+    new Set((scope?.targets ?? []).map((t) => (t.mosaic ? `m:${t.mosaic}` : t.name))).size,
   );
 
-  async function queueTarget(e: TonightEntry) {
-    queuing = e.name;
+  /** Panels in the plan per object, for objects with a mosaic planned. */
+  const mosaics = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const t of scope?.targets ?? []) if (t.mosaic) counts.set(t.mosaic, (counts.get(t.mosaic) ?? 0) + 1);
+    const out = new Map<string, number>();
+    if (!counts.size || !data) return out;
+    for (const e of data.entries) {
+      const n = counts.get(mosaicName(displayName(e)));
+      if (n) out.set(e.name, n);
+    }
+    return out;
+  });
+
+  function upTonight(e: TonightEntry, d: TonightResponse): boolean {
+    return d.dusk_utc && d.dawn_utc ? e.hours_above_min_alt > 0 : e.alt_now_deg >= d.min_alt_deg;
+  }
+
+  const listEntries = $derived(
+    data
+      ? data.entries.filter(
+          (e) =>
+            upTonight(e, data!) &&
+            (!shotOnly || e.session_count > 0 || e.shot_s > 0) &&
+            (group === null || typeGroup(e.object_type) === group) &&
+            matchesSearch(e, search),
+        )
+      : [],
+  );
+
+  function select(name: string | null) {
+    selected = name;
+  }
+
+  // ----- actions, the same from every view
+
+  let pointing = $state<string | null>(null);
+  let saving = $state(false);
+
+  async function shoot(e: TonightEntry) {
+    pointing = e.name;
     try {
       const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg, object_type: e.object_type });
-      toast.success(`Started ${r.target}. Watch the banner for each step.`);
+      toast.success(`Started ${r.target}. The Scope page shows each step.`);
       await refreshScope();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
-      queuing = null;
+      pointing = null;
     }
   }
 
-  let adding = $state<string | null>(null);
-
-  async function toggleAuto(e: TonightEntry) {
-    adding = e.name;
+  async function togglePlan(e: TonightEntry) {
+    saving = true;
     try {
       const current = (await api.getScope()).targets ?? [];
       const on = current.some((t) => t.name === e.name);
@@ -90,515 +211,295 @@
               object_type: e.object_type,
               display_name: displayName(e),
               common_name: e.common_name,
-            }
+            },
           ];
       await api.setScopeAuto({ enabled: !!scope?.scheduler?.enabled, targets });
-      toast.success(on ? `Removed ${e.name} from the auto list.` : `Added ${e.name} to the auto list.`);
+      toast.success(on ? `Took ${displayName(e)} out of the plan.` : `Added ${displayName(e)} to the plan.`);
       await refreshScope();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
-      adding = null;
+      saving = false;
     }
   }
 
-  async function refreshScope() {
-    try {
-      scope = await api.getScope();
-    } catch {
-      // The next poll retries.
-    }
-  }
-  refreshScope();
-
-  const job = $derived(scope?.status?.job ?? null);
-  const obs = $derived(scope?.observe ?? null);
-  const observing = $derived(obs?.state === 'running');
-
-  async function stopCapture() {
-    try {
-      await api.stopScope();
-      toast.success('Stop sent.');
-      await refreshScope();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
+  function showOnMap(e: TonightEntry) {
+    select(e.name);
+    view = 'map';
   }
 
-  $effect(() => {
-    const timer = setInterval(refreshScope, 5000);
-    return () => clearInterval(timer);
-  });
-
-  async function load() {
-    const min = minAlt;
-    const max = maxMag;
-    // Skip the refetch while either input is empty / mid-edit. The
-    // effect that drives load() will fire again the moment the user
-    // types a valid number, so this is intentionally silent.
-    if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) {
-      return;
-    }
-    loading = true;
-    error = null;
-    try {
-      const r = await api.getTonight({ min_alt: min, max_mag: max });
-      data = r;
-    } catch (e) {
-      const msg = (e as Error).message;
-      error = msg;
-      // 400 from missing site config is the common case; let the toast
-      // sit so the user notices the link to Settings.
-      toast.error(msg);
-    } finally {
-      loading = false;
-    }
+  function showInList(e: TonightEntry) {
+    select(e.name);
+    view = 'list';
   }
 
-  // Only the altitude and magnitude limits change the server result.
-  $effect(() => {
-    void minAlt;
-    void maxMag;
-    load();
-  });
-
-  function matchesView(e: TonightEntry): boolean {
-    if (view === 'captured') return e.session_count > 0;
-    if (view === 'auto') return isOnAutoList(e);
-    return true;
+  async function mosaic(e: TonightEntry) {
+    select(e.name);
+    view = 'map';
+    await tick();
+    await tick();
+    map?.startMosaic(e);
   }
 
-  function isOnAutoList(e: TonightEntry): boolean {
-    return !!scope?.targets?.some((t) => t.name === e.name);
+  /** A plan row's object on the map; a mosaic shows its panels. */
+  function showPlanned(t: ScopeAutoTarget) {
+    const entries = data?.entries ?? [];
+    const e = t.mosaic
+      ? entries.find((x) => mosaicName(displayName(x)) === t.mosaic)
+      : entries.find((x) => x.name === t.name);
+    if (e) showOnMap(e);
+    else toast.error(`${t.display_name ?? t.name} is not in the catalog the map draws.`);
   }
 
-  const filteredEntries = $derived(
-    (data?.entries ?? []).filter(
-      (e) =>
-        matchesView(e) &&
-        (group === null || typeGroup(e.object_type) === group) &&
-        matchesSearch(e, search),
-    ),
-  );
-  const visibleEntries = $derived(filteredEntries.slice(0, limit));
-
-  $effect(() => {
-    void view;
-    void group;
-    void search;
-    limit = PAGE_SIZE;
-  });
-
-  async function uploadImage(e: TonightEntry, input: HTMLInputElement) {
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) return;
-    try {
-      await api.uploadTonightImage(e.name, file);
-      failedThumbs[e.name] = undefined;
-      toast.success(`Saved your image for ${displayName(e)}.`);
-      await load();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
-  }
-
-  async function clearImage(e: TonightEntry) {
-    try {
-      await api.deleteTonightImage(e.name);
-      await load();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
-  }
-
-  function fmtTime(d: Date): string {
-    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  }
-
-  function fmtLocalTime(iso: string | null): string {
-    return iso ? fmtTime(new Date(iso)) : '—';
-  }
-
-  function fmtSummary(e: TonightEntry): string {
-    const parts = [e.object_type];
-    if (e.magnitude !== null) parts.push(`mag ${e.magnitude.toFixed(1)}`);
-    if (e.size_arcmin !== null) parts.push(`${Math.round(e.size_arcmin)}′`);
-    return parts.filter(Boolean).join(' · ');
-  }
-
-  function fmtUp(e: TonightEntry, d: TonightResponse): string {
-    const w = upWindow(e.alt_curve_deg, d.min_alt_deg, d.dusk_utc, d.alt_curve_step_min, e.skyline_curve_deg);
-    if (!w) return e.skyline_curve_deg ? 'Behind the trees or house tonight' : `${e.alt_now_deg.toFixed(0)}° now`;
-    const peak = Math.max(...(e.alt_curve_deg ?? [0]));
-    return `${fmtTime(w.start)} – ${fmtTime(w.end)} · peak ${peak.toFixed(0)}°`;
-  }
-
-  function fmtCaptured(entry: TonightEntry): string {
-    if (entry.session_count === 0) return 'Not yet';
-    const last = entry.last_session_at
-      ? new Date(entry.last_session_at).toLocaleDateString()
-      : '?';
-    return `${entry.session_count} (last ${last})`;
-  }
-
-  const SPARK_W = 240;
-  const SPARK_H = 44;
-  const SPARK_PAD_Y = 2;
-
-  /** Build SVG points for the altitude polyline (clipped to 0..90). */
-  function sparkPoints(curve: number[]): string {
-    if (curve.length < 2) return '';
-    const dx = SPARK_W / (curve.length - 1);
-    const yScale = (alt: number) => {
-      // Clip below horizon to 0 so the line doesn't disappear off the
-      // bottom of the box; alt > 90 is impossible but we clip anyway.
-      const a = Math.max(0, Math.min(90, alt));
-      return SPARK_H - SPARK_PAD_Y - (a / 90) * (SPARK_H - SPARK_PAD_Y * 2);
-    };
-    return curve.map((alt, i) => `${(i * dx).toFixed(1)},${yScale(alt).toFixed(1)}`).join(' ');
-  }
-
-  function sparkArea(curve: number[]): string {
-    if (curve.length < 2) return '';
-    const pts = sparkPoints(curve);
-    return `0,${SPARK_H} ${pts} ${SPARK_W},${SPARK_H}`;
-  }
-
-  /** Y position of the min-alt threshold guide. */
-  function thresholdY(min: number): number {
-    const a = Math.max(0, Math.min(90, min));
-    return SPARK_H - SPARK_PAD_Y - (a / 90) * (SPARK_H - SPARK_PAD_Y * 2);
-  }
-
-  /** Fraction along [dusk, dawn] for "now". Null when we're outside the
-   *  window or the window itself is degenerate; the caller hides the
-   *  marker in either case. */
-  function nowFraction(d: TonightResponse): number | null {
-    if (!d.dusk_utc || !d.dawn_utc) return null;
-    const dusk = new Date(d.dusk_utc).getTime();
-    const dawn = new Date(d.dawn_utc).getTime();
-    const now = new Date(d.at_utc).getTime();
-    if (dawn <= dusk) return null;
-    const frac = (now - dusk) / (dawn - dusk);
-    if (frac < 0 || frac > 1) return null;
-    return frac;
-  }
-
-  function sparkTooltip(curve: number[]): string {
-    const peak = Math.max(...curve);
-    return `peak ${peak.toFixed(0)}° tonight`;
-  }
-
-  function fmtWindow(d: TonightResponse): string {
-    if (!d.dusk_utc || !d.dawn_utc) return '24-hour daylight';
-    return `Dark ${fmtLocalTime(d.dusk_utc)} – ${fmtLocalTime(d.dawn_utc)}`;
+  function fmtTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 </script>
 
-<div
-  class="header"
-  class:has-pill={(obs && obs.state === 'running') || job?.state === 'running'}
->
-  <h1>Tonight</h1>
-  <a class="atlas-link" href="/atlas">Sky atlas →</a>
-  {#if (obs && obs.state === 'running') || job?.state === 'running'}
-    <a class="pill" href="/scope">
-      <span class="live-dot" aria-hidden="true"></span>
-      {obs?.state === 'running' ? obs.target : 'Scope'}
-      <span class="muted">
-        {#if obs?.state === 'running'}{obs.step}{:else if job}{job.captured ?? 0}/{job.frames ?? 0}{/if}
+<svelte:head><title>Tonight · astrolab</title></svelte:head>
+
+<div class="page" class:map-mode={view === 'map'}>
+  <div class="header">
+    <h1>Tonight</h1>
+    {#if data}
+      <span class="meta muted">
+        {data.dusk_utc && data.dawn_utc ? `Dark ${fmtTime(data.dusk_utc)} – ${fmtTime(data.dawn_utc)}` : '24-hour daylight'}
       </span>
-    </a>
+    {/if}
+    {#if observing || job?.state === 'running'}
+      <a class="pill" href="/scope">
+        <span class="live-dot" aria-hidden="true"></span>
+        {observing ? obs?.target : 'Scope'}
+        <span class="muted">
+          {#if observing}{obs?.step}{:else if job}{job.captured ?? 0}/{job.frames ?? 0}{/if}
+        </span>
+      </a>
+    {/if}
+    <div class="tabs" role="tablist" aria-label="Views of tonight">
+      <button type="button" role="tab" class="tab" class:active={view === 'list'} aria-selected={view === 'list'} onclick={() => (view = 'list')}>List</button>
+      <button type="button" role="tab" class="tab" class:active={view === 'map'} aria-selected={view === 'map'} onclick={() => (view = 'map')}>Map</button>
+      <button type="button" role="tab" class="tab" class:active={view === 'plan'} aria-selected={view === 'plan'} onclick={() => (view = 'plan')}>
+        Plan{#if planCount}<span class="count">{planCount}</span>{/if}
+      </button>
+    </div>
+  </div>
+
+  {#if error && view !== 'plan'}
+    <section class="panel error-panel">
+      <p>Couldn't load Tonight: {error}</p>
+      {#if /site location/i.test(error)}
+        <p class="muted small">
+          Set your latitude, longitude and elevation on the <a href="/settings">Settings</a> page, then come back.
+        </p>
+      {/if}
+    </section>
   {/if}
-  {#if data}
-    <span class="meta muted small">
-      {fmtWindow(data)}
-    </span>
+
+  {#if view === 'list' && !error}
+    <div class="toolbar">
+      <input class="search" type="search" placeholder="Search" aria-label="Search targets" bind:value={search} />
+      <button
+        type="button"
+        class="filter-toggle"
+        class:active={showFilters || group !== null || shotOnly}
+        aria-expanded={showFilters}
+        onclick={() => (showFilters = !showFilters)}
+      >
+        Filter
+      </button>
+    </div>
+    {#if showFilters}
+      <section class="filters">
+        <div class="filter-row">
+          <label class="filter-num">
+            <span class="filter-label">Min altitude</span>
+            <input type="number" min={0} max={89} step={1} bind:value={minAlt} aria-label="Minimum altitude in degrees" />
+            <span class="filter-unit">deg</span>
+          </label>
+          <label class="filter-num">
+            <span class="filter-label">Max magnitude</span>
+            <input type="number" min={-2} max={20} step={0.5} bind:value={maxMag} aria-label="Maximum magnitude (dimmer = larger)" />
+          </label>
+        </div>
+        <div class="chips" role="group" aria-label="Object type">
+          <button type="button" class="chip" class:active={group === null} onclick={() => (group = null)}>All types</button>
+          {#each GROUPS as g (g.id)}
+            <button type="button" class="chip" class:active={group === g.id} onclick={() => (group = group === g.id ? null : g.id)}>
+              {g.label}
+            </button>
+          {/each}
+          <button type="button" class="chip" class:active={shotOnly} onclick={() => (shotOnly = !shotOnly)}>Shot before</button>
+        </div>
+        <p class="muted small hint">The altitude and magnitude limits apply to the map too.</p>
+      </section>
+    {/if}
+    {#if data}
+      <TonightList
+        {data}
+        entries={listEntries}
+        {selected}
+        visible={view === 'list'}
+        {planned}
+        {mosaics}
+        {canQueue}
+        busy={saving || pointing !== null || observing}
+        {pointing}
+        onselect={select}
+        onshoot={shoot}
+        ontoggleauto={togglePlan}
+        onmap={showOnMap}
+        onmosaic={mosaic}
+        onimagechanged={load}
+      />
+    {:else if loading}
+      <p class="muted">Computing the sky…</p>
+    {/if}
+  {/if}
+
+  {#if view === 'plan'}
+    <section class="panel">
+      <AutoPlan {scope} onchanged={refreshScope} onshow={showPlanned} />
+    </section>
+    {#if worth.length}
+      <section class="panel worth" aria-label="Worth more time">
+        <h2 class="worth-h">Worth more time</h2>
+        <ul>
+          {#each worth as row, i (row.project_id)}
+            <li>
+              <a class="worth-name" href="/projects/{row.project_id}">
+                {row.common_name ?? row.name}
+                {#if row.common_name}<span class="worth-canon">{row.target}</span>{/if}
+              </a>
+              <MoreData
+                {row}
+                compact
+                onUpdated={(r) => {
+                  worth[i] = r;
+                  refreshScope();
+                }}
+              />
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+  {/if}
+
+  {#if mapMounted && !error}
+    <div class="map-wrap" class:hidden={view !== 'map'}>
+      <AtlasMap
+        bind:this={map}
+        bind:group
+        bind:search
+        {data}
+        {scope}
+        {selected}
+        visible={view === 'map'}
+        {canQueue}
+        busy={saving || pointing !== null || observing}
+        onselect={select}
+        onshoot={shoot}
+        ontoggleauto={togglePlan}
+        onlist={showInList}
+        onplanchanged={refreshScope}
+      />
+    </div>
   {/if}
 </div>
 
-{#if error}
-  <section class="panel error-panel">
-    <p>
-      Couldn't load Tonight: {error}
-    </p>
-    {#if /site location/i.test(error)}
-      <p class="muted small">
-        Set your latitude / longitude / elevation on the
-        <a href="/settings">Settings</a> page, then come back.
-      </p>
-    {/if}
-  </section>
-{:else if loading && data === null}
-  <p class="muted">Computing the sky…</p>
-{:else if data}
-  {#if worth.length}
-    <section class="panel worth" aria-label="Worth more time">
-      <h2 class="worth-h">Worth more time</h2>
-      <ul>
-        {#each worth as row, i (row.project_id)}
-          <li>
-            <a class="worth-name" href="/projects/{row.project_id}">
-              {row.common_name ?? row.name}
-              {#if row.common_name}<span class="worth-canon">{row.target}</span>{/if}
-            </a>
-            <MoreData {row} compact onUpdated={(r) => (worth[i] = r)} />
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-  <input
-    class="search"
-    type="search"
-    placeholder="Search"
-    aria-label="Search targets"
-    bind:value={search}
-  />
-
-  <div class="toolbar">
-    <div class="tabs" role="tablist" aria-label="Target lists">
-      {#each VIEWS as v (v.id)}
-        <button
-          type="button"
-          role="tab"
-          class="tab"
-          class:active={view === v.id}
-          aria-selected={view === v.id}
-          onclick={() => (view = v.id)}
-        >
-          {v.label}
-        </button>
-      {/each}
-    </div>
-    <button
-      type="button"
-      class="filter-toggle"
-      class:active={showFilters || group !== null}
-      aria-expanded={showFilters}
-      onclick={() => (showFilters = !showFilters)}
-    >
-      Filter
-    </button>
-  </div>
-
-  {#if showFilters}
-    <section class="filters">
-      <div class="filter-row">
-        <label class="filter-num">
-          <span class="filter-label">Min altitude</span>
-          <input
-            type="number"
-            min={0}
-            max={89}
-            step={1}
-            bind:value={minAlt}
-            aria-label="Minimum altitude in degrees"
-          />
-          <span class="filter-unit">deg</span>
-        </label>
-        <label class="filter-num">
-          <span class="filter-label">Max magnitude</span>
-          <input
-            type="number"
-            min={-2}
-            max={20}
-            step={0.5}
-            bind:value={maxMag}
-            aria-label="Maximum magnitude (dimmer = larger)"
-          />
-        </label>
-      </div>
-      <div class="chips" role="group" aria-label="Object type">
-        <button
-          type="button"
-          class="chip"
-          class:active={group === null}
-          onclick={() => (group = null)}
-        >
-          All types
-        </button>
-        {#each GROUPS as g (g.id)}
-          <button
-            type="button"
-            class="chip"
-            class:active={group === g.id}
-            onclick={() => (group = group === g.id ? null : g.id)}
-          >
-            {g.label}
-          </button>
-        {/each}
-      </div>
-    </section>
-  {/if}
-
-  {#if filteredEntries.length === 0}
-    <p class="muted empty">No targets match.</p>
-  {:else}
-    <ul class="targets">
-      {#each visibleEntries as entry (entry.name)}
-        {@const open = expanded === entry.name}
-        <li class="target" class:open>
-          <div class="row">
-            <button
-              type="button"
-              class="row-main"
-              aria-expanded={open}
-              onclick={() => (expanded = open ? null : entry.name)}
-            >
-              <span class="thumb">
-                {#if !failedThumbs[entry.name]}
-                  <img
-                    src={api.tonightThumbUrl(entry.name, entry.image_version)}
-                    alt=""
-                    width="64"
-                    height="64"
-                    loading="lazy"
-                    decoding="async"
-                    onerror={() => (failedThumbs[entry.name] = true)}
-                  />
-                {/if}
-              </span>
-              <span class="text">
-                <span class="title">
-                  <span class="name" class:captured={entry.session_count > 0}>
-                    {displayName(entry)}
-                  </span>
-                  {#if entry.common_name}
-                    <span class="common">{entry.common_name}</span>
-                  {/if}
-                </span>
-                <span class="line muted">{fmtSummary(entry)}</span>
-                <span class="line muted">{fmtUp(entry, data)}</span>
-              </span>
-            </button>
-            {#if canQueue}
-              <div class="actions">
-                <button
-                  type="button"
-                  class="btn compact"
-                  disabled={queuing !== null || observing}
-                  onclick={() => queueTarget(entry)}
-                >
-                  {queuing === entry.name ? 'Pointing…' : 'Point'}
-                </button>
-                <button
-                  type="button"
-                  class="btn compact icon"
-                  class:on={isOnAutoList(entry)}
-                  disabled={adding !== null}
-                  title={isOnAutoList(entry) ? 'Remove from the auto list' : 'Add to the all-night auto list'}
-                  aria-label="{isOnAutoList(entry) ? 'Remove' : 'Add'} {displayName(entry)} {isOnAutoList(entry) ? 'from' : 'to'} the auto list"
-                  onclick={() => toggleAuto(entry)}
-                >
-                  {isOnAutoList(entry) ? '✓' : '+'}
-                </button>
-              </div>
-            {/if}
-          </div>
-          {#if open}
-            <div class="details">
-              {#if entry.alt_curve_deg && entry.alt_curve_deg.length >= 2}
-                <svg
-                  class="spark"
-                  viewBox="0 0 {SPARK_W} {SPARK_H}"
-                  preserveAspectRatio="none"
-                  role="img"
-                  aria-label={sparkTooltip(entry.alt_curve_deg)}
-                >
-                  <line
-                    class="spark-threshold"
-                    x1="0"
-                    x2={SPARK_W}
-                    y1={thresholdY(data.min_alt_deg)}
-                    y2={thresholdY(data.min_alt_deg)}
-                  />
-                  <polygon class="spark-fill" points={sparkArea(entry.alt_curve_deg)} />
-                  {#if entry.skyline_curve_deg}
-                    <polygon
-                      class="spark-blocked"
-                      points={skylineArea(entry.skyline_curve_deg, SPARK_W, SPARK_H, thresholdY)}
-                    >
-                      <title>Houses and trees along its path, from the scope's panorama</title>
-                    </polygon>
-                  {/if}
-                  <polyline class="spark-line" points={sparkPoints(entry.alt_curve_deg)} />
-                  {#if nowFraction(data) !== null}
-                    <line
-                      class="spark-now"
-                      x1={(nowFraction(data) ?? 0) * SPARK_W}
-                      x2={(nowFraction(data) ?? 0) * SPARK_W}
-                      y1="0"
-                      y2={SPARK_H}
-                    />
-                  {/if}
-                </svg>
-              {/if}
-              <dl>
-                {#if entry.messier}<div><dt>Catalog</dt><dd>{entry.name}</dd></div>{/if}
-                <div><dt>Alt now</dt><dd>{entry.alt_now_deg.toFixed(0)}°</dd></div>
-                <div><dt>Transit</dt><dd>{fmtLocalTime(entry.transit_utc)}</dd></div>
-                <div><dt>Hours up</dt><dd>{entry.hours_above_min_alt.toFixed(1)}h</dd></div>
-                <div><dt>Constellation</dt><dd>{entry.constellation ?? '—'}</dd></div>
-                <div><dt>Captured</dt><dd>{fmtCaptured(entry)}</dd></div>
-              </dl>
-              <div class="image-actions">
-                <label class="btn compact">
-                  Upload image
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    hidden
-                    onchange={(ev) => uploadImage(entry, ev.currentTarget)}
-                  />
-                </label>
-                {#if entry.image_version}
-                  <button type="button" class="btn compact" onclick={() => clearImage(entry)}>
-                    Use survey image
-                  </button>
-                {/if}
-                <a class="btn compact atlas-btn" href="/atlas?target={encodeURIComponent(entry.name)}">Show on the atlas</a>
-              </div>
-            </div>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-    {#if filteredEntries.length > limit}
-      <button type="button" class="btn more" onclick={() => (limit += PAGE_SIZE)}>
-        Show more ({filteredEntries.length - limit} left)
-      </button>
-    {/if}
-    <p class="credit muted">Survey images: Digitized Sky Survey, STScI/NASA. Colour by CDS, hosted by ESA.</p>
-  {/if}
-{/if}
-
 <style>
-  .header {
-    position: relative;
+  :global(body.atlas-page main.container) {
+    max-width: none;
+    padding: 0;
   }
-  .header.has-pill .meta {
-    padding-right: 8.5rem;
+  :global(body.atlas-page footer.footer) {
+    display: none;
+  }
+  .map-mode {
+    height: calc(100dvh - 3.4rem);
+    display: flex;
+    flex-direction: column;
+  }
+  .map-mode .header {
+    margin: 0;
+    padding: 0.35rem 1rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .map-wrap {
+    flex: 1;
+    min-height: 0;
+  }
+  .map-wrap.hidden {
+    display: none;
+  }
+
+  .header {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    margin: 0.5rem 0 1rem;
+  }
+  .header h1 {
+    margin: 0;
+    font-size: 1.5rem;
+  }
+  .map-mode .header h1 {
+    font-size: 1.15rem;
+  }
+  .meta {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: auto;
+    padding: 0.15rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+  }
+  .tab {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: none;
+    padding: 0.3rem 0.85rem;
+    min-height: 0;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+  .count {
+    margin-left: 0.35rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    opacity: 0.8;
   }
   .pill {
-    position: absolute;
-    top: 0.25rem;
-    right: 0;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    max-width: 55%;
+    max-width: 14rem;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    padding: 0.25rem 0.7rem;
+    padding: 0.2rem 0.7rem;
     font-size: 0.78rem;
     color: var(--fg);
     text-decoration: none;
     border: 1px solid var(--border);
     border-radius: 999px;
     background: var(--bg-elev);
+    align-self: center;
   }
   .live-dot {
     flex: none;
@@ -608,46 +509,16 @@
     background: var(--good);
     box-shadow: 0 0 8px var(--good);
   }
-  .btn.compact {
-    min-height: 32px;
-    padding: 0 0.7rem;
-    font-size: 0.8rem;
-  }
-  .btn.icon {
-    width: 32px;
-    padding: 0;
-    margin-left: 0.3rem;
-    border-radius: 50%;
-    font-size: 1rem;
-  }
-  .btn.icon.on {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
-  .header {
-    display: flex;
-    align-items: baseline;
-    gap: 0.75rem;
-    margin: 0.5rem 0 1.25rem;
-  }
-  .atlas-btn {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-  }
-  .atlas-link {
-    font-size: 0.85rem;
-    color: var(--accent);
-    white-space: nowrap;
-  }
-  .header h1 {
-    margin: 0;
-    flex: 1;
-    font-size: 1.5rem;
-  }
-  .meta {
-    font-family: var(--font-mono);
+  @media (max-width: 560px) {
+    .tabs {
+      margin-left: 0;
+      order: 10;
+      flex-basis: 100%;
+      justify-content: space-between;
+    }
+    .tab {
+      flex: 1;
+    }
   }
 
   .small {
@@ -656,7 +527,6 @@
   .muted {
     color: var(--fg-mute);
   }
-
   .panel {
     margin-bottom: 1.25rem;
     padding: 1rem 1.2rem;
@@ -664,6 +534,9 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     box-shadow: var(--shadow);
+  }
+  .error-panel {
+    border-color: var(--bad);
   }
   .worth-h {
     margin: 0 0 0.6rem;
@@ -692,10 +565,37 @@
     color: var(--fg);
     text-decoration: none;
   }
-  .error-panel {
-    border-color: var(--bad);
-  }
 
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.9rem;
+  }
+  .search {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 0.55rem 0.9rem;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font: inherit;
+  }
+  .filter-toggle {
+    appearance: none;
+    padding: 0.25rem 0;
+    background: none;
+    border: 0;
+    color: var(--fg-mute);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .filter-toggle.active {
+    color: var(--accent);
+  }
   .filters {
     margin-bottom: 1.1rem;
   }
@@ -733,6 +633,9 @@
     font-family: var(--font-mono);
     font-size: 0.8rem;
   }
+  .hint {
+    margin: 0.6rem 0 0;
+  }
   .chips {
     display: flex;
     gap: 0.4rem;
@@ -756,7 +659,6 @@
     font: inherit;
     font-size: 0.78rem;
     cursor: pointer;
-    transition: border-color 160ms ease, color 160ms ease;
   }
   .chip:hover {
     color: var(--fg);
@@ -767,226 +669,5 @@
     background: var(--accent);
     border-color: transparent;
     font-weight: 600;
-  }
-
-  .search {
-    width: 100%;
-    box-sizing: border-box;
-    margin-bottom: 0.9rem;
-    padding: 0.55rem 0.9rem;
-    background: var(--bg-elev);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    font: inherit;
-  }
-  .toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 0.9rem;
-  }
-  .tabs {
-    display: flex;
-    gap: 1.1rem;
-    min-width: 0;
-  }
-  .tab,
-  .filter-toggle {
-    appearance: none;
-    padding: 0.25rem 0;
-    background: none;
-    border: 0;
-    color: var(--fg-mute);
-    font: inherit;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .tab.active {
-    color: var(--fg);
-    font-weight: 600;
-  }
-  .filter-toggle {
-    font-size: 0.85rem;
-  }
-  .filter-toggle.active {
-    color: var(--accent);
-  }
-  .empty {
-    margin-top: 2rem;
-    text-align: center;
-  }
-
-  .targets {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .target {
-    border-bottom: 1px solid var(--border-soft, rgba(255, 255, 255, 0.06));
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-  .row-main {
-    appearance: none;
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    padding: 0.65rem 0;
-    background: none;
-    border: 0;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  .thumb {
-    flex: none;
-    width: 64px;
-    height: 64px;
-    overflow: hidden;
-    border-radius: 10px;
-    background: radial-gradient(circle at 50% 45%, var(--bg-elev-2), var(--bg));
-  }
-  .thumb img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-  .text {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  .line {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-  .name {
-    font-weight: 600;
-  }
-  .name.captured {
-    color: var(--accent);
-  }
-  .common {
-    margin-left: 0.3rem;
-    color: var(--fg);
-  }
-  .line {
-    font-size: 0.8rem;
-  }
-  .actions {
-    flex: none;
-    display: flex;
-    align-items: center;
-  }
-  .details {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.75rem;
-    padding: 0 0 0.9rem;
-  }
-  .details dl {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
-    gap: 0.6rem 1rem;
-    margin: 0;
-  }
-  .details dt {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--fg-mute);
-  }
-  .details dd {
-    margin: 0.1rem 0 0;
-    font-size: 0.85rem;
-  }
-  .image-actions {
-    display: flex;
-    gap: 0.5rem;
-    grid-column: 1 / -1;
-  }
-  .image-actions label {
-    display: inline-flex;
-    align-items: center;
-    cursor: pointer;
-  }
-  .spark {
-    display: block;
-    width: 100%;
-    height: 44px;
-    overflow: visible;
-  }
-  .spark-blocked {
-    fill: rgba(236, 72, 153, 0.28);
-    stroke: rgba(236, 72, 153, 0.7);
-    stroke-width: 1;
-    vector-effect: non-scaling-stroke;
-  }
-  .spark-threshold {
-    stroke: var(--fg-mute);
-    stroke-width: 0.5;
-    stroke-dasharray: 2 2;
-    opacity: 0.5;
-    vector-effect: non-scaling-stroke;
-  }
-  .spark-fill {
-    fill: var(--accent-soft, rgba(94, 234, 212, 0.18));
-    stroke: none;
-  }
-  .spark-line {
-    fill: none;
-    stroke: var(--accent);
-    stroke-width: 1.25;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    vector-effect: non-scaling-stroke;
-  }
-  .spark-now {
-    stroke: var(--fg);
-    stroke-width: 1;
-    opacity: 0.6;
-    vector-effect: non-scaling-stroke;
-  }
-  .more {
-    display: block;
-    margin: 1rem auto 0;
-  }
-  .credit {
-    margin-top: 1.25rem;
-    font-size: 0.7rem;
-    text-align: center;
-  }
-
-  @media (min-width: 769px) {
-    .details {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      align-items: center;
-    }
-  }
-  @media (max-width: 420px) {
-    .thumb {
-      width: 56px;
-      height: 56px;
-    }
-    .row-main {
-      gap: 0.65rem;
-    }
-    .btn.compact {
-      padding: 0 0.55rem;
-    }
-    .btn.icon {
-      margin-left: 0.2rem;
-    }
   }
 </style>

@@ -211,59 +211,10 @@
     }
   }
 
-  function fmtHours(seconds: number): string {
-    const h = seconds / 3600;
-    return h < 1 ? `${Math.round(seconds / 60)} min` : `${h.toFixed(1)} h`;
-  }
-
-  /** A row of the auto list: one target, or every panel of one mosaic. */
-  interface QueueRow {
-    key: string;
-    first: ScopeAutoTarget;
-    names: string[];
-    panels: ScopeAutoTarget[] | null;
-  }
-
-  const queueRows = $derived.by(() => {
-    const rows: QueueRow[] = [];
-    const byMosaic = new Map<string, QueueRow>();
-    for (const t of scope?.targets ?? []) {
-      if (!t.mosaic) {
-        rows.push({ key: t.name, first: t, names: [t.name], panels: null });
-        continue;
-      }
-      let row = byMosaic.get(t.mosaic);
-      if (!row) {
-        row = { key: `mosaic:${t.mosaic}`, first: t, names: [], panels: [] };
-        byMosaic.set(t.mosaic, row);
-        rows.push(row);
-      }
-      row.names.push(t.name);
-      row.panels!.push(t);
-    }
-    return rows;
-  });
-
-  /** Time on a target, counting other sessions that cover it. */
-  function timeOn(name: string): number {
-    return sched?.time_on_s?.[name] ?? sched?.integrated_s?.[name] ?? 0;
-  }
-
-  function panelNumber(t: ScopeAutoTarget): string {
-    return (t.name.split(' panel ')[1] ?? '').split(' of ')[0];
-  }
-
-  /** Change a setting on a row: one target, or every panel of a mosaic. */
-  function editRow(row: QueueRow, patch: Partial<ScopeAutoTarget>) {
-    const names = new Set(row.names);
-    const targets = (scope?.targets ?? []).map((t) => (names.has(t.name) ? { ...t, ...patch } : t));
-    return setAuto(!!sched?.enabled, targets);
-  }
-
-  function removeRow(row: QueueRow) {
-    const names = new Set(row.names);
-    return setAuto(!!sched?.enabled, scope?.targets?.filter((o) => !names.has(o.name)));
-  }
+  /** Rows in the plan: one per target, one per mosaic. Edited on Tonight. */
+  const planCount = $derived(
+    new Set((scope?.targets ?? []).map((t) => (t.mosaic ? `m:${t.mosaic}` : t.name))).size,
+  );
 
   async function stopCapture() {
     stopping = true;
@@ -365,7 +316,7 @@
       <div class="sw-row">
         <div class="sw-text">
           <div class="sw-title">Run all night</div>
-          <div class="sw-sub">{sched?.enabled ? 'On. Picks a target and moves on when the sky or target fails.' : 'Off. The scope stays where it is.'}</div>
+          <div class="sw-sub">{sched?.enabled ? 'On. Works down the plan, moving on when the sky or a target fails.' : 'Off. The scope stays where it is.'}</div>
         </div>
         <button
           type="button"
@@ -396,106 +347,16 @@
       </div>
     </div>
 
-    <div class="subhead">Targets, in order</div>
-    {#if scope.targets?.length}
-      <ul class="queue">
-        {#each queueRows as row, i (row.key)}
-          {@const t = row.first}
-          {@const running = row.names.includes(obs?.target ?? '')}
-          <li class:running>
-            <span class="num">{i + 1}</span>
-            <span class="tname">
-              {t.common_name ?? t.mosaic ?? t.display_name ?? t.name}
-              {#if row.panels}
-                <span class="muted small">{t.mosaic} mosaic, {row.panels.length} panels</span>
-              {:else if t.common_name}
-                <span class="muted small">{t.display_name ?? t.name}</span>
-              {/if}
-              {#if row.panels}
-                <span class="muted small">
-                  {#if t.goal_hours}goal {fmtHours(t.goal_hours * 3600)} each{/if}
-                </span>
-              {:else if t.goal_hours}
-                <span class="muted small">{fmtHours(timeOn(t.name))} / {fmtHours(t.goal_hours * 3600)}</span>
-              {:else if timeOn(t.name)}
-                <span class="muted small">{fmtHours(timeOn(t.name))}</span>
-              {/if}
-            </span>
-            {#if running}
-              <span class="tag">now{#if row.panels} · panel {panelNumber(row.panels.find((p) => p.name === obs?.target) ?? t)}{/if}</span>
-            {/if}
-            <span class="opts">
-            <select
-              class="opt"
-              aria-label="Filter for {t.name}"
-              disabled={savingAuto}
-              value={t.filter ?? ''}
-              onchange={(e) => editRow(row, { filter: e.currentTarget.value || null } as Partial<ScopeAutoTarget>)}
-            >
-              <option value="">Filter: auto</option>
-              <option value="duo">Duo-band</option>
-              <option value="astro">Astro</option>
-              <option value="vis">Vis</option>
-            </select>
-            <select
-              class="opt"
-              aria-label="Exposure for {t.name}"
-              disabled={savingAuto}
-              value={t.exposure_s ?? ''}
-              onchange={(e) => editRow(row, { exposure_s: (Number(e.currentTarget.value) || null) as ScopeAutoTarget['exposure_s'] })}
-            >
-              <option value="">15 s</option>
-              <option value="30">30 s</option>
-              <option value="60">60 s</option>
-            </select>
-            <input
-              class="opt gain"
-              type="number"
-              min="0"
-              step="0.5"
-              aria-label="Integration goal in hours for {row.panels ? 'each panel of ' : ''}{t.name}"
-              placeholder={row.panels ? 'goal h each' : 'goal h'}
-              disabled={savingAuto}
-              value={t.goal_hours ?? ''}
-              onchange={(e) => editRow(row, { goal_hours: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null })}
-            />
-            <input
-              class="opt gain"
-              type="number"
-              min="0"
-              aria-label="Gain for {t.name}"
-              placeholder="gain 60"
-              disabled={savingAuto}
-              value={t.gain ?? ''}
-              onchange={(e) => editRow(row, { gain: e.currentTarget.value === '' ? null : Number(e.currentTarget.value) })}
-            />
-            <button
-              type="button"
-              class="x"
-              aria-label="Remove {row.panels ? `the ${t.mosaic} mosaic` : t.name}"
-              disabled={savingAuto}
-              onclick={() => removeRow(row)}
-              >×</button
-            >
-            </span>
-            {#if row.panels}
-              <span class="panels" aria-label="Time per panel">
-                {#each row.panels as p (p.name)}
-                  {@const done = !!p.goal_hours && timeOn(p.name) >= p.goal_hours * 3600}
-                  <span class="panel" class:done class:now={obs?.target === p.name}
-                    title="{p.name}: {fmtHours(timeOn(p.name))}, counting every kept session over it"
-                  >
-                    {panelNumber(p)}<span class="ptime">{fmtHours(timeOn(p.name))}</span>
-                  </span>
-                {/each}
-              </span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {:else}
-      <p class="muted small">No targets yet. Add some from Tonight.</p>
-    {/if}
+    <a class="plan-link" href="/tonight?view=plan">
+      <span>
+        {#if planCount}
+          Plan: {planCount} {planCount === 1 ? 'target' : 'targets'}{#if obs?.state === 'running' && obs.target}, now {obs.target}{/if}
+        {:else}
+          Nothing planned yet
+        {/if}
+      </span>
+      <span class="plan-go">Edit on Tonight →</span>
+    </a>
   </section>
 
   {#if scope.capabilities?.includes('setup')}
@@ -874,114 +735,24 @@
     opacity: 0.5;
     cursor: default;
   }
-  .queue {
-    margin: 0.5rem 0 0;
-    padding: 0;
-    list-style: none;
+  .plan-link {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.4rem 1rem;
+    margin-top: 0.8rem;
+    padding: 0.6rem 0.8rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    overflow: hidden;
+    color: var(--fg);
+    text-decoration: none;
   }
-  .queue li {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.2rem 0.7rem;
-    padding: 0.2rem 0.4rem 0.2rem 0.8rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .queue li:last-child {
-    border-bottom: 0;
-  }
-  .queue .num {
-    width: 1.1rem;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--fg-mute);
-  }
-  .queue .tname {
-    flex: 1 1 12rem;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-  }
-  .queue .opts {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
-    margin-left: auto;
-  }
-  /* On a phone the settings go under the name instead of squeezing it. */
-  @media (max-width: 640px) {
-    .queue .opts {
-      flex-basis: 100%;
-      padding-left: 1.8rem;
-    }
-    .queue .opts .x {
-      margin-left: auto;
-    }
-  }
-  .queue .opt {
-    font-size: 0.78rem;
-    padding: 0.1rem 0.3rem;
-  }
-  .queue .panels {
-    flex-basis: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin: 0.35rem 0 0 1.9rem;
-  }
-  .queue .panel {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    padding: 0.15rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-  }
-  .queue .panel .ptime {
-    color: var(--fg-mute);
-  }
-  .queue .panel.done {
-    border-color: var(--good);
-  }
-  .queue .panel.done .ptime {
-    color: var(--good);
-  }
-  .queue .panel.now {
+  .plan-link:hover {
     border-color: var(--accent);
   }
-  .queue .opt.gain {
-    width: 5.5rem;
-  }
-  .queue li.running .tname {
+  .plan-go {
     color: var(--accent);
-  }
-  .tag {
-    padding: 0.05rem 0.5rem;
-    font-size: 0.68rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--accent-ink);
-    background: var(--accent);
-    border-radius: 999px;
-  }
-  .x {
-    background: none;
-    border: 0;
-    color: var(--fg-mute);
-    min-width: 40px;
-    min-height: 40px;
-    cursor: pointer;
-    font-size: 1.2rem;
-  }
-  .x:hover {
-    color: var(--bad);
+    font-size: 0.85rem;
   }
   .horizon {
     display: block;

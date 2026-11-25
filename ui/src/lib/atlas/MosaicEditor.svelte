@@ -1,6 +1,6 @@
 <!--
   Lay out a mosaic: the grid sits at the centre of the map, so panning the
-  map moves it. Saving puts the panels on the auto list.
+  map moves it. Saving puts the panels in the plan.
 -->
 <script lang="ts">
   import { fmtHours, MOSAIC_MAX_SIDE, MOSAIC_OVERLAP, mosaicSize, type Grid } from './atlas';
@@ -20,7 +20,7 @@
     grid: Grid;
     compact?: boolean;
     busy?: boolean;
-    /** True when this mosaic is already on the auto list. */
+    /** True when this mosaic is already in the plan. */
     replacing?: boolean;
     /** Named objects inside the grid, with the time already shot on each. */
     inside?: { name: string; common: string | null; shot_s: number }[];
@@ -73,7 +73,7 @@
 
   {#if !compact}
     <p class="hint">
-      Drag the map to move the grid. The panels go on the auto list and take turns, the one
+      Drag the map to move the grid. The panels go in the plan and take turns, the one
       with the least time under it first, counting everything already shot there. Every panel
       stacks with anything else you have shot where it overlaps.
     </p>
@@ -81,7 +81,7 @@
 
   <div class="actions">
     <button type="button" class="primary" disabled={busy} onclick={onsave}>
-      {replacing ? 'Replace on the auto list' : 'Add to the auto list'}
+      {replacing ? 'Replace in the plan' : 'Add to the auto list'}
     </button>
     <button type="button" disabled={busy} onclick={oncancel}>Cancel</button>
   </div>
