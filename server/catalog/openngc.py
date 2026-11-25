@@ -42,6 +42,8 @@ class CatalogEntry:
     constellation: str | None  # IAU 3-letter abbreviation
     size_arcmin: float | None = None  # major axis
     messier: str | None = None  # 'M 45'
+    minor_arcmin: float | None = None  # minor axis
+    pa_deg: float | None = None  # position angle of the major axis, north through east
 
 
 # OpenNGC type code -> human-readable label. Keep this list aligned with
@@ -261,6 +263,8 @@ def _load() -> tuple[list[CatalogEntry], dict[str, CatalogEntry]]:
             constellation=(r.get("Const") or "").strip() or None,
             size_arcmin=_parse_float(r.get("MajAx")),
             messier=f"M {messier.lstrip('0')}" if messier else None,
+            minor_arcmin=_parse_float(r.get("MinAx")),
+            pa_deg=_parse_float(r.get("PosAng")),
         )
         entries.append(entry)
 

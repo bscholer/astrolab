@@ -2414,6 +2414,17 @@
             ],
             "title": "Messier"
           },
+          "minor_arcmin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minor Arcmin"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2428,6 +2439,17 @@
               }
             ],
             "title": "Object Type"
+          },
+          "pa_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pa Deg"
           },
           "ra_deg": {
             "title": "Ra Deg",
@@ -5117,6 +5139,50 @@
         "summary": "Patch Settings"
       }
     },
+    "/api/sky/hips/{path}": {
+      "get": {
+        "description": "A JPEG tile of the DSS colour survey for the sky atlas, cached on disk.\n`path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`.",
+        "operationId": "get_sky_tile_api_sky_hips__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "not a tile of the survey"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "imagery unavailable"
+          }
+        },
+        "summary": "Get Sky Tile"
+      }
+    },
     "/api/storage": {
       "get": {
         "description": "System-wide storage snapshot: total cache bytes, dead bytes, and a\nper-project breakdown of owned vs shared bytes.",
@@ -5475,7 +5541,7 @@
     },
     "/api/tonight": {
       "get": {
-        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets must clear `min_alt` degrees at\nsome point between dusk and dawn, or at `at` when the site has no\nnight window, so the list reads the same at noon as at midnight. They\nmust also be brighter than `max_mag` V-band. A named object with no\ncatalog magnitude stays in, because large nebulae often lack one.\nEntries are sorted by `sky.target_score`.",
+        "description": "List visible deep-sky targets for the configured site at time `at`.\n\nSite coords come from the settings KV; missing any of latitude /\nlongitude / elevation is a 400 with a clear message rather than a\nsilent fallback. We pick that strictness on purpose: silently\ndefaulting to (0,0,0) would mean the user sees a list that's wrong\nby tens of degrees and has no idea why.\n\n`at` defaults to now (UTC). Targets must clear `min_alt` degrees at\nsome point between dusk and dawn, or at `at` when the site has no\nnight window, so the list reads the same at noon as at midnight. They\nmust also be brighter than `max_mag` V-band. A named object with no\ncatalog magnitude stays in, because large nebulae often lack one.\nEntries are sorted by `sky.target_score`.\n\n`all_sky` keeps the targets that stay below `min_alt` all night too,\nwith a score of zero, for the sky atlas.",
         "operationId": "get_tonight_api_tonight_get",
         "parameters": [
           {
@@ -5512,6 +5578,16 @@
               "default": 12.0,
               "title": "Max Mag",
               "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "all_sky",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "All Sky",
+              "type": "boolean"
             }
           }
         ],

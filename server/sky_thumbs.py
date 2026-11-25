@@ -12,6 +12,7 @@ import io
 import logging
 import math
 import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -142,22 +143,69 @@ def tile_path(order: int, npix: int) -> str:
     return f"Norder{order}/Dir{npix // 10000 * 10000}/Npix{npix}.jpg"
 
 
-def fetch_tile(order: int, npix: int) -> np.ndarray | None:
-    """RGB tile as an array. None means the survey has no such tile."""
+def _fetch_bytes(path: str) -> bytes | None:
+    """Raw bytes of a file in the survey tree. None means the survey has no such file."""
     last_error: Exception | None = None
     for base in TILE_BASES:
-        url = f"{base}/{tile_path(order, npix)}"
+        url = f"{base}/{path}"
         try:
             with _upstream, urllib.request.urlopen(url, timeout=_TIMEOUT_S) as resp:
-                data = resp.read()
-            return np.asarray(Image.open(io.BytesIO(data)).convert("RGB"))
+                return resp.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
             last_error = exc
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
             last_error = exc
     raise ThumbUnavailable(f"no tile host answered: {last_error}")
+
+
+def fetch_tile(order: int, npix: int) -> np.ndarray | None:
+    """RGB tile as an array. None means the survey has no such tile."""
+    data = _fetch_bytes(tile_path(order, npix))
+    if data is None:
+        return None
+    try:
+        return np.asarray(Image.open(io.BytesIO(data)).convert("RGB"))
+    except (OSError, ValueError) as exc:
+        raise ThumbUnavailable(f"unreadable tile: {exc}") from exc
+
+
+_HIPS_FILE = re.compile(r"Norder(\d)/(?:Allsky\.jpg|Dir(\d+)/Npix(\d+)\.jpg)")
+
+
+def valid_hips_path(path: str) -> bool:
+    """True for a tile or the all-sky image of the survey, at an order it publishes."""
+    m = _HIPS_FILE.fullmatch(path)
+    if m is None:
+        return False
+    order = int(m.group(1))
+    if order > _MAX_ORDER:
+        return False
+    if m.group(3) is None:
+        return order == _MIN_ORDER
+    npix = int(m.group(3))
+    return npix < 12 * 4**order and int(m.group(2)) == npix // 10000 * 10000
+
+
+def get_hips_file(
+    root: Path, path: str, fetch: Callable[[str], bytes | None] | None = None
+) -> bytes | None:
+    """A survey tile for the sky atlas, kept on disk after the first fetch."""
+    fetch = fetch or _fetch_bytes
+    if not valid_hips_path(path):
+        raise ValueError(f"not a survey tile: {path!r}")
+    local = root / path
+    if local.exists():
+        return local.read_bytes()
+    data = fetch(path)
+    if data is None:
+        return None
+    local.parent.mkdir(parents=True, exist_ok=True)
+    tmp = local.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, local)
+    return data
 
 
 def render(

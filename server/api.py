@@ -4326,6 +4326,10 @@ class TonightEntry(BaseModel):
     messier: str | None = None
     size_arcmin: float | None = None
     """Major axis of the object, from OpenNGC."""
+    minor_arcmin: float | None = None
+    """Minor axis of the object, from OpenNGC."""
+    pa_deg: float | None = None
+    """Position angle of the major axis in degrees, north through east."""
     score: float = 0.0
     """Rank in 0..1. Entries arrive sorted by this, highest first."""
     image_version: str | None = None
@@ -4409,6 +4413,27 @@ def get_tonight_thumb(name: str) -> Response:
     return Response(jpeg, media_type="image/jpeg", headers=_THUMB_HEADERS)
 
 
+@app.get(
+    "/api/sky/hips/{path:path}",
+    responses={
+        404: {"description": "not a tile of the survey"},
+        502: {"description": "imagery unavailable"},
+    },
+)
+def get_sky_tile(path: str) -> Response:
+    """A JPEG tile of the DSS colour survey for the sky atlas, cached on disk.
+    `path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`."""
+    if not sky_thumbs.valid_hips_path(path):
+        raise HTTPException(status_code=404, detail=f"not a survey tile: {path!r}")
+    try:
+        jpeg = sky_thumbs.get_hips_file(astrolab_home() / "sky_hips", path)
+    except sky_thumbs.ThumbUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if jpeg is None:
+        raise HTTPException(status_code=404, detail=f"the survey has no {path!r}")
+    return Response(jpeg, media_type="image/jpeg", headers=_THUMB_HEADERS)
+
+
 @app.put(
     "/api/tonight/image",
     responses={
@@ -4452,6 +4477,7 @@ def get_tonight(
     at: str | None = None,
     min_alt: float = 20.0,
     max_mag: float = 12.0,
+    all_sky: bool = False,
 ) -> TonightResponse:
     """List visible deep-sky targets for the configured site at time `at`.
 
@@ -4467,6 +4493,9 @@ def get_tonight(
     must also be brighter than `max_mag` V-band. A named object with no
     catalog magnitude stays in, because large nebulae often lack one.
     Entries are sorted by `sky.target_score`.
+
+    `all_sky` keeps the targets that stay below `min_alt` all night too,
+    with a score of zero, for the sky atlas.
     """
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
@@ -4581,7 +4610,10 @@ def get_tonight(
             ra_arr, dec_arr, loc, dusk_utc, dawn_utc, min_alt
         )
         night_hours = (dawn_utc - dusk_utc).total_seconds() / 3600
-    visible_indices = np.where(hours_arr > 0 if has_night else alts >= min_alt)[0]
+    if all_sky:
+        visible_indices = np.arange(len(candidates))
+    else:
+        visible_indices = np.where(hours_arr > 0 if has_night else alts >= min_alt)[0]
 
     out: list[TonightEntry] = []
     for idx in visible_indices:
@@ -4603,6 +4635,8 @@ def get_tonight(
                 constellation=entry.constellation,
                 messier=entry.messier,
                 size_arcmin=entry.size_arcmin,
+                minor_arcmin=entry.minor_arcmin,
+                pa_deg=entry.pa_deg,
                 score=sky.target_score(
                     entry.object_type,
                     showpieces.fraction(entry.canonical),

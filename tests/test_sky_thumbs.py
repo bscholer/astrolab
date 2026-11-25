@@ -150,3 +150,44 @@ def test_get_thumb_does_not_store_a_failure(tmp_path: Path, monkeypatch: pytest.
     with pytest.raises(st.ThumbUnavailable):
         st.get_thumb(tmp_path, "M 31", 10.0, 41.0, 180.0)
     assert not st.thumb_path(tmp_path, "M 31").exists()
+
+
+@pytest.mark.parametrize(
+    ("path", "ok"),
+    [
+        ("Norder3/Allsky.jpg", True),
+        ("Norder5/Dir0/Npix677.jpg", True),
+        ("Norder9/Dir3140000/Npix3145727.jpg", True),
+        ("Norder9/Dir3140000/Npix3145728.jpg", False),  # past the last tile
+        ("Norder5/Dir10000/Npix677.jpg", False),  # wrong directory
+        ("Norder5/Allsky.jpg", False),  # only order 3 has one here
+        ("Norder10/Dir0/Npix1.jpg", False),  # deeper than the survey
+        ("Norder5/Dir0/../Npix677.jpg", False),
+        ("Norder5/Dir0/Npix677.png", False),
+    ],
+)
+def test_valid_hips_path(path: str, ok: bool) -> None:
+    assert st.valid_hips_path(path) is ok
+
+
+def test_get_hips_file_fetches_once(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fetch(path: str) -> bytes:
+        calls.append(path)
+        return b"tile"
+
+    for _ in range(2):
+        assert st.get_hips_file(tmp_path, TILE_M31, fetch) == b"tile"
+    assert calls == [TILE_M31]
+    assert (tmp_path / TILE_M31).read_bytes() == b"tile"
+
+
+def test_get_hips_file_keeps_nothing_for_a_gap(tmp_path: Path) -> None:
+    assert st.get_hips_file(tmp_path, TILE_M31, lambda path: None) is None
+    assert not (tmp_path / TILE_M31).exists()
+
+
+def test_get_hips_file_refuses_other_paths(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        st.get_hips_file(tmp_path, "../secrets.jpg", lambda path: b"x")

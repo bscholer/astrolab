@@ -972,6 +972,9 @@ export interface TonightEntry {
   magnitude: number | null;
   messier: string | null;
   size_arcmin: number | null;
+  minor_arcmin: number | null;
+  // Position angle of the major axis, north through east.
+  pa_deg: number | null;
   score: number;
   image_version: string | null;
   alt_now_deg: number;
@@ -1186,8 +1189,10 @@ export const api = {
     at?: string;
     min_alt?: number;
     max_mag?: number;
+    all_sky?: boolean;
   }) => {
     const qs = new URLSearchParams();
+    if (params?.all_sky) qs.set('all_sky', 'true');
     if (params?.at) qs.set('at', params.at);
     if (params?.min_alt !== undefined) qs.set('min_alt', String(params.min_alt));
     if (params?.max_mag !== undefined) qs.set('max_mag', String(params.max_mag));

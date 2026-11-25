@@ -371,6 +371,8 @@ def test_tonight_response_shape_matches_dto(client: TestClient) -> None:
             "magnitude",
             "messier",
             "size_arcmin",
+            "minor_arcmin",
+            "pa_deg",
             "score",
             "image_version",
             "alt_now_deg",
@@ -443,6 +445,60 @@ def test_showpiece_list_resolves_every_name_once() -> None:
     assert [n for n, e in zip(names, resolved, strict=True) if e is None] == []
     canonical = [e.canonical for e in resolved if e is not None]
     assert len(set(canonical)) == len(canonical)
+
+
+def test_all_sky_keeps_targets_that_never_rise(client: TestClient) -> None:
+    """The atlas draws the whole sky, so a target that stays down all night
+    is listed too, with no score. The plain list leaves it out."""
+    _set_site(client, lat=-33.9, lon=151.2, elev=58.0)
+    at = "2024-10-15T10:00:00Z"
+    plain = client.get(f"/api/tonight?at={at}").json()["entries"]
+    every = client.get(f"/api/tonight?at={at}&all_sky=true").json()["entries"]
+    assert "NGC 224" not in {e["name"] for e in plain}
+    m31 = next(e for e in every if e["name"] == "NGC 224")
+    assert m31["score"] == 0
+    assert m31["hours_above_min_alt"] == 0
+    assert len(every) > len(plain)
+
+
+def test_entries_carry_the_shape_of_the_object(client: TestClient) -> None:
+    """Minor axis and position angle let the atlas draw M 31 as an ellipse."""
+    _set_site(client)
+    entries = client.get("/api/tonight?at=2024-10-15T04:00:00Z").json()["entries"]
+    m31 = next(e for e in entries if e["name"] == "NGC 224")
+    assert m31["minor_arcmin"] < m31["size_arcmin"]
+    assert 0 <= m31["pa_deg"] < 180
+
+
+def test_sky_tile_serves_and_caches(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    fetched: list[str] = []
+
+    def fetch(path: str) -> bytes:
+        fetched.append(path)
+        return b"jpeg"
+
+    monkeypatch.setattr(sky_thumbs, "_fetch_bytes", fetch)
+    for _ in range(2):
+        r = client.get("/api/sky/hips/Norder5/Dir0/Npix677.jpg")
+        assert r.status_code == 200
+        assert r.content == b"jpeg"
+        assert "immutable" in r.headers["cache-control"]
+    assert fetched == ["Norder5/Dir0/Npix677.jpg"]
+
+
+def test_sky_tile_rejects_other_paths(client: TestClient) -> None:
+    for path in ("Norder5/Dir0/Npix99999.jpg", "Norder12/Dir0/Npix1.jpg", "properties", "Norder3/x.jpg"):
+        assert client.get(f"/api/sky/hips/{path}").status_code == 404
+
+
+def test_sky_tile_upstream_failure_is_502(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args, **kwargs):
+        raise sky_thumbs.ThumbUnavailable("down")
+
+    monkeypatch.setattr(sky_thumbs, "get_hips_file", fail)
+    r = client.get("/api/sky/hips/Norder3/Allsky.jpg")
+    assert r.status_code == 502
+    assert "immutable" not in r.headers.get("cache-control", "")
 
 
 def test_thumb_unknown_target_404(client: TestClient) -> None:

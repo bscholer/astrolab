@@ -8,6 +8,7 @@
   import MoreData from '$lib/MoreData.svelte';
   import type { MasterAdviceRow } from '$lib/api';
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
 
   // Masters that gain the most from more time (server/capture_loop.py).
   let worth = $state<MasterAdviceRow[]>([]);
@@ -43,7 +44,8 @@
 
   let view = $state<View>('recommended');
   let group = $state<TypeGroup | null>(null);
-  let search = $state('');
+  // The atlas links here with ?q= to show one target.
+  let search = $state($page.url.searchParams.get('q') ?? '');
   let showFilters = $state(false);
   let limit = $state(PAGE_SIZE);
   let expanded = $state<string | null>(null);
@@ -299,6 +301,7 @@
   class:has-pill={(obs && obs.state === 'running') || job?.state === 'running'}
 >
   <h1>Tonight</h1>
+  <a class="atlas-link" href="/atlas">Sky atlas →</a>
   {#if (obs && obs.state === 'running') || job?.state === 'running'}
     <a class="pill" href="/scope">
       <span class="live-dot" aria-hidden="true"></span>
@@ -547,6 +550,7 @@
                     Use survey image
                   </button>
                 {/if}
+                <a class="btn compact atlas-btn" href="/atlas?target={encodeURIComponent(entry.name)}">Show on the atlas</a>
               </div>
             </div>
           {/if}
@@ -617,6 +621,17 @@
     align-items: baseline;
     gap: 0.75rem;
     margin: 0.5rem 0 1.25rem;
+  }
+  .atlas-btn {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .atlas-link {
+    font-size: 0.85rem;
+    color: var(--accent);
+    white-space: nowrap;
   }
   .header h1 {
     margin: 0;
