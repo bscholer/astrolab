@@ -22,8 +22,11 @@ So colour and brightness are taken separately, still in linear space:
   (stars erased) and smoothed, mapped from red (H-alpha) to blue (OIII).
   The share is spread over its own 10th-90th percentile range, so the
   colour shows where OIII is stronger or weaker than usual for this target.
-  `oiii_strength` shifts the balance (1 as measured, higher bluer; the
-  default 1.4 gives the blue core of the usual HOO Rosette).
+  `oiii_strength` shifts the balance (1 as measured, higher bluer).
+  The two ends of that ramp are hues: `ha_hue` (default 24, gold) and
+  `oiii_hue` (default 215, azure), the warm-and-blue look of modern
+  narrowband pictures. Ha 4 and OIII 213 give the classic red and teal HOO;
+  pure red at full saturation clipped the red channel and looked blown out.
   The sky and stars stay neutral: colour fades in with nebula signal and
   out on anything much brighter than its surroundings.
 The stretch and its saturation then work as on any colour image.
@@ -62,7 +65,7 @@ class ChannelMapParams(BaseModel):
         json_schema_extra={"ui_section": "advanced"},
     )
     oiii_strength: float = Field(
-        default=1.4,
+        default=1.0,
         ge=0.0,
         le=2.0,
         description="Red-blue balance. 1 colours the nebula by its measured OIII "
@@ -72,11 +75,35 @@ class ChannelMapParams(BaseModel):
             "agent_hint": "Raise for more blue OIII in the core; lower for a redder nebula.",
         },
     )
+    ha_hue: float = Field(
+        default=24.0,
+        ge=0.0,
+        le=360.0,
+        description="Colour of H-alpha-rich nebula, as a hue in degrees: 24 gold, "
+        "10 orange-red, 4 the classic HOO red.",
+        json_schema_extra={"hash_precision": 1},
+    )
+    oiii_hue: float = Field(
+        default=215.0,
+        ge=0.0,
+        le=360.0,
+        description="Colour of OIII-rich nebula, as a hue in degrees: 215 azure, "
+        "190 teal, 213 the classic HOO blue-teal.",
+        json_schema_extra={"hash_precision": 1},
+    )
 
 
 BLOCK = 8
-RED = np.array([1.0, 0.18, 0.12], np.float32)
-BLUE = np.array([0.30, 0.62, 1.0], np.float32)
+HUE_SATURATION = 0.85
+"""How far each end colour sits from white. The stretch's saturation then scales it."""
+
+
+def hue_rgb(hue_deg: float, saturation: float = HUE_SATURATION) -> np.ndarray:
+    """An RGB colour of full value at this hue (HSV)."""
+    h = (hue_deg % 360.0) / 60.0
+    x = 1.0 - abs(h % 2.0 - 1.0)
+    rgb = [(1, x, 0), (x, 1, 0), (0, 1, x), (0, x, 1), (x, 0, 1), (1, 0, x)][int(h) % 6]
+    return np.array([1.0 - saturation * (1.0 - c) for c in rgb], np.float32)
 
 
 def _blocks(c: np.ndarray, k: int = BLOCK) -> np.ndarray:
@@ -140,7 +167,9 @@ def _spread(c: np.ndarray) -> tuple[float, float]:
     return sky, float(np.percentile(b, 99.5)) - sky
 
 
-def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
+def hoo(
+    data: np.ndarray, oiii_strength: float, ha_hue: float = 24.0, oiii_hue: float = 215.0
+) -> np.ndarray:
     """(3, H, W) RGB with H-alpha in red and OIII in green/blue -> HOO, linear."""
     ha = np.nan_to_num(data[0].astype(np.float32))
     oiii = np.nan_to_num(0.5 * (data[1].astype(np.float32) + data[2].astype(np.float32)))
@@ -183,7 +212,8 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
     local = _upsample(_blocks(lum), shape)
     star = _grow(np.clip((lum / np.maximum(local, 1e-9) - 1.3) / 0.7, 0, 1), 3)
     amount = wf * (1 - star)
-    col = (1 - tf)[None] * RED[:, None, None] + tf[None] * BLUE[:, None, None]
+    ha_rgb, oiii_rgb = hue_rgb(ha_hue), hue_rgb(oiii_hue)
+    col = (1 - tf)[None] * ha_rgb[:, None, None] + tf[None] * oiii_rgb[:, None, None]
     col = col / col.mean(axis=0, keepdims=True)
     col = 1 + amount[None] * (col - 1)
     out = lum[None] * col + max(hsky, 0.0)
@@ -194,7 +224,7 @@ def hoo(data: np.ndarray, oiii_strength: float) -> np.ndarray:
 @register("channel_map")
 class ChannelMapNode(Node[ChannelMapParams]):
     id = "channel_map"
-    version = 6
+    version = 7
     tier = "keep"
 
     inputs = {"image": PortType.IMAGE_FITS}
@@ -222,7 +252,12 @@ class ChannelMapNode(Node[ChannelMapParams]):
             ctx.progress(0.5, "channel_map: not an RGB stack - passing through")
             shutil.copy(src, out_image)
             return {"image": image_ref(out_image)}
-        ctx.progress(0.3, f"channel_map: {params.palette}, OIII x{params.oiii_strength:g}")
-        fits.PrimaryHDU(hoo(data, params.oiii_strength), header=header).writeto(out_image)
+        ctx.progress(
+            0.3,
+            f"channel_map: {params.palette}, OIII x{params.oiii_strength:g}, "
+            f"hues {params.ha_hue:g}/{params.oiii_hue:g}",
+        )
+        out = hoo(data, params.oiii_strength, params.ha_hue, params.oiii_hue)
+        fits.PrimaryHDU(out, header=header).writeto(out_image)
         ctx.progress(1.0, "channel_map: done")
         return {"image": image_ref(out_image)}

@@ -1,5 +1,5 @@
 id: stack_per_night_duo
-version: 4
+version: 5
 description: |
   Stack per night for duo-band (H-alpha + OIII) data on a colour camera.
   Each night is calibrated without debayering, split into H-alpha (red
@@ -170,9 +170,12 @@ nodes:
     # target_bg dropped from the Siril default (0.25) to 0.05 because
     # auto_bp_shift already pushed the background toward zero; leaving
     # target_bg at 0.25 would lift the BG back up and undo the shift.
+    # saturation 1.1: a touch more colour on the gold/azure HOO. 2 clipped the
+    # H-alpha into flat red.
     params:
       method: autostretch
       target_bg: 0.05
+      saturation: 1.1
     inputs:
       image: auto_bp_shift.image
 
