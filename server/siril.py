@@ -87,6 +87,23 @@ def parse_progress(line: str) -> tuple[str, float] | None:
     return m.group(1).strip(), max(0.0, min(pct, 1.0))
 
 
+_COMMAND_RE = re.compile(r"^log:\s*Running command:\s*(\S+)")
+
+
+@dataclass(frozen=True)
+class SirilStep:
+    """One script command that reports progress, for `make_progress_handler`.
+
+    `weight` is its share of the bar, roughly its share of the run time.
+    `sweeps` is how many 0-100% passes it reports: `stack` reports two
+    (normalization, then stacking); most commands report one.
+    """
+
+    command: str
+    weight: float = 1.0
+    sweeps: int = 1
+
+
 def make_progress_handler(
     ctx,
     *,
@@ -94,6 +111,7 @@ def make_progress_handler(
     high: float = 0.95,
     phases: int = 1,
     prefix: str = "",
+    steps: Sequence[SirilStep] | None = None,
 ):
     """Return an on_log handler that forwards Siril progress lines through
     `ctx.progress`, mapping 0..100% onto the [low, high] sub-range so the
@@ -110,7 +128,17 @@ def make_progress_handler(
     `prefix` is prepended to every progress message — useful for noting
     which phase ('Plate solve / Applying registration') in addition to
     Siril's own message text.
+
+    `steps` replaces `phases` for scripts whose commands differ a lot in
+    length or report more than one sweep. The handler follows Siril's
+    'Running command: X' lines to the next listed step named X, so a drop in
+    the percentage never has to be read as a boundary. Commands not listed
+    (cd, load, save) are ignored. The handler's `position` attribute holds
+    the last fraction it emitted, for a follow-on run to start from.
     """
+
+    if steps:
+        return _step_progress_handler(ctx, low=low, high=high, prefix=prefix, steps=steps)
 
     state: dict[str, float | int] = {"last": 0.0, "phase": 0, "last_emitted": low}
     phase_size = (high - low) / max(phases, 1)
@@ -142,6 +170,48 @@ def make_progress_handler(
         state["last_emitted"] = scaled
         ctx.progress(scaled, f"{prefix}{msg}" if prefix else msg)
 
+    return handler
+
+
+def _step_progress_handler(ctx, *, low, high, prefix, steps):
+    total = sum(s.weight for s in steps) or 1.0
+    starts: list[float] = []
+    acc = low
+    for s in steps:
+        starts.append(acc)
+        acc += (high - low) * s.weight / total
+    state = {"step": -1, "sweep": 0, "last": 0.0}
+
+    def handler(line: str) -> None:
+        ctx.log.debug("siril: %s", line)
+        m = _COMMAND_RE.match(line)
+        if m is not None:
+            name = m.group(1)
+            nxt = next(
+                (i for i in range(state["step"] + 1, len(steps)) if steps[i].command == name),
+                None,
+            )
+            if nxt is not None:
+                state.update(step=nxt, sweep=0, last=0.0)
+            return
+        parsed = parse_progress(line)
+        if parsed is None or state["step"] < 0:
+            return
+        msg, frac = parsed
+        step = steps[state["step"]]
+        if frac + 0.5 < state["last"]:
+            # A fresh sweep inside the same command (eg stack's normalization
+            # then stacking). Siril's trailing 'succeeded, 0%' line lands here
+            # too; capping at the last sweep keeps it from moving anything.
+            state["sweep"] = min(state["sweep"] + 1, step.sweeps - 1)
+        state["last"] = frac
+        width = (high - low) * step.weight / total
+        scaled = starts[state["step"]] + width * (state["sweep"] + frac) / step.sweeps
+        scaled = max(min(scaled, high), handler.position)
+        handler.position = scaled
+        ctx.progress(scaled, f"{prefix}{msg}" if prefix else msg)
+
+    handler.position = low
     return handler
 
 # ---------------------------------------------------------------------------

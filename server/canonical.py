@@ -27,6 +27,12 @@ DEFAULT_FLOAT_PRECISION: int = 6
 HASH_PRECISION_KEY: str = "hash_precision"
 """Key used inside Pydantic Field(json_schema_extra=...) to override precision."""
 
+HASH_OMIT_DEFAULT_KEY: str = "hash_omit_default"
+"""Field(json_schema_extra={"hash_omit_default": True}) leaves the field out of the
+hash while it holds its default. Mark a param added to an existing node with it:
+the node's cached results keep their keys until someone sets the new param, so
+adding an option does not recompute every project's heaviest step."""
+
 
 def _round_float(value: float, precision: int) -> float:
     """Round to `precision` decimals, normalizing -0.0 to 0.0 and NaN handling."""
@@ -49,6 +55,23 @@ def _field_precisions(params_model: type[BaseModel] | None) -> dict[str, int]:
             precision = extra.get(HASH_PRECISION_KEY)
             if isinstance(precision, int):
                 out[name] = precision
+    return out
+
+
+def _omitted_at_default(params_model: type[BaseModel] | None, payload: dict) -> dict:
+    """Drop hash_omit_default fields that hold their default."""
+    if params_model is None:
+        return payload
+    out = dict(payload)
+    for name, field in params_model.model_fields.items():
+        extra = field.json_schema_extra
+        if (
+            isinstance(extra, dict)
+            and extra.get(HASH_OMIT_DEFAULT_KEY)
+            and name in out
+            and out[name] == field.get_default(call_default_factory=True)
+        ):
+            del out[name]
     return out
 
 
@@ -120,11 +143,12 @@ def canonical_json(
     precision applies to all floats.
     """
     if isinstance(params, BaseModel):
-        precisions = _field_precisions(type(params))
+        params_model = type(params)
         payload = params.model_dump(mode="json")
     else:
-        precisions = _field_precisions(params_model)
         payload = dict(params)
+    precisions = _field_precisions(params_model)
+    payload = _omitted_at_default(params_model, payload)
 
     canonical = canonical_value(payload, precisions=precisions)
     return json.dumps(

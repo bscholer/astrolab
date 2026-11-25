@@ -227,6 +227,20 @@ class SeqRegisterParams(BaseModel):
     )
 
 
+def quality_filters(drop_fwhm: float | None, drop_round: float | None) -> list[str]:
+    """seqapplyreg options that drop the worst `drop` share of frames by FWHM / roundness.
+
+    Siril reads a bare number as a threshold in the property's own unit (FWHM in
+    pixels), so `-filter-fwhm=0.25` keeps only frames sharper than 0.25 px: none,
+    and the command aborts. A percentage keeps that share of the best frames.
+    """
+    opts = []
+    for flag, drop in (("fwhm", drop_fwhm), ("round", drop_round)):
+        if drop:
+            opts.append(f"-filter-{flag}={round((1 - drop) * 100, 1):g}%")
+    return opts
+
+
 @register("seq_register")
 class SeqRegisterNode(Node[SeqRegisterParams]):
     id = "seq_register"
@@ -265,10 +279,7 @@ class SeqRegisterNode(Node[SeqRegisterParams]):
             f"-framing={params.framing}",
             f"-kernel={params.kernel}",
         ]
-        if params.filter_fwhm is not None:
-            apply_opts.append(f"-filter-fwhm={params.filter_fwhm}")
-        if params.filter_round is not None:
-            apply_opts.append(f"-filter-round={params.filter_round}")
+        apply_opts += quality_filters(params.filter_fwhm, params.filter_round)
         if params.drizzle:
             # Drizzle reuses the same `r_` output prefix; only the dimensions
             # change. Cache key already differs because the params are part

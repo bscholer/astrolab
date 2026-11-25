@@ -349,3 +349,23 @@ def test_external_ref_path_still_affects_node_hash() -> None:
         params=P(),
     )
     assert h_a != h_b
+
+
+def test_a_param_marked_hash_omit_default_keeps_old_keys_until_it_is_set() -> None:
+    """Adding an option to a node must not change the key of runs that leave it alone."""
+    from pydantic import BaseModel, Field
+
+    from server.canonical import node_hash
+
+    class Before(BaseModel):
+        strength: float = 0.5
+
+    class After(BaseModel):
+        strength: float = 0.5
+        filter_fwhm: float | None = Field(default=None, json_schema_extra={"hash_omit_default": True})
+
+    def key(params):
+        return node_hash(node_id="n", node_version=1, inputs={}, params=params)
+
+    assert key(After()) == key(Before())
+    assert key(After(filter_fwhm=0.2)) != key(Before())

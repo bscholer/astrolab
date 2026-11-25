@@ -146,8 +146,10 @@ def test_filter_options_propagate(
         out_dir=out_dir,
     )
     apply_cmd = next(c for c in fake_rt.calls[0]["commands"] if c.startswith("seqapplyreg "))
-    assert "-filter-fwhm=0.2" in apply_cmd
-    assert "-filter-round=0.1" in apply_cmd
+    # Siril keeps the best share given as a percentage; a bare 0.2 would mean
+    # "FWHM under 0.2 px" and keep nothing.
+    assert "-filter-fwhm=80%" in apply_cmd
+    assert "-filter-round=90%" in apply_cmd
 
 
 def test_per_frame_no_count_check(

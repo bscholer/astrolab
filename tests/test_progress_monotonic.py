@@ -57,6 +57,28 @@ def _emit_subcommands(handler, n_sub_commands: int) -> None:
             handler(f"progress: doing thing #{sub}, {pct}%")
 
 
+# Commands that report progress, and how many 0-100% sweeps each reports.
+_SWEEPS = {
+    "seqextract_HaOIII": 1, "register": 1, "stack": 2, "link": 1,
+    "calibrate": 1, "seqplatesolve": 1, "seqapplyreg": 1,
+}
+
+
+def _emit_script(handler, commands) -> None:
+    """Replay what Siril prints for a script, quirks included: a 'Running
+    command' line per command, two sweeps for stack (normalization, then
+    stacking), and the 'succeeded, 0.00%' line that closes a sequence
+    command. That trailing 0% used to be read as the next phase starting."""
+    for cmd in commands:
+        name = cmd.split()[0]
+        handler(f"log: Running command: {name}")
+        for sweep in range(_SWEEPS.get(name, 0)):
+            for pct in range(0, 101, 5):  # Siril reports per frame; this is coarser
+                handler(f"progress: {name} sweep {sweep}, {pct:.2f}%")
+        if name in ("seqextract_HaOIII", "register", "calibrate", "seqplatesolve"):
+            handler("progress: Sequence processing succeeded., 0.00%")
+
+
 def _capture_ctx(tmp_path: Path) -> tuple[RunContext, list[float]]:
     """RunContext that records every progress fraction it sees."""
     log: list[float] = []
@@ -124,11 +146,13 @@ class ReplayRuntime:
     def __init__(
         self,
         *,
-        n_sub_commands: int,
+        n_sub_commands: int = 0,
         on_complete=None,
+        follow_script: bool = False,
     ) -> None:
         self.binary = SirilBinary(path=Path("/fake/siril"), source="env")
         self.n_sub_commands = n_sub_commands
+        self.follow_script = follow_script
         self._on_complete = on_complete
         self.calls: list[dict[str, Any]] = []
 
@@ -143,7 +167,9 @@ class ReplayRuntime:
         cancel=None,
     ) -> SirilResult:
         self.calls.append({"commands": list(commands), "working_dir": working_dir})
-        if on_log is not None:
+        if on_log is not None and self.follow_script:
+            _emit_script(on_log, commands)
+        elif on_log is not None:
             _emit_subcommands(on_log, self.n_sub_commands)
         if self._on_complete is not None:
             self._on_complete(working_dir)
@@ -163,24 +189,34 @@ def _make_extract_inputs(tmp_path: Path) -> Path:
     return seq_in
 
 
-def test_narrowband_extract_progress_is_monotonic(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("shared", [False, True], ids=["separate", "shared"])
+def test_narrowband_extract_progress_is_smooth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shared: bool
 ) -> None:
-    """The full extract chain (6 progress-emitting sub-commands) must not
-    rewind the bar. Pinned the phases=6 declaration in the node + the handler
-    clamp; either one alone would suffice, but both kept defense in depth.
+    """Both registration paths move the bar forward in small steps to the
+    end. Before, the node assumed six equal sweeps where Siril prints nine
+    (stack reports two, link one): the bar leapt 12% at a time and sat at
+    0.95 through the slow final registration.
     """
     seq_in = _make_extract_inputs(tmp_path)
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
     def on_complete(work_dir):
+        # The shared path reads the plate-solved debayered sequence and the
+        # split frames between its Siril runs.
+        (work_dir / "db_pp_light_.seq").write_text(
+            "S 'db_pp_light_' 1 3 3 5 -1 4 0 0\nL 3\n"
+            + "".join(f"I {i} 1\nR1 0 0 0 1 0 0 0 1 0 0 0 1\n" for i in (1, 2, 3))
+        )
+        for channel in ("Ha", "OIII"):
+            (work_dir / f"{channel}_pp_light_00001.fit").write_bytes(b"X")
         # The node moves work_dir/r_results_{ha,oiii}.fit into out_dir at the
         # end, so the stub needs to place them where the move expects them.
         (work_dir / "r_results_ha.fit").write_bytes(b"HA")
         (work_dir / "r_results_oiii.fit").write_bytes(b"OIII")
 
-    rt = ReplayRuntime(n_sub_commands=6, on_complete=on_complete)
+    rt = ReplayRuntime(follow_script=True, on_complete=on_complete)
     monkeypatch.setattr(
         "nodes.basic.narrowband_extract.SirilRuntime", lambda *a, **k: rt
     )
@@ -195,16 +231,24 @@ def test_narrowband_extract_progress_is_monotonic(
                 type=PortType.SEQUENCE_FITS,
             ),
         },
-        params=NarrowbandExtractParams(),
+        params=NarrowbandExtractParams(shared_registration=shared),
         ctx=ctx,
         out_dir=out_dir,
     )
-    assert len(log) >= 6
+    _assert_smooth(log, "narrowband_extract")
+
+
+def _assert_smooth(log: list[float], node: str) -> None:
+    """Never backwards, no big leaps, and the Siril part reaches 0.95."""
     for prev, curr in zip(log, log[1:], strict=False):
         assert curr >= prev, (
-            f"narrowband_extract progress went backwards: {prev:.4f} -> {curr:.4f}\n"
+            f"{node} progress went backwards: {prev:.4f} -> {curr:.4f}\n"
             f"full series: {log!r}"
         )
+    siril = [f for f in log if f < 1.0]
+    assert siril[-1] >= 0.94, f"{node} stalled at {siril[-1]:.3f}: {log!r}"
+    leaps = [b - a for a, b in zip(siril, siril[1:], strict=False)]
+    assert max(leaps) < 0.1, f"{node} jumped {max(leaps):.3f}: {log!r}"
 
 
 @pytest.mark.parametrize(

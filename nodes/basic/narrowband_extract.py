@@ -43,10 +43,11 @@ from pydantic import BaseModel, Field
 
 from nodes._seq_runner import drop_staged, quote, stage_sequence
 from nodes.base import Node
+from nodes.basic.seq_register import quality_filters
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
-from server.siril import SirilRuntime, make_progress_handler
+from server.siril import SirilRuntime, SirilStep, make_progress_handler
 
 
 class NarrowbandExtractParams(BaseModel):
@@ -79,6 +80,25 @@ class NarrowbandExtractParams(BaseModel):
         "fragile stack-to-stack shift alignment is skipped; narrowband_pack "
         "fixes the sub-pixel Bayer offset that remains.",
         json_schema_extra={"ui_hidden": True},
+    )
+    # Registration happens inside this node (there is no separate register step in
+    # the duo pipeline), so the frame filters live here.
+    filter_fwhm: float | None = Field(
+        default=None, ge=0.0, le=0.9,
+        description="Drop frames whose FWHM is in the worst N fraction. 0.25 keeps "
+        "the sharpest 75%. None keeps every frame.",
+        json_schema_extra={
+            "hash_omit_default": True,
+            "agent_hint": "0.2-0.3 drops the blurriest frames and sharpens the stack.",
+        },
+    )
+    filter_round: float | None = Field(
+        default=None, ge=0.0, le=0.9,
+        description="Drop frames whose stars are least round, the worst N fraction.",
+        json_schema_extra={
+            "hash_omit_default": True,
+            "agent_hint": "0.1-0.2 removes trailed or wind-shaken frames.",
+        },
     )
 
 
@@ -128,18 +148,19 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
         ctx.progress(0.1, "narrowband_extract: extracting Ha/OIII and aligning")
         runtime = SirilRuntime()
         if params.shared_registration:
-            result = _run_shared(runtime, params.input_basename, work_dir, ctx)
+            result = _run_shared(
+                runtime, params.input_basename, work_dir, ctx,
+                quality_filters(params.filter_fwhm, params.filter_round),
+            )
         else:
-            commands = _build_extract_commands(params.input_basename, work_dir)
-            # Six progress-emitting Siril sub-commands: seqextract_HaOIII,
-            # register Ha, stack r_Ha, register OIII, stack r_OIII, register
-            # results. The interleaved load/save and `link` calls don't emit
-            # progress, so they don't count. phases must match this exactly or
-            # the bar rewinds when a later sub-command opens at 0%.
+            commands = _build_extract_commands(
+                params.input_basename, work_dir,
+                quality_filters(params.filter_fwhm, params.filter_round),
+            )
             result = runtime.run(
                 commands,
                 working_dir=work_dir,
-                on_log=make_progress_handler(ctx, phases=6),
+                on_log=make_progress_handler(ctx, low=0.1, steps=_SEPARATE_STEPS),
                 cancel=ctx.cancel,
             )
         if result.returncode != 0:
@@ -174,6 +195,33 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
             "ha": Ref(node_hash="", port="ha", path=ha_out, type=PortType.IMAGE_FITS),
             "oiii": Ref(node_hash="", port="oiii", path=oiii_out, type=PortType.IMAGE_FITS),
         }
+
+
+# The Siril commands that report progress, weighted by their share of a real
+# 161-frame run (extract 11 s, each register or stack about 8 s, the final
+# stack-to-stack registration 38 s). Each `stack` reports two sweeps:
+# normalization, then stacking.
+_SEPARATE_STEPS = (
+    SirilStep("seqextract_HaOIII", 11),
+    SirilStep("register", 8),
+    SirilStep("stack", 8, sweeps=2),
+    SirilStep("register", 8),
+    SirilStep("stack", 8, sweeps=2),
+    SirilStep("link", 1),
+    SirilStep("register", 36),
+)
+_SHARED_SOLVE = (
+    SirilStep("calibrate", 2),
+    SirilStep("seqplatesolve", 4),
+    SirilStep("seqextract_HaOIII", 1),
+)
+_SHARED_MATCH = (SirilStep("register", 2), SirilStep("seqextract_HaOIII", 1))
+_SHARED_STACK = (
+    SirilStep("seqapplyreg", 1),
+    SirilStep("seqapplyreg", 1),
+    SirilStep("stack", 1, sweeps=2),
+    SirilStep("stack", 1, sweeps=2),
+)
 
 
 def transfer_registration(src: Path, dst: Path) -> None:
@@ -222,7 +270,9 @@ def copy_registration(src: Path, dst: Path, name: str) -> None:
     dst.write_text("\n".join(out) + "\n")
 
 
-def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContext):
+def _run_shared(
+    runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContext, filters: list[str] = ()
+):
     """Register once on a debayered copy, apply to both split channels, stack.
 
     Single 15 s duo-band frames split into H-alpha and OIII have too few real
@@ -241,14 +291,15 @@ def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContex
             f"seqextract_HaOIII {base} -resample=ha",
         ],
         working_dir=work_dir,
-        on_log=make_progress_handler(ctx, low=0.1, high=0.5, phases=3),
+        on_log=(solve := make_progress_handler(ctx, low=0.1, high=0.5, steps=_SHARED_SOLVE)),
         cancel=ctx.cancel,
     )
+    progress = solve.position
     if first.returncode != 0:
         # The reference frame didn't solve (Siril then fails the whole
         # sequence): star-match the debayered copy instead, which has the
         # signal the split frames lack.
-        ctx.progress(0.3, "narrowband_extract: plate solving failed, matching stars")
+        ctx.progress(progress, "narrowband_extract: plate solving failed, matching stars")
         first = runtime.run(
             [
                 cd,
@@ -256,9 +307,12 @@ def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContex
                 f"seqextract_HaOIII {base} -resample=ha",
             ],
             working_dir=work_dir,
-            on_log=make_progress_handler(ctx, low=0.3, high=0.5, phases=2),
+            on_log=(match := make_progress_handler(
+                ctx, low=progress, high=0.5, steps=_SHARED_MATCH
+            )),
             cancel=ctx.cancel,
         )
+        progress = match.position
         if first.returncode != 0:
             return first
     db = next(iter(sorted(work_dir.glob(f"db_{base}*.seq"))), None)
@@ -273,18 +327,23 @@ def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContex
     return runtime.run(
         [
             cd,
-            f"seqapplyreg OIII_{base} -framing=max",
-            f"seqapplyreg Ha_{base} -framing=max",
+            # The transferred registration carries each frame's FWHM and
+            # roundness from the plate-solved debayered copy, so the filters
+            # pick the same frames for both channels.
+            " ".join([f"seqapplyreg OIII_{base} -framing=max", *filters]),
+            " ".join([f"seqapplyreg Ha_{base} -framing=max", *filters]),
             f"stack r_OIII_{base} {stack} -out=r_results_oiii",
             f"stack r_Ha_{base} {stack} -out=r_results_ha",
         ],
         working_dir=work_dir,
-        on_log=make_progress_handler(ctx, low=0.5, high=0.95, phases=4),
+        on_log=make_progress_handler(ctx, low=max(progress, 0.5), high=0.95, steps=_SHARED_STACK),
         cancel=ctx.cancel,
     )
 
 
-def _build_extract_commands(input_basename: str, work_dir: Path) -> list[str]:
+def _build_extract_commands(
+    input_basename: str, work_dir: Path, filters: list[str] = ()
+) -> list[str]:
     """Render the Siril SSF for the extract+align half of the narrowband flow.
 
     Kept as a free function so tests can introspect the exact command list
@@ -305,8 +364,11 @@ def _build_extract_commands(input_basename: str, work_dir: Path) -> list[str]:
     for src_seq, out_name in ((ha_seq, ha_stack), (oiii_seq, oiii_stack)):
         cmds.append(f"register {src_seq}")
         cmds.append(
-            f"stack r_{src_seq} rej 3 3 -norm=addscale -output_norm -32b "
-            f"-out={out_name}"
+            " ".join([
+                f"stack r_{src_seq} rej 3 3 -norm=addscale -output_norm -32b",
+                *filters,
+                f"-out={out_name}",
+            ])
         )
 
     # Build a 2-frame sequence from the two stacks and shift-align it. Siril's
