@@ -64,7 +64,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -72,7 +72,7 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import coverage, pano_sky, scope_plan, sky_thumbs, telemetry, weather
+from server import coverage, pano_sky, scope_live, scope_plan, sky_thumbs, telemetry, weather
 from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
@@ -4286,6 +4286,31 @@ def start_scope_control(req: ControlIn) -> dict:
 @app.get("/api/scope/control")
 def get_scope_control() -> dict:
     return scope_control.snapshot()
+
+
+@app.get("/api/scope/live/{camera}.mjpg")
+async def get_scope_live(camera: str, request: Request) -> StreamingResponse:
+    """Live video from a camera as MJPEG, for an <img>. Every viewer shares one reader.
+
+    503 when the scope's video does not start (not prepared, or no RTSP, as on the fake
+    scope); the page then falls back to stills from /api/scope/frame.
+    """
+    cam = scope_live.cameras.get(camera)
+    if cam is None:
+        raise HTTPException(status_code=404, detail="camera is wide or tele")
+    service = get_setting(SETTING_SCOPE_URL, None, db_path=job_manager.db_path)
+    url = scope_live.rtsp_url(service, camera)
+    if url is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    cam.watch(url)
+    if not await scope_live.first_frame(cam, scope_live.FIRST_FRAME_S[camera]):
+        cam.leave()
+        raise HTTPException(status_code=503, detail=cam.error or "no picture from the scope yet")
+    return StreamingResponse(
+        scope_live.mjpeg(cam, request.is_disconnected),
+        media_type=f"multipart/x-mixed-replace; boundary={scope_live.BOUNDARY}",
+        headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 FRAME_FRESH_S = 5.0

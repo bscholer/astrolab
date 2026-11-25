@@ -4744,6 +4744,44 @@
         "summary": "Get Scope Horizon"
       }
     },
+    "/api/scope/live/{camera}.mjpg": {
+      "get": {
+        "description": "Live video from a camera as MJPEG, for an <img>. Every viewer shares one reader.\n\n503 when the scope's video does not start (not prepared, or no RTSP, as on the fake\nscope); the page then falls back to stills from /api/scope/frame.",
+        "operationId": "get_scope_live_api_scope_live__camera__mjpg_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "camera",
+            "required": true,
+            "schema": {
+              "title": "Camera",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Scope Live"
+      }
+    },
     "/api/scope/mosaic": {
       "delete": {
         "description": "Take a mosaic's panels off the auto list. Frames already shot stay.",

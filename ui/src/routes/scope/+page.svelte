@@ -1,11 +1,12 @@
 <!--
   Scope: one verdict (working or not) first, live pictures next, details last.
-  Status polls every 5 s. Live frames reload one after another.
+  Status polls every 5 s. The cameras play live (MJPEG from the scope's video).
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api, type ScopePano, type ScopeAutoTarget, type ScopeState } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import LiveFeed from '$lib/scope/LiveFeed.svelte';
   import PanoViewer from '$lib/scope/PanoViewer.svelte';
 
   let scope = $state<ScopeState | null>(null);
@@ -17,10 +18,6 @@
 
   let stackTick = $state(Date.now());
   let stackFailed = $state(false);
-  let wideTick = $state(Date.now());
-  let teleTick = $state(Date.now());
-  let wideFailed = $state(false);
-  let teleFailed = $state(false);
 
   const job = $derived(scope?.status?.job ?? null);
   const obs = $derived(scope?.observe ?? null);
@@ -210,31 +207,6 @@
 
   const fmtDeg = (v: number | null | undefined) => (typeof v === 'number' ? `${v.toFixed(1)}°` : '—');
 
-  // Reload each live frame a few seconds after the last one finished. Skip while the tab is hidden.
-  function next(kind: 'wide' | 'tele') {
-    const delay = kind === 'wide' ? 8000 : 30000;
-    setTimeout(() => {
-      if (document.hidden) return next(kind);
-      if (kind === 'wide') wideTick = Date.now();
-      else teleTick = Date.now();
-    }, delay);
-  }
-
-  // A failed frame retries later, so a scope that comes back gets its pictures back.
-  function retry(kind: 'wide' | 'tele') {
-    if (kind === 'wide') wideFailed = true;
-    else teleFailed = true;
-    setTimeout(() => {
-      if (kind === 'wide') {
-        wideFailed = false;
-        wideTick = Date.now();
-      } else {
-        teleFailed = false;
-        teleTick = Date.now();
-      }
-    }, 30000);
-  }
-
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let stackTimer: ReturnType<typeof setInterval> | undefined;
   let weatherTimer: ReturnType<typeof setInterval> | undefined;
@@ -307,32 +279,8 @@
       <figcaption>Stack</figcaption>
     </figure>
     {#if hasPreview}
-      <figure class="frame">
-        {#if wideFailed}
-          <div class="empty">No wide frame</div>
-        {:else}
-          <img
-            src="/api/scope/frame?camera=wide&t={wideTick}"
-            alt="Live wide view"
-            onload={() => next('wide')}
-            onerror={() => retry('wide')}
-          />
-        {/if}
-        <figcaption>Wide · live</figcaption>
-      </figure>
-      <figure class="frame">
-        {#if teleFailed}
-          <div class="empty">No tele frame</div>
-        {:else}
-          <img
-            src="/api/scope/frame?camera=tele&t={teleTick}"
-            alt="Live tele view"
-            onload={() => next('tele')}
-            onerror={() => retry('tele')}
-          />
-        {/if}
-        <figcaption>Tele · live</figcaption>
-      </figure>
+      <LiveFeed kind="wide" />
+      <LiveFeed kind="tele" />
     {/if}
   </div>
 
@@ -690,7 +638,7 @@
     gap: 0.75rem;
     margin-bottom: 1rem;
   }
-  .frame {
+  .gallery :global(.frame) {
     position: relative;
     margin: 0;
     min-width: 0;
@@ -700,23 +648,23 @@
     border-radius: var(--radius-card);
     aspect-ratio: 16 / 9;
   }
-  .frame.main {
+  .gallery :global(.frame.main) {
     grid-column: 1 / -1;
     aspect-ratio: 16 / 9;
     max-height: 52vh;
     justify-self: center;
     width: 100%;
   }
-  .frame img {
+  .gallery :global(.frame img) {
     display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
-  .frame.main img {
+  .gallery :global(.frame.main img) {
     object-fit: contain;
   }
-  figcaption {
+  .gallery :global(figcaption) {
     position: absolute;
     left: 0.5rem;
     bottom: 0.4rem;
@@ -727,7 +675,7 @@
     background: rgba(5, 8, 16, 0.65);
     border-radius: 999px;
   }
-  .empty {
+  .gallery :global(.empty) {
     display: grid;
     place-items: center;
     height: 100%;
