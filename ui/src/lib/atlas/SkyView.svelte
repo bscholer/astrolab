@@ -47,6 +47,7 @@
     covered = [],
     planned = [],
     mosaicGrid = null,
+    skyline = null,
     onselect,
     onviewchange,
   }: {
@@ -59,6 +60,8 @@
     minAlt?: number;
     autoNames?: Set<string>;
     constellations?: Constellations | null;
+    /** What blocks the sky from the scope: altitude per degree of azimuth, null unknown. */
+    skyline?: (number | null)[] | null;
     /** Where captured sessions landed; hours set how strongly each is filled. */
     covered?: (SkyBox & { hours: number })[];
     /** Mosaic panels waiting on the auto list. */
@@ -267,6 +270,12 @@
     invalidate();
   });
 
+  // The renderer may not exist yet; onMount hands it the skyline then.
+  $effect(() => {
+    const line = skyline;
+    renderer?.setSkyline(line);
+  });
+
   // Keep looking at the same part of the sky when the frame changes.
   $effect(() => {
     const next = frameUsed;
@@ -343,6 +352,7 @@
     ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
     strokeCurve(ctx, view, ring(minAlt));
     ctx.setLineDash([]);
+    if (skyline && layers.ground) drawSkyline(ctx, view, h, skyline);
 
     ctx.font = '600 13px Inter, system-ui, sans-serif';
     ctx.textAlign = 'center';
@@ -356,6 +366,27 @@
       ctx.fillStyle = label.length === 1 ? 'rgba(94, 234, 212, 0.95)' : 'rgba(94, 234, 212, 0.6)';
       ctx.fillText(label, p.x, Math.min(p.y - 8, height - 12));
     }
+  }
+
+  /** The skyline from the scope's panorama, broken where the scan did not reach. */
+  function drawSkyline(ctx: CanvasRenderingContext2D, view: View, h: Horizon, alt: (number | null)[]) {
+    const step = 360 / alt.length;
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(253, 224, 71, 0.75)';
+    let run: Vec3[] = [];
+    const flush = () => {
+      if (run.length > 1) strokeCurve(ctx, view, run);
+      run = [];
+    };
+    for (let i = 0; i <= alt.length; i++) {
+      const a = alt[i % alt.length];
+      if (a == null) {
+        flush();
+        continue;
+      }
+      run.push(altAzVec(h, Math.max(0, a), i * step));
+    }
+    flush();
   }
 
   function drawConstellations(ctx: CanvasRenderingContext2D, view: View, c: Constellations) {
@@ -587,7 +618,7 @@
     if (renderer) {
       renderer.showGround = layers.ground;
       renderer.minAltDeg = minAlt;
-      renderer.draw(view, h?.zenith ?? null);
+      renderer.draw(view, h?.zenith ?? null, h?.north ?? null, h?.east ?? null);
     }
     const ctx = overlay.getContext('2d');
     if (!ctx) return;
@@ -744,6 +775,7 @@
     try {
       renderer = new SkyRenderer(glCanvas);
       renderer.onChange = invalidate;
+      renderer.setSkyline(skyline);
     } catch (e) {
       glError = (e as Error).message;
     }

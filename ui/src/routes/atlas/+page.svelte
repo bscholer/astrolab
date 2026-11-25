@@ -54,6 +54,8 @@
     ground: true,
   });
   let coverage = $state<CoverageEntry[]>([]);
+  // What blocks the sky at the scope, from its panorama; null without one.
+  let skyline = $state<(number | null)[] | null>(null);
   // The mosaic being laid out for the selected object, or null.
   let mosaicGrid = $state<Grid | null>(null);
   let busy = $state(false);
@@ -153,6 +155,10 @@
   onMount(() => {
     load();
     refreshScope();
+    api.getScopeHorizon().then(
+      (h) => (skyline = h.alt),
+      () => {},
+    );
     api.getSkyCoverage().then(
       (c) => (coverage = c),
       () => {},
@@ -482,6 +488,7 @@
         {covered}
         {planned}
         {mosaicGrid}
+        {skyline}
         onselect={select}
         onviewchange={(r) => (readout = r)}
       />

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -250,8 +251,10 @@ def test_pano_refuses_while_run_all_night_is_on(client, monkeypatch):
     assert r.status_code == 409 and "Run all night" in r.json()["detail"]
 
 
-def test_pano_mosaic_is_404_before_any_scan(client):
-    assert client.get("/api/scope/pano/mosaic").status_code in (404, 200)
+def test_pano_image_is_404_before_any_scan(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(api.scope_pano, "state", {"state": "idle"})
+    assert client.get("/api/scope/pano/image").status_code == 404
+    assert client.get("/api/scope/horizon").status_code == 404
 
 
 def test_pointing_pairs_are_stored_and_capped(client):
@@ -264,38 +267,77 @@ def test_pointing_pairs_are_stored_and_capped(client):
     assert pairs[-1]["target"] == f"t{api_mod.POINTING_PAIRS_MAX + 2}"
 
 
-def test_excluded_pano_tiles_persist_and_show_in_the_overlay(client, tmp_path, monkeypatch):
-    import io
-
-    from PIL import Image
+def _pano_scan(tmp_path, monkeypatch, compass: bool):
+    """A finished scan: a panorama whose top half is blue sky and bottom half a wall."""
+    import cv2
+    import numpy as np
 
     folder = tmp_path / "pano" / "abc"
     folder.mkdir(parents=True)
-    for name in ("p100_r0.jpg", "p100_r45.jpg"):
-        buf = io.BytesIO()
-        Image.new("RGB", (64, 36), (110, 150, 215)).save(buf, "JPEG")
-        (folder / name).write_bytes(buf.getvalue())
-    monkeypatch.setattr(api.scope_pano, "state", {"state": "done", "id": "abc"})
+    rng = np.random.default_rng(0)
+    pano = np.zeros((1024, 4096, 3), np.uint8)
+    pano[:512] = (215, 150, 110)  # BGR blue
+    pano[512:] = rng.integers(20, 120, (512, 4096, 3), dtype=np.uint8)
+    cv2.imwrite(str(folder / "pano.jpg"), pano)
+    result = {"alt_top": 45.0, "alt_bottom": -45.0, "compass": compass}
+    (folder / "pano.json").write_text(json.dumps(result))
+    (folder / "manifest.json").write_text('{"tiles": []}')
     monkeypatch.setattr(api.scope_pano, "root", tmp_path / "pano")
-
-    assert client.get("/api/scope/pano/tiles").json()["rotations"] == [0.0, 45.0]
-    r = client.put("/api/scope/pano/tile", json={"pitch": 100, "rotation": 45, "excluded": True})
-    assert r.json()["excluded"] == ["p100_r45.jpg"]
-    assert client.get("/api/scope/pano/tiles").json()["excluded"] == ["p100_r45.jpg"]
-    sheet = Image.open(io.BytesIO(client.get("/api/scope/pano/overlay").content))
-    assert sheet.getpixel((320 + 160, 20))[0] < 60
-    r = client.put("/api/scope/pano/tile", json={"pitch": 100, "rotation": 45, "excluded": False})
-    assert r.json()["excluded"] == []
+    monkeypatch.setattr(api.scope_pano, "state", {"state": "done", "id": "abc", "result": result})
+    return folder
 
 
-def test_restart_finds_the_last_scan(tmp_path):
-    from server.scope_pano import PanoScanner
+def test_sky_is_found_and_the_horizon_follows_hand_fixes(client, tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
 
-    (tmp_path / "old").mkdir()
-    (tmp_path / "scan1").mkdir()
-    (tmp_path / "scan1" / "p30_r0.jpg").write_bytes(b"x")
-    assert PanoScanner(tmp_path).snapshot() == {"state": "done", "id": "scan1"}
-    assert PanoScanner(tmp_path / "none").snapshot() == {"state": "idle"}
+    _pano_scan(tmp_path, monkeypatch, compass=True)
+    horizon = client.post("/api/scope/pano/sky/detect").json()["horizon"]
+    # The wall's top is at altitude 0 all the way round.
+    assert all(abs(a) < 1.5 for a in horizon["alt"])
+    auto = cv2.imdecode(
+        np.frombuffer(client.get("/api/scope/pano/sky?layer=auto").content, np.uint8), 0
+    )
+    assert auto.shape == (1024, 2048)
+    assert (auto[262:400] == 255).mean() > 0.95  # sky, altitude 44 to 20 (row 256 is 45)
+    assert (auto[600:700] == 0).mean() > 0.95  # wall
+    assert (auto[:250] == 128).all()  # above what the scan saw
+    # Paint a tree from azimuth 90 to 100, up to altitude 30.
+    edits = np.zeros_like(auto)
+    edits[int((90 - 30) / 180 * 1024) : 512, 512:569] = 2
+    ok, png = cv2.imencode(".png", edits)
+    r = client.put("/api/scope/pano/sky", content=png.tobytes())
+    assert r.status_code == 200
+    alt = r.json()["horizon"]["alt"]
+    assert 29 < alt[95] < 31 and abs(alt[120]) < 1.5
+    assert client.get("/api/scope/horizon").json()["alt"][95] == alt[95]
+    back = cv2.imdecode(np.frombuffer(client.get("/api/scope/pano/sky?layer=edits").content, np.uint8), 0)
+    assert (back == edits).all()
+
+
+def test_a_mask_of_the_wrong_size_is_refused(client, tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+
+    _pano_scan(tmp_path, monkeypatch, compass=True)
+    client.post("/api/scope/pano/sky/detect")
+    ok, png = cv2.imencode(".png", np.zeros((10, 10), np.uint8))
+    assert client.put("/api/scope/pano/sky", content=png.tobytes()).status_code == 400
+
+
+def test_the_atlas_horizon_needs_a_compass(client, tmp_path, monkeypatch):
+    _pano_scan(tmp_path, monkeypatch, compass=False)
+    client.post("/api/scope/pano/sky/detect")
+    assert client.get("/api/scope/horizon").status_code == 404
+    assert client.get("/api/scope/horizon?compass_only=false").status_code == 200
+
+
+def test_learned_patches_carry_their_verdict(client):
+    api.scope_skymap.clear()
+    for _ in range(4):
+        api.scope_skymap.record(50.0, 120.0, good=1, failed=0, at=datetime.now(UTC))
+    patches = client.get("/api/scope/skymap").json()["patches"]
+    assert patches["50/120"]["verdict"] == "clear"
 
 
 def test_frame_requests_share_one_grab(client, monkeypatch):

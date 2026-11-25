@@ -1046,29 +1046,6 @@
         "title": "ObserveRequest",
         "type": "object"
       },
-      "PanoTileIn": {
-        "properties": {
-          "excluded": {
-            "title": "Excluded",
-            "type": "boolean"
-          },
-          "pitch": {
-            "title": "Pitch",
-            "type": "number"
-          },
-          "rotation": {
-            "title": "Rotation",
-            "type": "number"
-          }
-        },
-        "required": [
-          "pitch",
-          "rotation",
-          "excluded"
-        ],
-        "title": "PanoTileIn",
-        "type": "object"
-      },
       "PatchProjectRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4724,6 +4701,49 @@
         "summary": "Scope Frame"
       }
     },
+    "/api/scope/horizon": {
+      "get": {
+        "description": "What blocks the sky, from the panorama: altitude per degree of azimuth.\n\nThe sky atlas needs true azimuths, so by default this needs a scan with a compass (the\nmount polar aligned). alt is null where the scan did not reach.",
+        "operationId": "get_scope_horizon_api_scope_horizon_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "compass_only",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Compass Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Scope Horizon Api Scope Horizon Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Scope Horizon"
+      }
+    },
     "/api/scope/mosaic": {
       "delete": {
         "description": "Take a mosaic's panels off the auto list. Frames already shot stay.",
@@ -4851,6 +4871,7 @@
     },
     "/api/scope/pano": {
       "get": {
+        "description": "The scan: running (with progress), stitching, done (with how the stitch went), failed.",
         "operationId": "get_scope_pano_api_scope_pano_get",
         "responses": {
           "200": {
@@ -4910,9 +4931,10 @@
         "summary": "Start Scope Pano"
       }
     },
-    "/api/scope/pano/mosaic": {
+    "/api/scope/pano/image": {
       "get": {
-        "operationId": "get_scope_pano_mosaic_api_scope_pano_mosaic_get",
+        "description": "The panorama, equirectangular, cropped to the altitudes the scan saw.",
+        "operationId": "get_scope_pano_image_api_scope_pano_image_get",
         "responses": {
           "200": {
             "content": {
@@ -4923,48 +4945,30 @@
             "description": "Successful Response"
           }
         },
-        "summary": "Get Scope Pano Mosaic"
+        "summary": "Get Scope Pano Image"
       }
     },
-    "/api/scope/pano/overlay": {
+    "/api/scope/pano/sky": {
       "get": {
-        "operationId": "get_scope_pano_overlay_api_scope_pano_overlay_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Scope Pano Overlay"
-      }
-    },
-    "/api/scope/pano/tile": {
-      "put": {
-        "description": "Mark a tile as not usable for the horizon, or usable again.",
-        "operationId": "put_scope_pano_tile_api_scope_pano_tile_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PanoTileIn"
-              }
+        "description": "The sky mask over the whole sphere, as a grayscale PNG.\n\nlayer=auto is what the sky test found (255 sky, 0 not, 128 not seen); layer=edits is the\nhand fixes (0 none, 1 sky, 2 not sky).",
+        "operationId": "get_scope_pano_sky_api_scope_pano_sky_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "default": "auto",
+              "title": "Layer",
+              "type": "string"
             }
-          },
-          "required": true
-        },
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Put Scope Pano Tile Api Scope Pano Tile Put",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -4980,19 +4984,18 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Put Scope Pano Tile"
-      }
-    },
-    "/api/scope/pano/tiles": {
-      "get": {
-        "operationId": "get_scope_pano_tiles_api_scope_pano_tiles_get",
+        "summary": "Get Scope Pano Sky"
+      },
+      "put": {
+        "description": "Save the hand fixes (a PNG like layer=edits) and trace the horizon again.",
+        "operationId": "put_scope_pano_sky_api_scope_pano_sky_put",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Get Scope Pano Tiles Api Scope Pano Tiles Get",
+                  "title": "Response Put Scope Pano Sky Api Scope Pano Sky Put",
                   "type": "object"
                 }
               }
@@ -5000,7 +5003,49 @@
             "description": "Successful Response"
           }
         },
-        "summary": "Get Scope Pano Tiles"
+        "summary": "Put Scope Pano Sky"
+      }
+    },
+    "/api/scope/pano/sky/detect": {
+      "post": {
+        "description": "Find the sky in the panorama again. Hand fixes are kept.",
+        "operationId": "detect_scope_pano_sky_api_scope_pano_sky_detect_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Detect Scope Pano Sky Api Scope Pano Sky Detect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Detect Scope Pano Sky"
+      }
+    },
+    "/api/scope/pano/stitch": {
+      "post": {
+        "description": "Stitch the last scan again without moving the scope.",
+        "operationId": "restitch_scope_pano_api_scope_pano_stitch_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Restitch Scope Pano Api Scope Pano Stitch Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Restitch Scope Pano"
       }
     },
     "/api/scope/pointing": {

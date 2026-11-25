@@ -1,9 +1,21 @@
-"""Scan the scope's surroundings: point, grab a wide frame, and tile the frames into a mosaic."""
+"""Scan the scope's surroundings with the wide camera and stitch the frames into a panorama.
+
+The scan finds the rotation motor's stops, then turns through rings of pitch that overlap
+enough to stitch, saving each frame with the motor positions the scope reports (not the ones
+asked for: asking for rotation 0 lands at 12 to 16). server.pano_stitch does the rest, in a
+child process so the API stays responsive.
+"""
 
 from __future__ import annotations
 
 import base64
+import json
 import logging
+import math
+import os
+import resource
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -13,20 +25,32 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import AltAz, EarthLocation, get_sun
 from astropy.time import Time
-from PIL import Image, ImageDraw
 
-from server.scope_horizon import cached_mask
+from server import pano_sky
 from server.scope_service import ScopeServiceClient
 from server.telemetry import fail, note, traced
 
 log = logging.getLogger(__name__)
 
 SUN_MAX_ALT_DEG = -6.0
-DEFAULT_PITCHES = (70.0, 100.0, 130.0, 160.0)
-DEFAULT_ROTATIONS = tuple(float(r) for r in range(0, 360, 45))
-SETTLE_S = 3.0
+SETTLE_S = 2.0
 RETRY_WAIT_S = 5.0
-TILE_W, TILE_H = 320, 180
+POINT_TIMEOUT_S = 120
+FRAME_TIMEOUT_S = 60
+STITCH_TIMEOUT_S = 1800
+# The pod has 4 GB. A stitch of 100 frames peaks near 1.7 GB; past the cap it fails alone
+# instead of taking the API (and everything else in the pod) down with it.
+STITCH_MEMORY_BYTES = 3 * 1024**3
+
+# The wide frame is 46 x 27 degrees. Pitch 175 is as close to the rotation axis as the wide
+# camera gets, and below pitch 50 it looks into the scope's own base.
+HFOV_DEG, VFOV_DEG = 46.0, 27.0
+PLAN_MAX_PITCH, PLAN_MIN_PITCH = 175.0, 50.0
+OVERLAP = 0.35
+# Where the camera is square to the axis depends on the setup (about pitch 81 on a level
+# tripod, 105 on the equatorial mount). The plan only uses it to space frames in a ring, so
+# the tripod value is fine for both: it errs toward more frames.
+SQUARE_PITCH = 81.0
 
 
 class PanoRefused(Exception):
@@ -38,70 +62,81 @@ def sun_altitude_deg(loc: EarthLocation, when: datetime | None = None) -> float:
     return float(get_sun(t).transform_to(AltAz(obstime=t, location=loc)).alt.deg)
 
 
-def tile_name(pitch: float, rotation: float) -> str:
-    return f"p{pitch:g}_r{rotation:g}.jpg"
+def plan_stops(
+    rot_min: float,
+    rot_max: float,
+    max_pitch: float = PLAN_MAX_PITCH,
+    min_pitch: float = PLAN_MIN_PITCH,
+    overlap: float = OVERLAP,
+) -> list[tuple[float, float]]:
+    """Pitch and rotation of every frame: rings of pitch, each from one rotation stop to the other.
 
-
-def build_mosaic(folder: Path, pitches, rotations) -> Path:
-    """Rows are pitch from high to low. Columns are rotation. Missing tiles stay black."""
-    rows = sorted(pitches, reverse=True)
-    sheet = Image.new("RGB", (TILE_W * len(rotations), TILE_H * len(rows)))
-    for r, pitch in enumerate(rows):
-        for c, rot in enumerate(rotations):
-            path = folder / tile_name(pitch, rot)
-            if path.is_file():
-                tile = Image.open(path).convert("RGB").resize((TILE_W, TILE_H))
-                sheet.paste(tile, (c * TILE_W, r * TILE_H))
-    out = folder / "mosaic.jpg"
-    sheet.save(out, "JPEG", quality=85)
-    return out
-
-
-def tile_grid(folder: Path) -> tuple[list[float], list[float]]:
-    """Pitches and rotations of the tiles in a scan folder, from the file names."""
-    pitches, rotations = set(), set()
-    for path in folder.glob("p*_r*.jpg"):
-        pitch, rot = path.stem[1:].split("_r")
-        pitches.add(float(pitch))
-        rotations.add(float(rot))
-    return sorted(pitches), sorted(rotations)
-
-
-def build_overlay(folder: Path, excluded: set[str]) -> Path:
-    """Mosaic with the sky in magenta. Excluded tiles are dimmed and crossed out."""
-    pitches, rotations = tile_grid(folder)
-    rows = sorted(pitches, reverse=True)
-    sheet = Image.new("RGB", (TILE_W * len(rotations), TILE_H * len(rows)))
-    for r, pitch in enumerate(rows):
-        for c, rot in enumerate(rotations):
-            name = tile_name(pitch, rot)
-            if not (folder / name).is_file():
-                continue
-            tile = Image.open(folder / name).convert("RGB").resize((TILE_W, TILE_H))
-            if name in excluded:
-                tile = Image.fromarray((np.asarray(tile) * 0.25).astype(np.uint8))
-                draw = ImageDraw.Draw(tile)
-                draw.line((0, 0, TILE_W, TILE_H), fill=(255, 255, 255), width=2)
-                draw.line((0, TILE_H, TILE_W, 0), fill=(255, 255, 255), width=2)
-            else:
-                a = np.asarray(tile).copy()
-                m = cached_mask(folder / name)
-                a[m] = (0.4 * a[m] + 0.6 * np.array([255, 0, 255])).astype(np.uint8)
-                tile = Image.fromarray(a)
-            sheet.paste(tile, (c * TILE_W, r * TILE_H))
-    out = folder / "overlay.jpg"
-    tmp = folder / "overlay.tmp.jpg"
-    sheet.save(tmp, "JPEG", quality=85)
-    tmp.replace(out)  # a request reading the old file never sees half a new one
-    return out
+    Rings near the axis need fewer frames, since a frame there spans more of the turn.
+    Alternate rings run backwards so the scope never swings all the way back between them.
+    """
+    step = VFOV_DEG * (1 - overlap)
+    rings = int(math.ceil((max_pitch - min_pitch) / step)) + 1
+    pitches = np.linspace(max_pitch, min_pitch, rings)
+    half_w = math.radians(HFOV_DEG / 2)
+    reach = rot_max - rot_min
+    stops = []
+    for k, pitch in enumerate(pitches):
+        t = 90.0 + (SQUARE_PITCH - pitch)  # degrees from the axis
+        lo, hi = t - VFOV_DEG / 2, t + VFOV_DEG / 2
+        widest = 90.0 if lo <= 90 <= hi else (hi if hi < 90 else lo)  # edge nearest square
+        s = math.sin(math.radians(min(max(widest, 1.0), 179.0)))
+        # Near the axis a frame spans the whole turn; elsewhere the arc its width covers.
+        full = s <= math.sin(half_w)
+        span = 180.0 if full else 2 * math.degrees(math.asin(math.sin(half_w) / s))
+        n = max(2, math.ceil(reach / (span * (1 - overlap))) + 1)
+        rots = [rot_min + i * reach / (n - 1) for i in range(n)]
+        if k % 2:
+            rots.reverse()
+        stops += [(round(float(pitch), 2), round(r, 2)) for r in rots]
+    return stops
 
 
 def latest_scan(root: Path) -> str | None:
-    """The newest scan folder that has tiles in it, so a restart still finds the last scan."""
+    """The newest scan folder with a manifest, so a restart still finds the last scan."""
     if not root.is_dir():
         return None
-    scans = [p for p in root.iterdir() if p.is_dir() and any(p.glob("p*_r*.jpg"))]
+    scans = [p for p in root.iterdir() if (p / "manifest.json").is_file()]
     return max(scans, key=lambda p: p.stat().st_mtime).name if scans else None
+
+
+def read_result(folder: Path) -> dict | None:
+    path = folder / "pano.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _limit_memory() -> None:  # runs in the child, before the stitcher starts
+    resource.setrlimit(resource.RLIMIT_AS, (STITCH_MEMORY_BYTES, STITCH_MEMORY_BYTES))
+
+
+def run_stitch(folder: Path, latitude: float | None) -> dict:
+    """Stitch in a child process. OpenCV and the fit use every core for a minute or two."""
+    cmd = [sys.executable, "-m", "server.pano_stitch", str(folder)]
+    if latitude is not None:
+        cmd += ["--latitude", str(latitude)]
+    env = dict(os.environ, OMP_NUM_THREADS="4", OPENBLAS_NUM_THREADS="4")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=STITCH_TIMEOUT_S,
+        env=env,
+        preexec_fn=_limit_memory,
+    )
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or ["no output"]
+        raise RuntimeError(f"stitching failed: {tail[0]}")
+    result = read_result(folder)
+    if result is None:
+        raise RuntimeError("stitching wrote no result")
+    return result
 
 
 class PanoScanner:
@@ -110,6 +145,8 @@ class PanoScanner:
         self._lock = threading.Lock()
         scan = latest_scan(root)
         self.state: dict = {"state": "done", "id": scan} if scan else {"state": "idle"}
+        if scan:
+            self.state["result"] = read_result(root / scan)
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -119,72 +156,150 @@ class PanoScanner:
         with self._lock:
             self.state.update(kw)
 
-    def mosaic_path(self) -> Path | None:
-        scan = self.snapshot().get("id")
-        path = self.root / scan / "mosaic.jpg" if scan else None
-        return path if path and path.is_file() else None
-
     def folder(self) -> Path | None:
         scan = self.snapshot().get("id")
         path = self.root / scan if scan else None
         return path if path and path.is_dir() else None
 
+    def pano_path(self) -> Path | None:
+        folder = self.folder()
+        path = folder / "pano.jpg" if folder else None
+        return path if path and path.is_file() else None
+
+    def _claim(self, **state) -> None:
+        with self._lock:
+            if self.state.get("state") == "running":
+                raise PanoRefused("a scan is already running")
+            self.state = {"state": "running", **state}
+
     def start(
         self,
         client: ScopeServiceClient,
         loc: EarthLocation,
-        pitches=DEFAULT_PITCHES,
-        rotations=DEFAULT_ROTATIONS,
-        settle_s: float = SETTLE_S,
+        latitude: float | None = None,
         when: datetime | None = None,
         tele_covered: bool = False,
+        settle_s: float = SETTLE_S,
     ) -> str:
         alt = sun_altitude_deg(loc, when)
         if alt > SUN_MAX_ALT_DEG and not tele_covered:
             raise PanoRefused(
                 f"the Sun is {alt:.0f} degrees up, the limit is {SUN_MAX_ALT_DEG:.0f}"
             )
-        with self._lock:
-            if self.state.get("state") == "running":
-                raise PanoRefused("a scan is already running")
-            scan = uuid.uuid4().hex[:8]
-            total = len(pitches) * len(rotations)
-            self.state = {"state": "running", "id": scan, "done": 0, "total": total, "failed": 0}
+        scan = uuid.uuid4().hex[:8]
+        self._claim(id=scan, step="finding the rotation limits", done=0, total=0, failed=0)
         threading.Thread(
             target=self._run,
-            args=(client, scan, pitches, rotations, settle_s),
+            args=(client, scan, latitude, settle_s),
             name="astrolab-pano",
             daemon=True,
         ).start()
         return scan
 
-    def _tile(self, client, folder, pitch, rot, settle_s) -> bool:
+    def restitch(self, latitude: float | None = None) -> str:
+        """Stitch the last scan again, after a change to the stitcher, say."""
+        folder = self.folder()
+        if folder is None or not (folder / "manifest.json").is_file():
+            raise PanoRefused("no scan to stitch")
+        self._claim(id=folder.name, step="stitching")
+        threading.Thread(
+            target=self._stitch, args=(folder, latitude), name="astrolab-pano-stitch", daemon=True
+        ).start()
+        return folder.name
+
+    def _position(self, client) -> tuple[float | None, float | None]:
+        """Motor angles as the scope reports them. The relay sometimes has none to give."""
+        status = client.call("getStatus") or {}
+        pitch, rotation = status.get("pitch"), status.get("rotation")
+        return (
+            float(pitch) if pitch is not None else None,
+            float(rotation) if rotation is not None else None,
+        )
+
+    def find_rotation_stops(self, client, pitch: float) -> tuple[float, float]:
+        """Ask for rotation 0 and 360 and see where the motor stops."""
+        ends = []
+        for want in (0.0, 360.0):
+            client.call("pointScope", {"pitch": pitch, "rotation": want}, timeout=POINT_TIMEOUT_S)
+            got = None
+            for _ in range(3):
+                got = self._position(client)[1]
+                if got is not None:
+                    break
+                time.sleep(1.0)
+            if got is None:
+                raise RuntimeError("the scope does not report where the rotation motor is")
+            ends.append(got)
+        lo, hi = min(ends), max(ends)
+        if hi - lo < 90:
+            raise RuntimeError(f"the rotation motor only reaches {lo:.0f} to {hi:.0f}")
+        return lo, hi
+
+    def _frame(self, client, folder: Path, name: str, pitch, rot, settle_s) -> dict | None:
         for attempt in (1, 2):
             try:
-                client.call("pointScope", {"pitch": pitch, "rotation": rot}, timeout=90)
+                client.call(
+                    "pointScope", {"pitch": pitch, "rotation": rot}, timeout=POINT_TIMEOUT_S
+                )
                 time.sleep(settle_s)
-                frame = client.call("getFrame", {"camera": "wide"}, timeout=40)
-                (folder / tile_name(pitch, rot)).write_bytes(base64.b64decode(frame["data"]))
-                return True
+                got_pitch, got_rot = self._position(client)
+                frame = client.call("getFrame", {"camera": "wide"}, timeout=FRAME_TIMEOUT_S)
+                (folder / name).write_bytes(base64.b64decode(frame["data"]))
+                # Within the probed stops the motors land where asked, so the asked angles
+                # stand in when the scope reports none.
+                return {
+                    "name": name,
+                    "pitch": got_pitch if got_pitch is not None else pitch,
+                    "rotation": got_rot if got_rot is not None else rot,
+                    "asked_pitch": pitch,
+                    "asked_rotation": rot,
+                    "reported": got_pitch is not None and got_rot is not None,
+                    "t": datetime.now(UTC).isoformat(),
+                }
             except Exception as exc:
-                log.warning("pano tile %s/%s attempt %d failed: %s", pitch, rot, attempt, exc)
+                log.warning("pano frame %s/%s attempt %d failed: %s", pitch, rot, attempt, exc)
                 time.sleep(RETRY_WAIT_S)
-        return False
+        return None
 
     @traced("scope.pano")
-    def _run(self, client, scan, pitches, rotations, settle_s) -> None:
+    def _run(self, client, scan: str, latitude: float | None, settle_s: float) -> None:
         note(scan=scan)
         folder = self.root / scan
         folder.mkdir(parents=True, exist_ok=True)
-        failed = 0
         try:
-            for pitch in pitches:
-                for rot in rotations:
-                    if not self._tile(client, folder, pitch, rot, settle_s):
-                        failed += 1
-                    self._set(done=self.snapshot()["done"] + 1, failed=failed)
-            build_mosaic(folder, pitches, rotations)
-            self._set(state="done")
+            lo, hi = self.find_rotation_stops(client, PLAN_MAX_PITCH)
+            stops = plan_stops(lo, hi)
+            self._set(step="scanning", total=len(stops), rotation_limits=[lo, hi])
+            tiles, failed = [], 0
+            manifest = {"rotation_limits": [lo, hi], "started": datetime.now(UTC).isoformat()}
+            for k, (pitch, rot) in enumerate(stops):
+                tile = self._frame(client, folder, f"t{k:03d}.jpg", pitch, rot, settle_s)
+                if tile is None:
+                    failed += 1
+                else:
+                    tiles.append(tile)
+                manifest["tiles"] = tiles
+                (folder / "manifest.json").write_text(json.dumps(manifest, indent=1))
+                self._set(done=k + 1, failed=failed)
+            if not tiles:
+                raise RuntimeError("no frames came back")
+        except Exception as exc:
+            fail(str(exc))
+            self._set(state="failed", error=str(exc))
+            return
+        self._stitch(folder, latitude)
+
+    def _stitch(self, folder: Path, latitude: float | None) -> None:
+        self._set(step="stitching")
+        try:
+            result = run_stitch(folder, latitude)
+            self._set(step="finding the sky")
+            try:
+                pano_sky.detect(folder, float(result["alt_top"]))
+                pano_sky.save_horizon(folder, result)
+            except Exception:  # the panorama is still worth having without it
+                log.exception("pano sky detection failed")
+            self._set(state="done", step=None, result=result)
         except Exception as exc:
             fail(str(exc))
             self._set(state="failed", error=str(exc))

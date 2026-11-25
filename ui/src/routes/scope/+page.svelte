@@ -4,8 +4,9 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, type ScopeAutoTarget, type ScopeState } from '$lib/api';
+  import { api, type ScopePano, type ScopeAutoTarget, type ScopeState } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import PanoViewer from '$lib/scope/PanoViewer.svelte';
 
   let scope = $state<ScopeState | null>(null);
   let fetchError = $state<string | null>(null);
@@ -85,8 +86,7 @@
     }
   }
 
-  let pano = $state<Awaited<ReturnType<typeof api.getScopePano>> | null>(null);
-  let panoTick = $state(Date.now());
+  let pano = $state<ScopePano | null>(null);
 
   let control = $state<Awaited<ReturnType<typeof api.getScopeControl>> | null>(null);
 
@@ -139,34 +139,20 @@
   async function refreshPano() {
     try {
       pano = await api.getScopePano();
-      if (pano.state === 'done') {
-        panoTick = Date.now();
-        tiles = await api.getScopePanoTiles();
-      }
     } catch {
       pano = null;
     }
   }
 
   let teleCovered = $state(false);
-  let tiles = $state<{ pitches: number[]; rotations: number[]; excluded: string[] } | null>(null);
+  const panoBusy = $derived(pano?.state === 'running');
 
-  async function toggleTile(e: MouseEvent) {
-    if (!tiles || !tiles.pitches.length) return;
-    const img = e.currentTarget as HTMLImageElement;
-    const box = img.getBoundingClientRect();
-    const col = Math.floor(((e.clientX - box.left) / box.width) * tiles.rotations.length);
-    const row = Math.floor(((e.clientY - box.top) / box.height) * tiles.pitches.length);
-    const pitch = [...tiles.pitches].sort((a, b) => b - a)[row];
-    const rotation = tiles.rotations[col];
-    if (pitch === undefined || rotation === undefined) return;
-    const name = `p${pitch}_r${rotation}.jpg`;
+  async function restitchPano() {
     try {
-      await api.setScopePanoTile({ pitch, rotation, excluded: !tiles.excluded.includes(name) });
-      tiles = await api.getScopePanoTiles();
-      panoTick = Date.now();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
+      await api.restitchScopePano();
+      await refreshPano();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -262,7 +248,7 @@
     refreshControl();
     pollTimer = setInterval(() => {
       refresh();
-      if (pano?.state === 'running') refreshPano();
+      if (panoBusy) refreshPano();
       if (compass?.state === 'running') refreshCompass();
       if (control?.state === 'running') refreshControl();
     }, 5000);
@@ -501,22 +487,25 @@
       <h2>Surroundings</h2>
       <div class="sw-row">
         <div class="sw-text">
-          <div class="sw-title">Scan with the wide camera</div>
+          <div class="sw-title">Panorama with the wide camera</div>
           <div class="sw-sub">
-            {#if pano?.state === 'running'}
+            {#if panoBusy && pano?.step === 'scanning'}
               Scanning {pano.done}/{pano.total}. The scope turns on its own.
+            {:else if panoBusy}
+              {pano?.step ?? 'Working'}…
             {:else}
-              Moves the scope through 40 positions, about 10 minutes. After dark, or with the tele lens covered. Run all night must be off.
+              Turns through about 80 positions, then stitches them, about 20 minutes. After dark,
+              or with the tele lens covered. Run all night must be off.
             {/if}
           </div>
         </div>
         <button
           type="button"
           class="btn"
-          disabled={pano?.state === 'running' || !!sched?.enabled}
+          disabled={panoBusy || !!sched?.enabled}
           onclick={startPano}
         >
-          {pano?.state === 'running' ? 'Scanning…' : 'Scan'}
+          {panoBusy ? 'Scanning…' : 'Scan'}
         </button>
       </div>
       <label class="check">
@@ -548,15 +537,23 @@
         </button>
       </div>
       {#if compass?.state === 'failed'}<p class="muted small">{compass.error}</p>{/if}
-      {#if pano?.id && pano.state !== 'running'}
-        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-        <img
-          class="mosaic"
-          src="/api/scope/pano/overlay?t={panoTick}"
-          alt="Wide camera scan, sky in pink. Tap a tile to leave it out."
-          onclick={toggleTile}
-        />
-        <p class="muted small">Pink is sky. Tap a picture that is wrong to leave it out.</p>
+      {#if pano?.state === 'done' && pano.id && pano.result}
+        {#key pano.id + pano.result.width + pano.result.median_px}
+          <PanoViewer scan={pano.id} result={pano.result} />
+        {/key}
+        <p class="muted small">
+          {pano.result.used} frames, matched to {pano.result.median_px} px.
+          {#if pano.result.compass}
+            North is where the mount's axis leans, so it assumes the mount is polar aligned.
+            Dots are the patches Run all night has learned: blue clear, orange blocked.
+          {:else}
+            No compass: the mount's axis is not where a polar-aligned one would be, so
+            azimuths are the scope's own and the learned patches are left off.
+          {/if}
+          <button type="button" class="linkish" disabled={panoBusy} onclick={restitchPano}>
+            Stitch again
+          </button>
+        </p>
       {/if}
       {#if skymap}
         <div class="sw-title">What the scope can see</div>
@@ -891,12 +888,14 @@
     max-width: 420px;
     margin: 0.8rem auto 0;
   }
-  .mosaic {
-    display: block;
-    width: 100%;
-    margin-top: 0.8rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+  .linkish {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent, #60a5fa);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
   }
   .details summary {
     cursor: pointer;

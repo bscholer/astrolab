@@ -51,8 +51,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import cv2
 import numpy as np
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -62,7 +72,7 @@ import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import coverage, scope_plan, sky_thumbs, telemetry, weather
+from server import coverage, pano_sky, scope_plan, sky_thumbs, telemetry, weather
 from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
@@ -120,12 +130,13 @@ from server.scope_control import ACTIONS as CONTROL_ACTIONS
 from server.scope_control import ControlBusy, ScopeControl
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
-from server.scope_pano import PanoRefused, PanoScanner, build_overlay, tile_grid, tile_name
+from server.scope_pano import PanoRefused, PanoScanner
 from server.scope_plan import Candidate, capture_settings
 from server.scope_preview import stack_preview
 from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceClient, ScopeServiceError
 from server.scope_skymap import SkyMap, skymap_svg
+from server.scope_skymap import verdict as skymap_verdict
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
@@ -135,7 +146,6 @@ from server.storage import (
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_AUTO_STACK,
     SETTING_SCOPE_MIRROR_BASELINE,
-    SETTING_SCOPE_PANO_EXCLUDED,
     SETTING_SCOPE_POINTING,
     SETTING_SCOPE_PROGRESS,
     SETTING_SCOPE_SKYMAP,
@@ -197,7 +207,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         scope_scheduler.start()
         master_keeper.start()
         scope_cleaner.start()
-        threading.Thread(target=_warm_scope_caches, name="astrolab-warm", daemon=True).start()
     curator.start()
     nas_backup.start()
     yield
@@ -4087,22 +4096,100 @@ def start_scope_pano(tele_covered: bool = False) -> dict:
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night before a scan")
     try:
-        return {"id": scope_pano.start(client, loc, tele_covered=tele_covered)}
+        scan = scope_pano.start(client, loc, latitude=float(loc.lat.deg), tele_covered=tele_covered)
     except PanoRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": scan}
 
 
 @app.get("/api/scope/pano")
 def get_scope_pano() -> dict:
+    """The scan: running (with progress), stitching, done (with how the stitch went), failed."""
     return scope_pano.snapshot()
 
 
-@app.get("/api/scope/pano/mosaic")
-def get_scope_pano_mosaic() -> FileResponse:
-    path = scope_pano.mosaic_path()
-    if path is None:
-        raise HTTPException(status_code=404, detail="no scan yet")
+@app.post("/api/scope/pano/stitch", status_code=202)
+def restitch_scope_pano() -> dict:
+    """Stitch the last scan again without moving the scope."""
+    loc = _scope_site()
+    try:
+        scan = scope_pano.restitch(float(loc.lat.deg) if loc is not None else None)
+    except PanoRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": scan}
+
+
+def _pano_folder_done():
+    folder = scope_pano.folder()
+    if folder is None or not (folder / "pano.jpg").is_file():
+        raise HTTPException(status_code=404, detail="no panorama yet")
+    return folder
+
+
+@app.get("/api/scope/pano/image")
+def get_scope_pano_image() -> FileResponse:
+    """The panorama, equirectangular, cropped to the altitudes the scan saw."""
+    path = _pano_folder_done() / "pano.jpg"
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/scope/pano/sky")
+def get_scope_pano_sky(layer: str = "auto") -> Response:
+    """The sky mask over the whole sphere, as a grayscale PNG.
+
+    layer=auto is what the sky test found (255 sky, 0 not, 128 not seen); layer=edits is the
+    hand fixes (0 none, 1 sky, 2 not sky).
+    """
+    folder = _pano_folder_done()
+    if layer not in ("auto", "edits"):
+        raise HTTPException(status_code=400, detail="layer is auto or edits")
+    try:
+        auto = pano_sky.load_auto(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    img = auto if layer == "auto" else pano_sky.load_edits(folder, auto.shape)
+    ok, png = cv2.imencode(".png", img)
+    return Response(png.tobytes(), media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+
+@app.put("/api/scope/pano/sky")
+async def put_scope_pano_sky(request: Request) -> dict:
+    """Save the hand fixes (a PNG like layer=edits) and trace the horizon again."""
+    folder = _pano_folder_done()
+    data = np.frombuffer(await request.body(), np.uint8)
+    edits = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE) if data.size else None
+    try:
+        auto = pano_sky.load_auto(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if edits is None or edits.shape != auto.shape:
+        raise HTTPException(status_code=400, detail=f"send a {auto.shape[1]}x{auto.shape[0]} PNG")
+    pano_sky.save_edits(folder, edits)
+    result = pano_sky.save_horizon(folder, scope_pano.snapshot().get("result") or {})
+    return {"horizon": result}
+
+
+@app.post("/api/scope/pano/sky/detect")
+def detect_scope_pano_sky() -> dict:
+    """Find the sky in the panorama again. Hand fixes are kept."""
+    folder = _pano_folder_done()
+    result = scope_pano.snapshot().get("result") or {}
+    pano_sky.detect(folder, float(result.get("alt_top", 90.0)))
+    return {"horizon": pano_sky.save_horizon(folder, result)}
+
+
+@app.get("/api/scope/horizon")
+def get_scope_horizon(compass_only: bool = True) -> dict:
+    """What blocks the sky, from the panorama: altitude per degree of azimuth.
+
+    The sky atlas needs true azimuths, so by default this needs a scan with a compass (the
+    mount polar aligned). alt is null where the scan did not reach.
+    """
+    folder = scope_pano.folder()
+    data = pano_sky.load_horizon(folder) if folder else None
+    if data is None or (compass_only and not data.get("compass")):
+        raise HTTPException(status_code=404, detail="no horizon with a compass yet")
+    return data
 
 
 scope_compass = CompassRun(_store_pointing)
@@ -4142,7 +4229,9 @@ def get_scope_compass() -> dict:
 @app.get("/api/scope/skymap")
 def get_scope_skymap() -> dict:
     """What the scheduler has learned about which parts of the sky the scope can see."""
-    return {**scope_skymap.summary(), "patches": scope_skymap.cells()}
+    cells = scope_skymap.cells()
+    patches = {k: {**v, "verdict": skymap_verdict(v)} for k, v in cells.items()}
+    return {**scope_skymap.summary(), "patches": patches}
 
 
 @app.delete("/api/scope/skymap")
@@ -4177,7 +4266,8 @@ def start_scope_control(req: ControlIn) -> dict:
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night first")
     busy = scope_observer.snapshot().get("state") == "running"
-    busy = busy or "running" in (scope_pano.snapshot()["state"], scope_compass.snapshot()["state"])
+    busy = busy or scope_pano.snapshot()["state"] == "running"
+    busy = busy or scope_compass.snapshot()["state"] == "running"
     if busy:
         raise HTTPException(status_code=409, detail="the scope is working on something else")
     try:
@@ -4196,62 +4286,6 @@ def start_scope_control(req: ControlIn) -> dict:
 @app.get("/api/scope/control")
 def get_scope_control() -> dict:
     return scope_control.snapshot()
-
-
-class PanoTileIn(BaseModel):
-    pitch: float
-    rotation: float
-    excluded: bool
-
-
-def _pano_excluded() -> set[str]:
-    return set(get_setting(SETTING_SCOPE_PANO_EXCLUDED, [], db_path=job_manager.db_path) or [])
-
-
-@app.get("/api/scope/pano/tiles")
-def get_scope_pano_tiles() -> dict:
-    folder = scope_pano.folder()
-    pitches, rotations = tile_grid(folder) if folder else ([], [])
-    return {"pitches": pitches, "rotations": rotations, "excluded": sorted(_pano_excluded())}
-
-
-@app.put("/api/scope/pano/tile")
-def put_scope_pano_tile(req: PanoTileIn) -> dict:
-    """Mark a tile as not usable for the horizon, or usable again."""
-    excluded = _pano_excluded()
-    name = tile_name(req.pitch, req.rotation)
-    if req.excluded:
-        excluded.add(name)
-    else:
-        excluded.discard(name)
-    set_setting(SETTING_SCOPE_PANO_EXCLUDED, sorted(excluded), db_path=job_manager.db_path)
-    return {"excluded": sorted(excluded)}
-
-
-_overlay_key: dict[str, tuple] = {}
-
-
-def _warm_scope_caches() -> None:
-    """Read the scan once at startup, so the Scope page opens fast."""
-    try:
-        if scope_pano.folder() is not None:
-            get_scope_pano_overlay()
-    except Exception:
-        log.exception("could not warm the scope caches")
-
-
-@app.get("/api/scope/pano/overlay")
-def get_scope_pano_overlay() -> FileResponse:
-    folder = scope_pano.folder()
-    if folder is None:
-        raise HTTPException(status_code=404, detail="no scan yet")
-    excluded = _pano_excluded()
-    key = (str(folder), tuple(sorted(excluded)))
-    path = folder / "overlay.jpg"
-    if _overlay_key.get(str(folder)) != key or not path.is_file():
-        build_overlay(folder, excluded)
-        _overlay_key[str(folder)] = key
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 
 FRAME_FRESH_S = 5.0

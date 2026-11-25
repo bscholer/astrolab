@@ -1050,6 +1050,51 @@ export type ScopeSkymap = {
   cells: { clear: number; blocked: number; unknown: number };
 };
 
+export type ScopeSkyPatch = {
+  good: number;
+  failed: number;
+  nights: string[];
+  verdict: 'clear' | 'blocked' | 'unknown';
+};
+
+/** How the last stitch went, from pano.json. */
+export type ScopePanoResult = {
+  tiles: number;
+  used: number;
+  blank: string[];
+  pairs: number;
+  matches: number;
+  median_px: number;
+  rms_px: number;
+  focal_px: number;
+  level: string;
+  compass: boolean;
+  alt_top: number;
+  alt_bottom: number;
+  width: number;
+  height: number;
+};
+
+export type ScopePano = {
+  state: 'idle' | 'running' | 'done' | 'failed';
+  id?: string;
+  step?: string | null;
+  done?: number;
+  total?: number;
+  failed?: number;
+  error?: string;
+  rotation_limits?: [number, number];
+  result?: ScopePanoResult | null;
+};
+
+/** What blocks the sky: altitude per step of azimuth (north 0, east 90), null where unseen. */
+export type ScopeHorizon = {
+  step_deg: number;
+  alt: (number | null)[];
+  compass: boolean;
+  scan: string;
+};
+
 export type ScopeCompass = {
   state: string;
   step?: string;
@@ -1183,14 +1228,19 @@ export const api = {
   startScopeCompass: () => postJSON<ScopeCompass>('/api/scope/compass', {}),
   getScopeCompass: () => getJSON<ScopeCompass>('/api/scope/compass'),
   getScopeSkymap: () => getJSON<ScopeSkymap>('/api/scope/skymap'),
-  getScopePanoTiles: () =>
-    getJSON<{ pitches: number[]; rotations: number[]; excluded: string[] }>('/api/scope/pano/tiles'),
-  setScopePanoTile: (req: { pitch: number; rotation: number; excluded: boolean }) =>
-    putJSON<{ excluded: string[] }>('/api/scope/pano/tile', req),
-  getScopePano: () =>
-    getJSON<{ state: string; id?: string; done?: number; total?: number; failed?: number; error?: string }>(
-      '/api/scope/pano',
-    ),
+  getScopePano: () => getJSON<ScopePano>('/api/scope/pano'),
+  restitchScopePano: () => postJSON<{ id: string }>('/api/scope/pano/stitch', {}),
+  detectScopePanoSky: () => postJSON<{ horizon: ScopeHorizon }>('/api/scope/pano/sky/detect', {}),
+  /** Hand fixes to the sky mask, as a PNG whose pixels are 0 none, 1 sky, 2 not sky. */
+  putScopePanoSky: async (png: Blob) => {
+    const r = await fetch('/api/scope/pano/sky', { method: 'PUT', body: png, headers: { 'Content-Type': 'image/png' } });
+    if (!r.ok) throw new ApiError(r.status, await _readErrorDetail(r));
+    return (await r.json()) as { horizon: ScopeHorizon };
+  },
+  getScopeHorizon: (compassOnly = true) =>
+    getJSON<ScopeHorizon>(`/api/scope/horizon?compass_only=${compassOnly}`),
+  getScopeSkymapPatches: () =>
+    getJSON<ScopeSkymap & { patches: Record<string, ScopeSkyPatch> }>('/api/scope/skymap'),
   getScopeWeather: () =>
     getJSON<{ max_cloud_pct: number; mean_cloud_pct: number; precip_mm: number; snow_cm: number; warn: boolean; reason: string | null }>('/api/scope/weather'),
   getScope: () => getJSON<ScopeState>('/api/scope'),

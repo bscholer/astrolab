@@ -40,8 +40,10 @@ void main() {
   gl_FragColor = vec4(clamp((c - u_black) * u_gain, 0.0, 1.0), 1.0);
 }`;
 
-// Full-screen pass: darken what is below the horizon, and tint the band
-// below the altitude limit, by inverting the projection per pixel.
+// Full-screen pass: darken what is below the horizon, darken (a little less)
+// what the scope's panorama found blocking the sky above it, and tint the band
+// below the altitude limit, by inverting the projection per pixel. The skyline
+// is a 360 x 1 texture: altitude 0..90 per degree of azimuth from north.
 const GROUND_VS = `
 attribute vec2 a_clip;
 varying vec2 v_clip;
@@ -52,6 +54,10 @@ precision highp float;
 uniform mat3 u_inv;
 uniform vec2 u_scale;
 uniform vec3 u_zenith;
+uniform vec3 u_north;
+uniform vec3 u_east;
+uniform sampler2D u_skyline;
+uniform float u_has_skyline;
 uniform float u_min_sin;
 uniform float u_on;
 varying vec2 v_clip;
@@ -59,11 +65,20 @@ void main() {
   vec2 p = v_clip / u_scale;
   float r2 = dot(p, p);
   vec3 cam = vec3(2.0 * p, 1.0 - r2) / (1.0 + r2);
-  float s = dot(u_inv * cam, u_zenith);
+  vec3 d = u_inv * cam;
+  float s = dot(d, u_zenith);
   if (u_on < 0.5) discard;
+  float block = 0.0;
+  if (u_has_skyline > 0.5) {
+    float az = atan(dot(d, u_east), dot(d, u_north));
+    float u = fract(az / 6.2831853 + 1.0);
+    block = sin(radians(texture2D(u_skyline, vec2(u, 0.5)).r * 90.0));
+  }
   if (s < 0.0) {
     float depth = clamp(-s * 4.0, 0.0, 1.0);
     gl_FragColor = vec4(mix(vec3(0.035, 0.05, 0.045), vec3(0.01, 0.015, 0.015), depth), 0.86);
+  } else if (s < block) {
+    gl_FragColor = vec4(0.05, 0.07, 0.06, 0.74);
   } else if (s < u_min_sin) {
     gl_FragColor = vec4(0.98, 0.75, 0.14, 0.045);
   } else {
@@ -154,6 +169,7 @@ export class SkyRenderer {
   onChange: () => void = () => {};
   showGround = true;
   minAltDeg = 20;
+  private skylineTex: WebGLTexture | null = null;
   gain = 1.2;
   black = 0.045;
 
@@ -346,8 +362,39 @@ export class SkyRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, GRID * GRID * 6);
   }
 
-  /** Draw the sky. `zenith` is null when the site is unknown. */
-  draw(view: View, zenith: Vec3 | null) {
+  /**
+   * What blocks the sky, from the scope's panorama: altitude per degree of
+   * azimuth (north 0, east 90), null where unknown. null clears it.
+   */
+  setSkyline(alt: (number | null)[] | null) {
+    const gl = this.gl;
+    if (this.skylineTex) gl.deleteTexture(this.skylineTex);
+    this.skylineTex = null;
+    if (!alt || !alt.length) return;
+    const n = alt.length;
+    const data = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, Math.min(90, alt[i] ?? 0));
+      data[i] = Math.round((a / 90) * 255);
+    }
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, n, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    this.skylineTex = tex;
+    this.onChange();
+  }
+
+  /**
+   * Draw the sky. `zenith` is null when the site is unknown; `north` and
+   * `east` place the skyline, which is left off without them.
+   */
+  draw(view: View, zenith: Vec3 | null, north: Vec3 | null = null, east: Vec3 | null = null) {
     const dpr = this.canvas.width / Math.max(1, view.width);
     this.frame++;
     const { gl, rot, sx, sy } = this.uniforms(view);
@@ -413,6 +460,15 @@ export class SkyRenderer {
       gl.uniform3f(gl.getUniformLocation(this.groundProg, 'u_zenith'), zenith[0], zenith[1], zenith[2]);
       gl.uniform1f(gl.getUniformLocation(this.groundProg, 'u_min_sin'), Math.sin((this.minAltDeg * Math.PI) / 180));
       gl.uniform1f(gl.getUniformLocation(this.groundProg, 'u_on'), 1);
+      const skyline = this.skylineTex && north && east;
+      gl.uniform1f(gl.getUniformLocation(this.groundProg, 'u_has_skyline'), skyline ? 1 : 0);
+      if (skyline) {
+        gl.uniform3f(gl.getUniformLocation(this.groundProg, 'u_north'), north[0], north[1], north[2]);
+        gl.uniform3f(gl.getUniformLocation(this.groundProg, 'u_east'), east[0], east[1], east[2]);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.skylineTex);
+        gl.uniform1i(gl.getUniformLocation(this.groundProg, 'u_skyline'), 0);
+      }
       const loc = gl.getAttribLocation(this.groundProg, 'a_clip');
       gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
       gl.enableVertexAttribArray(loc);
