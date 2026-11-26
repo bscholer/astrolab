@@ -171,6 +171,5 @@ night (closes #15).
 - Is a master per (target, filter, camera) right, or should mosaics and different focal
   setups split further?
 - How far should Quick's intent sliders go before they hide too much?
-- Where do finished pictures live: the target page, a gallery, both?
 - Should recommendations ever queue capture on their own, or always wait for a click?
 - How much of the Workshop's preview engine can be pure numpy, and what still needs Siril?

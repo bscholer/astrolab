@@ -187,7 +187,7 @@ Loads templates, builds a `Job` (template + param overrides + input refs), valid
 A render = `(template_id, full param tree, input refs, output cache hash, thumbnail, notes, tags)`. Stored in SQLite. Compare-side-by-side, fork-from-render, etc.
 
 ### Web UI
-Views: **Library** (targets/sessions/calibration coverage, sortable by name/integration/recency), **Projects** (project detail with session list and freeform notes), **Tonight** (site-aware planner over OpenNGC, altitude sparklines), **Gallery**, **Compare**, **Settings**. Mobile-first responsive.
+Views: **Library** (targets/sessions/calibration coverage, sortable by name/integration/recency), **Projects** (project detail with session list and freeform notes), **Tonight** (site-aware planner over OpenNGC, altitude sparklines), **Settings**. Mobile-first responsive.
 
 ---
 
@@ -475,7 +475,7 @@ CREATE TABLE project_history (
     overrides_json  TEXT NOT NULL,
     label           TEXT,
     created_at      TEXT NOT NULL,
-    published       INTEGER NOT NULL DEFAULT 0,
+    published       INTEGER NOT NULL DEFAULT 0,  -- unused since the gallery was removed
     UNIQUE (project_id, seq)
 );
 
@@ -524,11 +524,9 @@ GET   /api/projects                             → list projects
 GET   /api/projects/{id}                        → project detail
 PATCH /api/projects/{id}                        → apply param overrides or set description
 PUT   /api/projects/{id}/cover                  → pin a history seq as cover image
-PUT   /api/projects/{id}/history/{seq}/published → toggle gallery visibility
 POST  /api/projects/{id}/revert/{seq}           → revert to a prior history entry
 DELETE /api/projects/{id}                       → delete project
 DELETE /api/projects/{id}/cache                 → evict project cache entries
-GET   /api/gallery                              → published renders
 GET   /api/tonight                              → visible DSOs for configured site
 GET   /api/masters                              → master calibration frames
 GET   /api/settings                             → current settings KV

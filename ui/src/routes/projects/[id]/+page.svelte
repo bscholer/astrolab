@@ -74,7 +74,6 @@
   let reprocessing = $state(false);
   let upgrading = $state(false);
   let coverBusy = $state(false);
-  let publishBusy = $state<Record<number, boolean>>({});
 
   // Notes draft
   let descriptionDraft = $state<string>('');
@@ -772,25 +771,6 @@
     }
   }
 
-  async function togglePublished(seq: number, currentlyPublished: boolean) {
-    if (!project || publishBusy[seq]) return;
-    publishBusy = { ...publishBusy, [seq]: true };
-    try {
-      const next = await api.setHistoryPublished(project.id, seq, !currentlyPublished);
-      onProjectUpdated(next);
-      toast.success(
-        !currentlyPublished
-          ? `Published v${seq + 1} to the gallery`
-          : `Unpublished v${seq + 1}`
-      );
-    } catch (e) {
-      toast.error(`Couldn't update gallery: ${(e as Error).message}`);
-    } finally {
-      const { [seq]: _, ...rest } = publishBusy;
-      publishBusy = rest;
-    }
-  }
-
   let flushQueued = false;
   function handleNodeOverrideChange(nodeId: string, partial: Record<string, unknown>) {
     patchQueue.onNodeOverrideChange(nodeId, partial);
@@ -1005,10 +985,8 @@
           compareA={compare.compareA}
           compareB={compare.compareB}
           compareLoading={compare.compareLoading}
-          {publishBusy}
           onRevert={revertTo}
           onToggleCompareSlot={compare.toggleCompareSlot}
-          onTogglePublished={togglePublished}
           onOpenCompare={() => { compare.compareOpen = true; }}
           onClearCompare={compare.clear}
         />
@@ -1032,10 +1010,8 @@
         compareA={compare.compareA}
         compareB={compare.compareB}
         compareLoading={compare.compareLoading}
-        {publishBusy}
         onRevert={revertTo}
         onToggleCompareSlot={compare.toggleCompareSlot}
-        onTogglePublished={togglePublished}
         onOpenCompare={() => { compare.compareOpen = true; }}
         onClearCompare={compare.clear}
       />

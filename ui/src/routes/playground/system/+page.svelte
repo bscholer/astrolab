@@ -358,7 +358,6 @@
     <a href="/">Library</a>
     <a href="/tonight">Tonight</a>
     <a href="/projects">Projects</a>
-    <a href="/gallery">Gallery</a>
     <a href="/settings">Settings</a>
     <a class="active" href="/playground/system">System</a>
   </nav>

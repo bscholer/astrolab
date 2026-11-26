@@ -462,9 +462,6 @@ export interface ProjectHistoryEntry {
   overrides: Record<string, Record<string, unknown>>;
   label: string | null;
   created_at: string;
-  // Whether this entry is opted in to the public gallery feed. Defaults
-  // to false; the user toggles it via setHistoryPublished().
-  published: boolean;
   // Discriminator: 'edit' for ordinary override changes, 'swap_sessions'
   // for entries created by the PATCH /sessions endpoint. Older entries
   // predating the column come back as 'edit' by default.
@@ -492,21 +489,6 @@ export interface SuggestedAdditions {
   // flag on this token so capturing a new session re-shows the banner
   // even after the user previously dismissed it.
   suggestions_token: string;
-}
-
-export interface GalleryEntry {
-  project_id: string;
-  project_name: string;
-  target_common_name: string | null;
-  template_id: string;
-  seq: number;
-  label: string | null;
-  created_at: string;
-  preview_hash: string;
-  preview_port: string;
-  is_cover: boolean;
-  target_canonical: string | null;
-  is_favorite: boolean;
 }
 
 export interface ProjectCapture {
@@ -1223,11 +1205,6 @@ export const api = {
     ),
   setProjectCover: (id: string, seq: number | null) =>
     putJSON<Project>(`/api/projects/${id}/cover`, { seq }),
-  setHistoryPublished: (id: string, seq: number, published: boolean) =>
-    putJSON<Project>(`/api/projects/${id}/history/${seq}/published`, {
-      published,
-    }),
-  listGallery: () => getJSON<GalleryEntry[]>('/api/gallery'),
   deleteProject: (id: string) =>
     deleteJSON<{ evicted_count: number; bytes_freed: number }>(
       `/api/projects/${id}`
@@ -1334,10 +1311,6 @@ export const api = {
   },
   deleteTonightImage: (name: string) =>
     deleteJSON<{ target: string }>(`/api/tonight/image?name=${encodeURIComponent(name)}`),
-  favoriteGalleryEntry: (projectId: string, seq: number) =>
-    putJSON<{ target: string }>(`/api/gallery/${projectId}/${seq}/favorite`, {}),
-  unfavoriteGalleryEntry: (projectId: string, seq: number) =>
-    deleteJSON<{ removed: boolean }>(`/api/gallery/${projectId}/${seq}/favorite`),
   getTonight: (params?: {
     at?: string;
     min_alt?: number;

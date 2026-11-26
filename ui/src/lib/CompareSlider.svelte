@@ -1,7 +1,7 @@
 <!--
-  Reusable A/B wipe slider. The /compare route uses it for full-page
-  comparisons; the project detail page mounts it inside a modal for
-  in-place history-version compares.
+  Reusable A/B wipe slider. The project detail page mounts it inside a
+  modal for history-version compares; the Last night card uses it for
+  before/after on a target's master.
 
   Both images render absolutely-positioned at object-fit: contain so they
   share the same painted box regardless of source dimensions. A is
