@@ -1,13 +1,14 @@
 <script lang="ts">
   import { goto, replaceState } from '$app/navigation';
   import { page } from '$app/stores';
-  import { slide } from 'svelte/transition';
+  import { fade, fly, slide } from 'svelte/transition';
   import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
   import {
     api,
     type CalibrationMode,
     type CalibrationStatus,
+    type Project,
     type ReassignCandidatesResponse,
     type ScanStatusResponse,
     type SessionSummary,
@@ -16,7 +17,7 @@
     type TargetSummary
   } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
-  import { shortAgo, formatFailPct, failPctClass, formatBytes, formatIntegrationTime } from '$lib/format';
+  import { shortAgo, formatBytes, formatIntegrationTime, templateShortName } from '$lib/format';
   import SessionRow from '$lib/SessionRow.svelte';
   import NasStorage from '$lib/NasStorage.svelte';
 
@@ -48,6 +49,59 @@
   // Keeping every target's sessions in hand makes expand/collapse feel
   // free: no spinner, no API roundtrip when the user clicks.
   let targetDetails = $state<Map<number, TargetDetail>>(new Map());
+  // Projects, for each target's picture and the "open project" links.
+  let projects = $state<Project[]>([]);
+  let brokenPics = $state<Set<number>>(new Set());
+
+  /** Projects made from each target's sessions, newest edit first. */
+  const projectsFor = $derived.by(() => {
+    const out = new Map<number, Project[]>();
+    const sessionTarget = new Map<string, number>();
+    for (const [tid, d] of targetDetails) for (const s of d.sessions) sessionTarget.set(String(s.id), tid);
+    for (const p of projects) {
+      const tids = new Set<number>();
+      if (p.master?.target_id != null) tids.add(p.master.target_id);
+      for (const sid of p.source_session_ids) {
+        const tid = sessionTarget.get(String(sid));
+        if (tid != null) tids.add(tid);
+      }
+      for (const tid of tids) out.set(tid, [...(out.get(tid) ?? []), p]);
+    }
+    for (const list of out.values()) list.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    return out;
+  });
+
+  /** The picture for a target's card: its newest project render. */
+  const picFor = $derived.by(() => {
+    const out = new Map<number, { hash: string; port: string }>();
+    for (const [tid, list] of projectsFor) {
+      const p = list.find((x) => x.preview_hash && x.preview_port);
+      if (p) out.set(tid, { hash: p.preview_hash!, port: p.preview_port! });
+    }
+    return out;
+  });
+
+  const openTarget = $derived(targets?.find((t) => t.id === openTargetId) ?? null);
+
+  function keptPct(t: TargetSummary): number | null {
+    return t.frame_count > 0 ? Math.round(((t.frame_count - t.failed_count) / t.frame_count) * 100) : null;
+  }
+
+  function shortDay(iso: string): string {
+    const d = new Date(iso.length <= 10 ? `${iso}T12:00:00` : iso);
+    const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  /** The recipe a new project should start from, by the sessions' filter:
+   *  duo-band data gets the duo recipe (with its palettes), the rest the
+   *  per-night one. */
+  function recipeFor(filter: string | null | undefined): string {
+    const duo = /ha|oiii|duo|dual|nb|narrow|enhance|extreme/i.test(filter ?? '');
+    const want = duo ? 'stack_per_night_duo' : 'stack_per_night';
+    return !templates || templates.some((t) => t.id === want) ? want : runTemplateId;
+  }
   let scanning = $state(false);
   let scanStatus = $state<ScanStatusResponse | null>(null);
   // When the last scan finished, from the server, so scans it ran on its
@@ -144,6 +198,7 @@
   async function load() {
     try {
       const list = await api.listTargets();
+      api.listProjects().then((p) => (projects = p), () => {});
       // Schedule the cascade flag to flip off once the staggered intro
       // has had time to play. Length-aware so a big library still gets
       // its full animation, then later refreshes render without it.
@@ -230,9 +285,9 @@
   }
 
   function handleReassignKey(e: KeyboardEvent) {
-    if (e.key === 'Escape' && reassignSessionId != null) {
-      closeReassign();
-    }
+    if (e.key !== 'Escape') return;
+    if (reassignSessionId != null) closeReassign();
+    else if (openTargetId != null) openTarget_(openTargetId);
   }
 
   // Multi-select state: a set of session ids the user has checked in the
@@ -287,6 +342,7 @@
     const next = new Set(selectedSessionIds);
     if (next.has(s.id)) next.delete(s.id);
     else next.add(s.id);
+    if (selectedSessionIds.size === 0 && next.size === 1) runTemplateId = recipeFor(s.filter);
     selectedSessionIds = next;
     // Hide any open per-session run panel; multi-mode owns the run
     // affordance once anything is checked.
@@ -457,8 +513,17 @@
     return shortAgo(lastScanAt);
   });
 
+  function sessionById(id: number): SessionSummary | undefined {
+    for (const d of targetDetails.values()) {
+      const s = d.sessions.find((x) => x.id === id);
+      if (s) return s;
+    }
+    return undefined;
+  }
+
   function toggleRun(sessionId: number) {
     runOpenSessionId = runOpenSessionId === sessionId ? null : sessionId;
+    if (runOpenSessionId !== null) runTemplateId = recipeFor(sessionById(sessionId)?.filter);
   }
 
   async function submitRun(sessionId: number) {
@@ -665,333 +730,340 @@
       >Recency</button>
     </div>
   </div>
-  <ul class="target-list">
+  <ul class="grid">
     {#each sortedTargets ?? [] as t, i (t.id)}
+      {@const pic = picFor.get(t.id)}
+      {@const kept = keptPct(t)}
       <li
-        class="target"
-        class:open={openTargetId === t.id}
         class:cascade={cascadeOnLoad}
         style={cascadeOnLoad ? `--stagger: ${i}` : ''}
         animate:flip={{ duration: 350, easing: cubicOut }}
       >
-        <div
-          class="target-row"
-          role="button"
-          tabindex="0"
-          aria-expanded={openTargetId === t.id}
-          onclick={() => openTarget_(t.id)}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              openTarget_(t.id);
-            }
-          }}
-        >
-          <div class="target-name">
-            {#if t.common_name}
-              <span class="target-common">{t.common_name}</span>
-              <span class="target-cat muted">{t.name}</span>
+        <button type="button" class="card" class:on={openTargetId === t.id} onclick={() => openTarget_(t.id)}>
+          <span class="pic">
+            {#if pic && !brokenPics.has(t.id)}
+              <img
+                src={api.previewUrl(pic.hash, pic.port)}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                onerror={() => (brokenPics = new Set([...brokenPics, t.id]))}
+              />
             {:else}
-              {t.name}
+              <span class="no-pic muted small">{projectsFor.has(t.id) ? 'No picture yet' : 'No project yet'}</span>
             {/if}
-          </div>
-          <div class="target-meta muted">
-            <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
-            <span aria-hidden="true">·</span>
-            <span class="num">{t.frame_count.toLocaleString()} frames</span>
-            {#if t.frame_count > 0}
-              <span aria-hidden="true">·</span>
-              <span class="fail-pct {failPctClass(t.failed_count, t.frame_count)}">
-                {formatFailPct(t.failed_count, t.frame_count)}
-              </span>
-            {/if}
+            <span class="title">
+              <span class="name">{t.common_name ?? t.name}</span>
+              {#if t.common_name}<span class="cat">{t.name}</span>{/if}
+            </span>
+          </span>
+          <span class="facts">
             {#if t.integration_seconds && t.integration_seconds > 0}
-              <span aria-hidden="true">·</span>
-              <span
-                class="num"
-                title="Useful integration: (frame_count - failed_count) × exptime"
-              >
-                {formatIntegrationTime(t.integration_seconds)} integ
-              </span>
+              <span class="strong num">{formatIntegrationTime(t.integration_seconds)}</span>
             {/if}
-            {#if t.bytes_on_disk > 0}
-              <span aria-hidden="true">·</span>
-              <span class="num" title="Total on-disk size of this target's frames">
-                {formatBytes(t.bytes_on_disk)}
-              </span>
-            {/if}
-            {#if t.last_session_at}
-              <span aria-hidden="true">·</span>
-              <span class="num">last {shortDate(t.last_session_at)}</span>
-            {/if}
+            <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
+            {#if t.last_session_at}<span>last {shortDay(t.last_session_at)}</span>{/if}
+          </span>
+          {#if kept !== null}
+            <span class="kept" title="The scope registered {(t.frame_count - t.failed_count).toLocaleString()} of {t.frame_count.toLocaleString()} frames; the rest were saved as failed">
+              <span class="kept-bar"><span style="width: {kept}%"></span></span>
+              <span class="num">{kept}% of {t.frame_count.toLocaleString()} frames kept</span>
+            </span>
+          {/if}
+        </button>
+      </li>
+    {/each}
+  </ul>
+{/if}
+
+{#if openTarget && view === 'library'}
+  {@const t = openTarget}
+  {@const tProjects = projectsFor.get(t.id) ?? []}
+  {@const detail = targetDetails.get(t.id)}
+  <button type="button" class="scrim" aria-label="Close" onclick={() => openTarget_(t.id)} transition:fade={{ duration: 150 }}></button>
+  <div class="drawer" role="dialog" aria-modal="true" aria-label={t.common_name ?? t.name} transition:fly={{ x: 40, duration: 220, easing: cubicOut }}>
+    <header class="drawer-head">
+      <div class="drawer-title">
+        <h2>{t.common_name ?? t.name}</h2>
+        {#if t.common_name}<span class="cat muted">{t.name}</span>{/if}
+      </div>
+      <button type="button" class="close" aria-label="Close" onclick={() => openTarget_(t.id)}>&times;</button>
+    </header>
+    <p class="drawer-facts muted">
+      {#if t.integration_seconds && t.integration_seconds > 0}<b>{formatIntegrationTime(t.integration_seconds)}</b> ·{/if}
+      {t.session_count} session{t.session_count === 1 ? '' : 's'} · {t.frame_count.toLocaleString()} frames
+      {#if keptPct(t) !== null}({keptPct(t)}% kept){/if} · {formatBytes(t.bytes_on_disk)}
+    </p>
+    {#if tProjects.length}
+      <div class="drawer-projects">
+        {#each tProjects as pr (pr.id)}
+          <a class="proj" href="/projects/{pr.id}">
+            {#if pr.preview_hash && pr.preview_port}<img src={api.previewUrl(pr.preview_hash, pr.preview_port)} alt="" loading="lazy" />{/if}
+            <span><b>{pr.display?.name ?? pr.name}</b><span class="muted small">{templateShortName(pr.template_id)} · {pr.source_session_ids.length} session{pr.source_session_ids.length === 1 ? '' : 's'}</span></span>
+          </a>
+        {/each}
+      </div>
+    {/if}
+    <p class="drawer-hint muted small">Tick sessions to start a project from them, or use Run on one.</p>
+    {#if detail === undefined}
+      <p class="muted">Loading…</p>
+    {:else if detail.sessions.length === 0}
+      <p class="muted">No sessions yet for this target.</p>
+    {:else}
+      {@const anchor = getAnchor(detail)}
+      {@const multiMode = selectedSessionIds.size > 0}
+      {#if multiMode}
+        <div class="multi-bar" role="region" aria-label="Selected sessions">
+          <div class="multi-bar-head">
+            <span class="multi-count">
+              {selectedSessionIds.size} session{selectedSessionIds.size === 1 ? '' : 's'} selected
+            </span>
+            <button
+              type="button"
+              class="multi-clear"
+              onclick={() => (selectedSessionIds = new Set())}
+            >
+              clear
+            </button>
+          </div>
+          <div class="multi-bar-controls">
+            <label class="run-row run-row--inline">
+              <span>Template</span>
+              <select bind:value={runTemplateId}>
+                {#if templates === null}
+                  <option>loading…</option>
+                {:else}
+                  {#each templates as t (t.id)}
+                    <option value={t.id}>{templateShortName(t.id)}</option>
+                  {/each}
+                {/if}
+              </select>
+            </label>
+            <label class="run-row run-row--inline">
+              <span>Calibration</span>
+              <select bind:value={runCalibrationMode}>
+                <option value="auto">auto (use catalog match)</option>
+                <option value="none">none (skip masters)</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              class="run-go"
+              onclick={submitMultiRun}
+              disabled={runningMulti}
+            >
+              {runningMulti
+                ? 'Submitting…'
+                : selectedSessionIds.size === 1
+                  ? 'Run pipeline'
+                  : `Run pipeline (${selectedSessionIds.size} sessions)`}
+            </button>
           </div>
         </div>
-
-        {#if openTargetId === t.id}
-          {@const detail = targetDetails.get(t.id)}
-          <div class="target-detail" transition:slide={{ duration: 220, easing: cubicOut }}>
-            {#if detail === undefined}
-              <p class="muted">Loading…</p>
-            {:else if detail.sessions.length === 0}
-              <p class="muted">No sessions yet for this target.</p>
-            {:else}
-              {@const anchor = getAnchor(detail)}
-              {@const multiMode = selectedSessionIds.size > 0}
-              {#if multiMode}
-                <div class="multi-bar" role="region" aria-label="Selected sessions">
-                  <div class="multi-bar-head">
-                    <span class="multi-count">
-                      {selectedSessionIds.size} session{selectedSessionIds.size === 1 ? '' : 's'} selected
-                    </span>
-                    <button
-                      type="button"
-                      class="multi-clear"
-                      onclick={() => (selectedSessionIds = new Set())}
-                    >
-                      clear
-                    </button>
-                  </div>
-                  <div class="multi-bar-controls">
-                    <label class="run-row run-row--inline">
-                      <span>Template</span>
-                      <select bind:value={runTemplateId}>
-                        {#if templates === null}
-                          <option>loading…</option>
-                        {:else}
-                          {#each templates as t (t.id)}
-                            <option value={t.id}>{t.id}</option>
+      {/if}
+      <ul class="session-list">
+        {#each detail.sessions as s (s.id)}
+          {@const checked = selectedSessionIds.has(s.id)}
+          {@const reason = incompatibleReason(s, anchor)}
+          {@const blocked = !!reason && !checked}
+          <SessionRow
+            session={s}
+            shortDate={shortDate(s.started_at)}
+            notesOpen={notesOpenId === s.id}
+            notesDraft={notesDraftById.get(s.id) ?? ''}
+            notesSaving={notesSavingId === s.id}
+            onToggleNotes={() => toggleNotes(s)}
+            onNotesInput={(v) => setNotesDraft(s.id, v)}
+            onNotesBlur={() => saveNotesOnBlur(s)}
+            selectable={{
+              checked,
+              disabled: blocked,
+              reason,
+              onToggle: () => toggleSelected(s),
+            }}
+            runAffordance={{
+              open: runOpenSessionId === s.id,
+              onToggle: () => toggleRun(s.id),
+              hidden: multiMode,
+            }}
+            reassign={{
+              open: reassignSessionId === s.id,
+              onClick: (e) => {
+                e.stopPropagation();
+                openReassign(s);
+              },
+            }}
+            notesHidden={multiMode}
+            {calLabel}
+            {calTitle}
+          >
+            {#snippet extrasAfterBody()}
+              {#if reassignSessionId === s.id}
+                <div
+                  class="reassign-popup"
+                  transition:slide={{ duration: 160, easing: cubicOut }}
+                >
+                  {#if reassignLoading && !reassignCandidates}
+                    <p class="muted">Loading suggestions…</p>
+                  {:else}
+                    {@const cands = reassignCandidates}
+                    {#if cands && cands.targets.length > 0}
+                      <div class="reassign-section">
+                        <div class="reassign-section-label">Move to existing target</div>
+                        <ul class="reassign-list">
+                          {#each cands.targets as cand (cand.id)}
+                            <li>
+                              <button
+                                type="button"
+                                class="reassign-option"
+                                disabled={reassignSaving}
+                                onclick={() => applyReassign({ target_id: cand.id })}
+                              >
+                                <span class="reassign-option-main">
+                                  {cand.name}{cand.common_name ? ` - ${cand.common_name}` : ''}
+                                </span>
+                                <span class="reassign-option-sep num">
+                                  {cand.separation_arcmin.toFixed(1)}'
+                                </span>
+                              </button>
+                            </li>
                           {/each}
-                        {/if}
-                      </select>
-                    </label>
-                    <label class="run-row run-row--inline">
-                      <span>Calibration</span>
-                      <select bind:value={runCalibrationMode}>
-                        <option value="auto">auto (use catalog match)</option>
-                        <option value="none">none (skip masters)</option>
-                      </select>
-                    </label>
+                        </ul>
+                      </div>
+                    {/if}
+                    {#if cands && cands.catalog.length > 0}
+                      <div class="reassign-section">
+                        <div class="reassign-section-label">Create new target from catalog</div>
+                        <ul class="reassign-list">
+                          {#each cands.catalog as cand (cand.canonical)}
+                            <li>
+                              <button
+                                type="button"
+                                class="reassign-option"
+                                disabled={reassignSaving}
+                                onclick={() => applyReassign({ new_target_name: cand.canonical })}
+                              >
+                                <span class="reassign-option-main">
+                                  {cand.canonical}{cand.common_name ? ` - ${cand.common_name}` : ''}
+                                </span>
+                                <span class="reassign-option-sep num">
+                                  {cand.separation_arcmin.toFixed(1)}'
+                                </span>
+                              </button>
+                            </li>
+                          {/each}
+                        </ul>
+                      </div>
+                    {/if}
+                    <div class="reassign-section">
+                      <div class="reassign-section-label">Or type a custom name</div>
+                      <form
+                        class="reassign-custom"
+                        onsubmit={(e) => {
+                          e.preventDefault();
+                          const name = reassignNewNameDraft.trim();
+                          if (!name) {
+                            toast.error('Type a target name or pick a suggestion.');
+                            return;
+                          }
+                          applyReassign({ new_target_name: name });
+                        }}
+                      >
+                        <input
+                          type="text"
+                          class="reassign-input"
+                          placeholder="M 31, NGC 7000, My target…"
+                          bind:value={reassignNewNameDraft}
+                        />
+                        <button
+                          type="submit"
+                          class="reassign-save"
+                          disabled={reassignSaving}
+                        >
+                          {reassignSaving ? 'Saving…' : 'Move'}
+                        </button>
+                        <button
+                          type="button"
+                          class="reassign-cancel"
+                          onclick={closeReassign}
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            {/snippet}
+            {#snippet extrasAfterNotes()}
+              {#if !multiMode && runOpenSessionId === s.id}
+                <div class="run-panel">
+                  <label class="run-row">
+                    <span>Template</span>
+                    <select bind:value={runTemplateId}>
+                      {#if templates === null}
+                        <option>loading…</option>
+                      {:else}
+                        {#each templates as t (t.id)}
+                          <option value={t.id}>{templateShortName(t.id)}</option>
+                        {/each}
+                      {/if}
+                    </select>
+                  </label>
+                  <label class="run-row">
+                    <span>Calibration</span>
+                    <select bind:value={runCalibrationMode}>
+                      <option value="auto">auto (use catalog match)</option>
+                      <option value="none">none (skip masters)</option>
+                    </select>
+                  </label>
+                  <div class="run-actions">
                     <button
                       type="button"
                       class="run-go"
-                      onclick={submitMultiRun}
-                      disabled={runningMulti}
+                      onclick={() => submitRun(s.id)}
+                      disabled={running}
                     >
-                      {runningMulti
-                        ? 'Submitting…'
-                        : selectedSessionIds.size === 1
-                          ? 'Run pipeline'
-                          : `Run pipeline (${selectedSessionIds.size} sessions)`}
+                      {running ? 'Submitting…' : 'Run pipeline'}
                     </button>
                   </div>
                 </div>
               {/if}
-              <ul class="session-list">
-                {#each detail.sessions as s (s.id)}
-                  {@const checked = selectedSessionIds.has(s.id)}
-                  {@const reason = incompatibleReason(s, anchor)}
-                  {@const blocked = !!reason && !checked}
-                  <SessionRow
-                    session={s}
-                    shortDate={shortDate(s.started_at)}
-                    notesOpen={notesOpenId === s.id}
-                    notesDraft={notesDraftById.get(s.id) ?? ''}
-                    notesSaving={notesSavingId === s.id}
-                    onToggleNotes={() => toggleNotes(s)}
-                    onNotesInput={(v) => setNotesDraft(s.id, v)}
-                    onNotesBlur={() => saveNotesOnBlur(s)}
-                    selectable={{
-                      checked,
-                      disabled: blocked,
-                      reason,
-                      onToggle: () => toggleSelected(s),
-                    }}
-                    runAffordance={{
-                      open: runOpenSessionId === s.id,
-                      onToggle: () => toggleRun(s.id),
-                      hidden: multiMode,
-                    }}
-                    reassign={{
-                      open: reassignSessionId === s.id,
-                      onClick: (e) => {
-                        e.stopPropagation();
-                        openReassign(s);
-                      },
-                    }}
-                    notesHidden={multiMode}
-                    {calLabel}
-                    {calTitle}
-                  >
-                    {#snippet extrasAfterBody()}
-                      {#if reassignSessionId === s.id}
-                        <div
-                          class="reassign-popup"
-                          transition:slide={{ duration: 160, easing: cubicOut }}
-                        >
-                          {#if reassignLoading && !reassignCandidates}
-                            <p class="muted">Loading suggestions…</p>
-                          {:else}
-                            {@const cands = reassignCandidates}
-                            {#if cands && cands.targets.length > 0}
-                              <div class="reassign-section">
-                                <div class="reassign-section-label">Move to existing target</div>
-                                <ul class="reassign-list">
-                                  {#each cands.targets as cand (cand.id)}
-                                    <li>
-                                      <button
-                                        type="button"
-                                        class="reassign-option"
-                                        disabled={reassignSaving}
-                                        onclick={() => applyReassign({ target_id: cand.id })}
-                                      >
-                                        <span class="reassign-option-main">
-                                          {cand.name}{cand.common_name ? ` - ${cand.common_name}` : ''}
-                                        </span>
-                                        <span class="reassign-option-sep num">
-                                          {cand.separation_arcmin.toFixed(1)}'
-                                        </span>
-                                      </button>
-                                    </li>
-                                  {/each}
-                                </ul>
-                              </div>
-                            {/if}
-                            {#if cands && cands.catalog.length > 0}
-                              <div class="reassign-section">
-                                <div class="reassign-section-label">Create new target from catalog</div>
-                                <ul class="reassign-list">
-                                  {#each cands.catalog as cand (cand.canonical)}
-                                    <li>
-                                      <button
-                                        type="button"
-                                        class="reassign-option"
-                                        disabled={reassignSaving}
-                                        onclick={() => applyReassign({ new_target_name: cand.canonical })}
-                                      >
-                                        <span class="reassign-option-main">
-                                          {cand.canonical}{cand.common_name ? ` - ${cand.common_name}` : ''}
-                                        </span>
-                                        <span class="reassign-option-sep num">
-                                          {cand.separation_arcmin.toFixed(1)}'
-                                        </span>
-                                      </button>
-                                    </li>
-                                  {/each}
-                                </ul>
-                              </div>
-                            {/if}
-                            <div class="reassign-section">
-                              <div class="reassign-section-label">Or type a custom name</div>
-                              <form
-                                class="reassign-custom"
-                                onsubmit={(e) => {
-                                  e.preventDefault();
-                                  const name = reassignNewNameDraft.trim();
-                                  if (!name) {
-                                    toast.error('Type a target name or pick a suggestion.');
-                                    return;
-                                  }
-                                  applyReassign({ new_target_name: name });
-                                }}
-                              >
-                                <input
-                                  type="text"
-                                  class="reassign-input"
-                                  placeholder="M 31, NGC 7000, My target…"
-                                  bind:value={reassignNewNameDraft}
-                                />
-                                <button
-                                  type="submit"
-                                  class="reassign-save"
-                                  disabled={reassignSaving}
-                                >
-                                  {reassignSaving ? 'Saving…' : 'Move'}
-                                </button>
-                                <button
-                                  type="button"
-                                  class="reassign-cancel"
-                                  onclick={closeReassign}
-                                >
-                                  Cancel
-                                </button>
-                              </form>
-                            </div>
-                          {/if}
-                        </div>
-                      {/if}
-                    {/snippet}
-                    {#snippet extrasAfterNotes()}
-                      {#if !multiMode && runOpenSessionId === s.id}
-                        <div class="run-panel">
-                          <label class="run-row">
-                            <span>Template</span>
-                            <select bind:value={runTemplateId}>
-                              {#if templates === null}
-                                <option>loading…</option>
-                              {:else}
-                                {#each templates as t (t.id)}
-                                  <option value={t.id}>{t.id}</option>
-                                {/each}
-                              {/if}
-                            </select>
-                          </label>
-                          <label class="run-row">
-                            <span>Calibration</span>
-                            <select bind:value={runCalibrationMode}>
-                              <option value="auto">auto (use catalog match)</option>
-                              <option value="none">none (skip masters)</option>
-                            </select>
-                          </label>
-                          <div class="run-actions">
-                            <button
-                              type="button"
-                              class="run-go"
-                              onclick={() => submitRun(s.id)}
-                              disabled={running}
-                            >
-                              {running ? 'Submitting…' : 'Run pipeline'}
-                            </button>
-                          </div>
-                        </div>
-                      {/if}
-                    {/snippet}
-                  </SessionRow>
-                {/each}
-              </ul>
-            {/if}
-          </div>
-        {/if}
-      </li>
-    {/each}
-  </ul>
-  <details class="legend">
-    <summary>
-      <span class="legend-cluster" aria-hidden="true">
-        <span class="cal cal-exact legend-swatch">D</span>
-        <span class="cal cal-approx legend-swatch">F</span>
-        <span class="cal cal-none legend-swatch">B</span>
-      </span>
-      <span class="legend-summary-text">Calibration legend</span>
-    </summary>
-    <div class="legend-body">
-      <div class="legend-row">
-        <span class="cal cal-exact legend-swatch">D</span>
-        <span><strong>D</strong> dark, <strong>F</strong> flat, <strong>B</strong> bias</span>
+            {/snippet}
+          </SessionRow>
+        {/each}
+      </ul>
+    {/if}
+
+    <details class="legend">
+      <summary>
+        <span class="legend-cluster" aria-hidden="true">
+          <span class="cal cal-exact legend-swatch">D</span>
+          <span class="cal cal-approx legend-swatch">F</span>
+          <span class="cal cal-none legend-swatch">B</span>
+        </span>
+        <span class="legend-summary-text">Calibration legend</span>
+      </summary>
+      <div class="legend-body">
+        <div class="legend-row">
+          <span class="cal cal-exact legend-swatch">D</span>
+          <span><strong>D</strong> dark, <strong>F</strong> flat, <strong>B</strong> bias</span>
+        </div>
+        <div class="legend-row">
+          <span class="cal cal-exact legend-swatch">·</span>
+          <span><strong>green</strong> exact match</span>
+        </div>
+        <div class="legend-row">
+          <span class="cal cal-approx legend-swatch">·</span>
+          <span><strong>amber</strong> approximate (within tolerance, e.g. &plusmn;3&deg;C for darks)</span>
+        </div>
+        <div class="legend-row">
+          <span class="cal cal-none legend-swatch">·</span>
+          <span><strong>red</strong> no match found</span>
+        </div>
       </div>
-      <div class="legend-row">
-        <span class="cal cal-exact legend-swatch">·</span>
-        <span><strong>green</strong> exact match</span>
-      </div>
-      <div class="legend-row">
-        <span class="cal cal-approx legend-swatch">·</span>
-        <span><strong>amber</strong> approximate (within tolerance, e.g. &plusmn;3&deg;C for darks)</span>
-      </div>
-      <div class="legend-row">
-        <span class="cal cal-none legend-swatch">·</span>
-        <span><strong>red</strong> no match found</span>
-      </div>
-    </div>
-  </details>
+    </details>
+  </div>
 {/if}
 
 <style>
@@ -1147,108 +1219,285 @@
     border-color: transparent;
   }
 
-  .target-list {
+  /* Target cards, the same look as the Projects grid. */
+  .grid {
     list-style: none;
     padding: 0;
     margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+    gap: 1rem;
+  }
+  .grid > li.cascade {
+    animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation-delay: calc(var(--stagger, 0) * 40ms + 60ms);
+  }
+  .card {
+    appearance: none;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .target {
-    background: var(--bg-elev);
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
-    overflow: hidden;
     box-shadow: var(--shadow);
+    overflow: hidden;
+    cursor: pointer;
     transition: border-color 160ms ease, transform 160ms ease;
   }
-  .target.cascade {
-    animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-    animation-delay: calc(var(--stagger, 0) * 60ms + 80ms);
+  .card:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-2px);
   }
-
-  .target:hover {
-    border-color: rgba(94, 234, 212, 0.35);
-    transform: translateY(-1px);
+  .card.on {
+    border-color: var(--accent);
   }
-  .target.open {
-    border-color: rgba(94, 234, 212, 0.35);
-  }
-
-  .target-row {
-    background: transparent;
-    border: none;
-    padding: 0.95rem 1.15rem;
-    border-radius: 0;
-    text-align: left;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    cursor: pointer;
-  }
-
-  .target-row:hover {
-    background: rgba(94, 234, 212, 0.04);
-  }
-  .target-row:focus-visible {
+  .card:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: -2px;
+    outline-offset: 2px;
   }
-
-  /* Target/project names get the serif treatment per design.md. */
-  .target-name {
+  .pic {
+    position: relative;
+    display: block;
+    aspect-ratio: 4 / 3;
+    background: var(--bg-elev-2);
+    overflow: hidden;
+  }
+  .pic img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .card:hover .pic img {
+    transform: scale(1.03);
+  }
+  .no-pic {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-bottom: 2.5rem;
+    background: radial-gradient(80% 70% at 50% 40%, rgba(94, 234, 212, 0.06), transparent 70%);
+  }
+  .pic::after {
+    content: '';
+    position: absolute;
+    inset: 45% 0 0 0;
+    background: linear-gradient(180deg, transparent, rgba(2, 3, 10, 0.85));
+    pointer-events: none;
+  }
+  .title {
+    position: absolute;
+    left: 0.85rem;
+    right: 0.85rem;
+    bottom: 0.65rem;
+    z-index: 1;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.1rem 0.5rem;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+  }
+  .name {
     font-family: var(--font-display);
     font-weight: 500;
-    font-size: 1.35rem;
+    font-size: 1.2rem;
+    line-height: 1.15;
     letter-spacing: -0.01em;
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex-wrap: wrap;
+    color: #fff;
   }
-
-  .target-common {
-    font-weight: 500;
-  }
-
-  .target-cat {
+  .cat {
     font-family: var(--font-mono);
-    font-weight: 500;
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    /* Mono digits sit lower than the serif baseline; nudge up. */
-    position: relative;
-    top: -0.1em;
+    font-size: 0.72rem;
+    color: rgba(233, 241, 255, 0.75);
   }
-
-  .target-meta {
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.2rem 0.6rem;
+    padding: 0.7rem 0.85rem 0.2rem;
     font-size: 0.85rem;
+    color: var(--fg-mute);
+  }
+  .facts .strong {
+    color: var(--fg);
+    font-weight: 600;
+    font-size: 1rem;
+  }
+  .kept {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.35rem 0.85rem 0.8rem;
+    font-size: 0.75rem;
+    color: var(--fg-mute);
+  }
+  .kept-bar {
+    display: block;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(233, 241, 255, 0.08);
+    overflow: hidden;
+  }
+  .kept-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: color-mix(in oklab, var(--accent) 70%, transparent);
+  }
+
+  /* The open target: sessions in a sheet from the right (from below on phones). */
+  .scrim {
+    appearance: none;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    min-height: 0;
+    background: rgba(2, 3, 10, 0.55);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    cursor: default;
+  }
+  .scrim:hover {
+    background: rgba(2, 3, 10, 0.55);
+  }
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 41;
+    width: min(720px, 100vw);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 1.1rem 1.25rem 2rem;
+    padding-top: max(1.1rem, env(safe-area-inset-top));
+    background: var(--bg);
+    border-left: 1px solid var(--border);
+    box-shadow: -20px 0 60px rgba(0, 0, 0, 0.5);
+  }
+  .drawer-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .drawer-title {
+    flex: 1;
+    min-width: 0;
+    display: flex;
     align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.6rem;
   }
-
-  /* Failure percentage: semantic color, mono numerals. */
-  .fail-pct {
-    color: var(--warn);
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-  .fail-pct.fail-zero {
-    color: var(--good);
-    opacity: 0.85;
-  }
-  .fail-pct.fail-high {
-    color: var(--bad);
+  .drawer-title h2 {
+    margin: 0;
+    font-family: var(--font-display);
     font-weight: 500;
+    font-size: 1.6rem;
+    letter-spacing: -0.01em;
   }
-
-  .target-detail {
-    border-top: 1px solid var(--border);
-    padding: 0.5rem 1rem 1rem;
+  .drawer-title .cat {
+    color: var(--fg-mute);
+  }
+  .close {
+    appearance: none;
+    width: 36px;
+    height: 36px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 999px;
+    font-size: 1.3rem;
+    line-height: 1;
+    flex: none;
+  }
+  .drawer-facts {
+    margin: 0.35rem 0 0.9rem;
+    font-size: 0.88rem;
+  }
+  .drawer-facts b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .drawer-projects {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 0.5rem;
+    margin: 0 0 1rem;
+  }
+  .proj {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-elev);
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 160ms ease;
+  }
+  .proj:hover {
+    border-color: var(--border-strong);
+  }
+  .proj img {
+    width: 52px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 8px;
+    flex: none;
+  }
+  .proj > span {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    font-size: 0.88rem;
+  }
+  .proj b {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .drawer-hint {
+    margin: 0 0 0.6rem;
+  }
+  /* Phones: two cards a row, so the library reads at a glance. */
+  @media (max-width: 520px) {
+    .grid {
+      grid-template-columns: 1fr 1fr;
+      gap: 0.6rem;
+    }
+    .title { left: 0.6rem; right: 0.6rem; bottom: 0.5rem; }
+    .name { font-size: 1rem; }
+    .cat { display: none; }
+    .no-pic { padding-bottom: 1.8rem; }
+    .facts { padding: 0.55rem 0.6rem 0.1rem; font-size: 0.75rem; gap: 0.1rem 0.45rem; }
+    .facts .strong { font-size: 0.9rem; }
+    .kept { padding: 0.3rem 0.6rem 0.6rem; font-size: 0.68rem; }
+  }
+  @media (max-width: 600px) {
+    .drawer {
+      top: 6dvh;
+      width: 100vw;
+      border-left: 0;
+      border-top: 1px solid var(--border);
+      border-radius: 18px 18px 0 0;
+      padding-left: 0.9rem;
+      padding-right: 0.9rem;
+    }
   }
 
   .session-list {
@@ -1649,9 +1898,4 @@
     text-decoration-color: var(--accent);
   }
 
-  @media (max-width: 600px) {
-    .target-row {
-      padding: 0.7rem 0.8rem;
-    }
-  }
 </style>

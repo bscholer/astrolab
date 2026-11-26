@@ -426,13 +426,26 @@
     }
   }
 
+  // The editor sits under the site header and fills the rest of the
+  // window, so it needs to know where it starts.
+  let root = $state<HTMLDivElement | undefined>();
+  let top = $state(0);
+  function measure() {
+    if (root) top = Math.round(root.getBoundingClientRect().top + window.scrollY);
+  }
+
   onMount(() => {
+    measure();
+    window.addEventListener('resize', measure);
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     maxEdge = Math.round(Math.min(1600, Math.max(900, Math.max(window.innerWidth, window.innerHeight) * dpr * 0.7)));
     document.body.classList.add('editor-open');
     const flush = () => { if (dirty) commit(); };
     window.addEventListener('pagehide', flush);
-    return () => window.removeEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('resize', measure);
+    };
   });
   onDestroy(() => {
     document.body.classList.remove('editor-open');
@@ -453,26 +466,16 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="editor">
+<div class="editor" bind:this={root} style="--ed-top: {top}px">
   <header class="top">
-    <a class="icon-btn" href="/projects" aria-label="Back to projects"><Icon name="back" /></a>
-    <div class="title">
-      <span class="t">{title}</span>
-      <span class="s">{subtitle ? `${subtitle} · ` : ''}{status}</span>
-    </div>
-    <div class="views" role="tablist" aria-label="Project views">
-      <button role="tab" class="on" aria-selected="true">Edit</button>
-      <button role="tab" aria-selected="false" onclick={() => onView('pipeline')}>Pipeline</button>
-      <button role="tab" aria-selected="false" onclick={() => onView('details')}>Details</button>
-    </div>
+    <h1 class="t">{title}{#if subtitle}<span class="canon">{subtitle}</span>{/if}</h1>
+    <span class="s">{status}</span>
     <button class="icon-btn wide-only" onclick={undo} disabled={!undoStack.length} aria-label="Undo" title="Undo (Cmd-Z)"><Icon name="undo" size={18} /></button>
     <button class="icon-btn wide-only" onclick={redo} disabled={!redoStack.length} aria-label="Redo" title="Redo (Cmd-Shift-Z)"><Icon name="redo" size={18} /></button>
     <div class="menu-wrap">
       <button class="icon-btn" onclick={() => (menuOpen = !menuOpen)} aria-label="More" aria-expanded={menuOpen}><Icon name="more" /></button>
       {#if menuOpen}
         <div class="menu" role="menu">
-          <button role="menuitem" class="phone-only" onclick={() => { menuOpen = false; onView('pipeline'); }}>Pipeline</button>
-          <button role="menuitem" class="phone-only" onclick={() => { menuOpen = false; onView('details'); }}>Details and sessions</button>
           <a role="menuitem" href="/api/projects/{project.id}/export?kind=stacked" download>Download linear stack (FITS)</a>
           {#if resultSrc}<a role="menuitem" href={resultSrc} target="_blank" rel="noopener">Open full size</a>{/if}
           {#if upgradeLabel && onUpgrade}
@@ -489,6 +492,11 @@
       {#if rendering || committing}<span class="spin"></span>{:else}<Icon name="download" size={16} />{/if} Export
     </button>
   </header>
+  <div class="views" role="tablist" aria-label="Project views">
+    <button role="tab" class="on" aria-selected="true">Edit</button>
+    <button role="tab" aria-selected="false" onclick={() => onView('pipeline')}>Pipeline</button>
+    <button role="tab" aria-selected="false" onclick={() => onView('details')}>Details</button>
+  </div>
 
   <div
     class="stage"
@@ -625,52 +633,44 @@
 <style>
   .editor {
     --ed-track: rgba(233, 241, 255, 0.12);
-    --ed-surface: #0b1120;
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    background: radial-gradient(120% 80% at 50% 0%, #0b1430 0%, var(--bg) 60%);
+    --ed-surface: var(--bg-elev);
     color: var(--fg);
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
-    grid-template-areas: 'top' 'stage' 'panel' 'tools';
-    height: 100dvh;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-    overflow: hidden;
-    overscroll-behavior: none;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas: 'top' 'views' 'stage' 'panel' 'tools';
+    height: calc(100dvh - var(--ed-top, 64px) - 0.75rem);
+    min-height: 420px;
   }
 
-  /* ---- top bar */
+  /* ---- title row and view tabs, laid out like the Pipeline and Details views */
   .top {
     grid-area: top;
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.55rem 0.75rem;
-  }
-  .title {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    flex: 1;
-    line-height: 1.2;
+    gap: 0.5rem;
+    margin-bottom: 0.15rem;
   }
   .t {
-    font-family: var(--font-display);
-    font-size: 1.15rem;
-    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 1.5rem;
+    line-height: 1.15;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .s {
-    font-size: 0.75rem;
+  .canon {
+    margin-left: 0.5rem;
     color: var(--fg-mute);
-    font-family: var(--font-mono);
+    font-size: 0.85em;
+  }
+  .s {
+    font-size: 0.85rem;
+    color: var(--fg-mute);
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    margin-right: 0.25rem;
   }
   .icon-btn {
     appearance: none;
@@ -681,7 +681,7 @@
     padding: 0;
     border-radius: 999px;
     border: 1px solid var(--border);
-    background: rgba(11, 17, 32, 0.7);
+    background: var(--bg-elev);
     color: var(--fg);
     display: inline-flex;
     align-items: center;
@@ -711,12 +711,15 @@
     flex: none;
   }
   .views {
-    display: none;
-    padding: 3px;
-    border-radius: 999px;
+    grid-area: views;
+    justify-self: start;
+    display: inline-flex;
+    gap: 0.2rem;
+    padding: 0.2rem;
+    margin: 0 0 1rem;
     border: 1px solid var(--border);
-    background: rgba(11, 17, 32, 0.7);
-    margin-right: 0.4rem;
+    border-radius: 999px;
+    background: var(--bg-elev);
   }
   .views button {
     appearance: none;
@@ -724,8 +727,8 @@
     background: none;
     color: var(--fg-mute);
     font: inherit;
-    font-size: 0.82rem;
-    padding: 0.3rem 0.8rem;
+    font-size: 0.88rem;
+    padding: 0.35rem 1rem;
     min-height: 0;
     border-radius: 999px;
     cursor: pointer;
@@ -774,11 +777,10 @@
   .stage {
     grid-area: stage;
     position: relative;
-    margin: 0 0.75rem;
-    border-radius: 18px;
+    border-radius: 16px;
     overflow: hidden;
     background: #000;
-    border: 1px solid rgba(233, 241, 255, 0.08);
+    border: 1px solid var(--border);
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
@@ -981,11 +983,11 @@
   /* ---- tool panel */
   .panel {
     grid-area: panel;
-    margin: 0.6rem 0.75rem 0;
+    margin: 0.6rem 0 0;
     padding: 0.4rem 0.85rem;
-    border-radius: 18px;
+    border-radius: 16px;
     background: var(--ed-surface);
-    border: 1px solid rgba(233, 241, 255, 0.07);
+    border: 1px solid var(--border);
     max-height: 42dvh;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -1109,11 +1111,11 @@
     grid-area: tools;
     display: flex;
     gap: 0.2rem;
-    margin: 0.6rem 0.75rem 0.6rem;
+    margin: 0.6rem 0 0;
     padding: 0.3rem;
     border-radius: 20px;
     background: var(--ed-surface);
-    border: 1px solid rgba(233, 241, 255, 0.07);
+    border: 1px solid var(--border);
   }
   .tools button {
     appearance: none;
@@ -1140,10 +1142,12 @@
   }
 
   .wide-only { display: none; }
-  /* Phones: tighter chrome, the view switch lives in the menu. */
+  /* Phones: tighter chrome. */
   @media (max-width: 819px) {
     .export { padding: 0 0.8rem; }
-    .t { font-size: 1.05rem; }
+    .t { font-size: 1.25rem; }
+    .views { margin: 0.35rem 0 0.5rem; }
+    .canon { display: none; }
   }
   @media (max-width: 380px) {
     .export :global(svg) { display: none; }
@@ -1154,23 +1158,18 @@
   @media (min-width: 820px) and (min-aspect-ratio: 1/1), (min-width: 1100px) {
     .editor {
       grid-template-columns: minmax(0, 1fr) clamp(320px, 30vw, 400px);
-      grid-template-rows: auto minmax(0, 1fr) auto;
-      grid-template-areas: 'top top' 'stage panel' 'stage tools';
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      grid-template-areas: 'top top' 'views views' 'stage panel' 'stage tools';
     }
-    .views { display: flex; }
     .wide-only { display: inline-flex; }
     .narrow-only { display: none; }
-    .menu .phone-only { display: none; }
-    .stage {
-      margin: 0 0 1rem 1rem;
-    }
     .panel {
-      margin: 0 1rem 0 1rem;
+      margin: 0 0 0 1rem;
       max-height: none;
       align-self: stretch;
     }
     .tools {
-      margin: 0.75rem 1rem 1rem 1rem;
+      margin: 0.75rem 0 0 1rem;
     }
     .cards {
       flex-wrap: wrap;

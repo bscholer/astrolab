@@ -19,8 +19,7 @@
   import type { CalibrationStatus, SessionSummary } from '$lib/api';
   import {
     formatBytes,
-    formatFailPct,
-    failPctClass,
+    formatKeptPct,
     filterBadgeClass,
     formatIntegrationTime,
   } from '$lib/format';
@@ -151,10 +150,10 @@
       {#if s.frame_count > 0}
         <span aria-hidden="true" class="muted">·</span>
         <span
-          class="fail-pct {failPctClass(s.failed_count, s.frame_count)}"
-          title="{s.failed_count} of {s.frame_count} failed"
+          class="kept-pct muted"
+          title="The scope registered {s.frame_count - s.failed_count} of {s.frame_count} frames; the rest were saved as failed"
         >
-          {formatFailPct(s.failed_count, s.frame_count)}
+          {formatKeptPct(s.failed_count, s.frame_count)}
         </span>
       {/if}
       {#if s.integration_seconds && s.integration_seconds > 0}
@@ -337,18 +336,9 @@
     margin-left: 0.4rem;
   }
 
-  .fail-pct {
-    color: var(--warn);
+  .kept-pct {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-  }
-  .fail-pct.fail-zero {
-    color: var(--good);
-    opacity: 0.85;
-  }
-  .fail-pct.fail-high {
-    color: var(--bad);
-    font-weight: 500;
   }
 
   .cal-row {
