@@ -3,57 +3,54 @@
 </p>
 
 <p align="center">
-  <em>The scope shoots all night, the stacks are waiting in the morning, and the finishing is yours.</em>
+  <em>Scheduling, stacking and processing for a smart telescope.</em>
 </p>
 
 ---
 
-## What it is
+astrolab is a self-hosted web app I use to run a DWARF 3 that sits outside on a fence. At night it picks targets and drives the scope. During the night and the next morning it copies the frames over, throws out the bad ones, and stacks them. Then I open a target and process it in the browser.
 
-astrolab is a self-hosted astrophotography workbench for a smart telescope that lives outside. It has three parts:
-
-- **Capture.** A scheduler runs the scope all night from a plan you set on the **Tonight** page. It moves on when clouds roll in or a target fails, and learns which parts of the sky your house and trees block.
-- **Library.** Overnight, new frames are copied in, judged, calibrated and stacked. Every target keeps a master that grows with each good night.
-- **Finishing.** In the morning you open a target and make the picture with a few big sliders. Every change is kept, so you can go back, compare, and export.
-
-The motto from the [roadmap](docs/roadmap.md): automate the chores, keep the craft. The machine sorts frames and stacks them. Making the picture stays with you, and the app does not edit pictures with AI.
-
-Today the capture side drives a **DWARF 3** through a small relay service. The library and finishing sides also take FITS files from other capture programs (see [Other scopes](#other-scopes)).
+The scope connection goes through a small relay service ([dwarf3-control](https://github.com/bscholer/dwarf3-control)), so the DWARF 3 is the only scope it can control right now. Processing works on FITS files from other capture programs too (see [Other scopes](#other-scopes)).
 
 <img src="docs/screenshots/last-night.png" alt="Home page: last night's card with good, rescued and junk time per target, and before/after sliders for updated masters" width="720" />
 
-## Capture: the scope runs itself
+## Capture
 
 <img src="docs/screenshots/sky-map.png" alt="Tonight sky map: the Milky Way with targets labelled, the scope's frame, the horizon, and the best targets tonight" width="720" />
 
-- **Tonight** lists what is up and well placed, with a sky map you can pan to find a target and send the scope to it.
-- **The plan** is an ordered list of targets, each with a filter, exposure, gain and an hours goal. Time from earlier nights counts toward the goal.
-- **Run all night** works down the plan. It prepares and calibrates the scope, slews, captures, and closes the barrel when the night ends. While it waits on clouds it probes the sky with short captures, and it stops a capture that stalls.
-- **Mosaics.** A target too big for one frame gets panels. Panels are shot in turn and stacked together.
-- **The learned sky.** Each frame the scope could not register stars in marks a patch of sky as suspect. Patches that keep failing over several nights get skipped. A wide-camera panorama of the surroundings can draw the skyline from the start.
-- **Alerts** go to a webhook (ntfy works) when something needs you, including rain or snow in the forecast while the scope is open.
+The Tonight page lists what's up and well placed, and has a sky map you can pan around to find a target and point the scope at it.
+
+You build a plan there: an ordered list of targets, each with a filter, exposure, gain and a goal in hours. Time from earlier nights counts toward the goal. With "Run all night" on, the scheduler works down the list. It prepares and calibrates the scope, slews, captures, and closes the barrel when it gets light. When it's cloudy it takes short test captures until the sky clears, and it gives up on a capture that stalls.
+
+Other things it handles:
+
+- Mosaics. Targets too big for one frame are split into panels that get shot in turn and stacked together.
+- Trees and houses. When the scope can't find stars in a frame, that bit of sky gets marked. If it keeps failing over several nights, the scheduler stops pointing there. You can also scan the surroundings with the wide camera to get the skyline up front.
+- Alerts. It can post to a webhook (ntfy works) when something needs attention, including rain or snow in the forecast while the scope is out.
 
 <img src="docs/screenshots/plan.png" alt="Tonight plan: twelve targets with filter, exposure, hours goal and gain, and a four-panel mosaic" width="720" />
 
 <img src="docs/screenshots/scope.png" alt="Scope page: status, pitch and rotation, and the live stack" width="720" />
 
-## Library: stacking happens overnight
+## Library
 
-- New sessions are copied from the scope (and, optionally, to a NAS).
-- Frames are triaged into good, rescued (frames the scope called failed that pass a second look) and junk. Scrap sessions are cleaned up.
-- Each night is calibrated with matching darks, flats and bias, plate solved against a local Gaia catalogue (star matching is the fallback), registered and stacked with **Siril**.
-- **Target masters** combine every kept night of a target. Sessions are grouped by where they land on the sky, not by name, so mosaic panels and a target saved under two names merge.
-- The home page shows last night: what was shot, what was kept, and how much more time would cut the noise by a third. That estimate feeds back into the plan.
+New sessions get copied off the scope (and optionally to a NAS). Frames are sorted into good, rescued and junk. "Rescued" means the scope marked the frame as failed but it looks fine on a second check. Sessions with too little usable data are deleted.
 
-## Finishing: you make the picture
+Each night is calibrated with matching darks, flats and bias, plate solved against a local Gaia catalogue (falling back to star matching), registered and stacked with Siril. The nights for a target are then combined into a master, which gets rebuilt whenever a good night is added. Sessions are matched by sky position, so mosaic panels end up in the same master, and so does a target that was saved under two different names.
+
+The home page shows how last night went for each target, and estimates how many more hours it would take to cut the noise by a third. That estimate goes back into the plan.
+
+## Processing
 
 <img src="docs/screenshots/project.png" alt="Project page: Triangulum Galaxy master with Quick sliders and the history strip" width="720" />
 
-- **Quick** sliders for brightness, dark sky, noise reduction, colour strength, green removal and stars, plus HOO colour for duo-band data and a crop on the picture.
-- **GraXpert** removes gradients and noise; **StarNet++** shrinks or removes stars.
-- Every render is a revision in the history strip: undo, branch, compare two side by side, and publish keepers to the gallery.
-- Export a full-size PNG or the linear stack as FITS for another tool.
-- Underneath is a pipeline of cached nodes. Changing a finishing slider never re-runs calibration or stacking, so edits come back in seconds.
+Each target opens with a handful of sliders: brightness, dark sky, noise reduction, colour strength, green removal and stars. There's also HOO colour for duo-band data and a crop tool. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
+
+Each render is saved to a history strip, where you can undo, branch, compare two versions side by side, and publish the ones you like to the gallery. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
+
+Under the hood it's a pipeline of cached steps, so moving a slider doesn't redo calibration or stacking. Most edits come back in a few seconds.
+
+I don't want the app editing pictures with AI, so it doesn't. The [roadmap](docs/roadmap.md) has more on where this is going.
 
 ## Quick start
 
@@ -96,15 +93,15 @@ Open `http://localhost:8000`. astrolab scans `/captures` on first run, so existi
 
 ### Connecting a scope
 
-1. Run the relay: [dwarf3-control](https://github.com/bscholer/dwarf3-control) (a Docker image) or the [Home Assistant app](https://github.com/bscholer/home-assistant-dwarf3). It talks to the DWARF 3 and leaves room for the DWARFLAB app on the same connection.
+1. Run the relay: [dwarf3-control](https://github.com/bscholer/dwarf3-control) (a Docker image) or the [Home Assistant app](https://github.com/bscholer/home-assistant-dwarf3). It talks to the scope, and you can still use the DWARFLAB app at the same time.
 2. In astrolab's **Settings**, set your site's latitude and longitude, and the scope service URL (the relay, port 9902).
 3. Add targets on **Tonight**, then turn on **Run all night**.
 
-astrolab talks to the relay over a small versioned HTTP API, routed by the service's own OpenAPI file, and shows only the features the service lists. Another scope can be supported by writing a service that follows the same spec. No astrolab changes are needed.
+astrolab talks to the relay over a small versioned HTTP API and only shows the features the relay says it supports. To add another scope, you'd write a service with the same API; astrolab itself wouldn't need to change.
 
 ### Try it without a scope
 
-`server/fakescope/` is a pretend DWARF 3 with a synthetic yard and weather. It serves the relay API (`python -m server.fakescope`, port 9902), so you can point astrolab at it and watch the scheduler work. It can also run the real scheduler through many simulated nights in seconds, which is how scheduler and sky-map changes get tested.
+`server/fakescope/` is a fake DWARF 3 with a made-up yard and weather. It serves the same API as the relay (`python -m server.fakescope`, port 9902), so you can point astrolab at it and watch the scheduler go. It can also run the real scheduler through lots of simulated nights in a few seconds, which is how I test scheduler changes.
 
 ### From source
 
@@ -122,9 +119,9 @@ Siril, GraXpert and StarNet++ must be installed on the host for the processing p
 
 ## Other scopes
 
-Ingest reads FITS headers, not folder layouts. NINA, ZWO ASIAIR and Seestar captures are recognised and sorted into sessions, and adding another capture program is usually one `if` in the classifier ([Adding a scope](CONTRIBUTING.md#adding-a-scope)). Processing has been validated end to end on DWARF 3 data. Scope control needs a scope service, which today exists for the DWARF 3.
+astrolab works out where files came from by reading their FITS headers, so folder layout doesn't matter. It recognises captures from NINA, ZWO ASIAIR and Seestar, and adding another capture program is usually a few lines in the classifier ([Adding a scope](CONTRIBUTING.md#adding-a-scope)). I've only tested processing end to end on DWARF 3 data, though, and scope control is DWARF 3 only for now.
 
-## For tools and agents
+## API
 
 Every endpoint is in the OpenAPI spec ([docs/openapi.json](docs/openapi.json)). astrolab serves an MCP endpoint at `/mcp` with a few tools so far ([docs/mcp-tools.json](docs/mcp-tools.json)). The relay has its own MCP server for driving the scope directly. Prometheus metrics are at `/metrics`, and OpenTelemetry traces are sent when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
@@ -138,7 +135,7 @@ The Docker image is amd64 and runs anywhere Docker does: Linux, macOS through Do
 
 ## Status
 
-v1. It runs a DWARF 3 every clear night and processes the results. Settings and the API are stable enough to build on; the [V1.1](https://github.com/bscholer/astrolab/milestone/2) and [V2](https://github.com/bscholer/astrolab/milestone/3) milestones track what's next.
+v1. I use it every clear night. Settings and the API should stay stable from here on. The [V1.1](https://github.com/bscholer/astrolab/milestone/2) and [V2](https://github.com/bscholer/astrolab/milestone/3) milestones track what's next.
 
 ## Built on
 
