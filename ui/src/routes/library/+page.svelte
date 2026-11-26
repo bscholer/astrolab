@@ -766,7 +766,6 @@
           </span>
           {#if kept !== null}
             <span class="kept" title="The scope registered {(t.frame_count - t.failed_count).toLocaleString()} of {t.frame_count.toLocaleString()} frames; the rest were saved as failed">
-              <span class="kept-bar"><span style="width: {kept}%"></span></span>
               <span class="num">{kept}% of {t.frame_count.toLocaleString()} frames kept</span>
             </span>
           {/if}
@@ -1337,23 +1336,9 @@
   .kept {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    padding: 0.35rem 0.85rem 0.8rem;
+    padding: 0.2rem 0.85rem 0.8rem;
     font-size: 0.75rem;
     color: var(--fg-mute);
-  }
-  .kept-bar {
-    display: block;
-    height: 3px;
-    border-radius: 999px;
-    background: rgba(233, 241, 255, 0.08);
-    overflow: hidden;
-  }
-  .kept-bar > span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: color-mix(in oklab, var(--accent) 70%, transparent);
   }
 
   /* The open target: sessions in a sheet from the right (from below on phones). */
