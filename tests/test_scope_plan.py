@@ -92,3 +92,26 @@ def test_time_goes_where_it_helps_most() -> None:
                        integrated={higher: 9 * 3600}).target.name == higher
     assert hour_gain(0) == 1.0
     assert hour_gain(3600) == pytest.approx(1 - 0.5 ** 0.5)
+
+
+def test_settings_fit_the_connected_model():
+    from server.scope_plan import Candidate, capture_options, capture_settings
+
+    nebula = Candidate("NGC 7000", 314.7, 44.3, "H II Region", exposure_s=30)
+    dwarf2 = capture_options({"capture": {"filters": ["vis", "astro"], "exposures": ["1", "10", "13", "15"]}})
+    cs = capture_settings(nebula, dwarf2)
+    assert (cs.filter, cs.exposure_s) == ("astro", 15), "no duo-band, and 15 s is its longest"
+
+    mini = capture_options({"capture": {"filters": ["astro", "duo"], "exposures": ["15", "30", "60", "180"]}})
+    galaxy = Candidate("M 31", 10.7, 41.3, "G", filter="vis", exposure_s=180)
+    cs = capture_settings(galaxy, mini)
+    assert (cs.filter, cs.exposure_s) == ("astro", 180), "no vis on a mini, and 180 s is there"
+
+
+def test_an_older_service_keeps_the_dwarf3_choices():
+    from server.scope_plan import Candidate, capture_options, capture_settings
+
+    options = capture_options({"spec_version": "0.1", "capabilities": ["capture"]})
+    assert options == {"filters": ["vis", "astro", "duo"], "exposures": ["15", "30", "60"]}
+    cs = capture_settings(Candidate("NGC 7000", 314.7, 44.3, "H II Region", exposure_s=60), options)
+    assert (cs.filter, cs.exposure_s) == ("duo", 60)

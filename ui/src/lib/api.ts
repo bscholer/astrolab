@@ -809,7 +809,7 @@ export interface ScopeAutoTarget {
   dec_deg: number;
   object_type?: string | null;
   filter?: 'vis' | 'astro' | 'duo' | null;
-  exposure_s?: 15 | 30 | 60 | null;
+  exposure_s?: number | null;
   gain?: number | null;
   goal_hours?: number | null;
   display_name?: string | null;
@@ -836,6 +836,8 @@ export interface ScopeState {
   service?: { name?: string; vendor?: string; model?: string };
   spec_version?: string;
   capabilities?: string[];
+  /** Filters and exposures the connected scope model accepts. */
+  capture?: { filters: string[]; exposures: string[] };
   status?: {
     app_connected?: boolean;
     busy_elsewhere?: boolean;

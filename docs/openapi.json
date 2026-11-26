@@ -979,11 +979,8 @@
           },
           "exposure_s": {
             "default": 15,
-            "enum": [
-              15,
-              30,
-              60
-            ],
+            "maximum": 600.0,
+            "minimum": 1.0,
             "title": "Exposure S",
             "type": "integer"
           },
@@ -1751,11 +1748,8 @@
           "exposure_s": {
             "anyOf": [
               {
-                "enum": [
-                  15,
-                  30,
-                  60
-                ],
+                "maximum": 600.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {

@@ -131,7 +131,7 @@ from server.scope_control import ControlBusy, ScopeControl
 from server.scope_mirror import Mirror
 from server.scope_observe import ObserveBusy, Observer
 from server.scope_pano import PanoRefused, PanoScanner
-from server.scope_plan import Candidate, capture_settings
+from server.scope_plan import Candidate, capture_options, capture_settings, service_info
 from server.scope_preview import stack_preview
 from server.scope_scheduler import Scheduler
 from server.scope_service import ScopeServiceClient, ScopeServiceError
@@ -3815,8 +3815,9 @@ class ScopeTarget(BaseModel):
     ra_deg: float = Field(ge=0, lt=360)
     dec_deg: float = Field(ge=-90, le=90)
     object_type: str | None = None
+    # Every filter name a DWARF model uses. The scheduler swaps in the nearest one the scope has.
     filter: Literal["vis", "astro", "duo"] | None = None
-    exposure_s: Literal[15, 30, 60] | None = None
+    exposure_s: int | None = Field(None, ge=1, le=600)
     gain: int | None = Field(None, ge=0)
     goal_hours: float | None = Field(None, gt=0)
     display_name: str | None = None
@@ -4021,6 +4022,7 @@ def _scope_state() -> dict:
             service=info.get("service"),
             spec_version=info.get("spec_version"),
             capabilities=info.get("capabilities", []),
+            capture=capture_options(info),
         )
         if client.has("status"):
             state["status"] = client.call("getStatus")
@@ -4051,7 +4053,7 @@ class ObserveRequest(BaseModel):
     ra_deg: float = Field(ge=0, lt=360)
     dec_deg: float = Field(ge=-90, le=90)
     frames: int = Field(30, ge=1, le=500)
-    exposure_s: Literal[15, 30, 60] = 15
+    exposure_s: int = Field(15, ge=1, le=600)
     gain: int = Field(60, ge=0)
     filter: Literal["vis", "astro", "duo"] | None = None
     object_type: str | None = None
@@ -4071,11 +4073,14 @@ def observe(req: ObserveRequest) -> dict:
         detail = f"service lacks capability: {', '.join(missing)}"
         raise HTTPException(status_code=400, detail=detail)
     try:
-        candidate = Candidate(req.name, req.ra_deg, req.dec_deg, req.object_type)
-        filter_name = req.filter or capture_settings(candidate).filter
+        candidate = Candidate(
+            req.name, req.ra_deg, req.dec_deg, req.object_type,
+            filter=req.filter, exposure_s=req.exposure_s,
+        )
+        cs = capture_settings(candidate, capture_options(service_info(client)))
         scope_observer.start(
-            client, req.name, req.ra_deg, req.dec_deg, req.frames, req.exposure_s, req.gain,
-            filter_name,
+            client, req.name, req.ra_deg, req.dec_deg, req.frames, cs.exposure_s, req.gain,
+            cs.filter,
         )
     except ObserveBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -4100,6 +4105,16 @@ def scope_preview() -> Response:
 scope_pano = PanoScanner(astrolab_home() / "pano")
 
 
+def _require_dwarf3_angles(client: ScopeServiceClient) -> None:
+    """The panorama and the horizon trace send motor angles measured on a DWARF 3 (172.5 is up)."""
+    model = str(((service_info(client) or {}).get("service") or {}).get("model") or "")
+    if model and not model.startswith("DWARF 3"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"this needs the DWARF 3's motor angles, and the scope is a {model}",
+        )
+
+
 @app.post("/api/scope/pano", status_code=202)
 def start_scope_pano(tele_covered: bool = False) -> dict:
     """Scan with the wide camera. Needs the Sun down or the tele lens covered."""
@@ -4114,6 +4129,7 @@ def start_scope_pano(tele_covered: bool = False) -> dict:
     if missing:
         detail = f"service lacks capability: {', '.join(missing)}"
         raise HTTPException(status_code=400, detail=detail)
+    _require_dwarf3_angles(client)
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night before a scan")
     if scope_trace.busy():
@@ -4157,6 +4173,7 @@ def start_scope_trace(tele_covered: bool = False) -> dict:
         raise HTTPException(status_code=400, detail="scope service and site location are needed")
     if folder is None or not (folder / "fit.json").is_file():
         raise HTTPException(status_code=404, detail="no panorama to trace")
+    _require_dwarf3_angles(client)
     if scope_scheduler.enabled:
         raise HTTPException(status_code=409, detail="turn off Run all night first")
     if scope_pano.snapshot()["state"] == "running":

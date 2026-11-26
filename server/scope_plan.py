@@ -49,17 +49,68 @@ DUO_BAND_TYPES = frozenset(
 @dataclass(frozen=True)
 class CaptureSettings:
     filter: str
-    exposure_s: int
+    exposure_s: float  # seconds; whole for the usual exposures
     gain: int
 
 
-def capture_settings(c: Candidate) -> CaptureSettings:
-    """Per-target overrides win. Gas nebulae default to duo-band, everything else to astro."""
+# What a scope service before spec 0.2 offers (a DWARF 3). Newer ones list their model's choices.
+LEGACY_CAPTURE_OPTIONS = {"filters": ["vis", "astro", "duo"], "exposures": ["15", "30", "60"]}
+# When the scope lacks a filter, the next best one. A DWARF II has no duo-band, a mini no vis.
+FILTER_FALLBACK = {"duo": "astro", "vis": "astro", "astro": "duo"}
+
+
+def capture_options(info: Mapping | None) -> dict:
+    """The filters and exposures the connected scope accepts, from its capabilities document."""
+    options = (info or {}).get("capture") or {}
+    return {
+        "filters": list(options.get("filters") or LEGACY_CAPTURE_OPTIONS["filters"]),
+        "exposures": list(options.get("exposures") or LEGACY_CAPTURE_OPTIONS["exposures"]),
+    }
+
+
+def service_info(client) -> Mapping | None:
+    """The capabilities document, or None when the client has none to give or is away."""
+    from server.scope_service import ScopeServiceError
+
+    info = getattr(client, "info", None)
+    if info is None:
+        return None
+    try:
+        return info()
+    except ScopeServiceError:
+        return None
+
+
+def fit(cs: CaptureSettings, options: Mapping | None) -> CaptureSettings:
+    """Bend settings to what the scope has, so a plan made for one model still shoots on another."""
+    if not options:
+        return cs
+    filters = list(options.get("filters") or [])
+    filter_name = cs.filter
+    if filters and filter_name not in filters:
+        fallback = FILTER_FALLBACK.get(filter_name)
+        filter_name = fallback if fallback in filters else filters[0]
+    exposure = cs.exposure_s
+    seconds = [float(e) for e in options.get("exposures") or []]
+    if seconds and float(exposure) not in seconds:
+        best = min(seconds, key=lambda s: abs(s - exposure))
+        exposure = int(best) if best.is_integer() else best
+    return CaptureSettings(filter_name, exposure, cs.gain)
+
+
+def capture_settings(c: Candidate, options: Mapping | None = None) -> CaptureSettings:
+    """Per-target overrides win. Gas nebulae default to duo-band, everything else to astro.
+
+    With the scope's capture options, the result is fitted to what that scope has.
+    """
     default_filter = "duo" if c.object_type in DUO_BAND_TYPES else "astro"
-    return CaptureSettings(
-        c.filter or default_filter,
-        c.exposure_s or DEFAULT_EXPOSURE_S,
-        c.gain if c.gain is not None else DEFAULT_GAIN,
+    return fit(
+        CaptureSettings(
+            c.filter or default_filter,
+            c.exposure_s or DEFAULT_EXPOSURE_S,
+            c.gain if c.gain is not None else DEFAULT_GAIN,
+        ),
+        options,
     )
 
 
