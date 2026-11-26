@@ -30,8 +30,8 @@ telescope through a relay service. CONTRIBUTING.md covers setup, nodes, and styl
 - `kubectl -n astrolab exec deploy/astrolab -- ...` works; the API is at the pod IP on 8000
   (`kubectl -n astrolab get pod -o jsonpath='{.items[0].status.podIP}'`). The Service name
   does not answer from this pod; use the pod IP.
-- The relay source is `bscholer/dwarf3-control` (clone it to read the API). It runs as the
-  "DWARF 3 relay" Home Assistant app (`bscholer/home-assistant-dwarf3`, `dwarf3_relay/`) on
+- The relay source is `bscholer/dwarf-relay` (formerly dwarf3-control; clone it to read the API). It
+  runs as the "DWARF relay" Home Assistant app (`bscholer/home-assistant-dwarf`, `dwarf3_relay/`) on
   the HA host, 192.168.1.140, with the HA integration in full control. API on 9902; it also
   forwards the scope's own ports, including RTSP on 554 (`ch1/stream0` wide, `ch0/stream0`
   tele, both 1920x1080 HEVC at 30 fps).

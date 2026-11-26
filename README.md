@@ -10,7 +10,7 @@
 
 astrolab is a self-hosted web app I use to run a DWARF 3 that sits outside on a fence. At night it picks targets and drives the scope. During the night and the next morning it copies the frames over, throws out the bad ones, and stacks them. Then I open a target and process it in the browser.
 
-The scope connection goes through a small relay service ([dwarf3-control](https://github.com/bscholer/dwarf3-control)), so the DWARF 3 is the only scope it can control right now. Processing works on FITS files from other capture programs too (see [Other scopes](#other-scopes)).
+The scope connection goes through a small relay service ([dwarf-relay](https://github.com/bscholer/dwarf-relay)), so the DWARF 3 is the only scope it can control right now. Processing works on FITS files from other capture programs too (see [Other scopes](#other-scopes)).
 
 <img src="docs/screenshots/last-night.png" alt="Home page: last night's card with good, rescued and junk time per target, and before/after sliders for updated masters" width="720" />
 
@@ -93,7 +93,7 @@ Open `http://localhost:8000`. astrolab scans `/captures` on first run, so existi
 
 ### Connecting a scope
 
-1. Run the relay: [dwarf3-control](https://github.com/bscholer/dwarf3-control) (a Docker image) or the [Home Assistant app](https://github.com/bscholer/home-assistant-dwarf3). It talks to the scope, and you can still use the DWARFLAB app at the same time.
+1. Run the relay: [dwarf-relay](https://github.com/bscholer/dwarf-relay) (a Docker image) or the [Home Assistant app](https://github.com/bscholer/home-assistant-dwarf). It talks to the scope, and you can still use the DWARFLAB app at the same time.
 2. In astrolab's **Settings**, set your site's latitude and longitude, and the scope service URL (the relay, port 9902).
 3. Add targets on **Tonight**, then turn on **Run all night**.
 
@@ -135,7 +135,7 @@ The Docker image is amd64 and runs anywhere Docker does: Linux, macOS through Do
 
 ## Status
 
-v1. I use it every clear night. Settings and the API should stay stable from here on. The [V1.1](https://github.com/bscholer/astrolab/milestone/2) and [V2](https://github.com/bscholer/astrolab/milestone/3) milestones track what's next.
+v0.3. I use it every clear night, but settings and the API can still change between releases. The [milestones](https://github.com/bscholer/astrolab/milestones) track what's next.
 
 ## Built on
 
