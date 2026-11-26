@@ -352,13 +352,14 @@ named entity). Below that, sub-heads are uppercase Inter labels in
 This list is what the playground is wrestling toward. Treat it as a
 spec, not a proposal.
 
-- **Library page** is for browsing existing data. The capture-root
+- **Home** (`/`) opens Projects once any exist, the Library before that.
+- **Library page** (`/library`, tabs Targets and Storage) is for browsing existing data. The capture-root
   text input belongs in **Settings**, not here. The library top has a
   small refresh icon button + muted "scanned Xh ago" relative time.
 - **Settings page** owns: capture root (and a "Scan now" primary
   button next to it), cache budget, cache root display, anything else
   configuration-shaped.
-- **Projects page** is a grid of project cards (see Components above).
+- **Projects page** is a grid of project cards (see Components above). When the scope shot last night (or is shooting tonight) it opens with a Last night strip: one line of totals, a card per target with what the night added to its master, and the rest on one line.
 - **Project detail page** has three tabs: Edit (the editor, below), Pipeline (every step) and Details (notes, sessions, what more data would buy). `?view=` keeps the tab.
 - **Jobs page** is a thin debugging table; not a primary surface.
 

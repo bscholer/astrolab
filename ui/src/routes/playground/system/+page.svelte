@@ -355,7 +355,7 @@
 <header class="container topbar">
   <a href="/" class="logo">astrolab</a>
   <nav class="nav">
-    <a href="/">Library</a>
+    <a href="/library">Library</a>
     <a href="/tonight">Tonight</a>
     <a href="/projects">Projects</a>
     <a href="/settings">Settings</a>

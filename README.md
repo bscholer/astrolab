@@ -38,7 +38,7 @@ New sessions get copied off the scope (and optionally to a NAS). Frames are sort
 
 Each night is calibrated with matching darks, flats and bias, plate solved against a local Gaia catalogue (falling back to star matching), registered and stacked with Siril. The nights for a target are then combined into a master, which gets rebuilt whenever a good night is added. Sessions are matched by sky position, so mosaic panels end up in the same master, and so does a target that was saved under two different names.
 
-The home page shows how last night went for each target, and estimates how many more hours it would take to cut the noise by a third. That estimate goes back into the plan.
+The Projects page opens with how last night went: what each target added to its master. Each master's Details tab estimates how many more hours it would take to cut the noise by a third, and that estimate goes back into the plan.
 
 ## Processing
 

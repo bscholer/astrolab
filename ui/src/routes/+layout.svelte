@@ -27,8 +27,8 @@
 
     <!-- Desktop nav: hidden on mobile via CSS -->
     <nav class="nav desktop-nav">
-      <a href="/" class:active={$page.url.pathname === '/'}>Library</a>
       <a href="/projects" class:active={$page.url.pathname.startsWith('/projects')}>Projects</a>
+      <a href="/library" class:active={$page.url.pathname.startsWith('/library')}>Library</a>
       <a href="/tonight" class:active={$page.url.pathname.startsWith('/tonight')}>Tonight</a>
       <a href="/scope" class:active={$page.url.pathname.startsWith('/scope')}>Scope</a>
       <a href="/system" class:active={$page.url.pathname.startsWith('/system')}>System</a>
@@ -84,8 +84,8 @@
   <!-- Mobile dropdown nav -->
   {#if menuOpen}
     <nav class="mobile-nav container" aria-label="Mobile navigation">
-      <a href="/" class:active={$page.url.pathname === '/'}>Library</a>
       <a href="/projects" class:active={$page.url.pathname.startsWith('/projects')}>Projects</a>
+      <a href="/library" class:active={$page.url.pathname.startsWith('/library')}>Library</a>
       <a href="/tonight" class:active={$page.url.pathname.startsWith('/tonight')}>Tonight</a>
       <a href="/scope" class:active={$page.url.pathname.startsWith('/scope')}>Scope</a>
       <a href="/system" class:active={$page.url.pathname.startsWith('/system')}>System</a>
