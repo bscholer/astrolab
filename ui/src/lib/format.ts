@@ -31,6 +31,39 @@ export function templateDisplayName(id: string): string {
     .join(' · ');
 }
 
+/** Short recipe names for tight spots like the project cards. */
+const TEMPLATE_SHORT_NAMES: Record<string, string> = {
+  calibrate_register_stack: 'Single stack',
+  stack_per_night: 'Stacked per night',
+  stack_per_night_duo: 'Duo-band, per night',
+  hoo_dwarf3_dualband: 'HOO',
+  hoo_recombine: 'HOO',
+  hso_recombine: 'HSO'
+};
+
+export function templateShortName(id: string): string {
+  return TEMPLATE_SHORT_NAMES[id] ?? templateDisplayName(id);
+}
+
+/**
+ * A capture span in a few characters: "Nov 12", "Nov 12–14",
+ * "Nov 28 – Dec 3". Adds the year when the span is not in this year.
+ */
+export function formatDateSpan(start: string | null, end: string | null): string {
+  const s = start ? new Date(`${start.slice(0, 10)}T12:00:00`) : null;
+  const e = end ? new Date(`${end.slice(0, 10)}T12:00:00`) : null;
+  const a = s ?? e;
+  const b = e ?? s;
+  if (!a || !b) return '';
+  const thisYear = new Date().getFullYear();
+  const yr = b.getFullYear() !== thisYear ? `, ${b.getFullYear()}` : '';
+  const mon = (d: Date) => d.toLocaleDateString(undefined, { month: 'short' });
+  if (a.toDateString() === b.toDateString()) return `${mon(a)} ${a.getDate()}${yr}`;
+  if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear())
+    return `${mon(a)} ${a.getDate()}–${b.getDate()}${yr}`;
+  return `${mon(a)} ${a.getDate()} – ${mon(b)} ${b.getDate()}${yr}`;
+}
+
 /**
  * Failure percentage for a frame count. Whole percent only — design.md
  * forbids decimals here. A returned string of '' means "don't render
