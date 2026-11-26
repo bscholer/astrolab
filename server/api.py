@@ -2028,9 +2028,8 @@ def create_project_from_sessions(req: CreateProjectFromSessionsRequest, conn: DB
         ).fetchone()
         target_name = row["name"] if row and row["name"] else None
         if target_name:
-            # Multi-session project name reads naturally with the count: the
-            # gallery view de-dupes by target anyway, so a single-target
-            # project named "M 33 (3 sessions)" is unambiguous.
+            # Multi-session project name reads naturally with the count, so a
+            # single-target project named "M 33 (3 sessions)" is unambiguous.
             name = f"{target_name} ({len(sids)} sessions)" if len(sids) > 1 else target_name
         else:
             name = f"sessions {sids}"
@@ -2717,99 +2716,6 @@ def get_project(project_id: str, conn: DBDep) -> dict:
     return _project_to_response(project, conn)
 
 
-class GalleryEntry(BaseModel):
-    """One render in the gallery: a successful project history entry,
-    surfaced as a flat row so the UI doesn't have to fan out per
-    project."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    project_id: str
-    project_name: str
-    target_common_name: str | None = None
-    template_id: str
-    seq: int
-    label: str | None = None
-    created_at: str
-    preview_hash: str
-    preview_port: str
-    is_cover: bool = False
-    target_canonical: str | None = None
-    """Catalog target of this project. Null blocks a Tonight favorite."""
-    is_favorite: bool = False
-    """This entry supplies the Tonight image of its target."""
-
-
-@app.get("/api/gallery", response_model=list[GalleryEntry])
-def list_gallery(conn: DBDep) -> list[GalleryEntry]:
-    """Every successful history entry across all projects, newest
-    first. Each entry has the bits a card needs (preview pointer +
-    target/template names) so the UI doesn't have to JOIN per render."""
-    out: list[GalleryEntry] = []
-    favorites = {
-        (r["project_id"], r["seq"])
-        for r in conn.execute(
-            "SELECT project_id, seq FROM target_images WHERE project_id IS NOT NULL"
-        ).fetchall()
-    }
-    for project in project_manager.list():
-        capture = _capture_for_project(conn, project.source_session_ids)
-        target_common = capture.target_common_name
-        target_canonical = _project_canonical(conn, project.source_session_ids)
-        for entry in project.history:
-            # Opt-in: only entries the user explicitly published surface
-            # in the gallery. Iterate-and-compare crumbs stay private.
-            if not entry.published:
-                continue
-            record = job_manager.get(entry.job_id)
-            if record is None or not record.outputs:
-                continue
-            outs = record.outputs
-            port = "image" if "image" in outs else next(iter(outs))
-            ref = outs.get(port)
-            if ref is None:
-                continue
-            out.append(
-                GalleryEntry(
-                    project_id=project.id,
-                    project_name=project.name,
-                    target_common_name=target_common,
-                    template_id=project.template.id,
-                    seq=entry.seq,
-                    label=entry.label,
-                    created_at=entry.created_at,
-                    preview_hash=ref.node_hash,
-                    preview_port=port,
-                    is_cover=(project.cover_seq == entry.seq),
-                    target_canonical=target_canonical,
-                    is_favorite=(project.id, entry.seq) in favorites,
-                )
-            )
-    out.sort(key=lambda e: e.created_at, reverse=True)
-    return out
-
-
-def _project_canonical(conn: sqlite3.Connection, session_ids: list[str]) -> str | None:
-    """OpenNGC canonical id of the target in the project's first session."""
-    if not session_ids or not all(s.isdigit() for s in session_ids):
-        return None
-    placeholders = ",".join("?" for _ in session_ids)
-    row = conn.execute(
-        f"""
-        SELECT t.name AS name, t.resolved_canonical AS resolved_canonical
-        FROM sessions s JOIN targets t ON t.id = s.target_id
-        WHERE s.id IN ({placeholders})
-        ORDER BY s.started_at
-        LIMIT 1
-        """,
-        [int(s) for s in session_ids],
-    ).fetchone()
-    if row is None:
-        return None
-    entry = openngc_enrich(row["resolved_canonical"] or row["name"])
-    return entry.canonical if entry is not None else None
-
-
 def _record_target_image(
     conn: sqlite3.Connection, canonical: str, project_id: str | None, seq: int | None
 ) -> None:
@@ -2839,48 +2745,6 @@ def _target_image_root() -> Path:
 
 def _target_image_path(canonical: str) -> Path:
     return sky_thumbs.custom_image_path(_target_image_root(), canonical)
-
-
-@app.put(
-    "/api/gallery/{project_id}/{seq}/favorite",
-    responses={
-        404: {"description": "unknown gallery entry"},
-        409: {"description": "project has no catalog target"},
-    },
-)
-def favorite_gallery_entry(project_id: str, seq: int, conn: DBDep) -> dict:
-    """Use a published render as the Tonight image of its target."""
-    project = project_manager.get(project_id)
-    entry = next((h for h in project.history if h.seq == seq), None) if project else None
-    record = job_manager.get(entry.job_id) if entry else None
-    if project is None or record is None or not record.outputs:
-        raise HTTPException(status_code=404, detail="gallery entry not found")
-    canonical = _project_canonical(conn, project.source_session_ids)
-    if canonical is None:
-        raise HTTPException(status_code=409, detail="project has no catalog target")
-    key = "image" if "image" in record.outputs else next(iter(record.outputs))
-    ref = record.outputs[key]
-    try:
-        path = render_output(
-            job_manager.cache, ref.node_hash, ref.port, display_ready=ref.display_ready
-        )
-        sky_thumbs.save_custom_image(_target_image_root(), canonical, path.read_bytes())
-    except (PreviewError, sky_thumbs.InvalidImage) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    _record_target_image(conn, canonical, project_id, seq)
-    return {"target": canonical}
-
-
-@app.delete("/api/gallery/{project_id}/{seq}/favorite")
-def unfavorite_gallery_entry(project_id: str, seq: int, conn: DBDep) -> dict:
-    """Drop the favorite. An image that a later upload replaced stays."""
-    row = conn.execute(
-        "SELECT canonical FROM target_images WHERE project_id = ? AND seq = ?",
-        (project_id, seq),
-    ).fetchone()
-    if row is not None:
-        _delete_target_image(conn, row["canonical"])
-    return {"removed": row is not None}
 
 
 @app.patch("/api/projects/{project_id}")
@@ -2931,28 +2795,10 @@ class SetCoverRequest(BaseModel):
 @app.put("/api/projects/{project_id}/cover")
 def set_project_cover(project_id: str, req: SetCoverRequest, conn: DBDep) -> dict:
     """Pin the history seq used as this project's cover image. Pass
-    seq=null to clear (Projects list + Gallery fall back to the auto
-    pick: latest entry with outputs)."""
+    seq=null to clear (the Projects list falls back to the auto pick:
+    the latest entry with outputs)."""
     try:
         project = project_manager.set_cover(project_id, req.seq)
-    except ProjectNotFound as exc:
-        raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _project_to_response(project, conn)
-
-
-class SetPublishedRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    published: bool
-
-
-@app.put("/api/projects/{project_id}/history/{seq}/published")
-def set_history_published(project_id: str, seq: int, req: SetPublishedRequest, conn: DBDep) -> dict:
-    """Toggle a single history entry's gallery-visible state. The gallery
-    feed filters to published-only; this is the user's opt-in surface."""
-    try:
-        project = project_manager.set_published(project_id, seq, req.published)
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     except ValueError as exc:

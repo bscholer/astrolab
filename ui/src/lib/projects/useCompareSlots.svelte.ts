@@ -26,7 +26,7 @@ export function createCompareSlots(getProject: () => Project | null) {
         comparePreviews = { ...comparePreviews, [entry.job_id]: null };
         return null;
       }
-      // Prefer 'image' port to match what gallery cards surface.
+      // Prefer the 'image' port, as the project cards do.
       const port = 'image' in job.outputs ? 'image' : Object.keys(job.outputs)[0];
       const ref = job.outputs[port];
       const out = ref ? { hash: ref.node_hash, port } : null;

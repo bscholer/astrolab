@@ -46,7 +46,7 @@ The home page shows how last night went for each target, and estimates how many 
 
 Each target opens with a handful of sliders: brightness, dark sky, noise reduction, colour strength, green removal and stars. There's also HOO colour for duo-band data and a crop tool. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
 
-Each render is saved to a history strip, where you can undo, branch, compare two versions side by side, and publish the ones you like to the gallery. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
+Each render is saved to a history strip, where you can undo, branch, and compare two versions side by side. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
 
 Under the hood it's a pipeline of cached steps, so moving a slider doesn't redo calibration or stacking. Most edits come back in a few seconds.
 

@@ -1,9 +1,9 @@
 <!--
   HistoryStrip: horizontal scroll rail of versioned history entries.
 
-  Each entry is a revert button plus a publish star and a compare-slot
-  toggle. The strip auto-scrolls to the right edge (newest) on mount
-  and whenever history grows.
+  Each entry is a revert button plus a compare-slot toggle. The strip
+  auto-scrolls to the right edge (newest) on mount and whenever history
+  grows.
 
   Compare state is threaded through via callback props so CompareController
   remains the single source of truth.
@@ -17,10 +17,8 @@
     compareA: number | null;
     compareB: number | null;
     compareLoading: boolean;
-    publishBusy: Record<number, boolean>;
     onRevert: (seq: number) => void;
     onToggleCompareSlot: (seq: number) => void;
-    onTogglePublished: (seq: number, currentlyPublished: boolean) => void;
     onOpenCompare: () => void;
     onClearCompare: () => void;
   };
@@ -30,10 +28,8 @@
     compareA,
     compareB,
     compareLoading,
-    publishBusy,
     onRevert,
     onToggleCompareSlot,
-    onTogglePublished,
     onOpenCompare,
     onClearCompare,
   }: Props = $props();
@@ -206,37 +202,6 @@
             <span class="qdot qdot-{nColor}"></span>
             <span class="qdot qdot-{sColor}"></span>
           </span>
-        </button>
-        <button
-          type="button"
-          class="publish-toggle"
-          class:on={h.published}
-          disabled={publishBusy[h.seq]}
-          aria-pressed={h.published}
-          aria-label={h.published
-            ? `Unpublish v${h.seq + 1} from gallery`
-            : `Publish v${h.seq + 1} to gallery`}
-          title={h.published ? 'In gallery - click to unpublish' : 'Publish to gallery'}
-          onclick={() => onTogglePublished(h.seq, h.published)}
-        >
-          {#if h.published}
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M12 2.5l2.95 5.98 6.6.96-4.78 4.66 1.13 6.58L12 17.6l-5.9 3.1 1.13-6.58L2.45 9.44l6.6-.96L12 2.5z"
-              />
-            </svg>
-          {:else}
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-              <path
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linejoin="round"
-                d="M12 2.5l2.95 5.98 6.6.96-4.78 4.66 1.13 6.58L12 17.6l-5.9 3.1 1.13-6.58L2.45 9.44l6.6-.96L12 2.5z"
-              />
-            </svg>
-          {/if}
         </button>
         <button
           type="button"
@@ -414,40 +379,6 @@
   }
   .hist-entry.failed > button:first-child:hover {
     border-color: rgba(236, 72, 153, 0.75);
-  }
-
-  .publish-toggle {
-    position: absolute;
-    top: 0.3rem;
-    right: 0.3rem;
-    appearance: none;
-    background: transparent;
-    border: 0;
-    color: var(--fg-mute, #777);
-    padding: 0.2rem;
-    border-radius: 4px;
-    cursor: pointer;
-    line-height: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  /* Invisible 44x44 hit area for phone tap targets. */
-  .publish-toggle::before {
-    content: '';
-    position: absolute;
-    inset: -12px;
-  }
-  .publish-toggle:hover:not(:disabled) {
-    color: var(--accent, #5eead4);
-    background: rgba(255, 255, 255, 0.04);
-  }
-  .publish-toggle.on {
-    color: var(--accent, #5eead4);
-  }
-  .publish-toggle:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
   }
 
   .hist-seq {

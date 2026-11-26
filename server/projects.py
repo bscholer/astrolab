@@ -116,7 +116,6 @@ class HistoryEntry:
     overrides: dict[str, dict[str, Any]]
     label: str | None
     created_at: str
-    published: bool = False
     kind: str = "edit"
     """Discriminates an override edit (`edit`) from a session-set swap
     (`swap_sessions`). Revert flow keys off this to know whether moving
@@ -135,7 +134,6 @@ class HistoryEntry:
             "overrides": self.overrides,
             "label": self.label,
             "created_at": self.created_at,
-            "published": self.published,
             "kind": self.kind,
             "snapshot": self.snapshot,
         }
@@ -405,10 +403,6 @@ class ProjectManager:
                 overrides=new_overrides,
                 label=derived_label,
                 created_at=_now(),
-                # Published was almost certainly false on the interrupted
-                # entry (you don't publish a tombstone), but preserve any
-                # explicit flag the user set rather than silently clearing it.
-                published=prev_entry.published,
             )
             # Replace in place; current_seq already points at this seq so
             # undo/redo continues to walk the same numeric range.
@@ -463,8 +457,8 @@ class ProjectManager:
 
     def set_cover(self, project_id: str, seq: int | None) -> Project:
         """Pin a specific history seq as the project's cover, or pass
-        None to clear (the projects list / gallery then auto-pick the
-        latest entry that has outputs)."""
+        None to clear (the projects list then auto-picks the latest entry
+        that has outputs)."""
         with self._lock:
             project = self._records.get(project_id)
         if project is None:
@@ -477,33 +471,6 @@ class ProjectManager:
         project.updated_at = _now()
         self._persist_project(project, kind="update")
         log.info("project cover set: %s -> seq=%s", project_id, seq)
-        return project
-
-    def set_published(
-        self, project_id: str, seq: int, published: bool
-    ) -> Project:
-        """Toggle the gallery 'published' flag on a single history entry.
-
-        The Gallery view filters to published-only; this is the user's
-        opt-in to surface a render publicly. Orthogonal to cover_seq
-        (cover is the project's representative thumbnail; published
-        promotes the entry to the global gallery feed).
-        """
-        with self._lock:
-            project = self._records.get(project_id)
-        if project is None:
-            raise ProjectNotFound(project_id)
-        entry = next((h for h in project.history if h.seq == seq), None)
-        if entry is None:
-            raise ValueError(f"project {project_id} has no history seq {seq}")
-        entry.published = bool(published)
-        project.updated_at = _now()
-        self._persist_history_published(project_id, seq, entry.published)
-        self._persist_project(project, kind="update")
-        log.info(
-            "project history published: %s seq=%d -> %s",
-            project_id, seq, entry.published,
-        )
         return project
 
     def set_description(self, project_id: str, description: str | None) -> Project:
@@ -970,8 +937,8 @@ class ProjectManager:
                     """
                     INSERT INTO project_history
                     (project_id, seq, job_id, overrides_json, label, created_at,
-                     published, kind, snapshot_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     kind, snapshot_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_id,
@@ -980,7 +947,6 @@ class ProjectManager:
                         json.dumps(entry.overrides),
                         entry.label,
                         entry.created_at,
-                        int(entry.published),
                         entry.kind,
                         json.dumps(entry.snapshot) if entry.snapshot is not None else None,
                     ),
@@ -1005,8 +971,7 @@ class ProjectManager:
                 conn.execute(
                     """
                     UPDATE project_history
-                    SET job_id=?, overrides_json=?, label=?, created_at=?,
-                        published=?
+                    SET job_id=?, overrides_json=?, label=?, created_at=?
                     WHERE project_id=? AND seq=?
                     """,
                     (
@@ -1014,7 +979,6 @@ class ProjectManager:
                         json.dumps(entry.overrides),
                         entry.label,
                         entry.created_at,
-                        int(entry.published),
                         project_id,
                         entry.seq,
                     ),
@@ -1023,28 +987,6 @@ class ProjectManager:
             log.exception(
                 "DB write failed replacing history on project %s seq=%d",
                 project_id, entry.seq,
-            )
-        finally:
-            conn.close()
-
-    def _persist_history_published(
-        self, project_id: str, seq: int, published: bool
-    ) -> None:
-        try:
-            conn = self._conn()
-        except Exception:
-            return
-        try:
-            with conn:
-                conn.execute(
-                    "UPDATE project_history SET published=? "
-                    "WHERE project_id=? AND seq=?",
-                    (int(published), project_id, seq),
-                )
-        except sqlite3.Error:
-            log.exception(
-                "DB write failed updating published on %s seq=%d",
-                project_id, seq,
             )
         finally:
             conn.close()
@@ -1087,13 +1029,6 @@ class ProjectManager:
             (row["id"],),
         ).fetchall()
         for hr in history_rows:
-            # `published` is nullable for pre-v8 rows that predate the
-            # column. Default falsy -> unpublished.
-            published = (
-                bool(hr["published"])
-                if "published" in hr.keys()  # noqa: SIM118
-                else False
-            )
             # `kind` / `snapshot_json` arrived in v12. Pre-v12 rows lack
             # the columns entirely; default to 'edit' (the only kind
             # that existed before) and None snapshot.
@@ -1122,7 +1057,6 @@ class ProjectManager:
                     overrides=json.loads(hr["overrides_json"]),
                     label=hr["label"],
                     created_at=hr["created_at"],
-                    published=published,
                     kind=kind,
                     snapshot=snapshot,
                 )

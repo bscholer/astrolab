@@ -495,94 +495,6 @@
         "title": "FramingQuery",
         "type": "object"
       },
-      "GalleryEntry": {
-        "additionalProperties": false,
-        "description": "One render in the gallery: a successful project history entry,\nsurfaced as a flat row so the UI doesn't have to fan out per\nproject.",
-        "properties": {
-          "created_at": {
-            "title": "Created At",
-            "type": "string"
-          },
-          "is_cover": {
-            "default": false,
-            "title": "Is Cover",
-            "type": "boolean"
-          },
-          "is_favorite": {
-            "default": false,
-            "title": "Is Favorite",
-            "type": "boolean"
-          },
-          "label": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Label"
-          },
-          "preview_hash": {
-            "title": "Preview Hash",
-            "type": "string"
-          },
-          "preview_port": {
-            "title": "Preview Port",
-            "type": "string"
-          },
-          "project_id": {
-            "title": "Project Id",
-            "type": "string"
-          },
-          "project_name": {
-            "title": "Project Name",
-            "type": "string"
-          },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          },
-          "target_canonical": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Canonical"
-          },
-          "target_common_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Common Name"
-          },
-          "template_id": {
-            "title": "Template Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "project_name",
-          "template_id",
-          "seq",
-          "created_at",
-          "preview_hash",
-          "preview_port"
-        ],
-        "title": "GalleryEntry",
-        "type": "object"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2091,20 +2003,6 @@
         "title": "SetCoverRequest",
         "type": "object"
       },
-      "SetPublishedRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "published": {
-            "title": "Published",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "published"
-        ],
-        "title": "SetPublishedRequest",
-        "type": "object"
-      },
       "SkyInfo": {
         "additionalProperties": false,
         "description": "Sub-payload bundled into target responses when we recognize the\ncatalog id. Pulled from the OpenNGC vendored CSVs at boot time;\nunits are decimal degrees (J2000), V-band magnitude preferred.",
@@ -2950,135 +2848,6 @@
           }
         },
         "summary": "Framing Params"
-      }
-    },
-    "/api/gallery": {
-      "get": {
-        "description": "Every successful history entry across all projects, newest\nfirst. Each entry has the bits a card needs (preview pointer +\ntarget/template names) so the UI doesn't have to JOIN per render.",
-        "operationId": "list_gallery_api_gallery_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/GalleryEntry"
-                  },
-                  "title": "Response List Gallery Api Gallery Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Gallery"
-      }
-    },
-    "/api/gallery/{project_id}/{seq}/favorite": {
-      "delete": {
-        "description": "Drop the favorite. An image that a later upload replaced stays.",
-        "operationId": "unfavorite_gallery_entry_api_gallery__project_id___seq__favorite_delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "seq",
-            "required": true,
-            "schema": {
-              "title": "Seq",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Unfavorite Gallery Entry Api Gallery  Project Id   Seq  Favorite Delete",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Unfavorite Gallery Entry"
-      },
-      "put": {
-        "description": "Use a published render as the Tonight image of its target.",
-        "operationId": "favorite_gallery_entry_api_gallery__project_id___seq__favorite_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "seq",
-            "required": true,
-            "schema": {
-              "title": "Seq",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Favorite Gallery Entry Api Gallery  Project Id   Seq  Favorite Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "description": "unknown gallery entry"
-          },
-          "409": {
-            "description": "project has no catalog target"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Favorite Gallery Entry"
       }
     },
     "/api/health": {
@@ -4013,7 +3782,7 @@
     },
     "/api/projects/{project_id}/cover": {
       "put": {
-        "description": "Pin the history seq used as this project's cover image. Pass\nseq=null to clear (Projects list + Gallery fall back to the auto\npick: latest entry with outputs).",
+        "description": "Pin the history seq used as this project's cover image. Pass\nseq=null to clear (the Projects list falls back to the auto pick:\nthe latest entry with outputs).",
         "operationId": "set_project_cover_api_projects__project_id__cover_put",
         "parameters": [
           {
@@ -4113,67 +3882,6 @@
           }
         },
         "summary": "Export Project"
-      }
-    },
-    "/api/projects/{project_id}/history/{seq}/published": {
-      "put": {
-        "description": "Toggle a single history entry's gallery-visible state. The gallery\nfeed filters to published-only; this is the user's opt-in surface.",
-        "operationId": "set_history_published_api_projects__project_id__history__seq__published_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "seq",
-            "required": true,
-            "schema": {
-              "title": "Seq",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetPublishedRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Set History Published Api Projects  Project Id  History  Seq  Published Put",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Set History Published"
       }
     },
     "/api/projects/{project_id}/revert/{seq}": {

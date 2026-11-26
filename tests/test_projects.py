@@ -241,29 +241,6 @@ def test_collapsed_entry_persists_across_rehydrate(pm, tmp_path: Path) -> None:
     assert reloaded.current_seq == reloaded.history[-1].seq
 
 
-def test_collapse_preserves_published_flag(pm) -> None:
-    """If the prior entry had `published=True` (unusual, since you don't
-    publish a tombstone, but possible via direct API), the collapsed
-    replacement carries that flag forward rather than silently demoting
-    the entry to unpublished."""
-    manager, jobs = pm
-    project = manager.create(
-        name="published-collapse",
-        template=_make_template(),
-        base_job=_make_job(),
-        source_session_ids=[],
-    )
-    jobs.mark_completed(project.history[0].job_id)
-    project = manager.patch(
-        project.id, overrides={"ds": {"target_size_px": 32}}
-    )
-    # Pin the in-flight entry as published.
-    project.history[-1].published = True
-
-    manager.patch(project.id, overrides={"ds": {"target_size_px": 16}})
-    assert project.history[-1].published is True
-
-
 # ---- template upgrade --------------------------------------------------------
 
 
