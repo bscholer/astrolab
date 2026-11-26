@@ -2,14 +2,13 @@
 # Multi-stage Dockerfile for astrolab.
 #
 # Build args
-#   BASE  ubuntu:24.04                  → CPU image (default; StarNet++ compatible)
-#         debian:bookworm-slim          → CPU image (legacy, no StarNet++)
-#         nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04  → CUDA image
+#   BASE  ubuntu:24.04                  → CPU image (published as :latest/:cpu on release, :dev on main)
+#         nvidia/cuda:12.6.3-runtime-ubuntu24.04  → CUDA image (published as :cuda on release, :dev-cuda on main)
+#         Other bases are not supported: StarNet++ 2.5 needs glibc 2.38 (Ubuntu 24.04).
 #
 # Build examples
 #   docker build -t astrolab:cpu .
-#   docker build --build-arg BASE=debian:bookworm-slim -t astrolab:cpu-bookworm .
-#   docker build --build-arg BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t astrolab:cuda .
+#   docker build --build-arg BASE=nvidia/cuda:12.6.3-runtime-ubuntu24.04 -t astrolab:cuda .
 
 ARG BASE=ubuntu:24.04
 
@@ -118,43 +117,31 @@ LABEL org.opencontainers.image.title="astrolab" \
 # AppDir's siril-cli binary; only packages not already bundled in the AppDir
 # are listed here.
 #
-# Package soname suffixes differ between Debian 12 (bookworm) and the CUDA
-# image's Ubuntu 22.04 (jammy) base. Dispatch on /etc/os-release.
+# Ubuntu 24.04 (noble) package names; several carry the t64 suffix from its
+# 64-bit time_t transition. StarNet++ 2.5 needs glibc 2.38, so older bases
+# are not supported.
 RUN set -eu; \
-    apt-get update -qq; \
     . /etc/os-release; \
-    case "${ID}-${VERSION_CODENAME}" in \
-        debian-bookworm) \
-            pkgs="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
-                  libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
-                  libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
-                  libsm6 libcurl4 ca-certificates curl unzip \
-                  libcfitsio10 libopencv-core406" ;; \
-        ubuntu-jammy) \
-            pkgs="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
-                  libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw20 libwcs7 \
-                  libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
-                  libsm6 libcurl4 ca-certificates curl unzip \
-                  libcfitsio9 libopencv-core4.5d" ;; \
-        ubuntu-noble) \
-            pkgs="libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 \
-                  libfftw3-single3 libgomp1 libexiv2-27 libheif1 libraw23t64 libwcs8 \
-                  libglib2.0-0 libgl1 libxrender1 libxext6 libxft2 libfontconfig1 \
-                  libsm6 libcurl4t64 ca-certificates curl unzip \
-                  libcfitsio10t64 libopencv-core406t64" ;; \
-        *) echo "unsupported base ${ID}-${VERSION_CODENAME}" >&2; exit 1 ;; \
-    esac; \
+    if [ "${VERSION_CODENAME}" != "noble" ]; then \
+        echo "unsupported base ${ID}-${VERSION_CODENAME}: need Ubuntu 24.04" >&2; exit 1; \
+    fi; \
+    apt-get update -qq; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        ${pkgs}; \
+        libc6 libgcc-s1 libstdc++6 libgsl27 libfftw3-double3 libfftw3-single3 \
+        libgomp1 libexiv2-27 libheif1 libraw23t64 libwcs8 libglib2.0-0t64 \
+        libgl1 libxrender1 libxext6 libxft2 libfontconfig1 libsm6 \
+        libcurl4t64 libcfitsio10t64 libopencv-core406t64 \
+        ca-certificates curl unzip; \
     rm -rf /var/lib/apt/lists/*
 
 # CUDA-only: install cuDNN 8 from NVIDIA's archive. GraXpert and StarNet++
 # ship onnxruntime / TensorFlow built against cuDNN 8.x; the cudnn-runtime
 # CUDA base ships cuDNN 9, so we use the plain `runtime` base (~3 GB smaller)
-# and install cuDNN 8 directly. Skip on the Debian base (no GPU, no need).
+# and install cuDNN 8 directly. Skipped on the CPU image (no GPU, no need).
+# NVIDIA publishes cuDNN 8 only in its ubuntu2204 repo; the deb is just shared
+# libraries, so it installs the same on noble.
 RUN set -eu; \
-    . /etc/os-release; \
-    if [ "${ID}-${VERSION_CODENAME}" = "ubuntu-jammy" ]; then \
+    if [ -d /usr/local/cuda ]; then \
         echo "installing cuDNN 8 for GraXpert / StarNet onnxruntime"; \
         tmp="$(mktemp /tmp/cudnn8.XXXXXX.deb)"; \
         curl -fL --silent --show-error -o "$tmp" \
@@ -162,7 +149,7 @@ RUN set -eu; \
         dpkg -i "$tmp"; \
         rm -f "$tmp"; \
     else \
-        echo "skipping cuDNN 8 install (not on CUDA base)"; \
+        echo "skipping cuDNN 8 install (not a CUDA base)"; \
     fi
 
 # Install uv via the standalone binary download (no installer script HOME issues)
