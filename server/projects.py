@@ -39,7 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .catalog.db import connect as open_catalog_db
+from .catalog.db import connect as open_catalog_db, retry_on_locked
 from .jobs import JobManager
 from .models import Job, Template
 
@@ -831,6 +831,7 @@ class ProjectManager:
     def _conn(self) -> sqlite3.Connection:
         return open_catalog_db(self._db_path)
 
+    @retry_on_locked
     def _persist_project(self, project: Project, *, kind: str) -> None:
         try:
             conn = self._conn()
@@ -886,6 +887,7 @@ class ProjectManager:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _persist_project_full(self, project: Project) -> None:
         """Rewrite the project row's base_job_json + source_session_ids
         alongside the usual mutable columns. Used by swap_sessions, which
@@ -924,6 +926,7 @@ class ProjectManager:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _persist_project_template(self, project: Project) -> None:
         """Rewrite the project row's `template_json` + `template_version`
         alongside `base_job_json` (which carries the new template_version).
@@ -959,6 +962,7 @@ class ProjectManager:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _persist_history_entry(self, project_id: str, entry: HistoryEntry) -> None:
         try:
             conn = self._conn()
@@ -990,6 +994,7 @@ class ProjectManager:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _persist_history_entry_replace(
         self, project_id: str, entry: HistoryEntry
     ) -> None:
@@ -1027,6 +1032,7 @@ class ProjectManager:
         finally:
             conn.close()
 
+    @retry_on_locked
     def _persist_history_published(
         self, project_id: str, seq: int, published: bool
     ) -> None:
