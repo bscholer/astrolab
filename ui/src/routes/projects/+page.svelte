@@ -12,7 +12,8 @@
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, type Project, type ProjectCapture, type StorageSnapshot, type SystemActiveJob } from '$lib/api';
+  import LastNight from '$lib/LastNight.svelte';
+  import { api, type MorningResponse, type Project, type ProjectCapture, type StorageSnapshot, type SystemActiveJob } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import {
     filterBadgeClass,
@@ -40,6 +41,22 @@
   let storage = $state<StorageSnapshot | null>(null);
   let busyId = $state<string | null>(null);
   let activeJobs = $state<SystemActiveJob[]>([]);
+
+  // Last night's strip shows when the scope shot yesterday evening or is
+  // shooting tonight (a night is named for the evening it began).
+  let morning = $state<MorningResponse | null>(null);
+  function isoDay(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  const recentNight = $derived.by(() => {
+    const n = morning?.night;
+    if (!n) return false;
+    const today = new Date();
+    return n === isoDay(today) || n === isoDay(new Date(today.getTime() - 86_400_000));
+  });
+  onMount(() => {
+    api.getMorning().then((m) => (morning = m), () => (morning = null));
+  });
   // Pictures that failed to load (evicted since the list was fetched).
   let brokenPics = $state<Set<string>>(new Set());
 
@@ -146,12 +163,17 @@
   {/if}
 </div>
 
+{#if recentNight}
+  <LastNight initial={morning} />
+  {#if projects && projects.length}<h2 class="all">All projects</h2>{/if}
+{/if}
+
 {#if projects === null}
   <p class="muted">Loading…</p>
 {:else if projects.length === 0}
   <p class="muted">
     No projects yet. Click "Run…" on a session in the
-    <a href="/" class="link">Library</a> to start one.
+    <a href="/library" class="link">Library</a> to start one.
   </p>
 {:else}
   <ul class="grid">
@@ -295,6 +317,11 @@
   }
   .link:hover { text-decoration-color: var(--accent); }
 
+  .all {
+    margin: 0 0 0.75rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
   .grid {
     list-style: none;
     padding: 0;

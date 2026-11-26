@@ -1,34 +1,30 @@
 <!--
-  "Last night": the home page's first card. For the most recent night with
-  captures, each target shot, how much of it was kept, and what its target
-  master gained, with a before/after wipe once the new master has rendered.
+  Last night, at the top of the Projects page: what the scope shot and what
+  each target's master gained, as one line of totals and one card per
+  target. A card opens the target's project. Nights whose data didn't make
+  it into a master collapse into a single line at the end.
   Data: GET /api/morning (server/morning.py).
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type MorningResponse, type MorningTarget, type MorningMasterUpdate } from '$lib/api';
+  import { api, type MorningResponse, type MorningTarget } from '$lib/api';
   import { formatIntegrationTime } from '$lib/format';
-  import CompareSlider from '$lib/CompareSlider.svelte';
 
-  // The Library page fetches the latest night to pick its default tab; it
-  // hands that response in so the first paint needs no second request.
   let { initial = null }: { initial?: MorningResponse | null } = $props();
 
   // svelte-ignore state_referenced_locally
   let data = $state<MorningResponse | null>(initial);
-  let failed = $state(false);
   let night = $state<string | undefined>(undefined);
 
   async function load() {
     try {
       data = await api.getMorning(night);
-      failed = false;
     } catch {
-      failed = true;
+      // Keep what we have; the next poll tries again.
     }
   }
 
-  // Poll while something is still moving (judging, queued, stacking).
+  // Poll faster while something is still moving (judging, queued, stacking).
   const busy = $derived(
     !!data?.targets.some(
       (t) =>
@@ -56,307 +52,246 @@
 
   function nightLabel(n: string): string {
     const d = new Date(`${n}T12:00:00`);
+    const iso = (x: Date) =>
+      `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
     const today = new Date();
     const yesterday = new Date(today.getTime() - 86_400_000);
     // A night is named for the evening it began.
-    const iso = (x: Date) =>
-      `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
-    const prefix = iso(d) === iso(yesterday) ? 'Last night' : iso(d) === iso(today) ? 'Tonight' : 'Night of';
-    return `${prefix} · ${d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
+    const day = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (iso(d) === iso(yesterday)) return `Last night · ${day}`;
+    if (iso(d) === iso(today)) return `Tonight · ${day}`;
+    return day;
   }
 
-  function stateText(t: MorningTarget, m: MorningMasterUpdate | undefined): string {
+  const time = (s: number) => formatIntegrationTime(s) || '0m';
+  const usable = (t: MorningTarget) => t.good_s + t.rescued_s;
+
+  /** Targets with something to show: a master update, or still in progress. */
+  const shown = $derived((data?.targets ?? []).filter((t) => t.masters.length > 0 || t.state === 'judging' || t.state === 'queued'));
+  /** The rest, as one line. */
+  const leftOver = $derived((data?.targets ?? []).filter((t) => !shown.includes(t)));
+
+  function chip(t: MorningTarget): { text: string; busy: boolean } {
+    const m = t.masters[0];
     if (m) {
-      if (m.status === 'running' || m.status === 'queued') return 'Stacking into the master…';
-      if (m.status === 'failed') return 'Master stack failed';
-      return 'Master updated';
+      if (m.status === 'running' || m.status === 'queued') return { text: 'Stacking', busy: true };
+      if (m.status === 'failed') return { text: 'Stack failed', busy: false };
+      return { text: m.before_seq === null ? 'New master' : `+${time(m.added_s)}`, busy: false };
     }
-    switch (t.state) {
-      case 'judging':
-        return 'Still judging frames';
-      case 'queued':
-        return 'Joins its master once the night settles';
-      case 'short':
-        return 'Kept, too short to add to the master';
-      case 'kept':
-        return 'Kept';
-      default:
-        return 'Scrap: too little usable data';
-    }
+    return t.state === 'judging' ? { text: 'Checking frames', busy: true } : { text: 'Waiting for the night to end', busy: true };
   }
 
-  const totals = $derived.by(() => {
-    const t = data?.targets ?? [];
-    return {
-      kept: t.reduce((a, x) => a + x.kept_s, 0),
-      scrap: t.reduce((a, x) => a + x.scrap_s, 0),
-    };
-  });
-
-  const RECIPES: Record<string, string> = {
-    nebula: 'nebula',
-    'nebula-duo': 'duo-band nebula',
-    galaxy: 'galaxy',
-    stars: 'star field',
-  };
-
-  function pct(x: number): string {
-    return `${Math.round(x * 100)}%`;
+  function leftOverText(t: MorningTarget): string {
+    const name = t.common_name ?? t.name;
+    if (t.state === 'short') return `${name} (${time(usable(t))}, too short)`;
+    if (t.state === 'kept') return `${name} (${time(usable(t))})`;
+    return `${name} (${time(usable(t))} usable of ${time(t.shot_s)})`;
   }
 </script>
 
 {#if data?.night}
-  <section class="lastnight" aria-label="Last night">
+  {@const i = data.nights.indexOf(data.night)}
+  <section class="night" aria-label="Last night">
     <header>
-      <button class="nav" onclick={() => step(-1)} disabled={data.nights.indexOf(data.night) <= 0} aria-label="Earlier night">‹</button>
       <h2>{nightLabel(data.night)}</h2>
-      <button class="nav" onclick={() => step(1)} disabled={data.nights.indexOf(data.night) >= data.nights.length - 1} aria-label="Later night">›</button>
-      <span class="sum">
-        {data.targets.length} target{data.targets.length === 1 ? '' : 's'}
-        · {formatIntegrationTime(totals.kept) || '0 min'} kept
-        {#if totals.scrap > 0}· {formatIntegrationTime(totals.scrap)} scrap{/if}
+      <span class="navs">
+        <button class="nav" onclick={() => step(-1)} disabled={i <= 0} aria-label="Earlier night">‹</button>
+        <button class="nav" onclick={() => step(1)} disabled={i >= data.nights.length - 1} aria-label="Later night">›</button>
       </span>
     </header>
     {#if data.totals && data.totals.shot_s > 0}
       {@const tt = data.totals}
-      <p class="split" title="Good: frames the scope accepted. Rescued: frames it called failed that our own star check found fine. Junk: failed frames that really are unusable.">
-        Shot {formatIntegrationTime(tt.shot_s)}:
-        <b>{formatIntegrationTime(tt.good_s) || '0 min'} good</b>
-        {#if tt.rescued_s > 0}· <b>{formatIntegrationTime(tt.rescued_s)} rescued</b> by triage{/if}
-        {#if tt.junk_s > 0}· {formatIntegrationTime(tt.junk_s)} junk ({pct(tt.junk_s / tt.shot_s)}){/if}
-        {#if tt.untriaged_s > 0}· {formatIntegrationTime(tt.untriaged_s)} still being checked{/if}
+      <p class="sum" title="Usable: frames that were good, plus failed frames our own check rescued">
+        {time(tt.shot_s)} shot · <b>{time(tt.good_s + tt.rescued_s)} usable</b> · {data.targets.length}
+        target{data.targets.length === 1 ? '' : 's'}
+        {#if tt.untriaged_s > 0}· {time(tt.untriaged_s)} still being checked{/if}
       </p>
     {/if}
 
-    <ul>
-      {#each data.targets as t (t.target_id ?? t.name)}
-        {@const m = t.masters[0]}
-        <li class:scrap={t.state === 'scrap'} class:compact={!m && t.state !== 'judging'}>
-          {#if m || t.state === 'judging'}
-          <div class="pic">
-            {#if m?.after && m?.before}
-              <CompareSlider
-                aSrc={api.previewUrl(m.before.hash, m.before.port)}
-                bSrc={api.previewUrl(m.after.hash, m.after.port)}
-                aLabel="Before"
-                bLabel="With this night"
-                aspect="3 / 2"
-              />
-            {:else if m?.after}
-              <img src={api.previewUrl(m.after.hash, m.after.port)} alt="{t.name} master" loading="lazy" />
-            {:else if m?.before}
-              <img class="stale" src={api.previewUrl(m.before.hash, m.before.port)} alt="{t.name} before this night" loading="lazy" />
-              <span class="overlay">{m.status === 'failed' ? 'failed' : 'stacking…'}</span>
-            {:else}
-              <div class="empty">{m ? 'stacking…' : 'judging…'}</div>
-            {/if}
-          </div>
-          {/if}
-          <div class="info">
-            <div class="name">
-              {#if m}<a href="/projects/{m.project_id}">{t.common_name ?? t.name}</a>{:else}{t.common_name ?? t.name}{/if}
-              {#if t.common_name}<span class="canon">{t.name}</span>{/if}
-              <span class="state" data-state={m ? (m.status === 'completed' ? 'done' : m.status) : t.state}>{stateText(t, m)}</span>
-            </div>
-            <div class="facts">
-              <span>{formatIntegrationTime(t.shot_s) || '0 min'} shot</span>
-              {#if t.good_s > 0}<span>{formatIntegrationTime(t.good_s)} good</span>{/if}
-              {#if t.rescued_s > 0}<span>{formatIntegrationTime(t.rescued_s)} rescued</span>{/if}
-              {#if t.junk_s > 0}<span>{formatIntegrationTime(t.junk_s)} junk</span>{/if}
-              {#if t.untriaged_s > 0}<span>{formatIntegrationTime(t.untriaged_s)} being checked</span>{/if}
-              <span>{t.frames} frames</span>
-            </div>
-            {#if m}
-              <div class="gain">
-                <b>{m.before_seq === null ? `New master${m.recipe ? `, ${RECIPES[m.recipe] ?? m.recipe} recipe` : ''}` : m.label}</b>
-                <span>master now {formatIntegrationTime(m.total_s)}</span>
-                {#if m.noise_drop}<span title="Expected from integration time: noise falls with its square root">noise −{pct(m.noise_drop)}</span>{/if}
-              </div>
-              {#if m.advice}<div class="next">Next: {m.advice.headline.charAt(0).toLowerCase() + m.advice.headline.slice(1)}</div>{/if}
-              <a class="open" href="/projects/{m.project_id}">Finish it →</a>
-            {/if}
-          </div>
-        </li>
-      {/each}
-    </ul>
+    {#if shown.length}
+      <ul class="cards">
+        {#each shown as t (t.target_id ?? t.name)}
+          {@const m = t.masters[0]}
+          {@const c = chip(t)}
+          {@const pic = m?.after ?? m?.before ?? null}
+          <li>
+            <svelte:element this={m ? 'a' : 'div'} class="card" href={m ? `/projects/${m.project_id}` : undefined}>
+              <span class="pic">
+                {#if pic}<img src={api.previewUrl(pic.hash, pic.port)} alt="" loading="lazy" class:stale={!m?.after} />{/if}
+                <span class="chip" class:bad={c.text === 'Stack failed'}>{#if c.busy}<span class="spin"></span>{/if}{c.text}</span>
+                <span class="name">{t.common_name ?? t.name}</span>
+              </span>
+              <span class="facts">
+                {time(usable(t))} usable{m ? ` · master ${time(m.total_s)}` : ''}
+              </span>
+            </svelte:element>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if leftOver.length}
+      <p class="left">Not added: {leftOver.map(leftOverText).join(' · ')}</p>
+    {/if}
   </section>
-{:else if failed}
-  <p class="muted-note">Couldn't load the last night.</p>
-{:else if data}
-  <p class="muted-note">No nights with captures yet.</p>
 {/if}
 
 <style>
-  .muted-note {
-    color: var(--fg-mute);
-  }
-  .lastnight {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card, 12px);
-    background: var(--bg-elev);
-    padding: 0.9rem 1rem 0.4rem;
-    margin: 0.5rem 0 1.5rem;
+  .night {
+    margin: 0 0 1.75rem;
   }
   header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.6rem;
   }
   h2 {
     margin: 0;
-    font-size: 1.15rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    flex: 1;
+  }
+  .navs {
+    display: inline-flex;
+    gap: 0.3rem;
   }
   .nav {
     appearance: none;
+    width: 30px;
+    height: 30px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 999px;
     border: 1px solid var(--border);
     background: transparent;
-    color: var(--fg-mute);
-    border-radius: 6px;
-    width: 26px;
-    height: 26px;
-    cursor: pointer;
-    font-size: 1rem;
+    color: var(--fg);
+    font-size: 1.1rem;
     line-height: 1;
-    display: grid;
-    place-items: center;
-    padding: 0 0 2px;
+    cursor: pointer;
   }
   .nav:disabled {
-    opacity: 0.35;
+    opacity: 0.3;
     cursor: default;
   }
-  .split {
-    margin: -0.2rem 0 0.6rem;
-    font-size: 0.85rem;
+  .sum {
+    margin: 0.2rem 0 0.8rem;
     color: var(--fg-mute);
+    font-size: 0.88rem;
   }
-  .split b {
+  .sum b {
     color: var(--fg);
     font-weight: 600;
   }
-  .sum {
-    color: var(--fg-mute);
-    font-size: 0.85rem;
-    margin-left: auto;
-  }
-  ul {
+  .cards {
     list-style: none;
     margin: 0;
-    padding: 0;
-  }
-  li {
+    padding: 0 0 0.2rem;
     display: grid;
-    grid-template-columns: minmax(180px, 280px) 1fr;
-    gap: 1rem;
-    padding: 0.7rem 0;
-    border-top: 1px solid var(--border);
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(190px, 46%);
+    gap: 0.75rem;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
   }
-  li:first-child {
-    border-top: 0;
-  }
-  li.scrap {
-    opacity: 0.6;
-  }
-  li.compact {
-    grid-template-columns: 1fr;
-    padding: 0.45rem 0;
-  }
-  .canon {
-    font-weight: 400;
-    font-size: 0.78rem;
-    color: var(--fg-mute);
-    font-family: var(--font-mono);
-  }
-  @media (max-width: 640px) {
-    li {
-      grid-template-columns: 1fr;
+  @media (min-width: 760px) {
+    .cards {
+      grid-auto-flow: row;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      overflow: visible;
     }
+  }
+  .cards li {
+    scroll-snap-align: start;
+  }
+  .card {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card, 12px);
+    background: var(--bg-elev);
+    overflow: hidden;
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 160ms ease, transform 160ms ease;
+  }
+  a.card:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
   }
   .pic {
     position: relative;
-    border-radius: 8px;
-    overflow: hidden;
-    background: var(--bg);
-    aspect-ratio: 3 / 2;
+    display: block;
+    aspect-ratio: 4 / 3;
+    background: var(--bg-elev-2);
   }
   .pic img {
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: cover;
     display: block;
   }
   .pic img.stale {
-    opacity: 0.45;
+    opacity: 0.55;
   }
-  .overlay,
-  .empty {
+  .pic::after {
+    content: '';
     position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    color: var(--fg-mute);
-    font-size: 0.85rem;
-  }
-  .info {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    min-width: 0;
+    inset: 50% 0 0 0;
+    background: linear-gradient(180deg, transparent, rgba(2, 3, 10, 0.85));
+    pointer-events: none;
   }
   .name {
-    font-weight: 600;
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    flex-wrap: wrap;
+    position: absolute;
+    left: 0.65rem;
+    right: 0.65rem;
+    bottom: 0.5rem;
+    z-index: 1;
+    font-family: var(--font-display);
+    font-size: 1rem;
+    line-height: 1.2;
+    color: #fff;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
   }
-  .name a {
-    color: inherit;
-    text-decoration: none;
-  }
-  .state {
-    font-weight: 500;
-    font-size: 0.78rem;
-    color: var(--fg-mute);
-    border: 1px solid var(--border);
+  .chip {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.12rem 0.55rem;
     border-radius: 999px;
-    padding: 0.05rem 0.5rem;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
   }
-  .state[data-state='done'] {
-    color: var(--good);
-    border-color: currentColor;
+  .chip.bad {
+    background: rgba(236, 72, 153, 0.75);
+    border-color: transparent;
   }
-  .state[data-state='failed'] {
-    color: var(--bad);
-    border-color: currentColor;
+  .spin {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    animation: spin 0.8s linear infinite;
   }
-  .state[data-state='running'],
-  .state[data-state='queued'] {
-    color: var(--accent);
-    border-color: currentColor;
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
-  .facts,
-  .gain {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem 0.9rem;
-    font-size: 0.85rem;
+  .facts {
+    padding: 0.5rem 0.65rem 0.6rem;
+    font-size: 0.8rem;
     color: var(--fg-mute);
   }
-  .gain b {
-    color: var(--fg);
-    font-weight: 600;
-  }
-  .next {
-    font-size: 0.85rem;
+  .left {
+    margin: 0.7rem 0 0;
+    font-size: 0.8rem;
     color: var(--fg-mute);
-  }
-  .open {
-    font-size: 0.85rem;
-    color: var(--accent);
-    text-decoration: none;
-    margin-top: auto;
   }
 </style>
