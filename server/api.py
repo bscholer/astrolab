@@ -115,6 +115,7 @@ from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
 from server.morning import morning
 from server.nas_backup import NasBackup, nas_root
+from server.nas_usage import NasUsage
 from server.paths import astrolab_home
 from server.preview import PreviewError, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
@@ -143,6 +144,8 @@ from server.storage import (
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_LAST_SCAN,
+    SETTING_NAS_USAGE,
     SETTING_SCOPE_ALERT_URL,
     SETTING_SCOPE_AUTO,
     SETTING_SCOPE_AUTO_STACK,
@@ -210,6 +213,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         scope_cleaner.start()
     curator.start()
     nas_backup.start()
+    nas_usage.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -270,26 +274,11 @@ def _bootstrap_capture_root() -> None:
     set_setting(SETTING_CAPTURE_ROOT, str(root), db_path=job_manager.db_path)
     log.info("seeded capture_root from ASTROLAB_CAPTURE_ROOT_DEFAULT: %s", root)
 
-    def _scan() -> None:
-        if not scan_state.start():
-            log.info("first-run scan skipped: a scan is already running")
-            return
-        try:
-            log.info("first-run scan: %s", root)
-            stats = run_scan(
-                root,
-                progress=_make_progress_callback(),
-            )
-            scan_state.finish(stats=stats)
-            log.info(
-                "first-run scan done: discovered=%d inserted=%d updated=%d",
-                stats.discovered, stats.inserted, stats.updated,
-            )
-        except Exception as exc:
-            scan_state.finish(error=str(exc))
-            log.exception("first-run scan failed; user can retry from Settings")
-
-    threading.Thread(target=_scan, name="astrolab-first-scan", daemon=True).start()
+    if not scan_state.start():
+        log.info("first-run scan skipped: a scan is already running")
+        return
+    log.info("first-run scan: %s", root)
+    _launch_scan(root)
 
 
 telemetry.setup("astrolab")
@@ -1224,17 +1213,43 @@ class ScanStatusResponse(BaseModel):
     last_stats: dict[str, Any] | None
 
 
+_scan_again = threading.Event()
+"""Set when new captures land while a scan is running; that scan then runs once more."""
+
+
 def _launch_scan(root: Path) -> None:
+    """Scan in a thread. The caller has already won scan_state.start()."""
+
     def _scan() -> None:
-        try:
-            stats = run_scan(root, progress=_make_progress_callback())
-            scan_state.finish(stats=stats)
-            log.info("scan done: %r", stats)
-        except Exception as exc:
-            scan_state.finish(error=str(exc))
-            log.exception("scan failed")
+        target = root
+        while True:
+            _scan_again.clear()
+            try:
+                stats = run_scan(target, progress=_make_progress_callback())
+                scan_state.finish(stats=stats)
+                log.info("scan done: %r", stats)
+            except Exception as exc:
+                scan_state.finish(error=str(exc))
+                log.exception("scan failed")
+            _remember_scan()
+            if not _scan_again.is_set() or not scan_state.start():
+                return
+            target = _mirror_root() or target
+            log.info("captures landed during the scan; scanning %s again", target)
 
     threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
+
+
+def _remember_scan() -> None:
+    snap = scan_state.snapshot()
+    try:
+        set_setting(
+            SETTING_LAST_SCAN,
+            {k: snap[k] for k in ("started_at", "finished_at", "error", "last_stats")},
+            db_path=job_manager.db_path,
+        )
+    except Exception:
+        log.warning("could not store the last scan", exc_info=True)
 
 
 @mcp_tool(
@@ -1291,7 +1306,12 @@ def trigger_scan(req: ScanRequest) -> ScanStarted:
     tags=["Scan"],
 )
 def scan_status() -> ScanStatusResponse:
-    return ScanStatusResponse(**scan_state.snapshot())
+    snap = scan_state.snapshot()
+    if not snap["running"] and snap["finished_at"] is None:
+        # Nothing scanned since this process started; report the last scan on record.
+        last = get_setting(SETTING_LAST_SCAN, None, db_path=job_manager.db_path) or {}
+        snap.update({k: last.get(k) for k in ("started_at", "finished_at", "error", "last_stats")})
+    return ScanStatusResponse(**snap)
 
 
 # ---------------------------------------------------------------------------
@@ -3306,6 +3326,19 @@ def get_storage() -> dict:
     }
 
 
+@app.get("/api/storage/nas")
+def get_nas_storage() -> dict:
+    """What takes up space on the NAS, by kind, from the last background walk.
+    `last` is null until the first walk finishes; `measuring` is true while one runs."""
+    return nas_usage.snapshot()
+
+
+@app.post("/api/storage/nas/refresh", status_code=202)
+def refresh_nas_storage() -> dict:
+    """Start a new walk of the NAS. It takes a minute or more on a large share."""
+    return {"started": nas_usage.refresh(), **nas_usage.snapshot()}
+
+
 @app.get("/metrics", include_in_schema=False)
 def get_metrics() -> Response:
     """Prometheus scrape endpoint."""
@@ -3407,7 +3440,11 @@ def _mirror_root() -> Path | None:
 
 def _scan_after_copy() -> None:
     root = _mirror_root()
-    if root is not None and scan_state.start():
+    if root is None:
+        return
+    # Set first: a running scan checks it as it ends, so these files are not missed.
+    _scan_again.set()
+    if scan_state.start():
         _launch_scan(root)
 
 
@@ -3663,6 +3700,11 @@ nas_backup = NasBackup(
     _mirror_root,
     job_manager.db_path or default_db_path(),
     lambda: job_manager.cache.root,
+)
+nas_usage = NasUsage(
+    nas_root,
+    load=lambda: get_setting(SETTING_NAS_USAGE, None, db_path=job_manager.db_path),
+    save=lambda v: set_setting(SETTING_NAS_USAGE, v, db_path=job_manager.db_path),
 )
 scope_mirror = Mirror(
     get_client=_scope_client,

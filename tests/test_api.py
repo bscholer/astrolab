@@ -214,3 +214,57 @@ def test_scan_endpoint_rejects_missing_root(astrolab_home: Path) -> None:
         "/api/scan", json={"root": "/nonexistent-astrolab"}
     )
     assert r.status_code == 400
+
+
+def test_scan_status_remembers_the_last_scan_across_restarts(
+    tmp_path: Path, astrolab_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scan the server started on its own still shows as 'scanned 5m ago'
+    after a restart, which wipes the in-memory scan state."""
+    import server.scan_state as scan_state
+
+    test_scan_endpoint(tmp_path, astrolab_home)
+    client = TestClient(app)
+    finished = client.get("/api/scan/status").json()["finished_at"]
+    assert finished is not None
+
+    monkeypatch.setattr(scan_state, "_state", scan_state.ScanState())
+    snap = client.get("/api/scan/status").json()
+    assert snap["running"] is False
+    assert snap["finished_at"] == finished
+    assert snap["last_stats"]["masters_inserted"] >= 1
+
+
+def test_captures_landing_during_a_scan_get_scanned_after_it(
+    tmp_path: Path, astrolab_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror's post-copy scan used to be dropped when a scan was already
+    running, so the night's last frames waited for the next copy."""
+    import threading
+
+    import server.api as api
+    import server.scan_state as scan_state
+
+    captures = tmp_path / "captures3"
+    _seed_tree(captures)
+    monkeypatch.setattr(api, "_mirror_root", lambda: captures)
+    gate, roots = threading.Event(), []
+
+    def slow_scan(root, progress=None):
+        roots.append(root)
+        if len(roots) == 1:
+            gate.wait(5)
+        return scan(root)
+
+    monkeypatch.setattr(api, "run_scan", slow_scan)
+    api._scan_after_copy()
+    deadline = time.time() + 5
+    while not roots and time.time() < deadline:
+        time.sleep(0.01)
+    api._scan_after_copy()  # lands while the first scan runs
+    gate.set()
+    deadline = time.time() + 10
+    while time.time() < deadline and (len(roots) < 2 or scan_state.snapshot()["running"]):
+        time.sleep(0.05)
+    assert len(roots) == 2
+    assert not scan_state.snapshot()["running"]

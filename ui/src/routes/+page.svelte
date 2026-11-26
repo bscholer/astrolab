@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { goto, replaceState } from '$app/navigation';
+  import { page } from '$app/stores';
   import { slide } from 'svelte/transition';
   import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
@@ -7,6 +8,7 @@
     api,
     type CalibrationMode,
     type CalibrationStatus,
+    type MorningResponse,
     type ReassignCandidatesResponse,
     type ScanStatusResponse,
     type SessionSummary,
@@ -18,6 +20,51 @@
   import { shortAgo, formatFailPct, failPctClass, formatBytes, formatIntegrationTime } from '$lib/format';
   import SessionRow from '$lib/SessionRow.svelte';
   import LastNight from '$lib/LastNight.svelte';
+  import NasStorage from '$lib/NasStorage.svelte';
+
+  // Tabs, like Tonight's. ?view= keeps the tab across reloads and links.
+  // Without one, the page opens on the last night when the scope shot
+  // last night (or is shooting tonight), and on the library otherwise.
+  type View = 'night' | 'library' | 'storage';
+  const VIEWS: View[] = ['night', 'library', 'storage'];
+  const urlView = $page.url.searchParams.get('view') as View | null;
+  let view = $state<View | null>(urlView && VIEWS.includes(urlView) ? urlView : null);
+  let morning = $state<MorningResponse | null>(null);
+  let morningDone = $state(false);
+
+  function isoDay(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** A night is named for the evening it began: last night is yesterday's date. */
+  function isRecentNight(night: string | null): boolean {
+    if (!night) return false;
+    const today = new Date();
+    return night === isoDay(today) || night === isoDay(new Date(today.getTime() - 86_400_000));
+  }
+
+  const hasNights = $derived(!!morning?.night);
+
+  $effect(() => {
+    api.getMorning()
+      .then((m) => (morning = m))
+      .catch(() => (morning = null))
+      .finally(() => {
+        morningDone = true;
+        if (view === null) view = isRecentNight(morning?.night ?? null) ? 'night' : 'library';
+      });
+  });
+
+  function setView(v: View) {
+    view = v;
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', v);
+    try {
+      replaceState(url, {});
+    } catch {
+      // Not ready during hydration; the tab still switches.
+    }
+  }
 
   let targets = $state<TargetSummary[] | null>(null);
   // Gates the cascading rise-in animation. The stagger looks great on
@@ -31,7 +78,12 @@
   let targetDetails = $state<Map<number, TargetDetail>>(new Map());
   let scanning = $state(false);
   let scanStatus = $state<ScanStatusResponse | null>(null);
+  // When the last scan finished, from the server, so scans it ran on its
+  // own (after the scope mirror copies frames) show here too.
   let lastScanAt = $state<string | null>(null);
+  // Only scans started from this page toast their results; the mirror's
+  // scans run every few minutes through a night and would be noise.
+  let userScan = false;
   let nowTick = $state(Date.now());
 
   // Polling handles: status poll (1.5s) and library reload (4s during scan).
@@ -39,9 +91,7 @@
   let _libraryPollHandle: ReturnType<typeof setInterval> | null = null;
 
   // Capture root lives in the server-side settings KV; the Library just
-  // calls /api/scan against whatever's saved there. last-scan timestamp
-  // is per-browser metadata and stays in localStorage.
-  const LAST_SCAN_KEY = 'astrolab.last_scan_at';
+  // calls /api/scan against whatever's saved there.
   let captureRoot = $state<string | null>(null);
 
   // Runs UI: which session's Run panel is open, plus its in-progress form state.
@@ -300,6 +350,26 @@
     }
   }
 
+  function noteScan(s: ScanStatusResponse) {
+    if (s.finished_at != null) lastScanAt = new Date(s.finished_at * 1000).toISOString();
+  }
+
+  // Every 30 s: notice scans the server started, and ones that finished
+  // between checks, so new sessions appear without a reload.
+  async function _checkBackgroundScan() {
+    if (scanning) return;
+    try {
+      const s = await api.scanStatus();
+      const before = lastScanAt;
+      scanStatus = s;
+      noteScan(s);
+      if (s.running) _startPolling();
+      else if (before !== null && lastScanAt !== before) await load();
+    } catch {
+      // Try again on the next tick.
+    }
+  }
+
   async function _pollStatus() {
     try {
       const s = await api.scanStatus();
@@ -308,13 +378,14 @@
         // Scan finished (or was never running).
         _stopPolling();
         scanning = false;
+        noteScan(s);
         await load();
+        const announce = userScan;
+        userScan = false;
+        if (!announce) return;
         if (s.error) {
           toast.error(`Scan failed: ${s.error}`);
         } else if (s.last_stats) {
-          const stamp = new Date().toISOString();
-          localStorage.setItem(LAST_SCAN_KEY, stamp);
-          lastScanAt = stamp;
           const st = s.last_stats;
           toast.success(
             `Scanned: +${st.inserted} frames, +${st.masters_inserted} masters, -${st.removed} orphans`
@@ -353,6 +424,7 @@
       toast.error('No capture root set: open Settings and add one.');
       return;
     }
+    userScan = true;
     try {
       await api.scan(captureRoot.trim());
     } catch (e: unknown) {
@@ -360,6 +432,7 @@
       const status = (e as { status?: number }).status;
       if (status !== 409) {
         toast.error(`Scan failed: ${(e as Error).message}`);
+        userScan = false;
         return;
       }
     }
@@ -379,7 +452,6 @@
       .then((s) => (captureRoot = s.capture_root))
       .catch(() => (captureRoot = null));
     if (typeof localStorage !== 'undefined') {
-      lastScanAt = localStorage.getItem(LAST_SCAN_KEY);
       const saved = localStorage.getItem(SORT_KEY);
       if (saved && SORT_MODES.has(saved as SortMode)) {
         sortMode = saved as SortMode;
@@ -390,12 +462,16 @@
     api.scanStatus()
       .then((s) => {
         scanStatus = s;
+        noteScan(s);
         if (s.running) _startPolling();
       })
       .catch(() => {});
     // Tick the clock so the muted "scanned 3m ago" line stays fresh
-    // without the user reloading.
-    const handle = setInterval(() => (nowTick = Date.now()), 30_000);
+    // without the user reloading, and watch for the server's own scans.
+    const handle = setInterval(() => {
+      nowTick = Date.now();
+      _checkBackgroundScan();
+    }, 30_000);
     return () => {
       clearInterval(handle);
       _stopPolling();
@@ -531,8 +607,6 @@
 
 <svelte:window on:keydown={handleReassignKey} />
 
-<LastNight />
-
 <div class="lib-header">
   <h1>Library</h1>
   <button
@@ -558,9 +632,26 @@
   {:else}
     <span class="muted small last-scan">never scanned</span>
   {/if}
+  <div class="tabs" role="tablist" aria-label="Views of the library">
+    {#if hasNights || view === 'night'}
+      <button type="button" role="tab" class="tab" class:active={view === 'night'} aria-selected={view === 'night'} onclick={() => setView('night')}>Last night</button>
+    {/if}
+    <button type="button" role="tab" class="tab" class:active={view === 'library'} aria-selected={view === 'library'} onclick={() => setView('library')}>Targets</button>
+    <button type="button" role="tab" class="tab" class:active={view === 'storage'} aria-selected={view === 'storage'} onclick={() => setView('storage')}>Storage</button>
+  </div>
 </div>
 
-{#if scanning && scanStatus}
+{#if view === 'night'}
+  {#if morningDone}
+    <LastNight initial={morning} />
+  {:else}
+    <p class="muted">Loading…</p>
+  {/if}
+{:else if view === 'storage'}
+  <NasStorage />
+{/if}
+
+{#if scanning && scanStatus && view === 'library'}
   <div class="scan-banner" role="status" aria-live="polite">
     <span class="scan-spinner" aria-hidden="true"></span>
     <span class="scan-text">
@@ -572,7 +663,9 @@
   </div>
 {/if}
 
-{#if targets === null}
+{#if view !== 'library'}
+  <!-- Another tab is showing. -->
+{:else if targets === null}
   <p class="muted">Loading targets…</p>
 {:else if targets.length === 0}
   <p class="muted">
@@ -944,6 +1037,47 @@
     align-items: center;
     gap: 0.7rem;
     margin: 0.5rem 0 1.25rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: auto;
+    padding: 0.15rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+  }
+  .tab {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: none;
+    padding: 0.3rem 0.85rem;
+    min-height: 0;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+  @media (max-width: 560px) {
+    .lib-header {
+      flex-wrap: wrap;
+    }
+    .tabs {
+      margin-left: 0;
+      order: 10;
+      flex-basis: 100%;
+      justify-content: space-between;
+    }
+    .tab {
+      flex: 1;
+    }
   }
   .lib-header h1 {
     margin: 0;

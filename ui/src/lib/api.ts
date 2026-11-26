@@ -770,6 +770,39 @@ export interface TemplateSchema {
 
 // ----- storage -----------------------------------------------------------
 
+export type NasKindId =
+  | 'lights'
+  | 'failed'
+  | 'scope_outputs'
+  | 'calibration'
+  | 'images'
+  | 'db'
+  | 'other';
+
+export interface NasKind {
+  id: NasKindId;
+  label: string;
+  bytes: number;
+  files: number;
+}
+
+/** One walk of the NAS (server/nas_usage.py). */
+export interface NasMeasurement {
+  root: string;
+  measured_at: string;
+  seconds: number;
+  kinds: NasKind[];
+  disk: { total_bytes: number; used_bytes: number; free_bytes: number };
+}
+
+export interface NasUsageResponse {
+  /** False when ASTROLAB_NAS_ROOT is not set. */
+  configured: boolean;
+  measuring: boolean;
+  error: string | null;
+  last: NasMeasurement | null;
+}
+
 export interface ProjectStorage {
   project_id: string;
   name: string;
@@ -1225,6 +1258,9 @@ export const api = {
       }
     >(`/api/projects/${id}/sessions`, req),
   getStorage: () => getJSON<StorageSnapshot>('/api/storage'),
+  getNasUsage: () => getJSON<NasUsageResponse>('/api/storage/nas'),
+  refreshNasUsage: () =>
+    postJSON<NasUsageResponse & { started: boolean }>('/api/storage/nas/refresh', {}),
   storageCleanup: (max_bytes?: number) =>
     postJSON<CleanupResponse>('/api/storage/cleanup', max_bytes !== undefined ? { max_bytes } : {}),
   getSettings: () => getJSON<SettingsResponse>('/api/settings'),

@@ -5693,6 +5693,48 @@
         "summary": "Storage Cleanup"
       }
     },
+    "/api/storage/nas": {
+      "get": {
+        "description": "What takes up space on the NAS, by kind, from the last background walk.\n`last` is null until the first walk finishes; `measuring` is true while one runs.",
+        "operationId": "get_nas_storage_api_storage_nas_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Nas Storage Api Storage Nas Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Nas Storage"
+      }
+    },
+    "/api/storage/nas/refresh": {
+      "post": {
+        "description": "Start a new walk of the NAS. It takes a minute or more on a large share.",
+        "operationId": "refresh_nas_storage_api_storage_nas_refresh_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh Nas Storage Api Storage Nas Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Refresh Nas Storage"
+      }
+    },
     "/api/system": {
       "get": {
         "description": "Host telemetry for the dashboard: CPU/mem/disk/GPU and job stats.",

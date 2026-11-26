@@ -732,6 +732,11 @@ SETTING_SCOPE_AUTO_STACK = "scope_auto_stack"
 SETTING_SCOPE_POINTING = "scope_pointing_pairs"
 SETTING_SCOPE_SKYMAP = "scope_skymap"
 SETTING_SCRAP_PURGE = "scrap_purge"
+SETTING_LAST_SCAN = "last_scan"
+"""When the last capture scan finished, with its counters, so the Library can say
+"scanned 5m ago" for scans the server started on its own, across restarts."""
+SETTING_NAS_USAGE = "nas_usage"
+"""The last walk of the NAS (server/nas_usage.py), shown until the next one finishes."""
 """When true, the curator deletes scrap capture folders (server/curator.py)."""
 
 SETTING_SITE_LATITUDE = "site_latitude"

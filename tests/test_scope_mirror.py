@@ -86,3 +86,17 @@ def test_interrupted_copy_resumes_at_the_partial_size(tmp_path, monkeypatch):
     copy_file(good, "DWARF_RAW_new/1.fits", 300, final)
     assert good.reads == [("DWARF_RAW_new/1.fits", 200)]
     assert final.read_bytes() == b"0123456789" * 30
+
+
+def test_files_that_land_before_a_failure_still_get_scanned(tmp_path, monkeypatch):
+    # 2.fits is 3 bytes (one chunk); 1.fits needs three. Fail on the second read,
+    # after the listing order copies 2.fits first.
+    files = {"DWARF_RAW_new": {"2.fits": b"abc", "1.fits": b"0123456789" * 30}}
+    monkeypatch.setattr("server.scope_mirror.CHUNK_BYTES", 100)
+    scans: list[int] = []
+    mirror, _ = make_mirror(
+        tmp_path, FakeService(files, chunk_fail_after=2), baseline=[], copied=scans
+    )
+    assert mirror.run_once() == 1
+    assert mirror.snapshot()["state"] == "error" and mirror.snapshot()["files_copied"] == 1
+    assert scans == [1]

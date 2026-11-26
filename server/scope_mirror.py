@@ -47,7 +47,14 @@ def copy_file(client: ScopeServiceClient, remote: str, size: int, local: Path) -
     return True
 
 
-def mirror_session(client: ScopeServiceClient, session: str, root: Path) -> int:
+def mirror_session(
+    client: ScopeServiceClient,
+    session: str,
+    root: Path,
+    on_file: Callable[[], None] = lambda: None,
+) -> int:
+    """Copy a session's new files. on_file runs after each one lands, so a caller
+    still knows what arrived when a later file fails."""
     copied = 0
     for entry in client.call("listFiles", {"path": session})["entries"]:
         if entry["dir"]:
@@ -55,6 +62,7 @@ def mirror_session(client: ScopeServiceClient, session: str, root: Path) -> int:
         name = entry["name"]
         if copy_file(client, f"{session}/{name}", entry["size"], root / session / name):
             copied += 1
+            on_file()
     return copied
 
 
@@ -97,6 +105,12 @@ class Mirror:
         if client is None or root is None:
             self._set(state="idle", error=None)
             return 0
+        copied = 0
+
+        def landed() -> None:
+            nonlocal copied
+            copied += 1
+
         try:
             if not client.has("files"):
                 self._set(state="idle", error=None)
@@ -107,29 +121,23 @@ class Mirror:
                 self._save_baseline(sessions)
                 baseline = sessions
             purged = self._get_purged()  # scrap the curator deleted; never copy it back
-            copied = 0
             for session in sessions:
                 if session in baseline or session in purged:
                     continue
                 self._set(state="copying", current=session)
-                n = mirror_session(client, session, root)
-                copied += n
-                if n:
+                if mirror_session(client, session, root, landed):
                     self._on_session_copied(session)
-            self._set(
-                state="idle",
-                current=None,
-                error=None,
-                last_ok=time.time(),
-                files_copied=self.snapshot()["files_copied"] + copied,
-            )
-            if copied:
-                self._on_copied()
-            return copied
+            self._set(state="idle", current=None, error=None, last_ok=time.time())
         except Exception as exc:
-            log.warning("scope mirror failed: %s", exc)
-            self._set(state="error", error=str(exc))
-            return 0
+            log.warning("scope mirror failed after %d new files: %s", copied, exc)
+            self._set(state="error", current=None, error=str(exc))
+        finally:
+            # A flaky link can fail every run partway through a night; the files
+            # that did land still belong in the library.
+            if copied:
+                self._set(files_copied=self.snapshot()["files_copied"] + copied)
+                self._on_copied()
+        return copied
 
     def start(self) -> None:
         def loop() -> None:

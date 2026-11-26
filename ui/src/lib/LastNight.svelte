@@ -10,7 +10,12 @@
   import { formatIntegrationTime } from '$lib/format';
   import CompareSlider from '$lib/CompareSlider.svelte';
 
-  let data = $state<MorningResponse | null>(null);
+  // The Library page fetches the latest night to pick its default tab; it
+  // hands that response in so the first paint needs no second request.
+  let { initial = null }: { initial?: MorningResponse | null } = $props();
+
+  // svelte-ignore state_referenced_locally
+  let data = $state<MorningResponse | null>(initial);
   let failed = $state(false);
   let night = $state<string | undefined>(undefined);
 
@@ -33,7 +38,9 @@
     )
   );
 
-  onMount(load);
+  onMount(() => {
+    if (!data) load();
+  });
   $effect(() => {
     const h = setInterval(load, busy ? 20_000 : 120_000);
     return () => clearInterval(h);
@@ -174,10 +181,15 @@
     </ul>
   </section>
 {:else if failed}
-  <!-- The library below still works; stay quiet. -->
+  <p class="muted-note">Couldn't load the last night.</p>
+{:else if data}
+  <p class="muted-note">No nights with captures yet.</p>
 {/if}
 
 <style>
+  .muted-note {
+    color: var(--fg-mute);
+  }
   .lastnight {
     border: 1px solid var(--border);
     border-radius: var(--radius-card, 12px);
