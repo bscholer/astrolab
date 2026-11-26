@@ -131,8 +131,7 @@ rounded share the scope kept (registered), in muted text:
 ```
 
 Failed frames are normal on this scope (clouds, wind, a dewy lens), so the
-number stays quiet: no red or amber. Library cards add a thin teal bar
-for the kept share. The tooltip says how many were saved as failed.
+number stays quiet: no red or amber. The tooltip says how many were saved as failed.
 
 ### Capitalization
 
@@ -351,7 +350,7 @@ spec, not a proposal.
 - **Home** (`/`) opens Projects once any exist, the Library before that.
 - **Library page** (`/library`, tabs Targets and Storage) is for browsing existing data. Targets is a
   grid of cards like Projects: the picture is the target's newest project render, then integration,
-  sessions, last night and a kept-frames bar. A card opens the target's sessions in a sheet (from the
+  sessions, last night and the kept-frames share. A card opens the target's sessions in a sheet (from the
   right; from below on phones) with links to its projects; starting a project there picks the
   duo-band recipe for duo-band filters and the per-night recipe otherwise. The capture-root
   text input belongs in **Settings**, not here. The library top has a
