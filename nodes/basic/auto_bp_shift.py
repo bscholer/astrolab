@@ -59,10 +59,10 @@ class AutoBpShiftParams(BaseModel):
     )
     neutral_sky: bool = Field(
         default=True,
-        description="Shift each colour channel by its own black point so the sky "
+        description="Shift each color channel by its own black point so the sky "
         "comes out the same level in all three. A faint target's signal sits a "
         "few ten-thousandths above the black point, so a channel offset of "
-        "0.00002 turns into a strong colour cast after the stretch.",
+        "0.00002 turns into a strong color cast after the stretch.",
         json_schema_extra={"ui_section": "advanced"},
     )
     clip_fraction: float = Field(

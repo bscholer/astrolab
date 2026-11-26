@@ -1,9 +1,9 @@
-"""channel_map: false-colour palettes for one-shot-colour data through a duo-band filter.
+"""channel_map: false-color palettes for one-shot-color data through a duo-band filter.
 
 Input port  : image (IMAGE_FITS) - a linear, background-extracted RGB stack
 Output port : image (IMAGE_FITS) - the remapped RGB stack, still linear
 
-Through a duo-band (H-alpha + OIII) filter, a colour camera records
+Through a duo-band (H-alpha + OIII) filter, a color camera records
 H-alpha in red and OIII in green and blue (stack_per_night_duo splits them
 properly before debayering and packs them that way). 'hoo' renders them in
 the classic look: H-alpha red, OIII blue-teal.
@@ -15,21 +15,21 @@ its stars: the Rosette came out red with cyan stars at any OIII scale.
 What the data does show is where OIII is relatively strong: on the Rosette
 the OIII/H-alpha ratio is high in the core and low in the outer ring.
 
-So colour and brightness are taken separately, still in linear space:
+So color and brightness are taken separately, still in linear space:
 - brightness: H-alpha plus OIII (OIII scaled to H-alpha's nebula spread),
   which keeps every bit of structure either channel has;
-- colour: the OIII share of the nebula, measured on 8x8 block medians
+- color: the OIII share of the nebula, measured on 8x8 block medians
   (stars erased) and smoothed, mapped from red (H-alpha) to blue (OIII).
   The share is spread over its own 10th-90th percentile range, so the
-  colour shows where OIII is stronger or weaker than usual for this target.
+  color shows where OIII is stronger or weaker than usual for this target.
   `oiii_strength` shifts the balance (1 as measured, higher bluer).
   The two ends of that ramp are hues: `ha_hue` (default 24, gold) and
   `oiii_hue` (default 215, azure), the warm-and-blue look of modern
   narrowband pictures. Ha 4 and OIII 213 give the classic red and teal HOO;
   pure red at full saturation clipped the red channel and looked blown out.
-  The sky and stars stay neutral: colour fades in with nebula signal and
+  The sky and stars stay neutral: color fades in with nebula signal and
   out on anything much brighter than its surroundings.
-The stretch and its saturation then work as on any colour image.
+The stretch and its saturation then work as on any color image.
 
 Pure numpy; no Siril round trip.
 """
@@ -60,7 +60,7 @@ class ChannelMapParams(BaseModel):
     )
     palette: Literal["hoo"] = Field(
         default="hoo",
-        description="'hoo': H-alpha red, OIII blue-teal, coloured by where OIII "
+        description="'hoo': H-alpha red, OIII blue-teal, colored by where OIII "
         "is relatively strong.",
         json_schema_extra={"ui_section": "advanced"},
     )
@@ -68,7 +68,7 @@ class ChannelMapParams(BaseModel):
         default=1.0,
         ge=0.0,
         le=2.0,
-        description="Red-blue balance. 1 colours the nebula by its measured OIII "
+        description="Red-blue balance. 1 colors the nebula by its measured OIII "
         "share; higher turns more of it blue, lower more of it red.",
         json_schema_extra={
             "hash_precision": 3,
@@ -79,7 +79,7 @@ class ChannelMapParams(BaseModel):
         default=24.0,
         ge=0.0,
         le=360.0,
-        description="Colour of H-alpha-rich nebula, as a hue in degrees: 24 gold, "
+        description="Color of H-alpha-rich nebula, as a hue in degrees: 24 gold, "
         "10 orange-red, 4 the classic HOO red.",
         json_schema_extra={"hash_precision": 1},
     )
@@ -87,7 +87,7 @@ class ChannelMapParams(BaseModel):
         default=215.0,
         ge=0.0,
         le=360.0,
-        description="Colour of OIII-rich nebula, as a hue in degrees: 215 azure, "
+        description="Color of OIII-rich nebula, as a hue in degrees: 215 azure, "
         "190 teal, 213 the classic HOO blue-teal.",
         json_schema_extra={"hash_precision": 1},
     )
@@ -95,11 +95,11 @@ class ChannelMapParams(BaseModel):
 
 BLOCK = 8
 HUE_SATURATION = 0.85
-"""How far each end colour sits from white. The stretch's saturation then scales it."""
+"""How far each end color sits from white. The stretch's saturation then scales it."""
 
 
 def hue_rgb(hue_deg: float, saturation: float = HUE_SATURATION) -> np.ndarray:
-    """An RGB colour of full value at this hue (HSV)."""
+    """An RGB color of full value at this hue (HSV)."""
     h = (hue_deg % 360.0) / 60.0
     x = 1.0 - abs(h % 2.0 - 1.0)
     rgb = [(1, x, 0), (x, 1, 0), (0, 1, x), (0, x, 1), (x, 0, 1), (1, 0, x)][int(h) % 6]
@@ -131,7 +131,7 @@ def _smooth(s: np.ndarray, r: int = 2) -> np.ndarray:
 
     A median, not a mean: a block a bright star dominates is an outlier
     among its neighbours and drops out, instead of spreading into a square
-    patch of colour around the star.
+    patch of color around the star.
     """
     p = np.pad(s, r, mode="edge")
     stack = [
@@ -151,7 +151,7 @@ def _grow(m: np.ndarray, r: int) -> np.ndarray:
     return out
 
 
-def _spread(c: np.ndarray) -> tuple[float, float]:
+def _spread(c: np.ndarray, k: int = BLOCK) -> tuple[float, float]:
     """(sky, nebula signal above sky) on block medians, stars erased.
 
     Stars are relatively bright in OIII, so raw percentiles would match the
@@ -159,7 +159,7 @@ def _spread(c: np.ndarray) -> tuple[float, float]:
     Rosette). Sky is a low percentile: a nebula filling half the frame lifts
     the median.
     """
-    b = _blocks(np.nan_to_num(c))
+    b = _blocks(np.nan_to_num(c), k)
     b = b[b > 0]
     if b.size == 0:
         return 0.0, 0.0
@@ -168,27 +168,38 @@ def _spread(c: np.ndarray) -> tuple[float, float]:
 
 
 def hoo(
-    data: np.ndarray, oiii_strength: float, ha_hue: float = 24.0, oiii_hue: float = 215.0
+    data: np.ndarray,
+    oiii_strength: float,
+    ha_hue: float = 24.0,
+    oiii_hue: float = 215.0,
+    pixel_scale: float = 1.0,
 ) -> np.ndarray:
-    """(3, H, W) RGB with H-alpha in red and OIII in green/blue -> HOO, linear."""
+    """(3, H, W) RGB with H-alpha in red and OIII in green/blue -> HOO, linear.
+
+    `pixel_scale` is how many full-size pixels one pixel of `data` covers (the quick
+    preview's downscaled copy); block and star-halo sizes shrink with it so
+    they cover the same patch of sky.
+    """
+    k = max(2, round(BLOCK / pixel_scale))
+    halo = max(1, round(3 / pixel_scale))
     ha = np.nan_to_num(data[0].astype(np.float32))
     oiii = np.nan_to_num(0.5 * (data[1].astype(np.float32) + data[2].astype(np.float32)))
     lit = (ha > 0) & (oiii > 0)
-    hsky, hspread = _spread(ha)
-    osky, ospread = _spread(oiii)
+    hsky, hspread = _spread(ha, k)
+    osky, ospread = _spread(oiii, k)
     scale = hspread / ospread if ospread > 0 else 1.0
     h_lin = np.clip(ha - hsky, 0, None)
     o_lin = np.clip(oiii - osky, 0, None) * scale
     lum = h_lin + o_lin
 
-    hb = _smooth(np.clip(_blocks(ha) - hsky, 0, None))
-    ob = _smooth(np.clip(_blocks(oiii) - osky, 0, None) * scale)
+    hb = _smooth(np.clip(_blocks(ha, k) - hsky, 0, None))
+    ob = _smooth(np.clip(_blocks(oiii, k) - osky, 0, None) * scale)
     signal = hb + ob
     share = ob / np.maximum(signal, 1e-12)
     # Statistics only from blocks wholly inside the image: a union of offset
     # nights or a mosaic leaves empty canvas, which is not sky.
-    inside = _blocks(lit.astype(np.float32)) > 0.99
-    # Colour only on nebula: none below the median block (sky), full from the
+    inside = _blocks(lit.astype(np.float32), k) > 0.99
+    # Color only on nebula: none below the median block (sky), full from the
     # 90th percentile up.
     if inside.sum() >= 10:
         floor, ref = np.percentile(signal[inside], [50, 90])
@@ -206,11 +217,11 @@ def hoo(
     t = np.clip((share - lo) / max(hi - lo, 1e-6) + 0.3 * (oiii_strength - 1.0), 0, 1)
 
     shape = ha.shape
-    tf = _upsample(t, shape)
-    wf = _upsample(weight, shape)
-    # Stars stay white: colour fades out where a pixel is far above its block.
-    local = _upsample(_blocks(lum), shape)
-    star = _grow(np.clip((lum / np.maximum(local, 1e-9) - 1.3) / 0.7, 0, 1), 3)
+    tf = _upsample(t, shape, k)
+    wf = _upsample(weight, shape, k)
+    # Stars stay white: color fades out where a pixel is far above its block.
+    local = _upsample(_blocks(lum, k), shape, k)
+    star = _grow(np.clip((lum / np.maximum(local, 1e-9) - 1.3) / 0.7, 0, 1), halo)
     amount = wf * (1 - star)
     ha_rgb, oiii_rgb = hue_rgb(ha_hue), hue_rgb(oiii_hue)
     col = (1 - tf)[None] * ha_rgb[:, None, None] + tf[None] * oiii_rgb[:, None, None]

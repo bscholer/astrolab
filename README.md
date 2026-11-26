@@ -44,7 +44,7 @@ The home page shows how last night went for each target, and estimates how many 
 
 <img src="docs/screenshots/project.png" alt="Project page: Triangulum Galaxy master with Quick sliders and the history strip" width="720" />
 
-Each target opens with a handful of sliders: brightness, dark sky, noise reduction, colour strength, green removal and stars. There's also HOO colour for duo-band data and a crop tool. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
+Each target opens with a handful of sliders: brightness, dark sky, noise reduction, color strength, green removal and stars. There's also HOO color for duo-band data and a crop tool. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
 
 Each render is saved to a history strip, where you can undo, branch, and compare two versions side by side. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
 
@@ -158,6 +158,6 @@ The stacking steps follow the shape of [Naztronomy's smart-telescope script](htt
 
 MIT, with a CC BY-SA 4.0 carve-out for the vendored OpenNGC catalog under `catalogs/openngc/` (Mattia Verga). See [LICENSE](LICENSE).
 
-Tonight thumbnails come from the Digitized Sky Survey (STScI/NASA), coloured and tiled by CDS and hosted by ESA ESASky. The server downloads them on demand and does not bundle them. See the [DSS copyright terms](https://archive.stsci.edu/dss/copyright.html).
+Tonight thumbnails come from the Digitized Sky Survey (STScI/NASA), colored and tiled by CDS and hosted by ESA ESASky. The server downloads them on demand and does not bundle them. See the [DSS copyright terms](https://archive.stsci.edu/dss/copyright.html).
 
 The Docker image bundles Siril (GPLv3) and GraXpert (GPLv3) as separate programs; astrolab's MIT license covers only astrolab's own source. See [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).

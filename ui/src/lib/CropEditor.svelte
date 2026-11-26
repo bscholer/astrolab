@@ -30,9 +30,11 @@
     params: Record<string, unknown>;
     /** New params for the box (replace every framing key), or null to reset. */
     onparams: (next: Record<string, number> | null) => void;
+    /** Tallest the picture may be (CSS length); the editor fits it to its stage. */
+    maxHeight?: string;
   }
 
-  const { previewUrl, hash, port, params, onparams }: Props = $props();
+  const { previewUrl, hash, port, params, onparams, maxHeight = 'max(320px, 100vh - 330px)' }: Props = $props();
 
   let info = $state<FramingInfo | null>(null);
   let error = $state<string | null>(null);
@@ -273,7 +275,7 @@
     <div
       class="viewport"
       style:aspect-ratio="{info.width} / {info.height}"
-      style:width="min(100%, calc(max(320px, 100vh - 330px) * {info.width / info.height}))"
+      style:width="min(100%, calc({maxHeight} * {info.width / info.height}))"
       bind:clientWidth={shownWidth}
     >
       <img class="bg" src={previewUrl} alt="" draggable="false" />

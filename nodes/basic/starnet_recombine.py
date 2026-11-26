@@ -13,8 +13,12 @@ When extract is on but recombine is off (rare) we pass through the
 starless layer; that's a useful escape hatch for "produce a starless
 image" workflows.
 
-`stars` below 1 shrinks the stars on the way back in (0 is starless); the
-Quick panel's Stars slider drives it.
+`stars` below 1 shrinks the stars on the way back in (0 is starless) and
+`tighten` pulls their edges in; the editor's Stars controls drive them.
+
+It is also where the last touches happen, on the finished picture:
+`contrast`, `highlights`, `shadows` and `sharpen`. They default to off, and
+the instant preview runs the same code (server/finish_math.py).
 
 Pure numpy. Header from the starless input is preserved (it's the more
 load-bearing one, since starless typically inherits the WCS / metadata
@@ -31,6 +35,7 @@ from astropy.io import fits
 from pydantic import BaseModel, Field
 
 from nodes.base import Node
+from server import finish_math as fm
 from server.models import Ref, RunContext
 from server.ports import PortType
 from server.registry import register
@@ -77,6 +82,42 @@ class StarnetRecombineParams(BaseModel):
             "agent_hint": "0.5-0.7 tames busy star fields around a nebula; 0 is starless.",
         },
     )
+    tighten: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Pull the stars' edges in (a 3x3 minimum filter on the stars "
+        "layer, blended by this amount). Needs StarNet on.",
+        json_schema_extra={"hash_precision": 3},
+    )
+    contrast: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="S-curve on brightness around middle grey; negative flattens.",
+        json_schema_extra={"hash_precision": 3},
+    )
+    highlights: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Lift (positive) or hold back (negative) the bright parts.",
+        json_schema_extra={"hash_precision": 3},
+    )
+    shadows: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Lift (positive) or deepen (negative) the dark parts.",
+        json_schema_extra={"hash_precision": 3},
+    )
+    sharpen: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Unsharp mask on brightness, 1.5 px radius.",
+        json_schema_extra={"hash_precision": 3},
+    )
 
 
 def shrink_stars(stars: np.ndarray, amount: float) -> np.ndarray:
@@ -96,7 +137,7 @@ def shrink_stars(stars: np.ndarray, amount: float) -> np.ndarray:
 @register("starnet_recombine")
 class StarnetRecombineNode(Node[StarnetRecombineParams]):
     id = "starnet_recombine"
-    version = 1
+    version = 2
     tier = "keep"
     preview_display_ready = True
 
@@ -129,6 +170,7 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
 
         if not params.enabled:
             ctx.progress(0.9, "starnet_recombine: disabled — passing starless")
+            starless_data = _last_touches(starless_data.astype(np.float32), params)
             fits.PrimaryHDU(data=starless_data, header=header).writeto(out_image, overwrite=True)
             ctx.progress(1.0, "starnet_recombine: pass-through")
             return _result(out_image)
@@ -143,6 +185,7 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
         ctx.progress(0.5, f"starnet_recombine: blend={params.blend}, stars x{params.stars:g}")
         a = starless_data.astype(np.float32)
         b = shrink_stars(stars_data.astype(np.float32), params.stars)
+        b = fm.tighten_stars(b, params.tighten)
         if params.blend == "add":
             combined = a + b
         elif params.blend == "screen":
@@ -159,10 +202,20 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
         # for 'add' so a bit of head-room over 1 survives if the stars layer
         # has hot pixels. save_image / preview will clamp at the end.
         combined = combined.astype(starless_data.dtype, copy=False)
+        combined = _last_touches(combined, params)
 
         fits.PrimaryHDU(data=combined, header=header).writeto(out_image, overwrite=True)
         ctx.progress(1.0, "starnet_recombine: done")
         return _result(out_image)
+
+
+def _last_touches(img: np.ndarray, params: StarnetRecombineParams) -> np.ndarray:
+    """Tone and sharpen; a no-op at the defaults so older renders keep their pixels."""
+    if not (params.contrast or params.highlights or params.shadows or params.sharpen):
+        return img
+    img = np.clip(img, 0.0, 1.0)
+    img = fm.tone(img, params.contrast, params.highlights, params.shadows)
+    return fm.sharpen(img, params.sharpen)
 
 
 def _read_fits(src: Path) -> tuple[np.ndarray, fits.Header]:

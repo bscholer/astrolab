@@ -1,4 +1,4 @@
-// Draws the DSS colour survey (a HiPS tree served by /api/sky/hips) onto a
+// Draws the DSS color survey (a HiPS tree served by /api/sky/hips) onto a
 // WebGL canvas in the View's stereographic projection. The all-sky image at
 // order 3 is always drawn first; sharper tiles are drawn over it once they
 // arrive, coarse to fine, so a view is never blank while zooming.

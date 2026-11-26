@@ -1,18 +1,18 @@
 id: stack_per_night_duo
 version: 5
 description: |
-  Stack per night for duo-band (H-alpha + OIII) data on a colour camera.
+  Stack per night for duo-band (H-alpha + OIII) data on a color camera.
   Each night is calibrated without debayering, split into H-alpha (red
   pixels) and OIII (green and blue pixels) by seqextract_HaOIII after
   the same small pedestal stack_per_night adds, and each
   channel is registered and stacked on its own (narrowband_extract). The
   night's two stacks are packed into one RGB image (red H-alpha, green and
   blue OIII), and from there it is stack_per_night: combine_stacks joins
-  the nights, then the same finishing steps, with HOO colour on and SCNR
+  the nights, then the same finishing steps, with HOO color on and SCNR
   green removal off.
 
   Why split before debayering: the demosaic fills each pixel's missing
-  colours from its neighbours using the other channels' detail, so on a
+  colors from its neighbours using the other channels' detail, so on a
   debayered stack green and blue carry H-alpha's structure. Measured on the
   California Nebula, debayered green+blue was 1.02 x red with almost
   nothing of its own; split first, OIII and H-alpha correlate at about 0.3.
@@ -85,7 +85,7 @@ nodes:
 
   - id: crop
     kind: crop
-    # Your framing, right after the stack so GraXpert, the HOO colour and the
+    # Your framing, right after the stack so GraXpert, the HOO color and the
     # stretch measure only what you framed. Set in the editor, stored on the
     # sky (centre, size, angle) and placed through the plate solve, so it
     # keeps framing the same nebula when a new night grows or shifts the
@@ -127,7 +127,7 @@ nodes:
 
   - id: channel_map
     kind: channel_map
-    # False colour for duo-band data on a colour camera: HOO maps red to
+    # False color for duo-band data on a color camera: HOO maps red to
     # H-alpha and green and blue to OIII. Off by default; the Quick panel's
     # HOO switch turns it on. Turn color_balance off with it, or SCNR eats
     # the OIII.
@@ -170,7 +170,7 @@ nodes:
     # target_bg dropped from the Siril default (0.25) to 0.05 because
     # auto_bp_shift already pushed the background toward zero; leaving
     # target_bg at 0.25 would lift the BG back up and undo the shift.
-    # saturation 1.1: a touch more colour on the gold/azure HOO. 2 clipped the
+    # saturation 1.1: a touch more color on the gold/azure HOO. 2 clipped the
     # H-alpha into flat red.
     params:
       method: autostretch

@@ -1,4 +1,4 @@
-"""Sky thumbnails for the Tonight page, cut from the DSS colour HiPS survey.
+"""Sky thumbnails for the Tonight page, cut from the DSS color HiPS survey.
 
 A HiPS survey is a pyramid of 512px JPEG tiles on the HEALPix grid. We use
 static tiles instead of a cutout service because ESA and CDS both host the
@@ -34,7 +34,7 @@ RENDER_VERSION = "1"
 
 _TILE_ORDER_BITS = 9  # 512px tiles
 _MIN_ORDER = 3  # coarsest level the survey publishes with allsky coverage
-_MAX_ORDER = 9  # hips_order of the DSS colour survey
+_MAX_ORDER = 9  # hips_order of the DSS color survey
 _MIN_FOV_DEG = 0.2
 _MAX_FOV_DEG = 6.0
 _DEFAULT_FOV_DEG = 0.5

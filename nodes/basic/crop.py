@@ -1,7 +1,7 @@
 """crop: frame the picture - a box on the sky, any angle, or the empty border trimmed.
 
 Input port  : image (IMAGE_FITS) - the combined stack (placed right after it,
-              before GraXpert, colour and the stretch, so they measure only
+              before GraXpert, color and the stretch, so they measure only
               what is framed).
 Output port : image (IMAGE_FITS) - the framed image, WCS carried over.
 

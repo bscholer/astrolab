@@ -466,7 +466,7 @@ class MasterKeeper:
                         pid,
                         new_template=want,
                         new_base_job=job,
-                        label="H-alpha and OIII split before debayering (real HOO colour)",
+                        label="H-alpha and OIII split before debayering (real HOO color)",
                         reset_nodes=DUO_RESET_NODES if want.id == DUO_TEMPLATE_ID else (),
                     )
                     moved.append(pid)

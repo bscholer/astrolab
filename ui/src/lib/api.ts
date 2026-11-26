@@ -674,6 +674,9 @@ export interface PatchProjectRequest {
   draft_mode?: boolean;
   label?: string;
   force?: boolean;
+  // Editing session id: patches from one session amend its version while it
+  // is the newest (server/projects.py patch).
+  session?: string;
   // Free-text notes. Empty string clears; omit to leave unchanged.
   // Updating description does NOT kick the pipeline.
   description?: string | null;
@@ -1196,6 +1199,23 @@ export const api = {
     postJSON<Project>('/api/projects/from_sessions', req),
   patchProject: (id: string, req: PatchProjectRequest) =>
     patchJSON<Project>(`/api/projects/${id}`, req),
+  /** The finishing steps with these overrides on a small copy, as a JPEG
+   *  (server/quick_preview.py). 409 when nothing is rendered far enough. */
+  quickPreview: async (
+    id: string,
+    overrides: Record<string, Record<string, unknown>>,
+    maxEdge: number,
+    signal?: AbortSignal
+  ): Promise<Blob> => {
+    const r = await fetch(`/api/projects/${id}/quick-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overrides, max_edge: maxEdge }),
+      signal
+    });
+    if (!r.ok) throw new ApiError(r.status, await _readErrorDetail(r));
+    return r.blob();
+  },
   revertProject: (id: string, seq: number) =>
     postJSON<Project>(`/api/projects/${id}/revert/${seq}`, {}),
   upgradeProjectTemplate: (id: string) =>

@@ -66,13 +66,22 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
-from server import coverage, pano_sky, scope_live, scope_plan, sky_thumbs, telemetry, weather
+from server import (
+    coverage,
+    pano_sky,
+    quick_preview,
+    scope_live,
+    scope_plan,
+    sky_thumbs,
+    telemetry,
+    weather,
+)
 from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
@@ -1924,6 +1933,9 @@ class PatchProjectRequest(BaseModel):
     the diff when omitted."""
     force: bool = False
     """Bypass the cache for this submission (debug rerun)."""
+    session: str | None = Field(default=None, max_length=64)
+    """Editing session id. Patches from the same session replace the latest
+    version instead of adding one while it is still the newest."""
     description: str | None = None
     """User-attached free-text notes. Pass an empty string to clear.
     Updating description does NOT submit a new job; it's metadata,
@@ -2778,6 +2790,7 @@ def patch_project(project_id: str, req: PatchProjectRequest, conn: DBDep) -> dic
                 draft_mode=req.draft_mode,
                 label=req.label,
                 force=req.force,
+                session=req.session,
             )
             if description_supplied:
                 # Combined edit: persist the note alongside the override.
@@ -2785,6 +2798,59 @@ def patch_project(project_id: str, req: PatchProjectRequest, conn: DBDep) -> dic
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
     return _project_to_response(project, conn)
+
+
+class QuickPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """The project's full overrides as the editor has them now (not a diff)."""
+    max_edge: int = Field(default=quick_preview.DEFAULT_EDGE, ge=96, le=2048)
+
+
+def _preview_base(project) -> tuple[Path, str]:
+    """The cached starting image for the quick preview: the current version's
+    if its job got that far, else the newest older version's."""
+    split = quick_preview.finishing_split(project.template)
+    if split is None:
+        raise quick_preview.NoBase("this template has no finishing steps to preview")
+    _, node_id, port = split
+    entries = sorted(
+        project.history, key=lambda h: (h.seq != project.current_seq, -h.seq)
+    )
+    for entry in entries:
+        record = job_manager.get(entry.job_id)
+        node_hash = record.node_hashes.get(node_id) if record else None
+        if not node_hash:
+            continue
+        manifest = job_manager.cache.load_outputs(node_hash)
+        if manifest and port in manifest and manifest[port].path.exists():
+            return manifest[port].path, node_hash
+    raise quick_preview.NoBase("no version has been rendered far enough yet")
+
+
+@app.post(
+    "/api/projects/{project_id}/quick-preview",
+    response_class=Response,
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "the preview"},
+        404: {"description": "unknown project"},
+        409: {"description": "nothing rendered far enough to preview yet"},
+    },
+)
+def quick_preview_image(project_id: str, req: QuickPreviewRequest) -> Response:
+    """Render the finishing steps with these overrides on a small copy of the
+    image, in well under a second (server/quick_preview.py)."""
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    try:
+        path, node_hash = _preview_base(project)
+        jpeg = quick_preview.render(path, node_hash, project.template, req.overrides, req.max_edge)
+    except quick_preview.NoBase as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 class SetCoverRequest(BaseModel):
@@ -4588,7 +4654,7 @@ def _display_common_name(entry: CatalogEntry) -> str | None:
 )
 def get_tonight_thumb(name: str) -> Response:
     """JPEG thumbnail for a catalog target: the user's own image when one
-    is set, or else a cutout of the DSS colour survey."""
+    is set, or else a cutout of the DSS color survey."""
     entry = openngc_enrich(name)
     if entry is None or entry.ra_deg is None or entry.dec_deg is None:
         raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
@@ -4616,7 +4682,7 @@ def get_tonight_thumb(name: str) -> Response:
     },
 )
 def get_sky_tile(path: str) -> Response:
-    """A JPEG tile of the DSS colour survey for the sky atlas, cached on disk.
+    """A JPEG tile of the DSS color survey for the sky atlas, cached on disk.
     `path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`."""
     if not sky_thumbs.valid_hips_path(path):
         raise HTTPException(status_code=404, detail=f"not a survey tile: {path!r}")

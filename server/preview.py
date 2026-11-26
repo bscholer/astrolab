@@ -489,7 +489,7 @@ def _debayer_half_res(plane: np.ndarray, pattern: str) -> np.ndarray:
 
     Each 2x2 super-pixel collapses to one RGB sample (R from R, B from B,
     G as the average of the two G sites). Half-res is fine for a 512px
-    thumbnail and avoids pulling in cv2 / colour-demosaicing as deps.
+    thumbnail and avoids pulling in cv2 / color-demosaicing as deps.
     """
     h, w = plane.shape
     # Crop to even dims so the 2:: slicing is clean.

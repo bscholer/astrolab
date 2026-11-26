@@ -1,5 +1,5 @@
 <!--
-  The Tonight page's map view: pan the sky over the DSS colour survey, find
+  The Tonight page's map view: pan the sky over the DSS color survey, find
   something to shoot, lay out a mosaic. The page owns the data, the
   selection and the actions; this draws them. Desktop keeps a side panel
   next to the map; on a phone the map fills the screen and details come up
@@ -603,7 +603,7 @@
         {#each best as e (e.name)}{@render bestItem(e)}{/each}
       </div>
       <p class="credit muted">
-        Imagery: DSS colour survey (STScI / Caltech) via ESA Sky HiPS. Constellation lines: d3-celestial.
+        Imagery: DSS color survey (STScI / Caltech) via ESA Sky HiPS. Constellation lines: d3-celestial.
       </p>
     </aside>
   {/if}

@@ -145,7 +145,7 @@ nodes:
 
   - id: channel_map
     kind: channel_map
-    # False colour for duo-band data on a colour camera: HOO maps red to
+    # False color for duo-band data on a color camera: HOO maps red to
     # H-alpha and green and blue to OIII. Off by default; the Quick panel's
     # HOO switch turns it on. Turn color_balance off with it, or SCNR eats
     # the OIII.

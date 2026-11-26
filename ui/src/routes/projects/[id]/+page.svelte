@@ -17,9 +17,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { page } from '$app/stores';
+  import { replaceState } from '$app/navigation';
   import {
     api,
-    FRAMING_KEYS,
     type CalibrationStatus,
     type DarkPreviewResponse,
     type Project,
@@ -37,9 +37,8 @@
   import HistoryStrip from '$lib/projects/HistoryStrip.svelte';
   import PipelineRow from '$lib/projects/PipelineRow.svelte';
   import CompareController from '$lib/projects/CompareController.svelte';
-  import QuickSliders from '$lib/projects/QuickSliders.svelte';
+  import Editor from '$lib/editor/Editor.svelte';
   import MoreData from '$lib/MoreData.svelte';
-  import CropEditor from '$lib/CropEditor.svelte';
   import type { MasterAdviceRow } from '$lib/api';
   import SessionRow from '$lib/SessionRow.svelte';
   import Checkbox from '$lib/Checkbox.svelte';
@@ -55,8 +54,25 @@
 
   // Target masters only: what more hours would buy (server/capture_loop.py).
   let advice = $state<MasterAdviceRow | null>(null);
-  // Quick's "Adjust crop" swaps the picture for the crop editor.
-  let cropping = $state(false);
+  // Edit (the editor, full screen), Pipeline (every step) or Details
+  // (notes, sessions, what more data would buy). Kept in ?view=.
+  type View = 'edit' | 'pipeline' | 'details';
+  const VIEWS: View[] = ['edit', 'pipeline', 'details'];
+  const initialView = $page.url.searchParams.get('view') as View | null;
+  let view = $state<View>(initialView && VIEWS.includes(initialView) ? initialView : 'edit');
+  const VIEW_TABS: [View, string][] = [['edit', 'Edit'], ['pipeline', 'Pipeline'], ['details', 'Details']];
+  function setView(v: View) {
+    view = v;
+    const url = new URL(window.location.href);
+    if (v === 'edit') url.searchParams.delete('view');
+    else url.searchParams.set('view', v);
+    try {
+      replaceState(url, {});
+    } catch {
+      // not ready during hydration
+    }
+    if (v !== 'edit') window.scrollTo(0, 0);
+  }
   let adviceFor = '';
   $effect(() => {
     const p = project;
@@ -167,20 +183,18 @@
         ? api.previewUrl(project.preview_hash, project.preview_port)
         : null
   );
+  const fullSrc = $derived(
+    finalOutput
+      ? api.outputUrl(finalOutput[1].node_hash, finalOutput[0])
+      : project?.preview_hash && project?.preview_port
+        ? api.outputUrl(project.preview_hash, project.preview_port)
+        : null
+  );
   const rendering = $derived(
     patchQueue.patching ||
       subscription.activeJob?.status === 'running' ||
       subscription.activeJob?.status === 'queued'
   );
-
-  // The full pipeline is the Workshop: folded away unless you opened it last time.
-  const WORKSHOP_KEY = 'astrolab.project.workshop_open';
-  let workshopOpen = $state(
-    typeof localStorage !== 'undefined' && localStorage.getItem(WORKSHOP_KEY) === '1'
-  );
-  $effect(() => {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(WORKSHOP_KEY, workshopOpen ? '1' : '0');
-  });
 
   const undoDisabled = $derived(
     !project || !project.history.some((h) => h.seq === (project!.current_seq - 1))
@@ -787,13 +801,6 @@
   // Framing: the crop node right after the stack (older duo projects had a
   // `frame` step at the end; their template upgrade removes it).
   const cropNode = $derived(project?.template.nodes.some((n) => n.id === 'frame') ? 'frame' : 'crop');
-  const cropParams = $derived.by(() => {
-    const spec = project?.template.nodes.find((n) => n.id === cropNode);
-    return {
-      ...((spec?.params ?? {}) as Record<string, unknown>),
-      ...((project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>)
-    };
-  });
   const cropInput = $derived(upstreamHashFor(cropNode));
   const cropPreviewUrl = $derived.by(() => {
     const up = cropInput;
@@ -803,17 +810,8 @@
       ? api.previewUrl(up.hash, up.port ?? 'image')
       : api.previewUrlStretched(up.hash, up.port ?? 'image');
   });
-  function setCrop(next: Record<string, number> | null) {
-    const o = { ...((project?.current_overrides?.[cropNode] ?? {}) as Record<string, unknown>) };
-    for (const key of [...FRAMING_KEYS, 'enabled']) delete o[key];
-    // Zero is every framing key's default: leave it out of the overrides.
-    const set = Object.fromEntries(Object.entries(next ?? {}).filter(([, v]) => v !== 0));
-    const on = cropNode === 'frame' && next ? { enabled: true } : {};
-    handleNodeOverrideChange(cropNode, { ...o, ...set, ...on });
-  }
-
   function onKeydown(e: KeyboardEvent) {
-    if (!project) return;
+    if (!project || view === 'edit') return;
     const meta = e.metaKey || e.ctrlKey;
     if (!meta) return;
     if (e.key === 'z' && !e.shiftKey) {
@@ -830,7 +828,40 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="project-root">
+{#if project && view === 'edit'}
+  <Editor
+    {project}
+    title={project.display?.name ?? project.name}
+    subtitle={project.display?.canonical && project.display.canonical !== project.display.name ? project.display.canonical : ''}
+    resultSrc={fullSrc}
+    {rendering}
+    {cropNode}
+    {cropInput}
+    {cropPreviewUrl}
+    {onProjectUpdated}
+    onView={setView}
+    onReprocess={reprocess}
+    upgradeLabel={(project.latest_template_version ?? project.template_version) > project.template_version
+      ? `Upgrade recipe (v${project.template_version} → v${project.latest_template_version})`
+      : null}
+    onUpgrade={upgradeTemplate}
+  >
+    {#snippet versions()}
+      <HistoryStrip
+        project={project!}
+        compareA={compare.compareA}
+        compareB={compare.compareB}
+        compareLoading={compare.compareLoading}
+        onRevert={revertTo}
+        onToggleCompareSlot={compare.toggleCompareSlot}
+        onOpenCompare={() => { compare.compareOpen = true; }}
+        onClearCompare={compare.clear}
+      />
+    {/snippet}
+  </Editor>
+{/if}
+
+<div class="project-root" hidden={view === 'edit' && !!project}>
   <div class="header">
     {#if project}
       <div class="title-block">
@@ -892,6 +923,14 @@
       </button>
     {/if}
   </div>
+
+  {#if project}
+    <div class="view-tabs" role="tablist" aria-label="Project views">
+      {#each VIEW_TABS as [v, label] (v)}
+        <button type="button" role="tab" class:on={view === v} aria-selected={view === v} onclick={() => setView(v)}>{label}</button>
+      {/each}
+    </div>
+  {/if}
 
   {#if project?.suggested_additions && !isDismissed(project.suggested_additions, project.id)}
     {@const s = project.suggested_additions}
@@ -956,67 +995,10 @@
       {/if}
     </p>
 
-    <div class="bench">
-      <div class="bench-result">
-        {#if cropping}
-          <div class="crop-stage">
-            <CropEditor
-              previewUrl={cropPreviewUrl}
-              hash={cropInput.hash}
-              port={cropInput.port ?? 'image'}
-              params={cropParams}
-              onparams={setCrop}
-            />
-            <div class="crop-bar">
-              <span class="muted small">Drag a box, turn it by the knob. It stays on the same sky as nights are added; Reset goes back to the whole frame.</span>
-              <button type="button" class="hbtn" onclick={() => (cropping = false)}>Done</button>
-            </div>
-          </div>
-        {:else if resultSrc}
-          <a class="result-frame" class:rendering href={resultSrc} target="_blank" rel="noopener" title="Open the current render">
-            <img src={resultSrc} alt="Current render of {project.name}" />
-            {#if rendering}<span class="result-badge">rendering…</span>{/if}
-          </a>
-        {:else}
-          <div class="result-frame empty">{rendering ? 'rendering…' : 'no render yet'}</div>
-        {/if}
-        <HistoryStrip
-          {project}
-          compareA={compare.compareA}
-          compareB={compare.compareB}
-          compareLoading={compare.compareLoading}
-          onRevert={revertTo}
-          onToggleCompareSlot={compare.toggleCompareSlot}
-          onOpenCompare={() => { compare.compareOpen = true; }}
-          onClearCompare={compare.clear}
-        />
-      </div>
-      <div class="bench-side">
-        <QuickSliders
-          {project}
-          disabled={patchQueue.patching}
-          {cropping}
-          onCrop={() => (cropping = !cropping)}
-          onNodeOverrideChange={handleNodeOverrideChange}
-        />
-        {#if project.master && advice}
-          <MoreData row={advice} onUpdated={(r) => (advice = r)} />
-        {/if}
-      </div>
-    </div>
-    <div class="history-mobile">
-      <HistoryStrip
-        {project}
-        compareA={compare.compareA}
-        compareB={compare.compareB}
-        compareLoading={compare.compareLoading}
-        onRevert={revertTo}
-        onToggleCompareSlot={compare.toggleCompareSlot}
-        onOpenCompare={() => { compare.compareOpen = true; }}
-        onClearCompare={compare.clear}
-      />
-    </div>
-    {#if schema && project}
+    {#if view === 'details' && project.master && advice}
+      <MoreData row={advice} onUpdated={(r) => (advice = r)} />
+    {/if}
+    {#if view === 'pipeline' && schema && project}
       {@const isCover = project.cover_seq === project.current_seq}
       {#snippet pipelineRow(nschema: TemplateSchema['nodes'][number])}
         {@const nid = nschema.node_id}
@@ -1049,8 +1031,8 @@
           jobQuality={nid === outputNodeId ? (subscription.activeJob?.quality ?? null) : null}
         />
       {/snippet}
-      <details class="workshop" bind:open={workshopOpen}>
-        <summary class="section-h">Workshop <span class="muted">every step of the pipeline, {schema.nodes.length} steps</span></summary>
+      <div class="workshop">
+        <h2 class="section-h">Pipeline <span class="muted">every step, {schema.nodes.length} in all</span></h2>
       <section class="nodes">
         {#if prepNodes.length > 0}
           <ol class="node-prep-strip" aria-label="Prep steps">
@@ -1067,10 +1049,10 @@
           </ol>
         {/if}
       </section>
-      </details>
+      </div>
     {/if}
 
-    {#if subscription.activeJob?.error}
+    {#if view === 'pipeline' && subscription.activeJob?.error}
       <section class="error-box">
         <h2 class="section-h">Error</h2>
         <pre>{subscription.activeJob.error}</pre>
@@ -1078,7 +1060,8 @@
     {/if}
 
     {@const sessionCount = project.source_session_ids.length}
-    <details class="details-block">
+    {#if view === 'details'}
+    <details class="details-block" open>
       <summary class="section-h">Notes and sessions <span class="muted">{sessionCount} session{sessionCount === 1 ? '' : 's'}{project.description ? ' · has notes' : ''}</span></summary>
     <div class="notes-sources">
       <!-- Notes card: same border/header chrome as the Sessions used
@@ -1177,6 +1160,7 @@
     </div>
 
     </details>
+    {/if}
   {/if}
 </div>
 
@@ -1328,6 +1312,32 @@
 {/if}
 
 <style>
+  .view-tabs {
+    display: inline-flex;
+    gap: 0.2rem;
+    padding: 0.2rem;
+    margin: 0 0 1rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+  }
+  .view-tabs button {
+    appearance: none;
+    border: 0;
+    background: none;
+    color: var(--fg-mute);
+    font: inherit;
+    font-size: 0.88rem;
+    padding: 0.35rem 1rem;
+    min-height: 0;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .view-tabs button.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
   .project-root {
     display: contents;
   }
@@ -1427,94 +1437,12 @@
     font-weight: 600;
     font-size: 0.75rem;
   }
-  .bench {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
-    gap: 1.25rem;
-    align-items: start;
-    margin: 0.75rem 0 1.5rem;
-  }
-  .bench-result {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-  .result-frame {
-    position: relative;
-    display: block;
-    border-radius: var(--radius-card, 12px);
-    overflow: hidden;
-    background: #000;
-    border: 1px solid var(--border);
-  }
-  .result-frame img {
-    display: block;
-    width: 100%;
-    /* Leave room under the picture for the history strip (about 170px)
-       below the header, so versions and compare stay in view. */
-    max-height: max(360px, calc(100vh - 330px));
-    object-fit: contain;
-  }
-  .result-frame.rendering img {
-    opacity: 0.6;
-  }
-  .result-frame.empty {
-    aspect-ratio: 3 / 2;
-    display: grid;
-    place-items: center;
-    color: var(--fg-mute);
-  }
-  .result-badge {
-    position: absolute;
-    right: 0.6rem;
-    bottom: 0.6rem;
-    font-size: 0.75rem;
-    padding: 0.1rem 0.55rem;
-    border-radius: 999px;
-    background: var(--bg-elev);
-    color: var(--fg-mute);
-    border: 1px solid var(--border);
-  }
-  .crop-stage {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-  .crop-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-  .bench-side {
-    min-width: 0;
-    position: sticky;
-    top: 0.75rem;
-    max-height: calc(100vh - 1.5rem);
-    overflow-y: auto;
-  }
-  .bench-side :global(.quick),
-  .bench-side :global(.more) {
-    margin-top: 0;
-  }
-  /* Quick and More data are components with their own big h2; in the side
-     column they read as section labels like History and Workshop. */
-  .bench-side :global(h2) {
-    font-size: 0.85rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--fg-mute);
-    margin: 0 0 0.5rem;
-  }
   .workshop,
   .details-block {
     margin: 1rem 0;
     border-top: 1px solid var(--border);
     padding-top: 0.75rem;
   }
-  .workshop > summary,
   .details-block > summary {
     cursor: pointer;
     list-style: none;
@@ -1522,59 +1450,22 @@
     align-items: baseline;
     gap: 0.6rem;
   }
-  .workshop > summary::-webkit-details-marker,
   .details-block > summary::-webkit-details-marker {
     display: none;
   }
-  .workshop > summary::before,
   .details-block > summary::before {
     content: '▸';
     color: var(--fg-mute);
     transition: transform 120ms;
   }
-  .workshop[open] > summary::before,
   .details-block[open] > summary::before {
     transform: rotate(90deg);
   }
-  .workshop > summary .muted,
   .details-block > summary .muted {
     font-size: 0.8rem;
     font-weight: 400;
     text-transform: none;
     letter-spacing: 0;
-  }
-  @media (max-width: 900px) {
-    .bench {
-      grid-template-columns: 1fr;
-    }
-    .bench-side {
-      position: static;
-      max-height: none;
-      overflow: visible;
-    }
-  }
-  /* Hidden on wider screens; declared before the phone query so it loses there. */
-  .history-mobile {
-    display: none;
-  }
-  @media (max-width: 700px) {
-    /* Phones: the picture stays in view while you work the sliders. */
-    .bench-result {
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      background: var(--bg);
-      padding-bottom: 0.4rem;
-    }
-    .result-frame img {
-      max-height: 36vh;
-    }
-    .bench-result > :global(:not(.result-frame):not(.crop-stage)) {
-      display: none;
-    }
-    .history-mobile {
-      display: block;
-    }
   }
   .capture-line {
     display: flex;
