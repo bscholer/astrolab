@@ -278,7 +278,7 @@
       Show more ({entries.length - limit} left)
     </button>
   {/if}
-  <p class="credit muted">Survey images: Digitized Sky Survey, STScI/NASA. Colour by CDS, hosted by ESA.</p>
+  <p class="credit muted">Survey images: Digitized Sky Survey, STScI/NASA. Color by CDS, hosted by ESA.</p>
 {/if}
 
 <style>

@@ -228,7 +228,7 @@ def transfer_registration(src: Path, dst: Path) -> None:
     """Write sequence `dst` with the frame selection and transforms of `src`.
 
     `src` is the plate-solved debayered copy of the same frames (its R lines
-    are per colour layer, eg R1); `dst` is a mono split sequence (Ha_ or
+    are per color layer, eg R1); `dst` is a mono split sequence (Ha_ or
     OIII_), so the transforms are written as layer 0. Siril only writes a
     sequence's .seq file when a command first opens it, so right after
     seqextract_HaOIII there is none: dst is built from src under its own

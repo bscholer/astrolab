@@ -132,11 +132,11 @@ class StretchParams(BaseModel):
         default=1.0,
         ge=0.0,
         le=3.0,
-        description="Colour strength after the stretch: 1 leaves colour as is, "
+        description="Color strength after the stretch: 1 leaves color as is, "
         "higher is more vivid, 0 is grey. Brightness is kept.",
         json_schema_extra={
             "hash_precision": 3,
-            "agent_hint": "1.2-1.5 brings out faint nebula colour; too high looks garish.",
+            "agent_hint": "1.2-1.5 brings out faint nebula color; too high looks garish.",
         },
     )
     # --- mtf ---
@@ -299,14 +299,14 @@ class StretchNode(Node[StretchParams]):
             )
 
         if params.saturation != 1.0:
-            ctx.progress(0.9, f"stretch: colour strength x{params.saturation:g}")
+            ctx.progress(0.9, f"stretch: color strength x{params.saturation:g}")
             saturate_fits(out_image, params.saturation)
         ctx.progress(1.0, f"stretch: wrote {out_image.name}")
         return {"image": image_ref(out_image, display_ready=True)}
 
 
 def saturate_fits(path: Path, amount: float) -> None:
-    """Scale each pixel's colour away from its own luminance, in place."""
+    """Scale each pixel's color away from its own luminance, in place."""
     with fits.open(path, memmap=False) as hdul:
         data, header = hdul[0].data, hdul[0].header.copy()
     if data is None or data.ndim != 3 or data.shape[0] != 3:

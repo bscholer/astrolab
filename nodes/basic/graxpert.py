@@ -270,7 +270,7 @@ def restore_nodata(src: Path, out: Path) -> int:
     """Put back the input's empty canvas (zero in every channel) as zero.
 
     GraXpert fills nodata with made-up values (about 0.006 on the Rosette),
-    which downstream steps then read as dark sky: the HOO colour and the
+    which downstream steps then read as dark sky: the HOO color and the
     stretch measured the sky off the filled border and came out garish.
     Returns the number of pixels restored.
     """

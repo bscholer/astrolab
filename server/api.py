@@ -4654,7 +4654,7 @@ def _display_common_name(entry: CatalogEntry) -> str | None:
 )
 def get_tonight_thumb(name: str) -> Response:
     """JPEG thumbnail for a catalog target: the user's own image when one
-    is set, or else a cutout of the DSS colour survey."""
+    is set, or else a cutout of the DSS color survey."""
     entry = openngc_enrich(name)
     if entry is None or entry.ra_deg is None or entry.dec_deg is None:
         raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
@@ -4682,7 +4682,7 @@ def get_tonight_thumb(name: str) -> Response:
     },
 )
 def get_sky_tile(path: str) -> Response:
-    """A JPEG tile of the DSS colour survey for the sky atlas, cached on disk.
+    """A JPEG tile of the DSS color survey for the sky atlas, cached on disk.
     `path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`."""
     if not sky_thumbs.valid_hips_path(path):
         raise HTTPException(status_code=404, detail=f"not a survey tile: {path!r}")

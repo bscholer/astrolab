@@ -217,7 +217,7 @@ and desktops put the tools in a column to the right of the picture.
 ```
 
 - Tools: Looks (palette and style cards rendered on your own picture),
-  Crop, Light, Colour, Detail, Versions. One tool's few controls show at a
+  Crop, Light, Color, Detail, Versions. One tool's few controls show at a
   time; the panel scrolls inside itself only if it must.
 - Controls run 0-100 (or -100..100 for contrast, highlights, shadows,
   balance), each with an icon, its value and a reset to the recipe's value.

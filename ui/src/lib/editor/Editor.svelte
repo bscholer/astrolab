@@ -51,7 +51,7 @@
     { id: 'looks', label: 'Looks', icon: 'looks' },
     { id: 'crop', label: 'Crop', icon: 'crop' },
     { id: 'light', label: 'Light', icon: 'light' },
-    { id: 'color', label: 'Colour', icon: 'color' },
+    { id: 'color', label: 'Color', icon: 'color' },
     { id: 'detail', label: 'Detail', icon: 'detail' },
     { id: 'versions', label: 'Versions', icon: 'versions' },
   ];

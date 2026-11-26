@@ -89,7 +89,7 @@ def autostretch_params(
 def asinh_stretch(
     data: np.ndarray, beta: float, offset: float = 0.0, human: bool = False
 ) -> np.ndarray:
-    """Siril's `asinh`: a colour-preserving arcsinh curve on luminance."""
+    """Siril's `asinh`: a color-preserving arcsinh curve on luminance."""
     x = np.clip(data - offset, 0.0, None).astype(np.float32)
     if x.ndim == 3 and x.shape[0] == 3:
         w = np.array([0.2126, 0.7152, 0.0722] if human else [1 / 3, 1 / 3, 1 / 3], np.float32)
@@ -101,7 +101,7 @@ def asinh_stretch(
 
 
 def saturate(data: np.ndarray, amount: float) -> np.ndarray:
-    """Scale each pixel's colour away from its own luminance (stretch's saturation)."""
+    """Scale each pixel's color away from its own luminance (stretch's saturation)."""
     if data.ndim != 3 or data.shape[0] != 3 or amount == 1.0:
         return data
     lum = data.mean(axis=0, keepdims=True)
@@ -140,7 +140,7 @@ def _sky(channel: np.ndarray, lit: np.ndarray, block: int = 8, pct: float = 10) 
 def bp_shift(data: np.ndarray, clip_fraction: float, neutral_sky: bool = True) -> np.ndarray:
     """auto_bp_shift: the black point that clips `clip_fraction` of the pixels.
 
-    With neutral_sky each colour channel moves by how far its own sky sits
+    With neutral_sky each color channel moves by how far its own sky sits
     from the mean, as the node does. Zero (no data) stays zero.
     """
     data = data.astype(np.float32)
@@ -196,7 +196,7 @@ def _luma(data: np.ndarray) -> np.ndarray:
 
 
 def _with_luma(data: np.ndarray, old: np.ndarray, new: np.ndarray) -> np.ndarray:
-    """Give each pixel the new luminance and keep its colour."""
+    """Give each pixel the new luminance and keep its color."""
     if data.ndim != 3:
         return np.clip(new, 0.0, 1.0).astype(np.float32)
     ratio = np.where(old > 1e-6, new / np.maximum(old, 1e-6), 1.0)

@@ -1,6 +1,6 @@
 /**
  * Looks: one tap sets several controls at once. Palettes change only the
- * colour mapping (duo-band data); styles change light and colour and keep
+ * color mapping (duo-band data); styles change light and color and keep
  * the palette. Each card in the editor shows the look on the user's own
  * picture, rendered by the instant preview.
  */
@@ -51,7 +51,7 @@ export const PALETTES: Look[] = [
 const FINISH = ['stretch', 'auto_bp_shift'];
 const TOUCH_KEYS = ['contrast', 'highlights', 'shadows', 'sharpen'];
 
-/** The draft with light and colour back at the template's values; palette,
+/** The draft with light and color back at the template's values; palette,
  *  stars, crop, gradient and noise settings stay. */
 function neutral(c: Ctx): Draft {
   const d: Draft = { ...c.draft };
@@ -84,7 +84,7 @@ const always = () => true;
 export const STYLES: Look[] = [
   { id: 'balanced', name: 'Balanced', sub: 'The recipe as made', show: always, apply: style({}) },
   {
-    id: 'vivid', name: 'Vivid', sub: 'Richer colour, more pop', show: always,
+    id: 'vivid', name: 'Vivid', sub: 'Richer color, more pop', show: always,
     apply: style({ stretch: { saturation: 1.6 }, touch: { contrast: 0.25 } }),
   },
   {

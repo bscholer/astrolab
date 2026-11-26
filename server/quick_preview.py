@@ -1,7 +1,7 @@
 """Instant preview: the finishing steps on a small copy of the image.
 
 The editor's sliders mostly change steps that come after the slow ones
-(GraXpert, StarNet, Siril's stretch): colour mapping, green removal, the
+(GraXpert, StarNet, Siril's stretch): color mapping, green removal, the
 black point, the stretch, star size and the last touches. Re-running the
 pipeline for each change takes seconds to a minute; this runs those steps in
 numpy on a copy of the slow steps' output, downscaled to about 1280 px, in a
@@ -10,7 +10,7 @@ once the user stops moving, so the full-size render follows.
 
 How it stays close to the real render:
 - the steps are the same maths (server/finish_math.py, tested against
-  Siril's output, and the nodes' own numpy code for colour mapping);
+  Siril's output, and the nodes' own numpy code for color mapping);
 - statistics (sky, noise, black points) come from a strided sample of the
   full-size image, not from the downscaled copy, whose averaging would
   hide the noise they measure;

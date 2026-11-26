@@ -5376,7 +5376,7 @@
     },
     "/api/sky/hips/{path}": {
       "get": {
-        "description": "A JPEG tile of the DSS colour survey for the sky atlas, cached on disk.\n`path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`.",
+        "description": "A JPEG tile of the DSS color survey for the sky atlas, cached on disk.\n`path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`.",
         "operationId": "get_sky_tile_api_sky_hips__path__get",
         "parameters": [
           {
@@ -6011,7 +6011,7 @@
     },
     "/api/tonight/thumb": {
       "get": {
-        "description": "JPEG thumbnail for a catalog target: the user's own image when one\nis set, or else a cutout of the DSS colour survey.",
+        "description": "JPEG thumbnail for a catalog target: the user's own image when one\nis set, or else a cutout of the DSS color survey.",
         "operationId": "get_tonight_thumb_api_tonight_thumb_get",
         "parameters": [
           {

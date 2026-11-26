@@ -4,9 +4,9 @@ Input ports : ha   (IMAGE_FITS) - aligned H-alpha stack from narrowband_extract
               oiii (IMAGE_FITS) - aligned OIII stack from narrowband_extract
 Output port : image (IMAGE_FITS) - RGB, red H-alpha, green and blue OIII, linear
 
-Duo-band data on a colour camera has to be split into H-alpha (red pixels)
+Duo-band data on a color camera has to be split into H-alpha (red pixels)
 and OIII (green and blue pixels) before debayering: the demosaic fills each
-pixel's missing colours from its neighbours using the other channels'
+pixel's missing colors from its neighbours using the other channels'
 detail, so after debayering green and blue carry H-alpha's structure. On
 the California Nebula the debayered green+blue came out at 1.02 x red with
 almost nothing else in it; split first, OIII and H-alpha correlate at 0.3.
@@ -14,7 +14,7 @@ almost nothing else in it; split first, OIII and H-alpha correlate at 0.3.
 Packing the two stacks into one RGB image per night lets the rest of the
 stack-per-night chain stay as it is: combine_stacks joins nights, and the
 finishing steps (channel_map scales OIII against H-alpha) see an ordinary
-colour image. No levels are changed here; OIII is moved by the sub-pixel
+color image. No levels are changed here; OIII is moved by the sub-pixel
 offset measured against H-alpha (see pack()).
 
 Pure numpy.

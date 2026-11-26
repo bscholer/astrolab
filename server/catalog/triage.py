@@ -59,7 +59,7 @@ class StarStats:
 
 
 def _luminance(data: np.ndarray) -> np.ndarray:
-    """Sum each 2x2 Bayer cell: one value per cell, colour-blind but star-shaped."""
+    """Sum each 2x2 Bayer cell: one value per cell, color-blind but star-shaped."""
     h, w = (data.shape[0] // 2) * 2, (data.shape[1] // 2) * 2
     d = data[:h, :w].astype(np.float32)
     return d[0::2, 0::2] + d[0::2, 1::2] + d[1::2, 0::2] + d[1::2, 1::2]
