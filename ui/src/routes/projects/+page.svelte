@@ -40,6 +40,8 @@
   let storage = $state<StorageSnapshot | null>(null);
   let busyId = $state<string | null>(null);
   let activeJobs = $state<SystemActiveJob[]>([]);
+  // Pictures that failed to load (evicted since the list was fetched).
+  let brokenPics = $state<Set<string>>(new Set());
 
   async function loadAll() {
     try {
@@ -158,26 +160,36 @@
       {@const activeJob = activeByJobId.get(r.current_job_id)}
       {@const c = r.capture}
       {@const common = c?.target_common_name && c.target_common_name !== r.name ? c.target_common_name : null}
+      {@const failed = !activeJob && !!r.history?.find((h) => h.seq === r.current_seq)?.failed}
+      {@const pct = activeJob ? Math.round(activeJob.progress * 100) : 0}
       <li class="card" class:busy={busyId === r.id} style="--stagger: {i}">
         <a class="pic" href="/projects/{r.id}" aria-label="Open {common ?? r.name}">
-          {#if r.preview_hash && r.preview_port}
+          {#if r.preview_hash && r.preview_port && !brokenPics.has(r.id)}
             <img
+              onerror={() => (brokenPics = new Set([...brokenPics, r.id]))}
               src={api.previewUrl(r.preview_hash, r.preview_port)}
               alt=""
               loading="lazy"
               decoding="async"
             />
           {:else}
-            <span class="no-pic muted small">{activeJob ? 'Rendering…' : 'No render yet'}</span>
+            <span class="no-pic muted small">{activeJob ? '' : 'No render yet'}</span>
           {/if}
           <span class="version">v{r.current_seq + 1}</span>
+          {#if activeJob}
+            <span class="state" title="v{r.current_seq + 1} is rendering; the picture is the last finished version">
+              <span class="spin"></span>Rendering <b>{pct}%</b>
+            </span>
+          {:else if failed}
+            <span class="state bad" title="The newest render failed; open the project's Pipeline tab for the error">Render failed</span>
+          {/if}
           <span class="title">
             <span class="name">{common ?? r.name}</span>
             {#if common}<span class="cat">{r.name}</span>{/if}
           </span>
           {#if activeJob}
-            <span class="progress" role="progressbar" aria-valuenow={Math.round(activeJob.progress * 100)} aria-valuemin="0" aria-valuemax="100" aria-label="Processing">
-              <span class="progress-fill" style="--pct: {(activeJob.progress * 100).toFixed(1)}%"></span>
+            <span class="progress" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100" aria-label="Rendering">
+              <span class="progress-fill" style="--pct: {Math.max(pct, 2)}%"></span>
             </span>
           {/if}
         </a>
@@ -377,6 +389,40 @@
     font-size: 0.75rem;
     color: rgba(233, 241, 255, 0.75);
   }
+  .state {
+    position: absolute;
+    top: 0.6rem;
+    left: 0.7rem;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.75rem;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 999px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    font-variant-numeric: tabular-nums;
+  }
+  .state.bad {
+    color: #fff;
+    background: rgba(236, 72, 153, 0.75);
+    border-color: transparent;
+  }
+  .spin {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
   .version {
     position: absolute;
     top: 0.6rem;
@@ -486,7 +532,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    height: 3px;
+    height: 5px;
     z-index: 2;
     background: rgba(94, 234, 212, 0.12);
     overflow: hidden;

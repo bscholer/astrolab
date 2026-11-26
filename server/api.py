@@ -2603,7 +2603,8 @@ def _attach_preview(project_dict: dict) -> dict:
         outputs = record.outputs
         port = "image" if "image" in outputs else next(iter(outputs))
         ref = outputs.get(port)
-        if ref is None:
+        # An evicted picture is a dead link; fall back to an older version.
+        if ref is None or not job_manager.cache.is_committed(ref.node_hash):
             continue
         project_dict["preview_hash"] = ref.node_hash
         project_dict["preview_port"] = port
@@ -3174,17 +3175,15 @@ def patch_project_sessions(project_id: str, req: PatchProjectSessionsRequest, co
     except ProjectNotFound as exc:  # pragma: no cover - guarded above
         raise HTTPException(status_code=404, detail=f"project {project_id} not found") from exc
 
-    # Evict the project's now-unreachable cache. The swap created a new
-    # Job, so the prior history's outputs are still reachable from the
-    # earlier `kind='edit'` entries, so purge_project_cache scopes by
-    # current ownership, so only entries that are now owned solely by
-    # the prior session set get freed. That's the right behavior: we
-    # don't want to nuke an output the user might want to revert back
-    # to. (Granularity work in #61 will revisit this.)
+    # Free the project's intermediates (the per-night stacks of the old
+    # session set dominate), but keep every version's saved outputs: they
+    # are the pictures the Projects list and the version strip show, and
+    # the new render may fail or take a while. Purging them too left a
+    # project with no picture at all while its re-render ran (or failed).
     evicted, freed = purge_project_cache(
         job_manager.cache,
         project_id,
-        keep_outputs=False,
+        keep_outputs=True,
         db_path=job_manager.db_path,
     )
     log.info(
