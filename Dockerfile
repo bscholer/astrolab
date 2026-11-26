@@ -101,6 +101,11 @@ RUN curl -fsSL -o /opt/graxpert-LICENSE \
     || curl -fsSL -o /opt/graxpert-LICENSE \
         https://raw.githubusercontent.com/Steffenhir/GraXpert/develop/License.md
 
+# Entrypoint, with CRLF stripped for Windows checkouts. Done here rather than
+# in the runtime stage so the runtime stage can end in --link copies only.
+COPY docker/entrypoint.sh /fetch/entrypoint.sh
+RUN sed -i 's/\r//' /fetch/entrypoint.sh && chmod 755 /fetch/entrypoint.sh
+
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime image
@@ -189,19 +194,18 @@ fits.PrimaryHDU(np.zeros((64,64),dtype='float32')).writeto('/tmp/graxpert_warmup
     ls -lh /root/.local/share/GraXpert/bge-ai-models/*/model.onnx \
            /root/.local/share/GraXpert/denoise-ai-models/*/model.onnx
 
-# Application sources
-COPY server/ ./server/
-COPY nodes/ ./nodes/
-COPY templates/ ./templates/
-COPY profiles/ ./profiles/
-COPY catalogs/ ./catalogs/
-
-# Pre-built UI
-COPY --from=ui-builder /ui/build ./ui/build/
-
-# Entrypoint
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+# Everything below changes from commit to commit. --link makes each copy its
+# own layer that doesn't depend on the ones beneath, so a code-only build reuses
+# the ~3.5 GB of layers above without downloading them from the build cache,
+# and pushes only these. Keep this section to --link copies: one RUN here would
+# need the whole filesystem again.
+COPY --link server/ /app/server/
+COPY --link nodes/ /app/nodes/
+COPY --link templates/ /app/templates/
+COPY --link profiles/ /app/profiles/
+COPY --link catalogs/ /app/catalogs/
+COPY --link --from=ui-builder /ui/build /app/ui/build/
+COPY --link --from=tools-fetcher /fetch/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Runtime environment
 # ASTROLAB_CAPTURE_ROOT_DEFAULT seeds the capture_root setting on first run
