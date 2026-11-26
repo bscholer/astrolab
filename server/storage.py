@@ -28,13 +28,15 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import nodes.basic  # noqa: F401  registers nodes, so tiers resolve (unknown = bulk)
 from nodes.base import Node
-from server.cache import ContentCache
+from server.cache import DONE_MARKER, ContentCache
 from server.catalog.db import connect as open_catalog_db
 from server.models import Template
 from server.registry import lookup as registry_lookup
@@ -64,6 +66,16 @@ class CacheEntryInfo:
     oldest_owner_updated_at: str | None = None
     """ISO timestamp of the least-recently-updated project that owns this
     entry. Used within a tier to evict oldest-project entries first."""
+    from_completed_job: bool = False
+    """A completed job (with or without a project) produced or used this
+    entry. Auto-stack and other standalone jobs have no project, so their
+    results have no owners but are not dead."""
+
+    @property
+    def dead(self) -> bool:
+        """Nothing can reach it: no project history and no completed job.
+        Left behind by deleted projects and failed or interrupted runs."""
+        return not self.owners and not self.from_completed_job
 
 
 @dataclass
@@ -119,6 +131,22 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}  # noqa: SIM118
 
 
+def _node_tier_map(template_json: str) -> dict[str, str]:
+    """Node id -> storage tier for a stored template; {} if it won't parse."""
+    try:
+        t = Template.model_validate(json.loads(template_json))
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for spec in t.nodes:
+        try:
+            cls: type[Node] = registry_lookup(spec.kind, spec.variant)
+            out[spec.id] = cls.tier
+        except KeyError:
+            continue
+    return out
+
+
 def build_reachability(
     conn: sqlite3.Connection,
     cache: ContentCache,
@@ -145,34 +173,41 @@ def build_reachability(
     # job_ids. Legacy list-shaped payloads are kept verbatim and resolved
     # below using the project's template node order, matching the old
     # storage behavior so old records don't silently change meaning.
+    tier_rank = {"bulk": 0, "keep": 1}
+
+    def _promote(entry: CacheEntryInfo, tier: str) -> None:
+        if tier_rank.get(tier, 0) > tier_rank.get(entry.tier, 0):
+            entry.tier = tier
+
     job_hashes_raw: dict[str, dict[str, str] | list[str]] = {}
-    for j in conn.execute("SELECT id, node_hashes_json FROM jobs").fetchall():
+    for j in conn.execute(
+        "SELECT id, status, node_hashes_json, template_json FROM jobs"
+    ).fetchall():
         if not j["node_hashes_json"]:
             continue
         try:
             raw = json.loads(j["node_hashes_json"])
         except (ValueError, TypeError):
             continue
+        if j["status"] == "completed":
+            for h in raw.values() if isinstance(raw, dict) else raw:
+                if isinstance(h, str) and h in entries:
+                    entries[h].from_completed_job = True
+            # Tier from the job's own template, so results of jobs without a
+            # project (auto-stacks) are protected like project results.
+            if isinstance(raw, dict) and j["template_json"]:
+                job_tiers = _node_tier_map(j["template_json"])
+                for node_id, h in raw.items():
+                    if isinstance(h, str) and h in entries:
+                        tier = job_tiers.get(node_id) or job_tiers.get(node_id.split("@", 1)[0])
+                        if tier:
+                            _promote(entries[h], tier)
         if isinstance(raw, dict):
             job_hashes_raw[j["id"]] = {
                 str(k): str(v) for k, v in raw.items() if isinstance(v, str)
             }
         elif isinstance(raw, list):
             job_hashes_raw[j["id"]] = [h for h in raw if isinstance(h, str)]
-
-    def _node_tier_map(template_json: str) -> dict[str, str]:
-        try:
-            t = Template.model_validate(json.loads(template_json))
-        except Exception:
-            return {}
-        out: dict[str, str] = {}
-        for spec in t.nodes:
-            try:
-                cls: type[Node] = registry_lookup(spec.kind, spec.variant)
-                out[spec.id] = cls.tier
-            except KeyError:
-                continue
-        return out
 
     # We don't have a stored mapping from node_hash to its (kind, variant),
     # so we approximate: walk each history entry, infer per-node tier from
@@ -181,8 +216,6 @@ def build_reachability(
     # node implementation, so tier is stable; if a tier mismatch ever shows
     # up we promote to `keep` to avoid evicting something a downstream user
     # is counting on.
-    tier_rank = {"bulk": 0, "keep": 1}
-
     for pid, p in projects.items():
         tier_map = _node_tier_map(p["template_json"])
         template = Template.model_validate(json.loads(p["template_json"]))
@@ -217,11 +250,10 @@ def build_reachability(
                     continue
                 entry = entries[hash_str]
                 entry.owners.add(pid)
-                spec = spec_by_id.get(node_id)
+                # Per-session copies ('stack@42') share their template node's tier.
+                spec = spec_by_id.get(node_id) or spec_by_id.get(node_id.split("@", 1)[0])
                 if spec is not None:
-                    tier = tier_map.get(spec.id, "bulk")
-                    if tier_rank.get(tier, 0) > tier_rank.get(entry.tier, 0):
-                        entry.tier = tier
+                    _promote(entry, tier_map.get(spec.id, "bulk"))
                 if entry.oldest_owner_updated_at is None or (
                     project_updated < entry.oldest_owner_updated_at
                 ):
@@ -239,8 +271,8 @@ def system_storage(
         entries, projects = build_reachability(conn, cache)
 
     total_bytes = sum(e.bytes for e in entries.values())
-    unreachable_bytes = sum(e.bytes for e in entries.values() if not e.owners)
-    unreachable_count = sum(1 for e in entries.values() if not e.owners)
+    unreachable_bytes = sum(e.bytes for e in entries.values() if e.dead)
+    unreachable_count = sum(1 for e in entries.values() if e.dead)
 
     per_project: list[ProjectStorage] = []
     for pid, p in projects.items():
@@ -426,7 +458,7 @@ def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
     """Sort key: lower = evict sooner.
 
     Position 0: orphan-flag (0 = no owners, 1 = has owners) so unreachable
-    entries always go first.
+    entries go first (dead ones are already gone by then, see run_cleanup).
     Position 1: tier rank (bulk=0, keep=1).
     Position 2: oldest-owner timestamp ascending; unknown sorts after
     populated values so we don't accidentally prioritize an undated entry.
@@ -435,6 +467,17 @@ def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
     tier_rank = _TIER_ORDER.get(entry.tier, 0)
     age_key = entry.oldest_owner_updated_at or "￿"
     return (has_owners, tier_rank, age_key)
+
+
+DEAD_GRACE_S = 24 * 3600
+"""Dead entries younger than this stay, so retrying a failed run resumes where it stopped."""
+
+
+def _age_s(cache: ContentCache, node_hash: str) -> float:
+    try:
+        return time.time() - (cache.entry_dir(node_hash) / DONE_MARKER).stat().st_mtime
+    except OSError:
+        return float("inf")
 
 
 @dataclass
@@ -473,13 +516,20 @@ def run_cleanup(
     max_bytes: int,
     db_path: Path | None = None,
 ) -> CleanupResult:
-    """Evict cache entries until total usage is <= max_bytes.
+    """Evict dead entries, then more until total usage is <= max_bytes.
 
-    Eviction order (lower = evict first):
-      1. Orphans (no project owns them) regardless of tier.
-      2. Bulk-tier entries (pre-stack sequence data), oldest project first.
-      3. Keep-tier entries (stack output and post-stack work). Only touched
-         when 1 and 2 didn't reclaim enough.
+    Dead entries (no project, no completed job: deleted projects, failed and
+    interrupted runs) older than DEAD_GRACE_S go on every call, budget or not.
+    Younger ones stay so a retry of a failed run reuses its finished steps.
+
+    Budget eviction only takes bulk-tier entries (pre-stack sequence data):
+      1. Orphans first (no project owns them, e.g. old auto-stack work).
+      2. Then project-owned bulk, oldest project first.
+    Keep-tier entries (stacks and everything after) are results people look
+    at, and small next to bulk, so the budget never takes them; one huge run
+    once evicted every other project's images that way. They go when their
+    project is deleted or they turn dead. If bulk alone can't get under
+    budget, the result says over_budget and the per-node disk check decides.
 
     Entries with a live in-use marker are skipped regardless of position;
     the lockfile protocol guarantees a running job's reads/writes survive
@@ -488,6 +538,19 @@ def run_cleanup(
     with _conn(db_path) as conn:
         entries, _ = build_reachability(conn, cache)
         alive = _alive_job_ids(conn)
+
+    dead_count = 0
+    dead_freed = 0
+    for e in [e for e in entries.values() if e.dead]:
+        if _age_s(cache, e.node_hash) < DEAD_GRACE_S:
+            continue
+        if cache.is_in_use(e.node_hash, alive):
+            continue  # the budget pass below counts it if it gets that far
+        dead_freed += cache.evict(e.node_hash, reason="dead")
+        dead_count += 1
+        del entries[e.node_hash]
+    if dead_count:
+        log.info("run_cleanup dead: evicted=%d freed=%d", dead_count, dead_freed)
 
     total = sum(e.bytes for e in entries.values())
     if total <= max_bytes:
@@ -498,13 +561,13 @@ def run_cleanup(
             len(entries),
         )
         return CleanupResult(
-            evicted_count=0,
-            bytes_freed=0,
+            evicted_count=dead_count,
+            bytes_freed=dead_freed,
             bytes_remaining=total,
             over_budget=False,
         )
 
-    ordered = sorted(entries.values(), key=_eviction_key)
+    ordered = sorted((e for e in entries.values() if e.tier != "keep"), key=_eviction_key)
     log.info(
         "run_cleanup start: total=%d max=%d over_by=%d entries=%d alive_jobs=%d",
         total,
@@ -514,7 +577,7 @@ def run_cleanup(
         len(alive),
     )
 
-    evicted_count = 0
+    evicted_count = dead_count
     bytes_freed = 0
     skipped_in_use = 0
     for e in ordered:
@@ -529,12 +592,7 @@ def run_cleanup(
                 sorted(cache.in_use_by(e.node_hash) & alive),
             )
             continue
-        if not e.owners:
-            reason = "orphan"
-        elif e.tier == "keep":
-            reason = "over-budget-keep"
-        else:
-            reason = "over-budget-bulk"
+        reason = "orphan" if not e.owners else "over-budget-bulk"
         log.info(
             "run_cleanup pick: hash=%s reason=%s bytes=%d tier=%s owners=%d "
             "oldest_owner=%s",
@@ -549,18 +607,20 @@ def run_cleanup(
         evicted_count += 1
 
     over_budget = (total - bytes_freed) > max_bytes
+    remaining = total - bytes_freed
+    bytes_freed += dead_freed
     log.info(
         "run_cleanup done: evicted=%d freed=%d remaining=%d over_budget=%s skipped_in_use=%d",
         evicted_count,
         bytes_freed,
-        total - bytes_freed,
+        remaining,
         over_budget,
         skipped_in_use,
     )
     return CleanupResult(
         evicted_count=evicted_count,
         bytes_freed=bytes_freed,
-        bytes_remaining=total - bytes_freed,
+        bytes_remaining=remaining,
         over_budget=over_budget,
         skipped_in_use_count=skipped_in_use,
     )
@@ -660,6 +720,19 @@ SETTING_CAPTURE_ROOT = "capture_root"
 Lives server-side rather than in browser localStorage so it survives a
 cache clear and works the same from any device pointed at the same
 astrolab instance — the scan target is server-local anyway."""
+
+SETTING_SCOPE_URL = "scope_service_url"
+SETTING_SCOPE_TOKEN = "scope_service_token"
+SETTING_SCOPE_MIRROR_BASELINE = "scope_mirror_baseline"
+SETTING_SCOPE_TARGETS = "scope_targets"
+SETTING_SCOPE_PROGRESS = "scope_progress"
+SETTING_SCOPE_AUTO = "scope_auto"
+SETTING_SCOPE_ALERT_URL = "scope_alert_url"
+SETTING_SCOPE_AUTO_STACK = "scope_auto_stack"
+SETTING_SCOPE_POINTING = "scope_pointing_pairs"
+SETTING_SCOPE_SKYMAP = "scope_skymap"
+SETTING_SCRAP_PURGE = "scrap_purge"
+"""When true, the curator deletes scrap capture folders (server/curator.py)."""
 
 SETTING_SITE_LATITUDE = "site_latitude"
 SETTING_SITE_LONGITUDE = "site_longitude"

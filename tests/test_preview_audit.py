@@ -40,6 +40,8 @@ from server.registry import lookup as registry_lookup
 # parametrized tests will catch any locator regression.
 NODE_LAYOUT: dict[tuple[str, str | None], dict[str, str]] = {
     ("auto_bp_shift", None): {"image": "image.fit"},
+    ("channel_map", None): {"image": "image.fit"},
+    ("narrowband_pack", None): {"image": "image.fit"},
     ("calibrate", None): {"sequence": "sequence/"},
     ("color_balance", None): {"image": "image.fit"},
     ("convert_lights", None): {"sequence": "sequence/"},
@@ -57,6 +59,7 @@ NODE_LAYOUT: dict[tuple[str, str | None], dict[str, str]] = {
     ("seq_register", None): {"sequence": "sequence/"},
     ("seq_resample", None): {"sequence": "sequence/"},
     ("seq_stack", None): {"image": "image.fit"},
+    ("combine_stacks", None): {"image": "image.fit"},
     ("starnet_extract", None): {
         "starless": "starless.fit",
         "stars": "stars.fit",

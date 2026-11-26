@@ -17,6 +17,7 @@
   import { toast } from '$lib/toast.svelte';
   import { shortAgo, formatFailPct, failPctClass, formatBytes, formatIntegrationTime } from '$lib/format';
   import SessionRow from '$lib/SessionRow.svelte';
+  import LastNight from '$lib/LastNight.svelte';
 
   let targets = $state<TargetSummary[] | null>(null);
   // Gates the cascading rise-in animation. The stagger looks great on
@@ -529,6 +530,8 @@
 </script>
 
 <svelte:window on:keydown={handleReassignKey} />
+
+<LastNight />
 
 <div class="lib-header">
   <h1>Library</h1>

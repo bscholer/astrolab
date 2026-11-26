@@ -127,10 +127,11 @@ def _render_artifact(
 
     # Neutral and raw lineages live side by side so flipping the toggle
     # doesn't trigger a re-render of the other. display_ready adds a third
-    # lineage (_dr) so both can coexist in the same cache entry.
+    # lineage (_dr) so both can coexist in the same cache entry. "2": these
+    # used to be drawn top-down, mirrored against Siril's renders.
     suffix_tag = "" if neutral else "_raw"
     if display_ready:
-        suffix_tag += "_dr"
+        suffix_tag += "_dr2"
     out = entry / f"_{cache_tag}_{port}{suffix_tag}.png"
     if out.exists() and out.stat().st_mtime >= target.stat().st_mtime:
         return out
@@ -222,10 +223,12 @@ def _render_display_ready_fits_to_png(
     """
     with fits.open(src, memmap=False) as hdul:
         data = hdul[0].data
+        header = hdul[0].header
         if data is None:
             for hdu in hdul[1:]:
                 if hdu.data is not None:
                     data = hdu.data
+                    header = hdu.header
                     break
     if data is None:
         raise PreviewError(f"FITS at {src} has no image data")
@@ -254,9 +257,23 @@ def _render_display_ready_fits_to_png(
         u8 = (scaled * 255.0 + 0.5).astype(np.uint8)
         img = Image.fromarray(u8, mode="L").convert("RGB")
 
+    img = as_displayed(img, header)
     if max_dim is not None:
         img.thumbnail((max_dim, max_dim))
     img.save(dst, "PNG", optimize=True)
+
+
+def as_displayed(img: Image.Image, header: fits.Header) -> Image.Image:
+    """Put FITS row 0 at the bottom, as Siril shows and saves images (the
+    astronomical convention), unless the file says it is stored top-down.
+
+    Every preview has to agree: the crop editor maps what is drawn on a
+    preview back to rows, and the saved picture comes from Siril. Drawn
+    top-down, display-ready previews were mirrored against the result.
+    """
+    if str(header.get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
+        return img
+    return img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
 
 def _render_fits_to_png(
@@ -448,6 +465,7 @@ def _render_fits_to_png_numpy(
     else:
         img = Image.fromarray(rgb, mode="RGB")
 
+    img = as_displayed(img, header)
     if max_dim is not None:
         img.thumbnail((max_dim, max_dim))
     img.save(dst, "PNG", optimize=True)

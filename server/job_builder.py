@@ -77,6 +77,12 @@ class IncompatibleSessions(JobBuildError):
 
 MIN_FRAMES_FOR_STACK = 3
 
+# Only frames with quality other than 'failed' get stacked. The Dwarf 3 saves subs
+# it could not find stars in as failed_*.fits; they are cloud, trees, or trails,
+# and a session of mostly those makes plate solving and registration fail.
+# Failed frames that triage found as starry as the good ones (rescued = 1, see
+# server/catalog/triage.py) are stacked too.
+
 # Fields a multi-session bundle must agree on before we will stack them.
 # Order matters only for stable error formatting.
 #
@@ -129,6 +135,22 @@ def session_lights_folder(conn: sqlite3.Connection, session_id: int) -> Path:
             "manual staging required"
         )
     return parents.pop()
+
+
+def _folder_is_clean(conn: sqlite3.Connection, session_id: int) -> bool:
+    """The session's lights are one folder of stackable frames only, so the folder
+    itself can be the input. Otherwise the job gets a folder of links to its good
+    and rescued frames (convert reads every FITS in its input folder)."""
+    rows = conn.execute(
+        """
+        SELECT path, quality, rescued FROM frames
+        WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
+          AND image_type = 'LIGHT'
+        """,
+        (session_id,),
+    ).fetchall()
+    parents = {Path(r["path"]).parent for r in rows}
+    return len(parents) == 1 and all(r["quality"] != "failed" or r["rescued"] == 1 for r in rows)
 
 
 def matched_master_path(
@@ -190,6 +212,8 @@ def build_from_sessions(
     # canonical order; without it [1,2] and [2,1] would race for the same dir.
     session_ids = sorted(set(session_ids))
     cal = calibration if calibration is not None else CalibrationSpec()
+    if any(n.per_session for n in template.nodes):
+        return _build_per_session(conn, session_ids, template, cal)
 
     # Compatibility gate (and frame-count gate): only meaningful for N>=2,
     # but we always run the row lookup so a bogus id surfaces as
@@ -206,24 +230,26 @@ def build_from_sessions(
             """
             SELECT COUNT(*) FROM frames
             WHERE id IN (SELECT frame_id FROM session_frames WHERE session_id = ?)
-              AND image_type = 'LIGHT'
+              AND image_type = 'LIGHT' AND (quality IS NOT 'failed' OR rescued = 1)
             """,
             (sid,),
         ).fetchone()[0]
     if total_lights < MIN_FRAMES_FOR_STACK:
         if len(session_ids) == 1:
             raise TooFewFrames(
-                f"session {session_ids[0]} has only {total_lights} light frame(s); "
+                f"session {session_ids[0]} has only {total_lights} good light frame(s); "
                 f"the pipeline needs at least {MIN_FRAMES_FOR_STACK}"
             )
         raise TooFewFrames(
-            f"sessions {session_ids} have only {total_lights} light frame(s) "
+            f"sessions {session_ids} have only {total_lights} good light frame(s) "
             f"between them; the pipeline needs at least {MIN_FRAMES_FOR_STACK}"
         )
 
     # Resolve the lights directory: a single session's folder for N=1, or a
-    # per-bundle staging dir of symlinks for N>=2.
-    if len(session_ids) == 1:
+    # per-bundle staging dir of symlinks for N>=2. A single session can span
+    # folders too (the scheduler returns to a target several times a night,
+    # and each return is a new scope folder); that one gets staged as well.
+    if len(session_ids) == 1 and _folder_is_clean(conn, session_ids[0]):
         lights_dir = session_lights_folder(conn, session_ids[0])
     else:
         lights_dir = _stage_multi_session_lights(conn, session_ids)
@@ -393,6 +419,53 @@ def build_from_sessions(
     )
 
 
+def _build_per_session(
+    conn: sqlite3.Connection,
+    session_ids: list[int],
+    template: Template,
+    cal: CalibrationSpec,
+) -> Job:
+    """Inputs for a template whose per_session nodes run once per session.
+
+    Each session gets exactly the inputs a one-session job of those nodes would
+    get, keyed '<node>@<session>.<port>'. Same lights path, darks, and params mean
+    the same cache keys, so a night auto-stack already stacked is a cache hit.
+    """
+    sessions = _load_sessions(conn, session_ids)
+    if len(sessions) > 1:
+        _assert_compatible(sessions)
+    per = [n.model_copy(update={"per_session": False}) for n in template.nodes if n.per_session]
+    sub = Template(id=template.id, version=template.version, nodes=per)
+    inputs: dict[str, Ref | list[Ref]] = {}
+    overrides: dict[str, dict[str, Any]] = {}
+    used: list[int] = []
+    for sid in session_ids:
+        try:
+            one = build_from_sessions(conn, [sid], sub, cal)
+        except TooFewFrames:
+            continue  # a session too short to stack on its own adds nothing
+        used.append(sid)
+        for key, ref in one.inputs.items():
+            nid, port = key.split(".", 1)
+            inputs[f"{nid}@{sid}.{port}"] = ref
+        for nid, params in one.param_overrides.items():
+            overrides[f"{nid}@{sid}"] = params
+    if not used:
+        raise TooFewFrames(
+            f"none of sessions {session_ids} has the {MIN_FRAMES_FOR_STACK} light "
+            "frames a stack needs"
+        )
+    return Job(
+        template_id=template.id,
+        template_version=template.version,
+        target_id=None,
+        session_ids=[str(sid) for sid in session_ids],
+        calibration=cal,
+        inputs=inputs,
+        param_overrides=overrides,
+    )
+
+
 def _dark_bin_meta(
     *,
     path: str | Path,
@@ -477,15 +550,26 @@ def _load_sessions(
     return out
 
 
+def canon_instrument(name: str) -> str:
+    """'DWARF 3' and 'DWARFIII' are one scope (firmware renamed it in late 2025)."""
+    return name.replace(" ", "").upper().replace("III", "3")
+
+
 def _assert_compatible(sessions: list[sqlite3.Row]) -> None:
     """Raise IncompatibleSessions if the bundle disagrees on any
     COMPAT_FIELDS value."""
     head = sessions[0]
     conflicts: list[str] = []
+
+    def same(field: str, a: Any, b: Any) -> bool:
+        if field == "instrument" and a and b:
+            return canon_instrument(a) == canon_instrument(b)
+        return a == b
+
     for field in COMPAT_FIELDS:
         head_val = head[field]
         for s in sessions[1:]:
-            if s[field] != head_val:
+            if not same(field, s[field], head_val):
                 values = sorted(
                     {repr(s[field]) for s in sessions}
                     | {repr(head_val)}
@@ -505,7 +589,7 @@ def _stage_multi_session_lights(
     """Materialize a flat directory of symlinks pointing at every light
     frame across the bundle.
 
-    The directory path is deterministic per (sorted) bundle so re-runs hit
+    The directory path is deterministic per bundle and frame list, so re-runs hit
     the same convert_lights cache entry. Filenames are prefixed with
     `s<session_id>__` to avoid collisions when two sessions share frame
     numbers (Dwarf 3 starts every session at frame 0001).
@@ -514,11 +598,6 @@ def _stage_multi_session_lights(
     session are picked up without an explicit reset.
     """
     sorted_ids = sorted(session_ids)
-    bundle_key = ",".join(str(sid) for sid in sorted_ids)
-    h = hashlib.sha1(bundle_key.encode("utf-8")).hexdigest()[:16]
-    stage_root = astrolab_home() / "lights_stage" / h
-    stage_root.mkdir(parents=True, exist_ok=True)
-
     placeholders = ",".join("?" for _ in sorted_ids)
     rows = conn.execute(
         f"""
@@ -526,7 +605,7 @@ def _stage_multi_session_lights(
         FROM session_frames sf
         JOIN frames f ON f.id = sf.frame_id
         WHERE sf.session_id IN ({placeholders})
-          AND f.image_type = 'LIGHT'
+          AND f.image_type = 'LIGHT' AND (f.quality IS NOT 'failed' OR f.rescued = 1)
         ORDER BY sf.session_id, f.path
         """,  # noqa: S608  (placeholders are ints)
         sorted_ids,
@@ -535,6 +614,16 @@ def _stage_multi_session_lights(
         raise SessionNotFound(
             f"no light frames found across sessions {sorted_ids}"
         )
+
+    # Key the folder on the frames, not just the session ids: the path is what
+    # the cache hashes, and a session that gains frames (the scheduler came
+    # back to the target) must not reuse the stack of its earlier frames.
+    bundle_key = ",".join(str(sid) for sid in sorted_ids) + "|" + "\n".join(
+        f"{r['session_id']}:{r['path']}" for r in rows
+    )
+    h = hashlib.sha1(bundle_key.encode("utf-8")).hexdigest()[:16]
+    stage_root = astrolab_home() / "lights_stage" / h
+    stage_root.mkdir(parents=True, exist_ok=True)
 
     desired: dict[str, Path] = {}
     for r in rows:

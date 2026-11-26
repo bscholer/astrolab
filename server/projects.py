@@ -253,6 +253,8 @@ class ProjectManager:
         template: Template,
         base_job: Job,
         source_session_ids: list[str],
+        label: str = "initial render",
+        snapshot: dict[str, Any] | None = None,
     ) -> Project:
         """Create a Project and submit its initial job.
 
@@ -285,8 +287,9 @@ class ProjectManager:
             seq=0,
             job_id=job_id,
             overrides=initial_overrides,
-            label="initial render",
+            label=label,
             created_at=now,
+            snapshot=snapshot,
         )
         project.history.append(entry)
 
@@ -537,6 +540,7 @@ class ProjectManager:
         new_session_ids: list[str],
         snapshot: dict[str, Any],
         auto_render: bool = True,
+        label: str | None = None,
     ) -> tuple[Project, str | None]:
         """Replace the project's source session set with a fresh Job.
 
@@ -600,7 +604,7 @@ class ProjectManager:
 
         next_seq = max((h.seq for h in project.history), default=-1) + 1
         n = len(new_session_ids)
-        label = f"swap sessions ({n} session{'s' if n != 1 else ''})"
+        label = label or f"swap sessions ({n} session{'s' if n != 1 else ''})"
         entry = HistoryEntry(
             seq=next_seq,
             job_id=entry_job_id,
@@ -714,6 +718,84 @@ class ProjectManager:
             project_id, prev_version, new_template.version, new_job_id, len(dropped),
         )
         return project, new_job_id, dropped
+
+    def switch_template(
+        self,
+        project_id: str,
+        *,
+        new_template: Template,
+        new_base_job: Job,
+        label: str,
+        reset_nodes: tuple[str, ...] = (),
+    ) -> tuple[Project, str]:
+        """Move the project onto a different template, keeping its history.
+
+        For target masters changing pipeline family (duo-band data moving to
+        the template that splits H-alpha and OIII before debayering). The
+        finishing edits carry over for every node id the new template still
+        has; `reset_nodes` drop theirs so the new template's defaults apply.
+        `new_base_job` must be built for `new_template` from the project's
+        sessions; its framework overrides (darks) are lifted as in create().
+        """
+        with self._lock:
+            project = self._records.get(project_id)
+        if project is None:
+            raise ProjectNotFound(project_id)
+        ids = {n.id for n in new_template.nodes}
+        prev_entry = project.current_entry()
+        kept = {
+            k: v
+            for k, v in prev_entry.overrides.items()
+            if k.split("@", 1)[0] in ids and k.split("@", 1)[0] not in reset_nodes
+        }
+        overrides = _deep_merge_overrides(new_base_job.param_overrides or {}, kept)
+        self._jobs.cancel(prev_entry.job_id)
+        prev_id = project.template.id
+        project.template = new_template
+        project.base_job = new_base_job.model_copy(update={"param_overrides": {}})
+        new_job_id = self._submit_with_overrides(project, overrides)
+        next_seq = max((h.seq for h in project.history), default=-1) + 1
+        entry = HistoryEntry(
+            seq=next_seq,
+            job_id=new_job_id,
+            overrides=overrides,
+            label=label,
+            created_at=_now(),
+            kind="template_upgrade",
+            snapshot={"from_template": prev_id, "to_template": new_template.id},
+        )
+        project.history.append(entry)
+        project.current_seq = next_seq
+        project.updated_at = _now()
+        try:
+            conn = self._conn()
+        except Exception:
+            log.exception("could not open catalog DB for project persistence")
+        else:
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE projects SET template_id=?, template_json=?, template_version=?,"
+                        " base_job_json=?, current_seq=?, updated_at=? WHERE id=?",
+                        (
+                            new_template.id,
+                            json.dumps(new_template.model_dump(mode="json")),
+                            new_template.version,
+                            json.dumps(project.base_job.model_dump(mode="json")),
+                            project.current_seq,
+                            project.updated_at,
+                            project.id,
+                        ),
+                    )
+            except sqlite3.Error:
+                log.exception("DB write failed during template switch for %s", project.id)
+            finally:
+                conn.close()
+        self._persist_history_entry(project_id, entry)
+        log.info(
+            "project %s switched %s -> %s job=%s", project_id, prev_id, new_template.id, new_job_id
+        )
+        return project, new_job_id
 
     def revert(self, project_id: str, seq: int) -> Project:
         """Move the current pointer to `seq`. Does not submit a new job; the

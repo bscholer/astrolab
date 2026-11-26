@@ -36,3 +36,16 @@ def _isolate_astrolab_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         default_home = tmp_path / "_default-astrolab-home"
         default_home.mkdir(exist_ok=True)
         monkeypatch.setenv("ASTROLAB_HOME", str(default_home))
+
+
+@pytest.fixture(autouse=True)
+def _no_scope_mirror_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASTROLAB_SCOPE_MIRROR", "0")
+
+
+@pytest.fixture(autouse=True)
+def _keep_every_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests seed a few synthetic frames and expect them in the library. With
+    no scrap threshold, the curator keeps every session at once. Curator tests
+    set their own threshold."""
+    monkeypatch.setattr("server.curator.SCRAP_BELOW_S", 0.0)

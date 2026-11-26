@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>astrolab · the machine does the chores, you make the picture</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#1c1b19;--mute:#6e6c66;--line:#e2e0da;--card:#fff;
+  --auto:#3b6ea8;--auto-soft:#e6eef7;--you:#b4561f;--you-soft:#f8eadf;--done:#3d7d4f;--done-soft:#e3f0e6}
+@media (prefers-color-scheme:dark){:root{--bg:#121211;--fg:#ebe9e4;--mute:#9b9890;--line:#2b2a27;--card:#1b1a18;
+  --auto:#7fa9da;--auto-soft:#1c2633;--you:#e89463;--you-soft:#33231a;--done:#7fbf8e;--done-soft:#1a2a1e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,sans-serif}
+main{max-width:1040px;margin:0 auto;padding:3rem 1.25rem 4rem}
+.kicker{color:var(--mute);font-size:.85rem;letter-spacing:.04em;text-transform:uppercase}
+h1{font-size:clamp(1.8rem,4vw,2.6rem);line-height:1.15;margin:.4rem 0 1rem;letter-spacing:-.01em}
+h1 em{font-style:normal;color:var(--you)}
+h2{font-size:1.25rem;margin:3rem 0 1rem}
+.lede{font-size:1.1rem;max-width:46rem;color:var(--fg)}
+.mute{color:var(--mute)}
+/* flow */
+.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1.15fr;gap:.6rem;align-items:stretch;margin-top:1.5rem}
+.stage{border-radius:14px;padding:1.1rem 1.1rem 1rem;border:1px solid var(--line);background:var(--card)}
+.stage h3{margin:0 0 .15rem;font-size:1.05rem}
+.stage .who{font-size:.78rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.stage ul{margin:.6rem 0 0;padding-left:1.1rem;font-size:.93rem}
+.stage li{margin:.2rem 0}
+.auto{background:var(--auto-soft);border-color:transparent}.auto .who{color:var(--auto)}
+.you{background:var(--you-soft);border-color:transparent}.you .who{color:var(--you)}
+.arrow{display:flex;align-items:center;color:var(--mute);font-size:1.4rem}
+.loop{margin-top:.6rem;border:1.5px dashed var(--line);border-radius:14px;padding:.6rem 1rem;font-size:.92rem;
+  color:var(--mute);text-align:center}
+.loop b{color:var(--fg)}
+@media (max-width:820px){.flow{grid-template-columns:1fr}.arrow{justify-content:center;transform:rotate(90deg)}}
+/* principles */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.8rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1rem 1.1rem}
+.card b{display:block;margin-bottom:.25rem}
+.card p{margin:0;font-size:.93rem;color:var(--mute)}
+/* two modes */
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}
+@media (max-width:700px){.modes{grid-template-columns:1fr}}
+.mode{border-radius:14px;padding:1.1rem 1.2rem;background:var(--card);border:1px solid var(--line)}
+.mode h3{margin:0 0 .4rem}
+.sliders{margin:.8rem 0 0;display:grid;gap:.45rem}
+.sl{display:grid;grid-template-columns:8.5rem 1fr;gap:.6rem;align-items:center;font-size:.88rem;color:var(--mute)}
+.track{height:6px;border-radius:3px;background:var(--line);position:relative}
+.track i{position:absolute;top:-4px;width:14px;height:14px;border-radius:50%;background:var(--you);border:2px solid var(--card)}
+.steps{margin:.8rem 0 0;display:grid;gap:.35rem;font-size:.88rem}
+.step{display:flex;gap:.5rem;align-items:center;padding:.35rem .6rem;border:1px solid var(--line);border-radius:8px}
+.step .dot{width:8px;height:8px;border-radius:50%;background:var(--you)}
+.step.off{opacity:.45}.step.off .dot{background:var(--mute)}
+.lanes{display:grid;grid-template-columns:1fr 1fr;gap:.35rem;padding-left:1rem}
+.note{font-size:.88rem;color:var(--mute);margin-top:.8rem}
+/* roadmap */
+.phases{display:grid;gap:.6rem}
+.phase{display:grid;grid-template-columns:7.5rem 1fr;gap:1rem;padding:1rem 1.1rem;border-radius:12px;background:var(--card);
+  border:1px solid var(--line)}
+.phase .tag{font-weight:700;font-size:.9rem}
+.phase .tag span{display:block;font-weight:500;color:var(--mute);font-size:.8rem}
+.phase ul{margin:0;padding-left:1.1rem;font-size:.93rem}
+.phase.done{background:var(--done-soft);border-color:transparent}.phase.done .tag{color:var(--done)}
+.issue{font-size:.78rem;color:var(--mute);font-variant-numeric:tabular-nums}
+@media (max-width:600px){.phase{grid-template-columns:1fr}}
+.quote{border-left:3px solid var(--you);padding:.2rem 0 .2rem 1rem;margin:1.5rem 0;color:var(--mute);font-size:.98rem}
+</style>
+</head>
+<body>
+<main>
+<div class="kicker">astrolab roadmap · Nov 2026</div>
+<h1>The machine does the chores.<br><em>You make the picture.</em></h1>
+<p class="lede">The scope shoots all night on its own. By morning, every new frame has been judged, calibrated, stacked and joined with everything shot before. What's left is the fun part: shaping the picture, quickly when you want it done, deeply when you want to explore.</p>
+
+<div class="flow" role="img" aria-label="Capture and library run automatically; finishing is yours; finishing feeds recommendations back to capture">
+  <div class="stage auto">
+    <div class="who">Automatic</div>
+    <h3>Capture</h3>
+    <ul><li>Scheduler picks and shoots targets</li><li>Mirror copies frames off the scope</li><li>Catalog sorts nights and sessions</li></ul>
+  </div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="stage auto">
+    <div class="who">Automatic · overnight</div>
+    <h3>Target masters</h3>
+    <ul><li>Triage, verdicts, calibration</li><li>Each night stacked once, cached</li><li>All kept nights combined into one master per target</li><li>"+2.1 h from Nov 13, noise −9%"</li></ul>
+  </div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="stage you">
+    <div class="who">You</div>
+    <h3>Finishing</h3>
+    <ul><li><b>Quick</b>: a recipe and a few big sliders</li><li><b>Workshop</b>: steps, variants, compare, your own recipes</li><li>Versioned, non-destructive</li></ul>
+  </div>
+</div>
+<div class="loop">↺ &nbsp;<b>Close the loop:</b> "about 2 more hours would cut noise by a third". One click adds the target to Tonight.</div>
+
+<h2>Principles</h2>
+<div class="grid">
+  <div class="card"><b>Automate the chores, keep the craft</b><p>Frames, quality, calibration and stacking happen on their own. Finishing is yours.</p></div>
+  <div class="card"><b>Smart defaults, nothing locked</b><p>Defaults come from the object type, filter and the data itself. Every one can be overridden.</p></div>
+  <div class="card"><b>Two speeds of change</b><p>Finishing edits take seconds. Stacking settings like drizzle are rare, and queue a rebuild.</p></div>
+  <div class="card"><b>Quick and deep are one thing</b><p>Quick sliders and the Workshop edit the same recipe, so the two never drift apart.</p></div>
+  <div class="card"><b>Human-made pictures</b><p>AI helps build and test astrolab. It doesn't edit your picture: diagnostics yes, "fix it for me" no.</p></div>
+  <div class="card"><b>Data tells capture what to do</b><p>Processing knows when a target needs more time, and says so where you plan the night.</p></div>
+</div>
+
+<h2>Finishing, two ways</h2>
+<div class="modes">
+  <div class="mode">
+    <h3>Quick: a pretty picture in two minutes</h3>
+    <p class="mute" style="margin:0;font-size:.93rem">The morning's render with the default recipe, plus intent sliders that drive several steps each.</p>
+    <div class="sliders" aria-hidden="true">
+      <div class="sl">Brightness<div class="track"><i style="left:58%"></i></div></div>
+      <div class="sl">Background<div class="track"><i style="left:30%"></i></div></div>
+      <div class="sl">Color strength<div class="track"><i style="left:66%"></i></div></div>
+      <div class="sl">Star size<div class="track"><i style="left:40%"></i></div></div>
+      <div class="sl">Detail<div class="track"><i style="left:50%"></i></div></div>
+    </div>
+  </div>
+  <div class="mode">
+    <h3>Workshop: explore and build workflows</h3>
+    <p class="mute" style="margin:0;font-size:.93rem">The same recipe as an ordered stack of steps. Branches are lanes, not a free-form graph.</p>
+    <div class="steps" aria-hidden="true">
+      <div class="step"><span class="dot"></span>Background extraction · GraXpert</div>
+      <div class="step"><span class="dot"></span>HOO channel mapping</div>
+      <div class="step"><span class="dot"></span>Separate stars</div>
+      <div class="lanes"><div class="step"><span class="dot"></span>starless: stretch, curves</div><div class="step"><span class="dot"></span>stars: reduce</div></div>
+      <div class="step off"><span class="dot"></span>Noise reduction <span class="mute">(trying 3 variants)</span></div>
+    </div>
+    <p class="note">Variants as contact sheets · compare slider · step catalog with before/after on your own image · save as recipe → shows up in Quick</p>
+  </div>
+</div>
+
+<div class="quote">The node graph editor stays retired. Pipeline shape almost never changes; knobs, inputs and the look do. The graph survives as a read-only view of what actually ran.</div>
+
+<h2>Roadmap</h2>
+<div class="phases">
+  <div class="phase done"><div class="tag">Phase 0<span>done this week</span></div>
+    <ul><li>Good-frame stacking, darks/flats/bias for new firmware, plate-solve fallback</li><li>Failed-frame triage and scrap purge; finished results protected from cache eviction</li><li>Stack per night + combine <span class="issue">closes #15</span></li></ul></div>
+  <div class="phase"><div class="tag">Phase 1<span>the morning after</span></div>
+    <ul><li>Target masters built overnight from kept nights</li><li>Replace session auto-stack with master updates <span class="issue">#200</span></li><li>Morning summary: what was shot, what each master gained</li><li>Image-based auto stretch, so the first render is viewable</li></ul></div>
+  <div class="phase"><div class="tag">Phase 2<span>Quick finishing</span></div>
+    <ul><li>Recipes by object type and filter (HOO for emission nebulae…)</li><li>Fast preview engine on the downscaled linear master</li><li>Intent sliders; full-resolution export; versions per target</li></ul></div>
+  <div class="phase"><div class="tag">Phase 3<span>the Workshop</span></div>
+    <ul><li>Step stack editor with lanes <span class="issue">#159 #12</span></li><li>Variants, contact sheets, compare, forks</li><li>Step catalog; noise reduction, sharpening, local contrast, SPCC <span class="issue">#116</span></li><li>Save as recipe; graph becomes read-only</li></ul></div>
+  <div class="phase"><div class="tag">Phase 4<span>capture loop</span></div>
+    <ul><li>Noise and SNR per master; estimated gain per extra hour</li><li>Recommendations on the target page and in Tonight, one click to queue</li><li>Scheduler weighs targets by expected improvement <span class="issue">#204</span></li></ul></div>
+  <div class="phase"><div class="tag">Phase 5<span>stacking settings</span></div>
+    <ul><li>Per-target drizzle, rejection, framing, strictness, excluded nights</li><li>Rebuild queue with time estimates, runs when the scope is idle</li><li>Moon and planetary pipeline (lucky imaging)</li></ul></div>
+</div>
+
+<p class="mute" style="margin-top:2.5rem;font-size:.85rem">Full text: docs/roadmap.md</p>
+</main>
+</body>
+</html>

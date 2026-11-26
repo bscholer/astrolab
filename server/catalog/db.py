@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 19
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -434,6 +434,67 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE jobs ADD COLUMN quality_json TEXT",
         "INSERT INTO schema_version (version) VALUES (16)",
     ],
+    17: [
+        # The user's own image for a catalog target on the Tonight page.
+        # project_id and seq are set when a gallery favorite supplied it,
+        # and stay null for an uploaded file. The JPEG lives on disk.
+        """
+        CREATE TABLE target_images (
+            canonical TEXT PRIMARY KEY,
+            project_id TEXT,
+            seq INTEGER,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (17)",
+    ],
+    18: [
+        # Second look at frames the scope rejected (server/catalog/triage.py).
+        # stars/star_fwhm: our own star count and size; rescued: NULL = not
+        # looked at, 0 = junk, 1 = good enough to stack and back up.
+        "ALTER TABLE frames ADD COLUMN stars INTEGER",
+        "ALTER TABLE frames ADD COLUMN star_fwhm REAL",
+        "ALTER TABLE frames ADD COLUMN rescued INTEGER",
+        # server/curator.py: 'keep' or 'scrap' per session once it has settled.
+        # The library and the NAS copy only see kept sessions.
+        """
+        CREATE TABLE session_verdicts (
+            session_id  INTEGER PRIMARY KEY,
+            verdict     TEXT NOT NULL,
+            usable_s    REAL NOT NULL,
+            decided_at  REAL NOT NULL
+        )
+        """,
+        # Capture folders deleted as scrap. The mirror never copies them
+        # again; the scope cleaner may delete them from the scope.
+        """
+        CREATE TABLE purged_folders (
+            name        TEXT PRIMARY KEY,
+            bytes       INTEGER NOT NULL,
+            usable_s    REAL NOT NULL,
+            purged_at   REAL NOT NULL
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (18)",
+    ],
+    19: [
+        # server/masters.py: one project per (target, instrument, camera,
+        # filter, gain, binning) that stacks every kept night. The row stays
+        # when the user deletes the project, so a deleted master isn't rebuilt.
+        # seen: session ids already offered to the master, so a night the user
+        # takes out by hand stays out.
+        """
+        CREATE TABLE target_masters (
+            key         TEXT PRIMARY KEY,
+            target_id   INTEGER NOT NULL,
+            project_id  TEXT NOT NULL,
+            recipe      TEXT,
+            seen        TEXT NOT NULL DEFAULT '[]',
+            created_at  REAL NOT NULL
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (19)",
+    ],
 }
 
 
@@ -503,6 +564,12 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     # gives the loser plenty of room to wait for the winner to finish.
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
+    # In WAL mode NORMAL only fsyncs at checkpoints, not on every commit.
+    # The database stays consistent through a crash; a power cut can lose
+    # the last few commits. FULL cost ~19 ms per commit on the replicated
+    # volume, and a job writes a few rows per node (events, progress), so
+    # a fully cached 47-node rerun spent ~5 s just committing.
+    conn.execute("PRAGMA synchronous = NORMAL")
     # PRAGMA journal_mode is special: it can fail with SQLITE_BUSY even
     # when busy_timeout is set, because changing journal mode requires
     # an exclusive lock the timeout sometimes doesn't wait for. Skip it
@@ -530,6 +597,25 @@ def open_db(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+_held: dict[Path, sqlite3.Connection] = {}
+
+
+def keep_open(path: Path | None = None) -> None:
+    """Hold one idle connection to the catalog for the life of the process.
+
+    Code here opens a connection per call and closes it. When the last
+    connection to a WAL database closes, SQLite checkpoints the whole log
+    into the database (with fsyncs) and deletes it, and the next open
+    recreates it. A job saving an event per node paid that on every event,
+    ~45 ms each: 2.5 s of a 2.5 s fully cached rerun. One idle connection
+    keeps the log in place, and commits drop to under a millisecond.
+    Long-running processes (the API, the worker) call this once at start.
+    """
+    target = (path if path is not None else default_db_path()).resolve()
+    if target not in _held:
+        _held[target] = connect(target)
 
 
 def retry_on_locked(fn):

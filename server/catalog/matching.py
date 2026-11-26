@@ -62,6 +62,13 @@ dark temps and real session sensor temps.
 
 log = logging.getLogger("astrolab.catalog.matching")
 
+# Dwarf 3 firmware changed INSTRUME from 'DWARFIII' to 'DWARF 3' in late 2025,
+# while the factory masters still say 'DWARFIII'. Compare names with spaces
+# dropped and 'III' read as '3', so both are 'DWARF3'.
+# The queries below inline this comparison:
+#   UPPER(REPLACE(REPLACE(instrument, ' ', ''), 'III', '3'))
+#     = UPPER(REPLACE(REPLACE(?, ' ', ''), 'III', '3'))
+
 
 def _match_dark(
     conn: sqlite3.Connection, session: sqlite3.Row
@@ -74,7 +81,8 @@ def _match_dark(
         SELECT id, ccd_temp, gain, binning, stack_count, exptime
         FROM masters
         WHERE kind = 'dark'
-          AND instrument = ?
+          AND UPPER(REPLACE(REPLACE(instrument, ' ', ''), 'III', '3'))
+            = UPPER(REPLACE(REPLACE(?, ' ', ''), 'III', '3'))
           AND ABS(IFNULL(exptime, 0) - ?) < 0.001
           AND IFNULL(gain, -1) = IFNULL(?, -1)
           AND IFNULL(binning, -1) = IFNULL(?, -1)
@@ -153,7 +161,8 @@ def _match_flat(
         SELECT id, date_built, stack_count
         FROM masters
         WHERE kind = 'flat'
-          AND instrument = ?
+          AND UPPER(REPLACE(REPLACE(instrument, ' ', ''), 'III', '3'))
+            = UPPER(REPLACE(REPLACE(?, ' ', ''), 'III', '3'))
           AND IFNULL(filter, '') = IFNULL(?, '')
           AND IFNULL(binning, -1) = IFNULL(?, -1)
           AND (camera = ? OR camera IS NULL OR ? IS NULL)
@@ -190,7 +199,8 @@ def _match_bias(
         SELECT id, stack_count
         FROM masters
         WHERE kind = 'bias'
-          AND instrument = ?
+          AND UPPER(REPLACE(REPLACE(instrument, ' ', ''), 'III', '3'))
+            = UPPER(REPLACE(REPLACE(?, ' ', ''), 'III', '3'))
           AND IFNULL(binning, -1) = IFNULL(?, -1)
           AND (camera = ? OR camera IS NULL OR ? IS NULL)
         """,
@@ -524,7 +534,8 @@ def _best_dark_for_bin(
         SELECT id, path, ccd_temp, stack_count
         FROM masters
         WHERE kind = 'dark'
-          AND instrument = ?
+          AND UPPER(REPLACE(REPLACE(instrument, ' ', ''), 'III', '3'))
+            = UPPER(REPLACE(REPLACE(?, ' ', ''), 'III', '3'))
           AND ABS(IFNULL(exptime, 0) - ?) < 0.001
           AND IFNULL(gain, -1) = IFNULL(?, -1)
           AND IFNULL(binning, -1) = IFNULL(?, -1)

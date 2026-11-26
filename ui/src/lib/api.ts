@@ -210,6 +210,23 @@ async function _readErrorDetail(r: Response): Promise<string> {
   return text || `${r.status} ${r.statusText}`;
 }
 
+/** A crop box on the displayed canvas, in full-size image pixels; angle is
+ *  degrees clockwise. */
+export type FramingBox = { cx: number; cy: number; width: number; height: number; angle: number };
+
+export type FramingInfo = {
+  width: number;
+  height: number;
+  solved: boolean;
+  /** Where north points on the display, degrees clockwise from up. */
+  north_angle: number | null;
+  arcsec_per_px: number | null;
+  box: FramingBox | null;
+};
+
+/** Crop params that place the box; a new box replaces all of them. */
+export const FRAMING_KEYS = ['x', 'y', 'width', 'height', 'rotation', 'ra', 'dec', 'sky_width', 'sky_height', 'angle'];
+
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) {
@@ -488,6 +505,8 @@ export interface GalleryEntry {
   preview_hash: string;
   preview_port: string;
   is_cover: boolean;
+  target_canonical: string | null;
+  is_favorite: boolean;
 }
 
 export interface ProjectCapture {
@@ -563,6 +582,90 @@ export interface Project {
   // to template_version when the project is on the latest; greater when
   // a template bump is available to upgrade into.
   latest_template_version?: number;
+  // Set when the server keeps this project up to date as a target master.
+  master?: { key: string; target_id: number; recipe: string | null } | null;
+}
+
+export interface PreviewRef {
+  hash: string;
+  port: string;
+}
+
+export interface MasterAdvice {
+  hours: number;
+  snr: number | null;
+  options: { hours: number; noise_drop: number; snr: number | null }[];
+  verdict: 'worth_it' | 'slowing' | 'diminishing';
+  headline: string;
+  third_h: number;
+}
+
+export interface MasterAdviceRow {
+  project_id: string;
+  name: string;
+  target: string;
+  common_name: string | null;
+  filter: string | null;
+  advice: MasterAdvice;
+  plan: {
+    name: string;
+    goal_hours: number | null;
+    shot_hours: number;
+    remaining_hours: number | null;
+    remaining_noise_drop: number | null;
+  } | null;
+}
+
+export interface MorningMasterUpdate {
+  project_id: string;
+  name: string;
+  seq: number;
+  label: string | null;
+  status: string;
+  after: PreviewRef | null;
+  before: PreviewRef | null;
+  before_seq: number | null;
+  recipe: string | null;
+  added_s: number;
+  total_s: number;
+  noise_drop: number | null;
+  advice?: MasterAdvice | null;
+}
+
+export interface MorningTarget {
+  target_id: number | null;
+  name: string;
+  common_name: string | null;
+  sessions: number[];
+  started_at: string;
+  frames: number;
+  shot_s: number;
+  good_s: number;
+  rescued_s: number;
+  junk_s: number;
+  untriaged_s: number;
+  kept_s: number;
+  scrap_s: number;
+  judging_s: number;
+  state: 'updated' | 'judging' | 'queued' | 'short' | 'kept' | 'scrap';
+  masters: MorningMasterUpdate[];
+}
+
+export interface MorningTotals {
+  shot_s: number;
+  good_s: number;
+  rescued_s: number;
+  junk_s: number;
+  untriaged_s: number;
+  kept_s: number;
+  scrap_s: number;
+}
+
+export interface MorningResponse {
+  night: string | null;
+  nights: string[];
+  targets: MorningTarget[];
+  totals?: MorningTotals;
 }
 
 export type UpgradeTemplateResponse = Project & {
@@ -700,6 +803,69 @@ export interface CleanupResponse {
   max_bytes: number;
 }
 
+export interface ScopeAutoTarget {
+  name: string;
+  ra_deg: number;
+  dec_deg: number;
+  object_type?: string | null;
+  filter?: 'vis' | 'astro' | 'duo' | null;
+  exposure_s?: number | null;
+  gain?: number | null;
+  goal_hours?: number | null;
+  display_name?: string | null;
+  common_name?: string | null;
+  // Name of the mosaic this target is a panel of.
+  mosaic?: string | null;
+}
+
+export interface ScopeJob {
+  id?: string;
+  state: string;
+  frames?: number;
+  captured?: number;
+  failed?: number;
+  session?: string | null;
+  error?: string | null;
+}
+
+export interface ScopeState {
+  configured: boolean;
+  reachable: boolean;
+  url?: string;
+  has_token?: boolean;
+  service?: { name?: string; vendor?: string; model?: string };
+  spec_version?: string;
+  capabilities?: string[];
+  /** Filters and exposures the connected scope model accepts. */
+  capture?: { filters: string[]; exposures: string[] };
+  status?: {
+    app_connected?: boolean;
+    busy_elsewhere?: boolean;
+    job?: ScopeJob | null;
+    pitch?: number | null;
+    rotation?: number | null;
+    tele_darks?: number;
+    wide_darks?: number;
+  };
+  error?: string;
+  error_code?: string;
+  observe?: { state: string; step?: string; target?: string; error?: string | null };
+  scheduler?: {
+    enabled: boolean;
+    state: string;
+    target?: string;
+    reason?: string;
+    integrated_s?: Record<string, number>;
+    // Seconds per target counting kept sessions shot under other names that
+    // cover it (a mosaic panel over earlier Heart nights).
+    time_on_s?: Record<string, number>;
+  };
+  targets?: ScopeAutoTarget[];
+  alert_url_set?: boolean;
+  auto_stack?: boolean;
+  mirror?: { state: string; files_copied: number; last_ok: number | null; current?: string | null; error?: string | null };
+}
+
 export interface SettingsResponse {
   cache_max_bytes: number;
   // Persisted override (null when the server is using the default location).
@@ -801,6 +967,32 @@ export interface SystemSnapshot {
   sampled_at: number;
 }
 
+// ----- sky atlas: mosaics and coverage -----------------------------------
+
+export interface MosaicRequest {
+  name: string;
+  ra_deg: number;
+  dec_deg: number;
+  cols: number;
+  rows: number;
+  overlap?: number;
+  object_type?: string | null;
+  common_name?: string | null;
+}
+
+// Where one session's frames landed on the sky.
+export interface CoverageEntry {
+  session_id: number;
+  target: string;
+  filter: string | null;
+  night: string;
+  ra_deg: number;
+  dec_deg: number;
+  width_deg: number;
+  height_deg: number;
+  usable_s: number;
+}
+
 // ----- tonight ----------------------------------------------------------
 
 export interface TonightEntry {
@@ -811,6 +1003,16 @@ export interface TonightEntry {
   ra_deg: number;
   dec_deg: number;
   magnitude: number | null;
+  messier: string | null;
+  size_arcmin: number | null;
+  minor_arcmin: number | null;
+  // Position angle of the major axis, north through east.
+  pa_deg: number | null;
+  // Kept seconds of every session whose frames cover the object's centre,
+  // whatever target they were shot under (mosaic panels included).
+  shot_s: number;
+  score: number;
+  image_version: string | null;
   alt_now_deg: number;
   az_now_deg: number;
   // ISO 8601 UTC; null when the target doesn't transit during the night.
@@ -824,6 +1026,10 @@ export interface TonightEntry {
   // at alt_curve_step_min cadence. Null when the night window is
   // degenerate (polar day with no twilight).
   alt_curve_deg: number[] | null;
+  // At the same samples, the altitude the target must clear where it is
+  // then (houses and trees from the scope's panorama, -90 where unseen).
+  // Null without a panorama that has a compass.
+  skyline_curve_deg?: number[] | null;
 }
 
 export interface TonightResponse {
@@ -840,6 +1046,8 @@ export interface TonightResponse {
   // alt_curve_deg. Constant within a response so the UI reconstructs the
   // time axis as dusk_utc + i * step.
   alt_curve_step_min: number;
+  // The panorama scan whose skyline was applied, or null.
+  skyline_scan?: string | null;
   entries: TonightEntry[];
 }
 
@@ -850,6 +1058,84 @@ async function deleteJSON<T>(path: string): Promise<T> {
   }
   return (await r.json()) as T;
 }
+
+export type ScopeSkymap = {
+  cell_deg: number;
+  cells: { clear: number; blocked: number; unknown: number };
+};
+
+export type ScopeSkyPatch = {
+  good: number;
+  failed: number;
+  nights: string[];
+  verdict: 'clear' | 'blocked' | 'unknown';
+};
+
+/** How the last stitch went, from pano.json. */
+export type ScopePanoResult = {
+  tiles: number;
+  used: number;
+  blank: string[];
+  pairs: number;
+  matches: number;
+  median_px: number;
+  rms_px: number;
+  focal_px: number;
+  level: string;
+  compass: boolean;
+  alt_top: number;
+  alt_bottom: number;
+  width: number;
+  height: number;
+};
+
+export type ScopePano = {
+  state: 'idle' | 'running' | 'done' | 'failed';
+  id?: string;
+  step?: string | null;
+  done?: number;
+  total?: number;
+  failed?: number;
+  error?: string;
+  rotation_limits?: [number, number];
+  result?: ScopePanoResult | null;
+  /** Changes whenever pano.jpg is written again. */
+  image_version?: number;
+};
+
+/** Walking the tele along the skyline: point done of total, and where it is now. */
+export type ScopeTrace = {
+  state: 'idle' | 'running' | 'done' | 'stopped' | 'failed';
+  done?: number;
+  total?: number;
+  az?: number;
+  alt?: number;
+  error?: string;
+};
+
+/** What blocks the sky: altitude per step of azimuth (north 0, east 90), null where unseen. */
+export type ScopeHorizon = {
+  step_deg: number;
+  alt: (number | null)[];
+  compass: boolean;
+  scan: string;
+};
+
+export type ScopeCompass = {
+  state: string;
+  step?: string;
+  done?: number;
+  total?: number;
+  failed?: number;
+  error?: string | null;
+};
+
+export type ScopeControl = {
+  state: string;
+  action?: string;
+  label?: string;
+  error?: string | null;
+};
 
 export const api = {
   listTargets: () => getJSON<TargetSummary[]>('/api/targets'),
@@ -879,6 +1165,13 @@ export const api = {
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
   listProjects: () => getJSON<Project[]>('/api/projects'),
+  getMasterAdvice: (needsTime = false) =>
+    getJSON<MasterAdviceRow[]>(`/api/target-masters/advice${needsTime ? '?needs_time=true' : ''}`),
+  queueMoreData: (projectId: string, hours: number) =>
+    postJSON<{ target: Record<string, unknown>; advice: MasterAdviceRow }>(
+      `/api/target-masters/${projectId}/more`, { hours }),
+  getMorning: (night?: string) =>
+    getJSON<MorningResponse>(`/api/morning${night ? `?night=${encodeURIComponent(night)}` : ''}`),
   getProject: (id: string) => getJSON<Project>(`/api/projects/${id}`),
   createProjectFromSession: (req: CreateProjectFromSessionRequest) =>
     postJSON<Project>('/api/projects/from_session', req),
@@ -941,13 +1234,80 @@ export const api = {
     site_longitude?: number | null;
     site_elevation_m?: number | null;
   }) => patchJSON<SettingsResponse>('/api/settings', req),
+  observe: (req: {
+    name: string;
+    ra_deg: number;
+    dec_deg: number;
+    frames?: number;
+    object_type?: string | null;
+  }) =>
+    postJSON<{ target: string }>('/api/scope/observe', req),
+  setScopeAuto: (req: { enabled: boolean; targets?: ScopeAutoTarget[]; auto_stack?: boolean }) =>
+    putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/auto', req),
+  setScopeAlerts: (url: string) => putJSON<{ alert_url_set: boolean }>('/api/scope/alerts', { url }),
+  stopScope: () => postJSON<{ message: string }>('/api/scope/stop', {}),
+  startScopePano: (teleCovered = false) =>
+    postJSON<{ id: string }>(`/api/scope/pano?tele_covered=${teleCovered}`, {}),
+  runScopeControl: (action: 'prepare' | 'calibrate' | 'close') =>
+    postJSON<ScopeControl>('/api/scope/control', { action }),
+  getScopeControl: () => getJSON<ScopeControl>('/api/scope/control'),
+  startScopeCompass: () => postJSON<ScopeCompass>('/api/scope/compass', {}),
+  getScopeCompass: () => getJSON<ScopeCompass>('/api/scope/compass'),
+  getScopeSkymap: () => getJSON<ScopeSkymap>('/api/scope/skymap'),
+  getScopePano: () => getJSON<ScopePano>('/api/scope/pano'),
+  restitchScopePano: () => postJSON<{ id: string }>('/api/scope/pano/stitch', {}),
+  detectScopePanoSky: () => postJSON<{ horizon: ScopeHorizon }>('/api/scope/pano/sky/detect', {}),
+  /** Hand fixes to the sky mask, as a PNG whose pixels are 0 none, 1 sky, 2 not sky. */
+  putScopePanoSky: async (png: Blob) => {
+    const r = await fetch('/api/scope/pano/sky', { method: 'PUT', body: png, headers: { 'Content-Type': 'image/png' } });
+    if (!r.ok) throw new ApiError(r.status, await _readErrorDetail(r));
+    return (await r.json()) as { horizon: ScopeHorizon };
+  },
+  startScopeTrace: (teleCovered = false) =>
+    postJSON<{ points: number }>(`/api/scope/pano/trace?tele_covered=${teleCovered}`, {}),
+  getScopeTrace: () => getJSON<ScopeTrace>('/api/scope/pano/trace'),
+  stopScopeTrace: () => postJSON<ScopeTrace>('/api/scope/pano/trace/stop', {}),
+  getScopeHorizon: (compassOnly = true) =>
+    getJSON<ScopeHorizon>(`/api/scope/horizon?compass_only=${compassOnly}`),
+  getScopeSkymapPatches: () =>
+    getJSON<ScopeSkymap & { patches: Record<string, ScopeSkyPatch> }>('/api/scope/skymap'),
+  getScopeWeather: () =>
+    getJSON<{ max_cloud_pct: number; mean_cloud_pct: number; precip_mm: number; snow_cm: number; warn: boolean; reason: string | null }>('/api/scope/weather'),
+  getScope: () => getJSON<ScopeState>('/api/scope'),
+  putScopeMosaic: (req: MosaicRequest) =>
+    putJSON<{ targets: ScopeAutoTarget[] }>('/api/scope/mosaic', req),
+  deleteScopeMosaic: (name: string) =>
+    deleteJSON<{ targets: ScopeAutoTarget[]; removed: number }>(
+      `/api/scope/mosaic?name=${encodeURIComponent(name)}`,
+    ),
+  getSkyCoverage: () => getJSON<CoverageEntry[]>('/api/sky/coverage'),
+  putScope: (req: { url: string; token?: string }) => putJSON<ScopeState>('/api/scope', req),
   getSystem: () => getJSON<SystemSnapshot>('/api/system'),
+  tonightThumbUrl: (name: string, version: string | null) =>
+    `/api/tonight/thumb?name=${encodeURIComponent(name)}` +
+    (version ? `&v=${encodeURIComponent(version)}` : ''),
+  uploadTonightImage: async (name: string, file: File) => {
+    const r = await fetch(`/api/tonight/image?name=${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    if (!r.ok) throw new ApiError(r.status, await _readErrorDetail(r));
+  },
+  deleteTonightImage: (name: string) =>
+    deleteJSON<{ target: string }>(`/api/tonight/image?name=${encodeURIComponent(name)}`),
+  favoriteGalleryEntry: (projectId: string, seq: number) =>
+    putJSON<{ target: string }>(`/api/gallery/${projectId}/${seq}/favorite`, {}),
+  unfavoriteGalleryEntry: (projectId: string, seq: number) =>
+    deleteJSON<{ removed: boolean }>(`/api/gallery/${projectId}/${seq}/favorite`),
   getTonight: (params?: {
     at?: string;
     min_alt?: number;
     max_mag?: number;
+    all_sky?: boolean;
   }) => {
     const qs = new URLSearchParams();
+    if (params?.all_sky) qs.set('all_sky', 'true');
     if (params?.at) qs.set('at', params.at);
     if (params?.min_alt !== undefined) qs.set('min_alt', String(params.min_alt));
     if (params?.max_mag !== undefined) qs.set('max_mag', String(params.max_mag));
@@ -969,6 +1329,14 @@ export const api = {
       }
     };
     return ws;
+  },
+  /** Where the crop params put the box on this canvas (see CropEditor). */
+  framing(nodeHash: string, port: string, params: Record<string, unknown>): Promise<FramingInfo> {
+    return postJSON(`/api/framing/${nodeHash}/${encodeURIComponent(port)}`, { params });
+  },
+  /** The crop params to store for a box drawn on this canvas (on the sky when solved). */
+  framingParams(nodeHash: string, port: string, box: FramingBox): Promise<Record<string, number>> {
+    return postJSON(`/api/framing/${nodeHash}/${encodeURIComponent(port)}/box`, box);
   },
   previewUrl(nodeHash: string, port: string): string {
     // Cache-buster: previously we promised previews were `immutable` for 24h,

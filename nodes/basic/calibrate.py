@@ -367,10 +367,14 @@ def _run_group_calibrate(
     if params.debayer:
         opts.append("-debayer")
 
-    commands = [
-        f"cd {quote(group_dir.resolve())}",
-        f"calibrate {basename} {' '.join(opts)}",
-    ]
+    # Siril won't read a one-image folder as a sequence ("invalid input
+    # sequence"); a group of one frame (one odd temperature) takes the
+    # single-image command, which writes the same pp_ name.
+    if len(staged) == 1:
+        step = f"calibrate_single {staged[0].name} {' '.join(opts)}"
+    else:
+        step = f"calibrate {basename} {' '.join(opts)}"
+    commands = [f"cd {quote(group_dir.resolve())}", step]
     result = runtime.run(
         commands,
         working_dir=group_dir,

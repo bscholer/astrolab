@@ -13,6 +13,9 @@ When extract is on but recombine is off (rare) we pass through the
 starless layer; that's a useful escape hatch for "produce a starless
 image" workflows.
 
+`stars` below 1 shrinks the stars on the way back in (0 is starless); the
+Quick panel's Stars slider drives it.
+
 Pure numpy. Header from the starless input is preserved (it's the more
 load-bearing one, since starless typically inherits the WCS / metadata
 from the upstream stretch).
@@ -61,6 +64,33 @@ class StarnetRecombineParams(BaseModel):
             ),
         },
     )
+    stars: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="How much of the stars layer comes back. 1 keeps the stars "
+        "as shot; lower shrinks them, faint halos first (the layer is raised "
+        "to the power 1/stars, so a star's dim wings fade before its core); "
+        "0 leaves the starless image.",
+        json_schema_extra={
+            "hash_precision": 3,
+            "agent_hint": "0.5-0.7 tames busy star fields around a nebula; 0 is starless.",
+        },
+    )
+
+
+def shrink_stars(stars: np.ndarray, amount: float) -> np.ndarray:
+    """Fade a stretched stars layer: identity at 1, nothing at 0.
+
+    A power curve rather than a plain scale: a star's wings are dim, so
+    raising the layer to 1/amount drops them far more than the core, which
+    reads as smaller stars rather than greyer ones.
+    """
+    if amount >= 1.0:
+        return stars
+    if amount <= 0.0:
+        return np.zeros_like(stars)
+    return np.power(np.clip(stars, 0.0, 1.0), 1.0 / amount).astype(stars.dtype, copy=False)
 
 
 @register("starnet_recombine")
@@ -110,9 +140,9 @@ class StarnetRecombineNode(Node[StarnetRecombineParams]):
                 f"stars={stars_data.shape}"
             )
 
-        ctx.progress(0.5, f"starnet_recombine: blend={params.blend}")
+        ctx.progress(0.5, f"starnet_recombine: blend={params.blend}, stars x{params.stars:g}")
         a = starless_data.astype(np.float32)
-        b = stars_data.astype(np.float32)
+        b = shrink_stars(stars_data.astype(np.float32), params.stars)
         if params.blend == "add":
             combined = a + b
         elif params.blend == "screen":

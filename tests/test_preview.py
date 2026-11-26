@@ -181,3 +181,22 @@ def test_neutral_false_keeps_raw_lineage_separate(tmp_path: Path) -> None:
     b = render_preview(cache, "h5", "image", neutral=False)
     assert a != b
     assert a.exists() and b.exists()
+
+
+@pytest.mark.parametrize("display_ready", [True, False])
+def test_previews_put_fits_row_zero_at_the_bottom(tmp_path: Path, monkeypatch, display_ready) -> None:
+    """Siril shows and saves FITS bottom-up; every preview must agree, or the
+    crop editor draws on a mirror image (display-ready previews used to be
+    top-down while the saved picture was bottom-up)."""
+    import server.preview as preview
+
+    monkeypatch.setattr(preview, "_render_via_siril", lambda *a, **k: False)
+    data = np.full((3, 40, 30), 0.05, np.float32)
+    data[:, :5, :] = 0.9  # FITS rows 0-4: the bottom of the picture
+    src = tmp_path / "x.fit"
+    fits.PrimaryHDU(data).writeto(src)
+    cache = ContentCache(root=tmp_path / "cache")
+    _commit_entry(cache, "hrow", {"image.fit": src.read_bytes()})
+    out = render_preview(cache, "hrow", "image", display_ready=display_ready)
+    px = np.asarray(Image.open(out).convert("L"), float)
+    assert px[-3:].mean() > px[:3].mean() + 50

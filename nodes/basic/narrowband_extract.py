@@ -68,12 +68,24 @@ class NarrowbandExtractParams(BaseModel):
         "matching the upstream sequence layout makes input staging simpler.",
         json_schema_extra={"ui_hidden": True},
     )
+    shared_registration: bool = Field(
+        default=False,
+        description="Register once, on a plate-solved debayered copy of the "
+        "frames, and apply the same transforms to the H-alpha and OIII splits. "
+        "Each frame's two channels come from one exposure and share its "
+        "geometry, but split 15 s frames have too few real stars to match on "
+        "their own (identity transforms on a whole California night; no frame "
+        "at all on a short Rosette night). Both stacks land on one grid, so the "
+        "fragile stack-to-stack shift alignment is skipped; narrowband_pack "
+        "fixes the sub-pixel Bayer offset that remains.",
+        json_schema_extra={"ui_hidden": True},
+    )
 
 
 @register("narrowband_extract")
 class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
     id = "narrowband_extract"
-    version = 1
+    version = 2
     tier = "keep"
     uses_siril = True
 
@@ -113,21 +125,23 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
                 f"the Bayer pattern."
             )
 
-        commands = _build_extract_commands(params.input_basename, work_dir)
-
         ctx.progress(0.1, "narrowband_extract: extracting Ha/OIII and aligning")
         runtime = SirilRuntime()
-        # Six progress-emitting Siril sub-commands: seqextract_HaOIII,
-        # register Ha, stack r_Ha, register OIII, stack r_OIII, register
-        # results. The interleaved load/save and `link` calls don't emit
-        # progress, so they don't count. phases must match this exactly or
-        # the bar rewinds when a later sub-command opens at 0%.
-        result = runtime.run(
-            commands,
-            working_dir=work_dir,
-            on_log=make_progress_handler(ctx, phases=6),
-            cancel=ctx.cancel,
-        )
+        if params.shared_registration:
+            result = _run_shared(runtime, params.input_basename, work_dir, ctx)
+        else:
+            commands = _build_extract_commands(params.input_basename, work_dir)
+            # Six progress-emitting Siril sub-commands: seqextract_HaOIII,
+            # register Ha, stack r_Ha, register OIII, stack r_OIII, register
+            # results. The interleaved load/save and `link` calls don't emit
+            # progress, so they don't count. phases must match this exactly or
+            # the bar rewinds when a later sub-command opens at 0%.
+            result = runtime.run(
+                commands,
+                working_dir=work_dir,
+                on_log=make_progress_handler(ctx, phases=6),
+                cancel=ctx.cancel,
+            )
         if result.returncode != 0:
             raise RuntimeError(
                 f"narrowband_extract: siril exited {result.returncode}\n"
@@ -160,6 +174,114 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
             "ha": Ref(node_hash="", port="ha", path=ha_out, type=PortType.IMAGE_FITS),
             "oiii": Ref(node_hash="", port="oiii", path=oiii_out, type=PortType.IMAGE_FITS),
         }
+
+
+def transfer_registration(src: Path, dst: Path) -> None:
+    """Write sequence `dst` with the frame selection and transforms of `src`.
+
+    `src` is the plate-solved debayered copy of the same frames (its R lines
+    are per colour layer, eg R1); `dst` is a mono split sequence (Ha_ or
+    OIII_), so the transforms are written as layer 0. Siril only writes a
+    sequence's .seq file when a command first opens it, so right after
+    seqextract_HaOIII there is none: dst is built from src under its own
+    name (taken from the file name, eg OIII_pp_light_.seq). If Siril did
+    write one, its image count must match. Statistics (M lines) are left
+    out; Siril recomputes them.
+    """
+    src_lines = src.read_text().splitlines()
+    s_src = next(x for x in src_lines if x.startswith("S '"))
+    f_src = s_src[s_src.index("'", 3) + 1 :].split()
+    if dst.exists():
+        s_dst = next((x for x in dst.read_text().splitlines() if x.startswith("S '")), None)
+        if s_dst is not None:
+            f_dst = s_dst[s_dst.index("'", 3) + 1 :].split()
+            if f_dst[1] != f_src[1]:
+                raise RuntimeError(
+                    f"narrowband_extract: {src.name} has {f_src[1]} images, "
+                    f"{dst.name} {f_dst[1]}"
+                )
+    out = [x for x in src_lines if x.startswith("#")]
+    out.append(f"S '{dst.stem}' " + " ".join(f_src))
+    out.append("L 1")
+    out += [x for x in src_lines if x.startswith("I ")]
+    for x in src_lines:
+        if x.startswith("R") and len(x) > 1 and x[1].isdigit():
+            out.append("R0" + x[x.index(" ") :])
+    dst.write_text("\n".join(out) + "\n")
+
+
+def copy_registration(src: Path, dst: Path, name: str) -> None:
+    """Give sequence `dst` the selection and registration of `src` (same layout)."""
+    out = []
+    for line in src.read_text().splitlines():
+        if line.startswith("M"):
+            continue
+        if line.startswith("S '"):
+            line = f"S '{name}'" + line[line.index("'", 3) + 1 :]
+        out.append(line)
+    dst.write_text("\n".join(out) + "\n")
+
+
+def _run_shared(runtime: SirilRuntime, base: str, work_dir: Path, ctx: RunContext):
+    """Register once on a debayered copy, apply to both split channels, stack.
+
+    Single 15 s duo-band frames split into H-alpha and OIII have too few real
+    stars to match: star matching locked onto leftover hot pixels and
+    returned identity transforms for a whole 2.3 h California night, which
+    smeared every star out of the stack. A debayered copy of the same frames
+    plate-solves (as stack_per_night registers them); its transforms fit the
+    split frames, which share the geometry.
+    """
+    cd = f"cd {quote(work_dir.resolve())}"
+    first = runtime.run(
+        [
+            cd,
+            f"calibrate {base} -debayer -prefix=db_",
+            f"seqplatesolve db_{base} -nocache -force",
+            f"seqextract_HaOIII {base} -resample=ha",
+        ],
+        working_dir=work_dir,
+        on_log=make_progress_handler(ctx, low=0.1, high=0.5, phases=3),
+        cancel=ctx.cancel,
+    )
+    if first.returncode != 0:
+        # The reference frame didn't solve (Siril then fails the whole
+        # sequence): star-match the debayered copy instead, which has the
+        # signal the split frames lack.
+        ctx.progress(0.3, "narrowband_extract: plate solving failed, matching stars")
+        first = runtime.run(
+            [
+                cd,
+                f"register db_{base} -2pass",
+                f"seqextract_HaOIII {base} -resample=ha",
+            ],
+            working_dir=work_dir,
+            on_log=make_progress_handler(ctx, low=0.3, high=0.5, phases=2),
+            cancel=ctx.cancel,
+        )
+        if first.returncode != 0:
+            return first
+    db = next(iter(sorted(work_dir.glob(f"db_{base}*.seq"))), None)
+    if db is None:
+        raise RuntimeError(f"narrowband_extract: no registered debayered sequence in {work_dir}")
+    seq = db.name.removeprefix("db_")  # eg pp_light_.seq
+    for channel in ("OIII", "Ha"):
+        if not (work_dir / f"{channel}_{seq.removesuffix('.seq')}00001.fit").exists():
+            raise RuntimeError(f"narrowband_extract: seqextract_HaOIII wrote no {channel} frames")
+        transfer_registration(db, work_dir / f"{channel}_{seq}")
+    stack = "rej 3 3 -norm=addscale -output_norm -32b"
+    return runtime.run(
+        [
+            cd,
+            f"seqapplyreg OIII_{base} -framing=max",
+            f"seqapplyreg Ha_{base} -framing=max",
+            f"stack r_OIII_{base} {stack} -out=r_results_oiii",
+            f"stack r_Ha_{base} {stack} -out=r_results_ha",
+        ],
+        working_dir=work_dir,
+        on_log=make_progress_handler(ctx, low=0.5, high=0.95, phases=4),
+        cancel=ctx.cancel,
+    )
 
 
 def _build_extract_commands(input_basename: str, work_dir: Path) -> list[str]:

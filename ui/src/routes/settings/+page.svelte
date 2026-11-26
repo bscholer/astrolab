@@ -4,7 +4,8 @@
   Slider sets cache_max_bytes (binary GiB). The "Run cleanup" button
   triggers POST /api/storage/cleanup which evicts entries until the cache
   fits under the budget. Eviction order:
-    1. Unreachable entries (deleted projects, half-runs) always go first.
+    1. Dead entries (deleted projects, failed or interrupted runs) go on
+       every sweep, under budget or not. Results of completed jobs stay.
     2. Bulk-tier entries (pre-stack sequence data — convert/calibrate/
        register/etc.) by oldest owning project first.
     3. Keep-tier entries (stack output and post-stack work) only when 1
@@ -13,7 +14,8 @@
     lockfile protocol in server/cache.py.
 -->
 <script lang="ts">
-  import { api, type StorageSnapshot } from '$lib/api';
+  import { api, type ScopeState, type StorageSnapshot } from '$lib/api';
+  import { onMount } from 'svelte';
   import { toast } from '$lib/toast.svelte';
   import { formatBytes } from '$lib/format';
 
@@ -56,6 +58,57 @@
   let persistedSiteElev = $state<number | null>(null);
   let savingSite = $state(false);
   let locating = $state(false);
+
+  let scope = $state<ScopeState | null>(null);
+  let scopeUrl = $state('');
+  let scopeToken = $state('');
+  let savingScope = $state(false);
+  let alertUrl = $state('');
+  let savingAlert = $state(false);
+
+  async function saveAlert(clear = false) {
+    savingAlert = true;
+    try {
+      await api.setScopeAlerts(clear ? '' : alertUrl.trim());
+      alertUrl = '';
+      toast.success(clear ? 'Alerts off.' : 'Alerts on.');
+      await loadScope();
+    } catch (e) {
+      toast.error(`Alert save failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      savingAlert = false;
+    }
+  }
+
+  async function loadScope() {
+    try {
+      scope = await api.getScope();
+      scopeUrl = scope.url ?? '';
+    } catch {
+      // The next poll retries.
+    }
+  }
+
+  async function saveScope() {
+    savingScope = true;
+    try {
+      scope = await api.putScope({
+        url: scopeUrl,
+        ...(scopeToken ? { token: scopeToken } : {}),
+      });
+      scopeToken = '';
+    } catch (e) {
+      toast.error(`Scope save failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      savingScope = false;
+    }
+  }
+
+  onMount(() => {
+    loadScope();
+    const timer = setInterval(loadScope, 10000);
+    return () => clearInterval(timer);
+  });
 
   async function saveCaptureRoot() {
     const next = captureRoot.trim();
@@ -303,6 +356,80 @@
 <div class="header">
   <h1>Settings</h1>
 </div>
+
+<section class="panel">
+  <h2>Scope service</h2>
+  <p class="muted small">
+    Any service that follows the scope service spec. Astrolab shows only the
+    features the service lists.
+  </p>
+  <div class="capture-row">
+    <input
+      type="text"
+      class="capture-input"
+      placeholder="http://192.168.5.15:9902"
+      bind:value={scopeUrl}
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <input
+      type="password"
+      class="capture-input"
+      placeholder={scope?.has_token ? 'Token saved (type to replace)' : 'Token (optional)'}
+      bind:value={scopeToken}
+      autocomplete="off"
+    />
+    <button type="button" class="btn" onclick={saveScope} disabled={savingScope}>
+      {savingScope ? 'Saving…' : 'Save'}
+    </button>
+  </div>
+  <p class="muted small alert-note" style="margin-top: 1.1rem">
+    Alerts. A webhook that gets a short message when the night starts, the sky turns bad,
+    something stalls, or rain is forecast. A ntfy topic URL works.
+  </p>
+  <div class="capture-row">
+    <input
+      type="url"
+      class="capture-input"
+      placeholder={scope?.alert_url_set ? 'Alerts are on (type a new URL to replace)' : 'https://ntfy.sh/your-topic'}
+      bind:value={alertUrl}
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button
+      type="button"
+      class="btn"
+      onclick={() => saveAlert(false)}
+      disabled={savingAlert || !alertUrl.trim()}
+    >
+      Save
+    </button>
+    {#if scope?.alert_url_set}
+      <button type="button" class="btn" onclick={() => saveAlert(true)} disabled={savingAlert}>
+        Turn off
+      </button>
+    {/if}
+  </div>
+  {#if scope?.configured}
+    {#if scope.reachable}
+      <p class="small note">
+        Connected to {scope.service?.name ?? 'service'} (spec {scope.spec_version}).
+        Scope {scope.status?.app_connected ? 'online' : 'offline'}.
+      </p>
+      <p class="muted small">Features: {(scope.capabilities ?? []).join(', ') || 'none'}</p>
+      {#if scope.capabilities?.includes('files') && scope.mirror}
+        <p class="muted small">
+          Frame copy: {scope.mirror.state}
+          {#if scope.mirror.current}({scope.mirror.current}){/if}
+          · {scope.mirror.files_copied} files copied
+          {#if scope.mirror.error}· {scope.mirror.error}{/if}
+        </p>
+      {/if}
+    {:else}
+      <p class="small note">Cannot reach the service: {scope.error}</p>
+    {/if}
+  {/if}
+</section>
 
 <section class="panel">
   <h2>Capture</h2>

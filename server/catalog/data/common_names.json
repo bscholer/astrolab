@@ -35,7 +35,6 @@
   "M 108": "Surfboard Galaxy",
   "M 109": "M 109",
   "M 110": "Edward Young Star",
-
   "C 1": "Polaris Cluster",
   "C 9": "Cave Nebula",
   "C 11": "Bubble Nebula",
@@ -59,7 +58,6 @@
   "C 63": "Helix Nebula (alt)",
   "C 64": "Tau Canis Majoris Cluster",
   "C 99": "Coalsack Nebula",
-
   "NGC 224": "Andromeda Galaxy",
   "NGC 246": "Pacman Nebula (alt)",
   "NGC 281": "Pacman Nebula",
@@ -107,7 +105,6 @@
   "NGC 7380": "Wizard Nebula",
   "NGC 7635": "Bubble Nebula",
   "NGC 7822": "NGC 7822",
-
   "IC 405": "Flaming Star Nebula",
   "IC 410": "Tadpoles Nebula",
   "IC 434": "Horsehead Nebula (background)",
@@ -122,8 +119,15 @@
   "IC 5067": "Pelican Nebula",
   "IC 5070": "Pelican Nebula (cluster)",
   "IC 5146": "Cocoon Nebula",
-
   "Sh2-155": "Cave Nebula",
   "B 33": "Horsehead Nebula",
-  "Barnard 33": "Horsehead Nebula"
+  "Barnard 33": "Horsehead Nebula",
+  "M 3": "Canes Venatici Cluster",
+  "M 11": "Wild Duck Cluster",
+  "M 15": "Great Pegasus Cluster",
+  "M 22": "Sagittarius Cluster",
+  "M 34": "Spiral Cluster",
+  "M 35": "Shoe-Buckle Cluster",
+  "M 83": "Southern Pinwheel Galaxy",
+  "NGC 253": "Sculptor Galaxy"
 }

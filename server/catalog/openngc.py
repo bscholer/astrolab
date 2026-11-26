@@ -40,6 +40,10 @@ class CatalogEntry:
     dec_deg: float | None
     magnitude: float | None # V-Mag preferred; falls back to B-Mag
     constellation: str | None  # IAU 3-letter abbreviation
+    size_arcmin: float | None = None  # major axis
+    messier: str | None = None  # 'M 45'
+    minor_arcmin: float | None = None  # minor axis
+    pa_deg: float | None = None  # position angle of the major axis, north through east
 
 
 # OpenNGC type code -> human-readable label. Keep this list aligned with
@@ -50,6 +54,7 @@ _TYPE_LABELS: dict[str, str] = {
     "GTrpl": "Galaxy Triplet",
     "GGroup": "Galaxy Group",
     "OC": "Open Cluster",
+    "OCl": "Open Cluster",
     "GCl": "Globular Cluster",
     "Cl+N": "Cluster with Nebula",
     "HII": "H II Region",
@@ -211,6 +216,13 @@ def _pick_magnitude(v: str, b: str) -> float | None:
     return None
 
 
+def _parse_float(raw: str | None) -> float | None:
+    try:
+        return float((raw or "").strip())
+    except ValueError:
+        return None
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -240,6 +252,7 @@ def _load() -> tuple[list[CatalogEntry], dict[str, CatalogEntry]]:
         common_name = common_list[0] if common_list else None
 
         type_code = (r.get("Type") or "").strip()
+        messier = (r.get("M") or "").strip()
         entry = CatalogEntry(
             canonical=canonical,
             common_name=common_name,
@@ -248,6 +261,10 @@ def _load() -> tuple[list[CatalogEntry], dict[str, CatalogEntry]]:
             dec_deg=_parse_dec(r.get("Dec", "")),
             magnitude=_pick_magnitude(r.get("V-Mag", ""), r.get("B-Mag", "")),
             constellation=(r.get("Const") or "").strip() or None,
+            size_arcmin=_parse_float(r.get("MajAx")),
+            messier=f"M {messier.lstrip('0')}" if messier else None,
+            minor_arcmin=_parse_float(r.get("MinAx")),
+            pa_deg=_parse_float(r.get("PosAng")),
         )
         entries.append(entry)
 
@@ -255,7 +272,7 @@ def _load() -> tuple[list[CatalogEntry], dict[str, CatalogEntry]]:
         # NGC/IC xrefs, common names, and selected foreign identifiers.
         for key in _alias_keys_for(
             canonical,
-            (r.get("M") or "").strip(),
+            messier,
             (r.get("NGC") or "").strip(),
             (r.get("IC") or "").strip(),
             r.get("Identifiers") or "",

@@ -174,3 +174,26 @@ def test_retry_on_locked_unblocks_when_lock_released(tmp_path: Path) -> None:
     threading.Thread(target=release_soon, daemon=True).start()
     assert writer() == 1
     t.join(timeout=2.0)
+
+
+def test_connections_skip_the_fsync_on_every_commit(tmp_path) -> None:
+    from server.catalog.db import connect
+
+    conn = connect(tmp_path / "c.sqlite")
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+    finally:
+        conn.close()
+
+
+def test_keep_open_holds_one_connection_per_database(tmp_path) -> None:
+    from server.catalog import db as catalog_db
+
+    p = tmp_path / "c.sqlite"
+    catalog_db.keep_open(p)
+    held = catalog_db._held[p.resolve()]
+    catalog_db.keep_open(p)
+    assert catalog_db._held[p.resolve()] is held  # idempotent
+    assert held.execute("SELECT 1").fetchone()[0] == 1
+    catalog_db._held.pop(p.resolve()).close()

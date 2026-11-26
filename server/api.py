@@ -36,32 +36,50 @@ Phase 2 keeps job state in memory; persistence + worker scaling come later.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import dataclasses
 import logging
 import os
+import re
 import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import nodes.basic  # noqa: F401  registers nodes for job execution
 import server.catalog.adapters  # noqa: F401  registers ingest adapters
 import server.scan_state as scan_state
 import server.sky as sky
+from server import coverage, pano_sky, scope_live, scope_plan, sky_thumbs, telemetry, weather
+from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
+from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
-from server.catalog.db import open_db
+from server.catalog.db import default_db_path, keep_open, open_db
 from server.catalog.fits_reader import normalize_target
 from server.catalog.matching import match_bundle_darks
+from server.catalog.openngc import CatalogEntry
 from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
 from server.catalog.scanner import resolve_target as resolve_target_row
@@ -71,6 +89,15 @@ from server.catalog.sky_match import (
     suggest_tolerance_deg,
     target_centroid,
     target_envelope,
+)
+from server.catalog.triage import live_rescue_share
+from server.curator import Curator, purged_names
+from server.endpoints import (
+    StatusHint,
+    ToolAnnotations,
+    http_endpoint,
+    mcp_tool,
+    mount_endpoints,
 )
 from server.job_builder import (
     CalibrationMissing,
@@ -82,7 +109,13 @@ from server.job_builder import (
     build_from_sessions,
 )
 from server.jobs import JobManager
+from server.masters import MasterKeeper, master_projects
+from server.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
+from server.morning import morning
+from server.nas_backup import NasBackup, nas_root
+from server.paths import astrolab_home
 from server.preview import PreviewError, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
 from server.quality import (
@@ -90,11 +123,37 @@ from server.quality import (
 )
 from server.registry import _REGISTRY, all_kinds
 from server.registry import lookup as registry_lookup
+from server.scope_alerts import make_notifier
+from server.scope_cleanup import Cleaner
+from server.scope_compass import CompassRefused, CompassRun
+from server.scope_control import ACTIONS as CONTROL_ACTIONS
+from server.scope_control import ControlBusy, ScopeControl
+from server.scope_mirror import Mirror
+from server.scope_observe import ObserveBusy, Observer
+from server.scope_pano import PanoRefused, PanoScanner
+from server.scope_plan import Candidate, capture_options, capture_settings, service_info
+from server.scope_preview import stack_preview
+from server.scope_scheduler import Scheduler
+from server.scope_service import ScopeServiceClient, ScopeServiceError
+from server.scope_skymap import SkyMap, skymap_svg
+from server.scope_skymap import verdict as skymap_verdict
+from server.scope_trace import HorizonTrace, TraceRefused
 from server.storage import (
     MIN_CACHE_MAX_BYTES,
     SETTING_CACHE_MAX_BYTES,
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
+    SETTING_SCOPE_ALERT_URL,
+    SETTING_SCOPE_AUTO,
+    SETTING_SCOPE_AUTO_STACK,
+    SETTING_SCOPE_MIRROR_BASELINE,
+    SETTING_SCOPE_POINTING,
+    SETTING_SCOPE_PROGRESS,
+    SETTING_SCOPE_SKYMAP,
+    SETTING_SCOPE_TARGETS,
+    SETTING_SCOPE_TOKEN,
+    SETTING_SCOPE_URL,
+    SETTING_SCRAP_PURGE,
     SETTING_SITE_ELEVATION_M,
     SETTING_SITE_LATITUDE,
     SETTING_SITE_LONGITUDE,
@@ -109,6 +168,10 @@ from server.storage import (
 from server.system_metrics import collect_system_metrics
 from server.templates import TemplateNotFound, list_templates, load_template
 
+logging.basicConfig(
+    level=os.environ.get("ASTROLAB_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 log = logging.getLogger("astrolab.api")
 
 job_manager = JobManager()
@@ -120,6 +183,11 @@ from contextlib import asynccontextmanager  # noqa: E402  (used by app() below)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # One idle connection for the process: see keep_open().
+    try:
+        keep_open(job_manager.db_path)
+    except Exception:  # pragma: no cover
+        log.exception("could not hold the catalog open")
     # Pull persisted jobs and projects into memory so the UI lists them
     # and detail pages can replay events even after a server restart.
     try:
@@ -131,6 +199,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # pragma: no cover
         log.exception("project rehydrate failed; continuing with empty state")
     _bootstrap_capture_root()
+    _bootstrap_scope_settings()
+    if os.environ.get("ASTROLAB_SCOPE_MIRROR", "1") == "1":
+        scope_mirror.start()
+        scope_scheduler.enabled = bool(
+            get_setting(SETTING_SCOPE_AUTO, False, db_path=job_manager.db_path)
+        )
+        scope_scheduler.start()
+        master_keeper.start()
+        scope_cleaner.start()
+    curator.start()
+    nas_backup.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -142,6 +221,31 @@ def _make_progress_callback() -> Any:
         scan_state.update(seen, path)
 
     return _cb
+
+
+def _bootstrap_scope_settings() -> None:
+    """Seed the scope URL and site from the environment on a fresh database.
+
+    ASTROLAB_SCOPE_URL_DEFAULT is the scope service, such as a fake scope in staging.
+    ASTROLAB_SITE_DEFAULT is "lat,lon" or "lat,lon,elevation_m". A value already saved,
+    such as one set in Settings, always wins.
+    """
+    url = os.environ.get("ASTROLAB_SCOPE_URL_DEFAULT", "").strip()
+    if url and not get_setting(SETTING_SCOPE_URL, None, db_path=job_manager.db_path):
+        set_setting(SETTING_SCOPE_URL, url, db_path=job_manager.db_path)
+        log.info("seeded the scope URL from ASTROLAB_SCOPE_URL_DEFAULT: %s", url)
+    site = os.environ.get("ASTROLAB_SITE_DEFAULT", "").strip()
+    if site and get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path) is None:
+        try:
+            parts = [float(p) for p in site.split(",")]
+            lat, lon, elev = (parts + [0.0])[:3]
+        except ValueError:
+            log.warning("ASTROLAB_SITE_DEFAULT=%r is not lat,lon[,elevation_m]", site)
+            return
+        set_setting(SETTING_SITE_LATITUDE, lat, db_path=job_manager.db_path)
+        set_setting(SETTING_SITE_LONGITUDE, lon, db_path=job_manager.db_path)
+        set_setting(SETTING_SITE_ELEVATION_M, elev, db_path=job_manager.db_path)
+        log.info("seeded the site from ASTROLAB_SITE_DEFAULT: %s", site)
 
 
 def _bootstrap_capture_root() -> None:
@@ -188,7 +292,9 @@ def _bootstrap_capture_root() -> None:
     threading.Thread(target=_scan, name="astrolab-first-scan", daemon=True).start()
 
 
+telemetry.setup("astrolab")
 app = FastAPI(title="astrolab", version="0.1.0", lifespan=lifespan)
+telemetry.instrument_app(app)
 
 # Phase 1 dev: SvelteKit dev server runs on a different port. Allow it through
 # CORS. Tighten or drop once the static build is mounted under the same origin.
@@ -539,10 +645,14 @@ def list_targets(conn: DBDep) -> list[TargetSummary]:
                  FROM frames f
                  JOIN session_frames sf ON sf.frame_id = f.id
                  JOIN sessions s2 ON s2.id = sf.session_id
+                 JOIN session_verdicts v2 ON v2.session_id = s2.id AND v2.verdict = 'keep'
                  WHERE s2.target_id = t.id
                ) AS bytes_on_disk
         FROM targets t
-        LEFT JOIN sessions s ON s.target_id = t.id
+        JOIN sessions s ON s.target_id = t.id
+        -- The library shows kept sessions only: new ones appear once the
+        -- curator has judged them, scrap never (server/curator.py).
+        JOIN session_verdicts v ON v.session_id = s.id AND v.verdict = 'keep'
         GROUP BY t.id, t.name
         ORDER BY t.name
         """
@@ -586,6 +696,7 @@ def get_target(target_id: int, conn: DBDep) -> TargetDetail:
         """
         SELECT * FROM sessions
         WHERE target_id = ?
+          AND id IN (SELECT session_id FROM session_verdicts WHERE verdict = 'keep')
         ORDER BY started_at
         """,
         (target_id,),
@@ -1084,21 +1195,36 @@ def list_masters(conn: DBDep) -> list[MasterRow]:
     return [MasterRow(**dict(r)) for r in rows]
 
 
-@app.post("/api/scan")
-def trigger_scan(req: ScanRequest) -> JSONResponse:
-    """Start a scan in a background thread. Returns 202 immediately.
+class RootNotFoundError(Exception):
+    pass
 
-    Returns 409 if a scan is already in progress.
-    The caller should poll GET /api/scan/status to track progress.
-    """
-    root = Path(req.root).expanduser()
-    if not root.exists():
-        raise HTTPException(status_code=400, detail=f"root does not exist: {root}")
-    if not scan_state.start():
-        raise HTTPException(status_code=409, detail="already_running")
 
-    log.info("scan triggered: root=%s", root)
+class ScanAlreadyRunningError(Exception):
+    pass
 
+
+class ScanStarted(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["started"]
+
+
+class ScanStatusResponse(BaseModel):
+    running: bool
+    started_at: float | None
+    finished_at: float | None
+    current_path: str | None
+    discovered: int
+    inserted: int
+    updated: int
+    skipped: int
+    removed: int
+    failed: int
+    error: str | None
+    last_stats: dict[str, Any] | None
+
+
+def _launch_scan(root: Path) -> None:
     def _scan() -> None:
         try:
             stats = run_scan(root, progress=_make_progress_callback())
@@ -1109,13 +1235,63 @@ def trigger_scan(req: ScanRequest) -> JSONResponse:
             log.exception("scan failed")
 
     threading.Thread(target=_scan, name="astrolab-scan", daemon=True).start()
-    return JSONResponse({"status": "started"}, status_code=202)
 
 
-@app.get("/api/scan/status")
-def scan_status() -> dict[str, Any]:
-    """Return the current scan progress state."""
-    return scan_state.snapshot()
+@mcp_tool(
+    name="trigger_scan",
+    title="Scan the capture folder for new frames",
+    description=(
+        "Start a background scan of a capture folder so new frames appear in the library. "
+        "Returns at once; poll scan_status for progress. Fails if a scan is already running."
+    ),
+    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, open_world_hint=False),
+    error_map={
+        RootNotFoundError: "The capture folder does not exist.",
+        ScanAlreadyRunningError: "A scan is already running. Check scan_status.",
+    },
+)
+@http_endpoint(
+    path="/api/scan",
+    operation_id="triggerScan",
+    method="POST",
+    status_code=202,
+    payload_model=ScanRequest,
+    response_model=ScanStarted,
+    description="Start a scan in a background thread. Poll /api/scan/status to track progress.",
+    tags=["Scan"],
+    error_map={
+        RootNotFoundError: StatusHint(400, "root_not_found"),
+        ScanAlreadyRunningError: StatusHint(409, "already_running"),
+    },
+)
+def trigger_scan(req: ScanRequest) -> ScanStarted:
+    root = Path(req.root).expanduser()
+    if not root.exists():
+        raise RootNotFoundError(f"root does not exist: {root}")
+    if not scan_state.start():
+        raise ScanAlreadyRunningError("already_running")
+
+    log.info("scan triggered: root=%s", root)
+    _launch_scan(root)
+    return ScanStarted(status="started")
+
+
+@mcp_tool(
+    name="scan_status",
+    title="Check scan progress",
+    description="Return the state of the current or most recent capture folder scan.",
+    annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False),
+)
+@http_endpoint(
+    path="/api/scan/status",
+    operation_id="getScanStatus",
+    method="GET",
+    response_model=ScanStatusResponse,
+    description="Return the current scan progress state.",
+    tags=["Scan"],
+)
+def scan_status() -> ScanStatusResponse:
+    return ScanStatusResponse(**scan_state.snapshot())
 
 
 # ---------------------------------------------------------------------------
@@ -2483,6 +2659,8 @@ def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     _attach_history_quality(payload, conn)
     session_ids = payload.get("source_session_ids") or []
     payload["capture"] = _capture_for_project(conn, session_ids).model_dump(mode="json")
+    # Target masters (server/masters.py) are kept up to date by the server.
+    payload["master"] = master_projects(conn).get(project.id)
     display = _display_for_project(conn, session_ids)
     payload["display"] = display.model_dump(mode="json") if display else None
     # Suggestions are sourced from the project's canonical_group; null when
@@ -2536,6 +2714,10 @@ class GalleryEntry(BaseModel):
     preview_hash: str
     preview_port: str
     is_cover: bool = False
+    target_canonical: str | None = None
+    """Catalog target of this project. Null blocks a Tonight favorite."""
+    is_favorite: bool = False
+    """This entry supplies the Tonight image of its target."""
 
 
 @app.get("/api/gallery", response_model=list[GalleryEntry])
@@ -2544,9 +2726,16 @@ def list_gallery(conn: DBDep) -> list[GalleryEntry]:
     first. Each entry has the bits a card needs (preview pointer +
     target/template names) so the UI doesn't have to JOIN per render."""
     out: list[GalleryEntry] = []
+    favorites = {
+        (r["project_id"], r["seq"])
+        for r in conn.execute(
+            "SELECT project_id, seq FROM target_images WHERE project_id IS NOT NULL"
+        ).fetchall()
+    }
     for project in project_manager.list():
         capture = _capture_for_project(conn, project.source_session_ids)
         target_common = capture.target_common_name
+        target_canonical = _project_canonical(conn, project.source_session_ids)
         for entry in project.history:
             # Opt-in: only entries the user explicitly published surface
             # in the gallery. Iterate-and-compare crumbs stay private.
@@ -2572,10 +2761,106 @@ def list_gallery(conn: DBDep) -> list[GalleryEntry]:
                     preview_hash=ref.node_hash,
                     preview_port=port,
                     is_cover=(project.cover_seq == entry.seq),
+                    target_canonical=target_canonical,
+                    is_favorite=(project.id, entry.seq) in favorites,
                 )
             )
     out.sort(key=lambda e: e.created_at, reverse=True)
     return out
+
+
+def _project_canonical(conn: sqlite3.Connection, session_ids: list[str]) -> str | None:
+    """OpenNGC canonical id of the target in the project's first session."""
+    if not session_ids or not all(s.isdigit() for s in session_ids):
+        return None
+    placeholders = ",".join("?" for _ in session_ids)
+    row = conn.execute(
+        f"""
+        SELECT t.name AS name, t.resolved_canonical AS resolved_canonical
+        FROM sessions s JOIN targets t ON t.id = s.target_id
+        WHERE s.id IN ({placeholders})
+        ORDER BY s.started_at
+        LIMIT 1
+        """,
+        [int(s) for s in session_ids],
+    ).fetchone()
+    if row is None:
+        return None
+    entry = openngc_enrich(row["resolved_canonical"] or row["name"])
+    return entry.canonical if entry is not None else None
+
+
+def _record_target_image(
+    conn: sqlite3.Connection, canonical: str, project_id: str | None, seq: int | None
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO target_images (canonical, project_id, seq, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (canonical) DO UPDATE SET
+            project_id = excluded.project_id,
+            seq = excluded.seq,
+            updated_at = excluded.updated_at
+        """,
+        (canonical, project_id, seq, datetime.now(UTC).isoformat()),
+    )
+    conn.commit()
+
+
+def _delete_target_image(conn: sqlite3.Connection, canonical: str) -> None:
+    _target_image_path(canonical).unlink(missing_ok=True)
+    conn.execute("DELETE FROM target_images WHERE canonical = ?", (canonical,))
+    conn.commit()
+
+
+def _target_image_root() -> Path:
+    return astrolab_home() / "target_images"
+
+
+def _target_image_path(canonical: str) -> Path:
+    return sky_thumbs.custom_image_path(_target_image_root(), canonical)
+
+
+@app.put(
+    "/api/gallery/{project_id}/{seq}/favorite",
+    responses={
+        404: {"description": "unknown gallery entry"},
+        409: {"description": "project has no catalog target"},
+    },
+)
+def favorite_gallery_entry(project_id: str, seq: int, conn: DBDep) -> dict:
+    """Use a published render as the Tonight image of its target."""
+    project = project_manager.get(project_id)
+    entry = next((h for h in project.history if h.seq == seq), None) if project else None
+    record = job_manager.get(entry.job_id) if entry else None
+    if project is None or record is None or not record.outputs:
+        raise HTTPException(status_code=404, detail="gallery entry not found")
+    canonical = _project_canonical(conn, project.source_session_ids)
+    if canonical is None:
+        raise HTTPException(status_code=409, detail="project has no catalog target")
+    key = "image" if "image" in record.outputs else next(iter(record.outputs))
+    ref = record.outputs[key]
+    try:
+        path = render_output(
+            job_manager.cache, ref.node_hash, ref.port, display_ready=ref.display_ready
+        )
+        sky_thumbs.save_custom_image(_target_image_root(), canonical, path.read_bytes())
+    except (PreviewError, sky_thumbs.InvalidImage) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _record_target_image(conn, canonical, project_id, seq)
+    return {"target": canonical}
+
+
+@app.delete("/api/gallery/{project_id}/{seq}/favorite")
+def unfavorite_gallery_entry(project_id: str, seq: int, conn: DBDep) -> dict:
+    """Drop the favorite. An image that a later upload replaced stays."""
+    row = conn.execute(
+        "SELECT canonical FROM target_images WHERE project_id = ? AND seq = ?",
+        (project_id, seq),
+    ).fetchone()
+    if row is not None:
+        _delete_target_image(conn, row["canonical"])
+    return {"removed": row is not None}
 
 
 @app.patch("/api/projects/{project_id}")
@@ -3021,6 +3306,12 @@ def get_storage() -> dict:
     }
 
 
+@app.get("/metrics", include_in_schema=False)
+def get_metrics() -> Response:
+    """Prometheus scrape endpoint."""
+    return Response(render_metrics(job_manager), media_type=METRICS_CONTENT_TYPE)
+
+
 @app.get("/api/system")
 def get_system() -> dict:
     """Host telemetry for the dashboard: CPU/mem/disk/GPU and job stats."""
@@ -3092,6 +3383,1074 @@ def get_settings() -> dict:
         SETTING_SITE_LONGITUDE: (float(site_lon) if site_lon is not None else None),
         SETTING_SITE_ELEVATION_M: (float(site_elev) if site_elev is not None else None),
     }
+
+
+class ScopeConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+    token: str | None = None
+    """None keeps the stored token. '' clears it."""
+
+
+def _scope_client() -> ScopeServiceClient | None:
+    url = get_setting(SETTING_SCOPE_URL, None, db_path=job_manager.db_path)
+    if not url:
+        return None
+    token = get_setting(SETTING_SCOPE_TOKEN, None, db_path=job_manager.db_path)
+    return ScopeServiceClient(url, token or None)
+
+
+def _mirror_root() -> Path | None:
+    root = get_setting(SETTING_CAPTURE_ROOT, None, db_path=job_manager.db_path)
+    return Path(root) if root else None
+
+
+def _scan_after_copy() -> None:
+    root = _mirror_root()
+    if root is not None and scan_state.start():
+        _launch_scan(root)
+
+
+POINTING_PAIRS_MAX = 500
+
+
+def _store_pointing(pair: dict) -> None:
+    """Keep each slew's motor angles with its target, to learn the scope's compass mapping."""
+    pairs = get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+    pairs.append(pair)
+    set_setting(SETTING_SCOPE_POINTING, pairs[-POINTING_PAIRS_MAX:], db_path=job_manager.db_path)
+
+
+scope_observer = Observer(on_pointed=_store_pointing)
+
+
+@app.get("/api/scope/pointing")
+def get_scope_pointing() -> list[dict]:
+    return get_setting(SETTING_SCOPE_POINTING, [], db_path=job_manager.db_path) or []
+
+
+master_keeper = MasterKeeper(
+    job_manager.db_path or default_db_path(),
+    project_manager,
+    lambda: bool(get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)),
+)
+
+
+@app.get("/api/target-masters")
+def get_masters() -> dict:
+    """Target masters: what the keeper would do now (a dry run) and its last pass."""
+    return {
+        "enabled": bool(
+            get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)
+        ),
+        "last": master_keeper.last,
+        "plan": [a.as_dict() for a in master_keeper.plan()],
+    }
+
+
+@app.post("/api/target-masters/run")
+def run_masters() -> dict:
+    """Create and extend target masters now instead of waiting for the next pass."""
+    return master_keeper.run()
+
+
+@app.get("/api/morning")
+def get_morning(conn: DBDep, night: str | None = None) -> dict:
+    """Last night (or `night`, YYYY-MM-DD): targets shot, what was kept, what each master gained."""
+    payload = morning(conn, project_manager.get, job_manager.get, night)
+    for t in payload["targets"]:
+        for m in t["masters"]:
+            project = project_manager.get(m["project_id"])
+            advice = _master_advice(conn, project) if project else None
+            m["advice"] = advice["advice"] if advice else None
+    return payload
+
+
+def _stacked_output(project) -> tuple[str, Path] | None:
+    """The newest linear stack among the project's renders."""
+    for entry in sorted(project.history, key=lambda h: h.seq, reverse=True):
+        record = job_manager.get(entry.job_id)
+        ref = (record.outputs or {}).get("stacked") if record else None
+        if ref is not None:
+            return ref.node_hash, Path(ref.path)
+    return None
+
+
+def _master_advice(conn: sqlite3.Connection, project) -> dict | None:
+    """Noise, SNR and what more hours would buy for one target master."""
+    info = master_projects(conn).get(project.id)
+    if info is None:
+        return None
+    ids = [int(s) for s in project.source_session_ids]
+    marks = ",".join("?" * len(ids)) or "NULL"
+    total_s = conn.execute(
+        "SELECT COALESCE(SUM(usable_s), 0) FROM session_verdicts"  # noqa: S608
+        f" WHERE session_id IN ({marks})",
+        ids,
+    ).fetchone()[0]
+    stacked = _stacked_output(project)
+    quality = None
+    if stacked is not None:
+        try:
+            quality = measure_cached(*stacked)
+        except Exception:
+            log.warning("could not measure %s", stacked[1], exc_info=True)
+    target = conn.execute(
+        "SELECT name, resolved_canonical FROM targets WHERE id = ?", (info["target_id"],)
+    ).fetchone()
+    name = target["name"] if target else project.name
+    canonical = target["resolved_canonical"] if target else None
+    plan_targets = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+
+    def same_object(t: dict) -> bool:
+        if t.get("name") == name:
+            return True
+        hit = openngc_enrich(t.get("name"))
+        return bool(canonical and hit and hit.canonical == canonical)
+
+    in_plan = next((t for t in plan_targets if same_object(t)), None)
+    shot = scope_scheduler.snapshot().get("integrated_s", {})
+    entry = openngc_enrich(canonical or name)
+    return {
+        "project_id": project.id,
+        "name": project.name,
+        "target": name,
+        "common_name": (entry.common_name if entry else None) or lookup_common_name(name),
+        "filter": info["key"].split("|")[3] or None,
+        "advice": advise(total_s, quality).as_dict(),
+        "plan": _plan_status(in_plan, shot, total_s) if in_plan else None,
+    }
+
+
+def _plan_status(target: dict, shot: dict, total_s: float) -> dict:
+    """Where a master's target stands in the scheduler, and what the rest of its goal buys."""
+    shot_h = shot.get(target["name"], 0.0) / 3600
+    goal = target.get("goal_hours")
+    remaining_h = max(0.0, goal - shot_h) if goal else None
+    return {
+        "name": target["name"],
+        "goal_hours": goal,
+        "shot_hours": shot_h,
+        "remaining_hours": remaining_h,
+        "remaining_noise_drop": (
+            noise_drop(total_s, remaining_h * 3600) if remaining_h else None
+        ),
+    }
+
+
+@app.get("/api/projects/{project_id}/export")
+def export_project(project_id: str, kind: Literal["image", "stacked"] = "image") -> FileResponse:
+    """Download the current render at full resolution (PNG), or its linear stack (FITS)."""
+    project = project_manager.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    by_seq = {h.seq: h for h in project.history}
+    order = [project.current_seq] + sorted((s for s in by_seq if s != project.current_seq),
+                                           reverse=True)
+    for seq in order:
+        record = job_manager.get(by_seq[seq].job_id)
+        ref = (record.outputs or {}).get(kind) if record else None
+        if ref is not None and Path(ref.path).exists():
+            path = Path(ref.path)
+            stem = re.sub(r"[^\w .()-]+", "", project.name).strip() or "astrolab"
+            date = (record.finished_at or "")[:10]
+            name = f"{stem} v{seq + 1}{' ' + date if date else ''}{path.suffix}"
+            return FileResponse(path, filename=name)
+    raise HTTPException(status_code=404, detail=f"no {kind} output in cache for {project_id}")
+
+
+@app.get("/api/target-masters/advice")
+def get_master_advice(conn: DBDep, needs_time: bool = False) -> list[dict]:
+    """Every target master with its noise and what more hours would buy, best gains first.
+
+    needs_time: only masters worth more time that don't already have an hour
+    or more planned in the scheduler (Tonight's list).
+    """
+    out = []
+    for project in project_manager.list():
+        a = _master_advice(conn, project)
+        if a is not None:
+            out.append(a)
+    out.sort(key=lambda a: -a["advice"]["options"][1]["noise_drop"])
+    if needs_time:
+        # Already planned for a good while (no goal counts as open-ended):
+        # suggesting more would only repeat the plan.
+        out = [a for a in out if needs_more_time(a["advice"]["verdict"], a["plan"])]
+    return out
+
+
+class MoreDataRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hours: float = Field(gt=0, le=50)
+
+
+@app.post("/api/target-masters/{project_id}/more")
+def queue_more_data(project_id: str, req: MoreDataRequest, conn: DBDep) -> dict:
+    """Ask the scheduler for `hours` more of this master's target: raise its goal, or add it."""
+    project = project_manager.get(project_id)
+    advice = _master_advice(conn, project) if project else None
+    if advice is None:
+        raise HTTPException(status_code=404, detail=f"no target master {project_id}")
+    name = advice["plan"]["name"] if advice["plan"] else advice["target"]
+    entry = openngc_enrich(name)
+    ids = [int(s) for s in project.source_session_ids]
+    marks = ",".join("?" * len(ids)) or "NULL"
+    exposures = conn.execute(
+        f"SELECT exptime, COUNT(*) n FROM sessions WHERE id IN ({marks})"  # noqa: S608
+        " GROUP BY exptime ORDER BY n DESC",
+        ids,
+    ).fetchall()
+    targets = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    try:
+        updated, target = queue_more(
+            targets,
+            scope_scheduler.snapshot().get("integrated_s", {}),
+            name=name,
+            more_h=req.hours,
+            ra_deg=entry.ra_deg if entry else None,
+            dec_deg=entry.dec_deg if entry else None,
+            object_type=entry.object_type if entry else None,
+            filter_name=advice["filter"],
+            exposure_s=int(exposures[0]["exptime"]) if exposures else 30,
+            common_name=entry.common_name if entry else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    set_setting(SETTING_SCOPE_TARGETS, updated, db_path=job_manager.db_path)
+    return {"target": target, "advice": _master_advice(conn, project)}
+
+
+def _purged_folders() -> set[str]:
+    with _db() as conn:
+        return purged_names(conn)
+
+
+curator = Curator(
+    job_manager.db_path or default_db_path(),
+    _mirror_root,
+    nas_root,
+    lambda: bool(get_setting(SETTING_SCRAP_PURGE, False, db_path=job_manager.db_path)),
+)
+
+
+class ScrapPurgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@app.get("/api/curator")
+def get_curator() -> dict:
+    """The curator's last pass and a dry run: the scrap folders a purge would delete."""
+    plan = curator.plan()
+    return {
+        "purge_enabled": bool(get_setting(SETTING_SCRAP_PURGE, False, db_path=job_manager.db_path)),
+        "last": curator.last,
+        "scrap": [p.as_dict() for p in plan],
+        "scrap_bytes": sum(p.bytes for p in plan),
+        "scrap_nas_bytes": sum(p.nas_bytes for p in plan),
+    }
+
+
+@app.put("/api/curator/purge")
+def set_scrap_purge(req: ScrapPurgeRequest) -> dict:
+    """Turn automatic deletion of scrap capture folders on or off."""
+    set_setting(SETTING_SCRAP_PURGE, req.enabled, db_path=job_manager.db_path)
+    return {"purge_enabled": req.enabled}
+
+
+nas_backup = NasBackup(
+    nas_root,
+    _mirror_root,
+    job_manager.db_path or default_db_path(),
+    lambda: job_manager.cache.root,
+)
+scope_mirror = Mirror(
+    get_client=_scope_client,
+    get_root=_mirror_root,
+    load_baseline=lambda: get_setting(
+        SETTING_SCOPE_MIRROR_BASELINE, None, db_path=job_manager.db_path
+    ),
+    save_baseline=lambda names: set_setting(
+        SETTING_SCOPE_MIRROR_BASELINE, names, db_path=job_manager.db_path
+    ),
+    on_copied=_scan_after_copy,
+    get_purged=lambda: _purged_folders(),
+)
+
+
+scope_cleaner = Cleaner(
+    _scope_client,
+    _mirror_root,
+    notify=make_notifier(
+        lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+    ),
+    get_purged=lambda: _purged_folders(),
+)
+
+
+def _scope_site():
+    vals = [
+        get_setting(k, None, db_path=job_manager.db_path)
+        for k in (SETTING_SITE_LATITUDE, SETTING_SITE_LONGITUDE, SETTING_SITE_ELEVATION_M)
+    ]
+    if vals[0] is None or vals[1] is None:
+        return None
+    return sky.observer_location(float(vals[0]), float(vals[1]), float(vals[2] or 0))
+
+
+def _scope_targets() -> list[Candidate]:
+    rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    return [
+        Candidate(
+            r["name"],
+            r["ra_deg"],
+            r["dec_deg"],
+            r.get("object_type"),
+            r.get("filter"),
+            r.get("exposure_s"),
+            r.get("gain"),
+            r.get("goal_hours"),
+        )
+        for r in rows
+    ]
+
+
+_weather_cache: dict = {"at": 0.0, "outlook": None}
+
+
+def _scope_outlook() -> weather.Outlook | None:
+    loc = _scope_site()
+    if loc is None:
+        return None
+    if time.time() - _weather_cache["at"] > 900 or _weather_cache["outlook"] is None:
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+        _weather_cache["outlook"] = weather.outlook(
+            float(loc.lat.deg), float(loc.lon.deg), now_iso
+        )
+        _weather_cache["at"] = time.time()
+    return _weather_cache["outlook"]
+
+
+def _scope_warning() -> str | None:
+    o = _scope_outlook()
+    return o.reason if o and o.warn else None
+
+
+@app.get("/api/scope/weather")
+def scope_weather() -> dict:
+    try:
+        o = _scope_outlook()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"forecast failed: {exc}") from exc
+    if o is None:
+        raise HTTPException(status_code=400, detail="site location not set")
+    return dataclasses.asdict(o)
+
+
+scope_skymap = SkyMap(
+    lambda: get_setting(SETTING_SCOPE_SKYMAP, {}, db_path=job_manager.db_path),
+    lambda cells: set_setting(SETTING_SCOPE_SKYMAP, cells, db_path=job_manager.db_path),
+)
+
+def _skyline():
+    """Houses and trees from the panorama, when its scan has a compass."""
+    return pano_sky.load_skyline(scope_pano.folder())
+
+
+scope_scheduler = Scheduler(
+    _scope_client,
+    _scope_site,
+    _scope_targets,
+    scope_observer,
+    get_warning=_scope_warning,
+    notify=make_notifier(
+        lambda: get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+    ),
+    load_progress=lambda: get_setting(SETTING_SCOPE_PROGRESS, {}, db_path=job_manager.db_path),
+    save_progress=lambda p: set_setting(SETTING_SCOPE_PROGRESS, p, db_path=job_manager.db_path),
+    skymap=scope_skymap,
+    skyline=lambda: _skyline(),
+    rescue_share=lambda target: _live_rescue_share(target),
+    sky_credit=lambda c: _sky_credit(c),
+)
+
+_SKY_CREDIT_S = 600
+_sky_credit_cache: dict[str, Any] = {"at": -_SKY_CREDIT_S, "sessions": []}
+
+
+def _sky_credit(c: Candidate) -> float:
+    """Kept seconds over a target from sessions shot under other names. Its
+    own sessions are what the scheduler already credits by name."""
+    if time.monotonic() - _sky_credit_cache["at"] > _SKY_CREDIT_S:
+        with _db() as conn:
+            _sky_credit_cache["sessions"] = coverage.kept_sessions(conn)
+        _sky_credit_cache["at"] = time.monotonic()
+    return coverage.shot_at(_sky_credit_cache["sessions"], c.ra_deg, c.dec_deg, skip_target=c.name)
+
+
+def _live_rescue_share(target: str) -> float | None:
+    with _db() as conn:
+        return live_rescue_share(conn, target)
+
+
+class ScopeAlertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+
+
+@app.put("/api/scope/alerts")
+def put_scope_alerts(req: ScopeAlertRequest) -> dict:
+    """Set the webhook for scheduler alerts. An empty url turns alerts off."""
+    url = req.url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url must start with http:// or https://")
+    set_setting(SETTING_SCOPE_ALERT_URL, url or None, db_path=job_manager.db_path)
+    return {"alert_url_set": bool(url)}
+
+
+
+class ScopeTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    ra_deg: float = Field(ge=0, lt=360)
+    dec_deg: float = Field(ge=-90, le=90)
+    object_type: str | None = None
+    # Every filter name a DWARF model uses. The scheduler swaps in the nearest one the scope has.
+    filter: Literal["vis", "astro", "duo"] | None = None
+    exposure_s: int | None = Field(None, ge=1, le=600)
+    gain: int | None = Field(None, ge=0)
+    goal_hours: float | None = Field(None, gt=0)
+    display_name: str | None = None
+    common_name: str | None = None
+    mosaic: str | None = None
+    """Name of the mosaic this target is a panel of."""
+
+
+class ScopeAutoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    targets: list[ScopeTarget] | None = None
+    auto_stack: bool | None = None
+
+
+@app.put("/api/scope/auto")
+def put_scope_auto(req: ScopeAutoRequest) -> dict:
+    """Turn the all-night scheduler on or off. Optionally replace the target list."""
+    if req.targets is not None:
+        rows = [t.model_dump() for t in req.targets]
+        set_setting(SETTING_SCOPE_TARGETS, rows, db_path=job_manager.db_path)
+    set_setting(SETTING_SCOPE_AUTO, req.enabled, db_path=job_manager.db_path)
+    if req.auto_stack is not None:
+        set_setting(SETTING_SCOPE_AUTO_STACK, req.auto_stack, db_path=job_manager.db_path)
+    scope_scheduler.enabled = req.enabled
+    return {
+        "scheduler": scope_scheduler.snapshot(),
+        "auto_stack": bool(
+            get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)
+        ),
+        "alert_url_set": bool(
+            get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+        ),
+        "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
+    }
+
+
+class MosaicPanel(BaseModel):
+    index: int
+    ra_deg: float
+    dec_deg: float
+
+
+class MosaicPlan(BaseModel):
+    panels: list[MosaicPanel]
+    width_deg: float
+    """East-west extent of the whole mosaic."""
+    height_deg: float
+    frame_width_deg: float
+    frame_height_deg: float
+
+
+_MAX_PANELS_PER_SIDE = 6
+
+
+def _mosaic_plan(ra_deg: float, dec_deg: float, cols: int, rows: int, overlap: float) -> MosaicPlan:
+    try:
+        panels = coverage.plan_mosaic(ra_deg, dec_deg, cols, rows, overlap)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    w, h = coverage.TELE_W_DEG, coverage.TELE_H_DEG
+    return MosaicPlan(
+        panels=[MosaicPanel(index=p.index, ra_deg=p.ra_deg, dec_deg=p.dec_deg) for p in panels],
+        width_deg=w + (cols - 1) * w * (1 - overlap),
+        height_deg=h + (rows - 1) * h * (1 - overlap),
+        frame_width_deg=w,
+        frame_height_deg=h,
+    )
+
+
+class MosaicRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    """The mosaic's name; panels are named '<name> · panel i/n'."""
+    ra_deg: float = Field(ge=0, lt=360)
+    dec_deg: float = Field(ge=-90, le=90)
+    cols: int = Field(ge=1, le=_MAX_PANELS_PER_SIDE)
+    rows: int = Field(ge=1, le=_MAX_PANELS_PER_SIDE)
+    overlap: float = Field(0.2, ge=0.1, le=0.5)
+    object_type: str | None = None
+    """Picks the filter, as for a single target: a nebula's panels shoot duo-band."""
+    common_name: str | None = None
+
+
+def _without_mosaic(rows: list[dict], name: str) -> list[dict]:
+    return [r for r in rows if r.get("mosaic") != name]
+
+
+@app.put("/api/scope/mosaic", responses={400: {"description": "the grid does not fit"}})
+def put_scope_mosaic(req: MosaicRequest) -> dict:
+    """Put a mosaic's panels on the auto list, replacing an earlier grid of the
+    same name. The scheduler shoots them like any target, so panels with the
+    least time come first. Their nights stack with every other session that
+    overlaps them (server/masters.py)."""
+    if req.cols * req.rows < 2:
+        raise HTTPException(status_code=400, detail="a mosaic needs at least two panels")
+    name = coverage.safe_name(req.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="the mosaic needs a name in plain letters")
+    plan = _mosaic_plan(req.ra_deg, req.dec_deg, req.cols, req.rows, req.overlap)
+    n = len(plan.panels)
+    panels = [
+        ScopeTarget(
+            name=coverage.panel_name(name, p.index, n),
+            ra_deg=p.ra_deg,
+            dec_deg=p.dec_deg,
+            object_type=req.object_type,
+            display_name=coverage.panel_name(name, p.index, n),
+            common_name=req.common_name,
+            mosaic=name,
+        ).model_dump()
+        for p in plan.panels
+    ]
+    rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    rows = _without_mosaic(rows, name) + panels
+    set_setting(SETTING_SCOPE_TARGETS, rows, db_path=job_manager.db_path)
+    return {"targets": rows, "plan": plan.model_dump()}
+
+
+@app.delete("/api/scope/mosaic")
+def delete_scope_mosaic(name: str) -> dict:
+    """Take a mosaic's panels off the auto list. Frames already shot stay."""
+    rows = get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path) or []
+    kept = _without_mosaic(rows, name)
+    set_setting(SETTING_SCOPE_TARGETS, kept, db_path=job_manager.db_path)
+    return {"targets": kept, "removed": len(rows) - len(kept)}
+
+
+class CoverageEntry(BaseModel):
+    session_id: int
+    target: str
+    filter: str | None
+    night: str
+    ra_deg: float
+    dec_deg: float
+    width_deg: float
+    height_deg: float
+    usable_s: float
+    """Kept exposure time; 0 until the curator has judged the session."""
+
+
+@app.get("/api/sky/coverage", response_model=list[CoverageEntry])
+def get_sky_coverage(conn: DBDep) -> list[CoverageEntry]:
+    """Where every session's frames landed on the sky, for the atlas."""
+    feet = coverage.footprints(conn)
+    if not feet:
+        return []
+    usable = {
+        r[0]: r[1] or 0.0
+        for r in conn.execute(
+            "SELECT session_id, usable_s FROM session_verdicts WHERE verdict = 'keep'"
+        )
+    }
+    out = []
+    for r in conn.execute(
+        "SELECT s.id, t.name, s.filter, s.started_at"
+        " FROM sessions s JOIN targets t ON t.id = s.target_id"
+    ):
+        f = feet.get(r[0])
+        if f is None:
+            continue
+        out.append(
+            CoverageEntry(
+                session_id=r[0],
+                target=r[1],
+                filter=r[2],
+                night=(r[3] or "")[:10],
+                ra_deg=f.ra_deg,
+                dec_deg=f.dec_deg,
+                width_deg=f.width_deg,
+                height_deg=f.height_deg,
+                usable_s=usable.get(r[0], 0.0),
+            )
+        )
+    return out
+
+
+def _scope_state() -> dict:
+    client = _scope_client()
+    if client is None:
+        return {"configured": False, "reachable": False}
+    state = {
+        "mirror": scope_mirror.snapshot(),
+        "observe": scope_observer.snapshot(),
+        "scheduler": scope_scheduler.snapshot(),
+        "targets": get_setting(SETTING_SCOPE_TARGETS, [], db_path=job_manager.db_path),
+        "auto_stack": bool(
+            get_setting(SETTING_SCOPE_AUTO_STACK, False, db_path=job_manager.db_path)
+        ),
+        "alert_url_set": bool(
+            get_setting(SETTING_SCOPE_ALERT_URL, None, db_path=job_manager.db_path)
+        ),
+        "configured": True,
+        "url": client.base_url,
+        "has_token": bool(client.token),
+        "reachable": False,
+    }
+    try:
+        info = client.info()
+        state.update(
+            reachable=True,
+            service=info.get("service"),
+            spec_version=info.get("spec_version"),
+            capabilities=info.get("capabilities", []),
+            capture=capture_options(info),
+        )
+        if client.has("status"):
+            state["status"] = client.call("getStatus")
+    except ScopeServiceError as exc:
+        state.update(error=str(exc), error_code=exc.code)
+    return state
+
+
+@app.get("/api/scope")
+def get_scope() -> dict:
+    return _scope_state()
+
+
+@app.put("/api/scope")
+def put_scope(req: ScopeConfigRequest) -> dict:
+    url = req.url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url must start with http:// or https://")
+    set_setting(SETTING_SCOPE_URL, url or None, db_path=job_manager.db_path)
+    if req.token is not None:
+        set_setting(SETTING_SCOPE_TOKEN, req.token.strip() or None, db_path=job_manager.db_path)
+    return _scope_state()
+
+
+class ObserveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    ra_deg: float = Field(ge=0, lt=360)
+    dec_deg: float = Field(ge=-90, le=90)
+    frames: int = Field(30, ge=1, le=500)
+    exposure_s: int = Field(15, ge=1, le=600)
+    gain: int = Field(60, ge=0)
+    filter: Literal["vis", "astro", "duo"] | None = None
+    object_type: str | None = None
+
+
+@app.post("/api/scope/observe", status_code=202)
+def observe(req: ObserveRequest) -> dict:
+    """Start prepare, calibrate, slew, and capture in the background."""
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        missing = [c for c in ("goto", "capture") if not client.has(c)]
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if missing:
+        detail = f"service lacks capability: {', '.join(missing)}"
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        candidate = Candidate(
+            req.name, req.ra_deg, req.dec_deg, req.object_type,
+            filter=req.filter, exposure_s=req.exposure_s,
+        )
+        cs = capture_settings(candidate, capture_options(service_info(client)))
+        scope_observer.start(
+            client, req.name, req.ra_deg, req.dec_deg, req.frames, cs.exposure_s, req.gain,
+            cs.filter,
+        )
+    except ObserveBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"target": req.name}
+
+
+@app.get("/api/scope/preview")
+def scope_preview() -> Response:
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        found = stack_preview(client)
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if found is None:
+        raise HTTPException(status_code=404, detail="no stack yet")
+    session, jpeg = found
+    return Response(jpeg, media_type="image/jpeg", headers={"X-Scope-Session": session})
+
+
+scope_pano = PanoScanner(astrolab_home() / "pano")
+
+
+def _require_dwarf3_angles(client: ScopeServiceClient) -> None:
+    """The panorama and the horizon trace send motor angles measured on a DWARF 3 (172.5 is up)."""
+    model = str(((service_info(client) or {}).get("service") or {}).get("model") or "")
+    if model and not model.startswith("DWARF 3"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"this needs the DWARF 3's motor angles, and the scope is a {model}",
+        )
+
+
+@app.post("/api/scope/pano", status_code=202)
+def start_scope_pano(tele_covered: bool = False) -> dict:
+    """Scan with the wide camera. Needs the Sun down or the tele lens covered."""
+    client = _scope_client()
+    loc = _scope_site()
+    if client is None or loc is None:
+        raise HTTPException(status_code=400, detail="scope service and site location are needed")
+    try:
+        missing = [c for c in ("pointing", "preview") if not client.has(c)]
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if missing:
+        detail = f"service lacks capability: {', '.join(missing)}"
+        raise HTTPException(status_code=400, detail=detail)
+    _require_dwarf3_angles(client)
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night before a scan")
+    if scope_trace.busy():
+        raise HTTPException(status_code=409, detail="the scope is tracing the horizon")
+    try:
+        scan = scope_pano.start(client, loc, latitude=float(loc.lat.deg), tele_covered=tele_covered)
+    except PanoRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": scan}
+
+
+@app.get("/api/scope/pano")
+def get_scope_pano() -> dict:
+    """The scan: running (with progress), stitching, done (with how the stitch went), failed.
+
+    image_version changes whenever the panorama is written again, so a page asks for the new
+    one instead of reusing the picture it already holds for the same scan.
+    """
+    snap = scope_pano.snapshot()
+    path = scope_pano.pano_path()
+    if path is not None:
+        snap["image_version"] = int(path.stat().st_mtime_ns // 1_000_000)
+    return snap
+
+
+scope_trace = HorizonTrace()
+
+
+@app.post("/api/scope/pano/trace", status_code=202)
+def start_scope_trace(tele_covered: bool = False) -> dict:
+    """Walk the tele along the panorama's skyline, pausing at each point, to watch live.
+
+    A rough end-to-end check: if the tele frame follows the rooflines and treetops, the
+    panorama, its compass and the horizon agree with the scope. Needs the Sun down or the
+    tele covered; points near the Sun are skipped either way.
+    """
+    client = _scope_client()
+    loc = _scope_site()
+    folder = scope_pano.folder()
+    if client is None or loc is None:
+        raise HTTPException(status_code=400, detail="scope service and site location are needed")
+    if folder is None or not (folder / "fit.json").is_file():
+        raise HTTPException(status_code=404, detail="no panorama to trace")
+    _require_dwarf3_angles(client)
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night first")
+    if scope_pano.snapshot()["state"] == "running":
+        raise HTTPException(status_code=409, detail="the scope is scanning")
+    try:
+        status = client.call("getStatus") or {}
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if status.get("busy_elsewhere") or (status.get("job") or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="the scope is capturing, stop it first")
+    try:
+        points = scope_trace.start(client, folder, loc, tele_covered=tele_covered)
+    except TraceRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"points": points}
+
+
+@app.get("/api/scope/pano/trace")
+def get_scope_trace() -> dict:
+    """The trace: running (point done/total, and where it is), done, stopped, failed."""
+    return scope_trace.snapshot()
+
+
+@app.post("/api/scope/pano/trace/stop")
+def stop_scope_trace() -> dict:
+    """Stop after the current point."""
+    scope_trace.stop()
+    return scope_trace.snapshot()
+
+
+@app.post("/api/scope/pano/stitch", status_code=202)
+def restitch_scope_pano() -> dict:
+    """Stitch the last scan again without moving the scope."""
+    loc = _scope_site()
+    try:
+        scan = scope_pano.restitch(float(loc.lat.deg) if loc is not None else None)
+    except PanoRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"id": scan}
+
+
+def _pano_folder_done():
+    folder = scope_pano.folder()
+    if folder is None or not (folder / "pano.jpg").is_file():
+        raise HTTPException(status_code=404, detail="no panorama yet")
+    return folder
+
+
+@app.get("/api/scope/pano/image")
+def get_scope_pano_image() -> FileResponse:
+    """The panorama, equirectangular, cropped to the altitudes the scan saw."""
+    path = _pano_folder_done() / "pano.jpg"
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/scope/pano/sky")
+def get_scope_pano_sky(layer: str = "auto") -> Response:
+    """The sky mask over the whole sphere, as a grayscale PNG.
+
+    layer=auto is what the sky test found (255 sky, 0 not, 128 not seen); layer=edits is the
+    hand fixes (0 none, 1 sky, 2 not sky).
+    """
+    folder = _pano_folder_done()
+    if layer not in ("auto", "edits"):
+        raise HTTPException(status_code=400, detail="layer is auto or edits")
+    try:
+        auto = pano_sky.load_auto(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    img = auto if layer == "auto" else pano_sky.load_edits(folder, auto.shape)
+    ok, png = cv2.imencode(".png", img)
+    return Response(png.tobytes(), media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+
+@app.put("/api/scope/pano/sky")
+async def put_scope_pano_sky(request: Request) -> dict:
+    """Save the hand fixes (a PNG like layer=edits) and trace the horizon again."""
+    folder = _pano_folder_done()
+    data = np.frombuffer(await request.body(), np.uint8)
+    edits = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE) if data.size else None
+    try:
+        auto = pano_sky.load_auto(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if edits is None or edits.shape != auto.shape:
+        raise HTTPException(status_code=400, detail=f"send a {auto.shape[1]}x{auto.shape[0]} PNG")
+    pano_sky.save_edits(folder, edits)
+    result = pano_sky.save_horizon(folder, scope_pano.snapshot().get("result") or {})
+    return {"horizon": result}
+
+
+@app.post("/api/scope/pano/sky/detect")
+def detect_scope_pano_sky() -> dict:
+    """Find the sky in the panorama again. Hand fixes are kept."""
+    folder = _pano_folder_done()
+    result = scope_pano.snapshot().get("result") or {}
+    pano_sky.detect(folder, float(result.get("alt_top", 90.0)))
+    return {"horizon": pano_sky.save_horizon(folder, result)}
+
+
+@app.get("/api/scope/horizon")
+def get_scope_horizon(compass_only: bool = True) -> dict:
+    """What blocks the sky, from the panorama: altitude per degree of azimuth.
+
+    The sky atlas needs true azimuths, so by default this needs a scan with a compass (the
+    mount polar aligned). alt is null where the scan did not reach.
+    """
+    folder = scope_pano.folder()
+    data = pano_sky.load_horizon(folder) if folder else None
+    if data is None or (compass_only and not data.get("compass")):
+        raise HTTPException(status_code=404, detail="no horizon with a compass yet")
+    return data
+
+
+scope_compass = CompassRun(_store_pointing)
+
+
+@app.post("/api/scope/compass", status_code=202)
+def start_scope_compass() -> dict:
+    """Slew to a few sky points to learn the motor-to-compass mapping. Needs full dark."""
+    client = _scope_client()
+    loc = _scope_site()
+    if client is None or loc is None:
+        raise HTTPException(status_code=400, detail="scope service and site location are needed")
+    try:
+        missing = [c for c in ("setup", "goto") if not client.has(c)]
+        status = client.call("getStatus") or {}
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if missing:
+        detail = f"service lacks capability: {', '.join(missing)}"
+        raise HTTPException(status_code=400, detail=detail)
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night first")
+    if status.get("busy_elsewhere"):
+        raise HTTPException(status_code=409, detail="the scope is busy with another capture")
+    try:
+        scope_compass.start(client, loc)
+    except CompassRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return scope_compass.snapshot()
+
+
+@app.get("/api/scope/compass")
+def get_scope_compass() -> dict:
+    return scope_compass.snapshot()
+
+
+@app.get("/api/scope/skymap")
+def get_scope_skymap() -> dict:
+    """What the scheduler has learned about which parts of the sky the scope can see."""
+    cells = scope_skymap.cells()
+    patches = {k: {**v, "verdict": skymap_verdict(v)} for k, v in cells.items()}
+    return {**scope_skymap.summary(), "patches": patches}
+
+
+@app.delete("/api/scope/skymap")
+def delete_scope_skymap() -> dict:
+    """Forget what was learned, such as after moving the scope."""
+    scope_skymap.clear()
+    return scope_skymap.summary()
+
+
+@app.get("/api/scope/skymap.svg")
+def get_scope_skymap_svg() -> Response:
+    """The learned patches on a sky map."""
+    svg = skymap_svg(scope_skymap.cells(), scope_plan.MIN_ALT_DEG)
+    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-cache"})
+
+
+scope_control = ScopeControl()
+
+
+class ControlIn(BaseModel):
+    action: str
+
+
+@app.post("/api/scope/control", status_code=202)
+def start_scope_control(req: ControlIn) -> dict:
+    """Run a manual action: prepare, calibrate, or close the barrel."""
+    if req.action not in CONTROL_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"unknown action: {req.action}")
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    if scope_scheduler.enabled:
+        raise HTTPException(status_code=409, detail="turn off Run all night first")
+    busy = scope_observer.snapshot().get("state") == "running"
+    busy = busy or scope_pano.snapshot()["state"] == "running" or scope_trace.busy()
+    busy = busy or scope_compass.snapshot()["state"] == "running"
+    if busy:
+        raise HTTPException(status_code=409, detail="the scope is working on something else")
+    try:
+        status = client.call("getStatus") or {}
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if status.get("busy_elsewhere") or (status.get("job") or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="the scope is capturing, stop it first")
+    try:
+        scope_control.start(client, req.action)
+    except ControlBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return scope_control.snapshot()
+
+
+@app.get("/api/scope/control")
+def get_scope_control() -> dict:
+    return scope_control.snapshot()
+
+
+@app.get("/api/scope/live/{camera}.mjpg")
+async def get_scope_live(camera: str, request: Request) -> StreamingResponse:
+    """Live video from a camera as MJPEG, for an <img>. Every viewer shares one reader.
+
+    503 when the scope's video does not start (not prepared, or no RTSP, as on the fake
+    scope); the page then falls back to stills from /api/scope/frame.
+    """
+    cam = scope_live.cameras.get(camera)
+    if cam is None:
+        raise HTTPException(status_code=404, detail="camera is wide or tele")
+    service = get_setting(SETTING_SCOPE_URL, None, db_path=job_manager.db_path)
+    url = scope_live.rtsp_url(service, camera)
+    if url is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    cam.watch(url)
+    if not await scope_live.first_frame(cam, scope_live.FIRST_FRAME_S[camera]):
+        cam.leave()
+        raise HTTPException(status_code=503, detail=cam.error or "no picture from the scope yet")
+    return StreamingResponse(
+        scope_live.mjpeg(cam, request.is_disconnected),
+        media_type=f"multipart/x-mixed-replace; boundary={scope_live.BOUNDARY}",
+        headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+FRAME_FRESH_S = 5.0
+_frame_locks = {"tele": threading.Lock(), "wide": threading.Lock()}
+_frame_last: dict[str, tuple[float, bytes | str]] = {}
+
+
+@app.get("/api/scope/frame")
+def scope_frame(camera: str = Query("wide", pattern="^(tele|wide)$")) -> Response:
+    """One live frame from the scope camera, for a quick look at the sky.
+
+    Each grab opens the scope's video stream and waits for a keyframe, up to 70 seconds for
+    the tele. Requests for the same camera share one grab, and a frame or failure from the
+    last few seconds is reused, so open tabs and retries do not pile streams up on the scope.
+    """
+    with _frame_locks[camera]:
+        last = _frame_last.get(camera)
+        if last and time.monotonic() - last[0] < FRAME_FRESH_S:
+            if isinstance(last[1], str):
+                raise HTTPException(status_code=502, detail=last[1])
+            return Response(last[1], media_type="image/jpeg")
+        client = _scope_client()
+        if client is None:
+            raise HTTPException(status_code=400, detail="no scope service configured")
+        try:
+            if not client.has("preview"):
+                raise HTTPException(status_code=400, detail="service lacks capability: preview")
+            data = base64.b64decode(client.call("getFrame", {"camera": camera}, timeout=80)["data"])
+        except ScopeServiceError as exc:
+            _frame_last[camera] = (time.monotonic(), str(exc))
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _frame_last[camera] = (time.monotonic(), data)
+    return Response(data, media_type="image/jpeg")
+
+
+@app.post("/api/scope/stop")
+def stop_scope_capture() -> dict:
+    client = _scope_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="no scope service configured")
+    try:
+        return client.call("stopCapture")
+    except ScopeServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 class PatchSettingsRequest(BaseModel):
@@ -3261,6 +4620,21 @@ class TonightEntry(BaseModel):
     ra_deg: float
     dec_deg: float
     magnitude: float | None = None
+    messier: str | None = None
+    size_arcmin: float | None = None
+    """Major axis of the object, from OpenNGC."""
+    minor_arcmin: float | None = None
+    """Minor axis of the object, from OpenNGC."""
+    pa_deg: float | None = None
+    """Position angle of the major axis in degrees, north through east."""
+    shot_s: float = 0.0
+    """Kept exposure of every session whose frames cover the object's centre,
+    whatever target they were shot under (mosaic panels included)."""
+    score: float = 0.0
+    """Rank in 0..1. Entries arrive sorted by this, highest first."""
+    image_version: str | None = None
+    """Set when the user chose an image for this target. It changes with
+    each new image, so the UI adds it to the thumbnail URL."""
     alt_now_deg: float
     az_now_deg: float
     transit_utc: str | None = None
@@ -3276,6 +4650,11 @@ class TonightEntry(BaseModel):
     `dawn_utc` at `alt_curve_step_min` cadence (top-level field). Null
     when the night window is degenerate (polar day with no usable
     twilight). The UI renders this as a per-row sparkline."""
+    skyline_curve_deg: list[float] | None = None
+    """At the same samples, the altitude the target must clear where it
+    stands then: the houses and trees the scope's panorama found, plus a
+    margin for the tele frame (-90 where the scan did not reach). Null
+    without a panorama with a compass. Hours up count only time above it."""
 
 
 class TonightResponse(BaseModel):
@@ -3296,7 +4675,107 @@ class TonightResponse(BaseModel):
     """Spacing in minutes between consecutive samples in each entry's
     `alt_curve_deg` array. Constant within a response so the UI can
     reconstruct the time axis as dusk_utc + i * step."""
+    skyline_scan: str | None = None
+    """The panorama scan whose skyline was applied, or null."""
     entries: list[TonightEntry]
+
+
+# The UI puts image_version in the URL, so a changed image gets a new URL.
+_THUMB_HEADERS = {"Cache-Control": "public, max-age=2592000, immutable"}
+_MAX_IMAGE_BYTES = 64 * 1024 * 1024
+
+
+def _display_common_name(entry: CatalogEntry) -> str | None:
+    """Curated name first, because OpenNGC lists odd ones first on some
+    rows: 'Edward Young Star' for M 110."""
+    return lookup_common_name(entry.messier or entry.canonical) or entry.common_name
+
+
+@app.get(
+    "/api/tonight/thumb",
+    responses={
+        404: {"description": "unknown target"},
+        502: {"description": "imagery unavailable"},
+    },
+)
+def get_tonight_thumb(name: str) -> Response:
+    """JPEG thumbnail for a catalog target: the user's own image when one
+    is set, or else a cutout of the DSS colour survey."""
+    entry = openngc_enrich(name)
+    if entry is None or entry.ra_deg is None or entry.dec_deg is None:
+        raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
+    custom = _target_image_path(entry.canonical)
+    if custom.exists():
+        return FileResponse(custom, media_type="image/jpeg", headers=_THUMB_HEADERS)
+    try:
+        jpeg = sky_thumbs.get_thumb(
+            astrolab_home() / "sky_thumbs",
+            entry.canonical,
+            entry.ra_deg,
+            entry.dec_deg,
+            entry.size_arcmin,
+        )
+    except sky_thumbs.ThumbUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(jpeg, media_type="image/jpeg", headers=_THUMB_HEADERS)
+
+
+@app.get(
+    "/api/sky/hips/{path:path}",
+    responses={
+        404: {"description": "not a tile of the survey"},
+        502: {"description": "imagery unavailable"},
+    },
+)
+def get_sky_tile(path: str) -> Response:
+    """A JPEG tile of the DSS colour survey for the sky atlas, cached on disk.
+    `path` is a HiPS path: `Norder3/Allsky.jpg` or `Norder5/Dir0/Npix123.jpg`."""
+    if not sky_thumbs.valid_hips_path(path):
+        raise HTTPException(status_code=404, detail=f"not a survey tile: {path!r}")
+    try:
+        jpeg = sky_thumbs.get_hips_file(astrolab_home() / "sky_hips", path)
+    except sky_thumbs.ThumbUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if jpeg is None:
+        raise HTTPException(status_code=404, detail=f"the survey has no {path!r}")
+    return Response(jpeg, media_type="image/jpeg", headers=_THUMB_HEADERS)
+
+
+@app.put(
+    "/api/tonight/image",
+    responses={
+        400: {"description": "not a readable image"},
+        404: {"description": "unknown target"},
+        413: {"description": "file too large"},
+    },
+)
+def put_tonight_image(
+    name: str,
+    conn: DBDep,
+    data: Annotated[bytes, Body(media_type="application/octet-stream")],
+) -> dict:
+    """Store an uploaded image as the Tonight image of a target."""
+    entry = openngc_enrich(name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="image is larger than 64 MB")
+    try:
+        sky_thumbs.save_custom_image(_target_image_root(), entry.canonical, data)
+    except sky_thumbs.InvalidImage as exc:
+        raise HTTPException(status_code=400, detail="not a readable image") from exc
+    _record_target_image(conn, entry.canonical, None, None)
+    return {"target": entry.canonical}
+
+
+@app.delete("/api/tonight/image", responses={404: {"description": "unknown target"}})
+def delete_tonight_image(name: str, conn: DBDep) -> dict:
+    """Go back to the survey image for a target."""
+    entry = openngc_enrich(name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown target {name!r}")
+    _delete_target_image(conn, entry.canonical)
+    return {"target": entry.canonical}
 
 
 @app.get("/api/tonight", response_model=TonightResponse)
@@ -3305,6 +4784,8 @@ def get_tonight(
     at: str | None = None,
     min_alt: float = 20.0,
     max_mag: float = 12.0,
+    all_sky: bool = False,
+    use_skyline: bool = True,
 ) -> TonightResponse:
     """List visible deep-sky targets for the configured site at time `at`.
 
@@ -3314,12 +4795,18 @@ def get_tonight(
     defaulting to (0,0,0) would mean the user sees a list that's wrong
     by tens of degrees and has no idea why.
 
-    `at` defaults to now (UTC). Targets are filtered to those currently
-    above `min_alt` degrees and brighter than `max_mag` V-band, then
-    sorted by descending hours-above-min-alt with current altitude as
-    the tiebreaker. The primary sort key matters most: a target that's
-    high right now but sets in twenty minutes is worth less than one
-    that's currently 25deg but stays up the whole night.
+    `at` defaults to now (UTC). Targets must clear `min_alt` degrees at
+    some point between dusk and dawn, or at `at` when the site has no
+    night window, so the list reads the same at noon as at midnight. They
+    must also be brighter than `max_mag` V-band. A named object with no
+    catalog magnitude stays in, because large nebulae often lack one.
+    Entries are sorted by `sky.target_score`.
+
+    `all_sky` keeps the targets that stay below `min_alt` all night too,
+    with a score of zero, for the sky atlas.
+
+    With a panorama that has a compass, time behind the houses and trees
+    it found does not count as up (`use_skyline=false` turns that off).
     """
     site_lat = get_setting(SETTING_SITE_LATITUDE, None, db_path=job_manager.db_path)
     site_lon = get_setting(SETTING_SITE_LONGITUDE, None, db_path=job_manager.db_path)
@@ -3386,6 +4873,12 @@ def get_tonight(
             "last_session_at": row["last_session_at"],
         }
 
+    shot = coverage.kept_sessions(conn)
+    image_versions = {
+        r["canonical"]: r["updated_at"]
+        for r in conn.execute("SELECT canonical, updated_at FROM target_images").fetchall()
+    }
+
     # Pre-filter the catalog to entries with usable RA/Dec/mag, then
     # batch the alt/az transform. astropy's vectorized AltAz call is
     # ~100x faster than per-entry calls on the full ~14k OpenNGC list.
@@ -3394,9 +4887,10 @@ def get_tonight(
     for entry in catalog_entries:
         if entry.ra_deg is None or entry.dec_deg is None:
             continue
-        # Treat unknown magnitude as "fail the cap" so we don't surface
-        # rows we can't tell the user how bright they are.
-        if entry.magnitude is None or entry.magnitude > max_mag:
+        if entry.magnitude is None:
+            if _display_common_name(entry) is None and entry.messier is None:
+                continue
+        elif entry.magnitude > max_mag:
             continue
         candidates.append(entry)
 
@@ -3418,25 +4912,27 @@ def get_tonight(
     dec_arr = np.asarray([e.dec_deg for e in candidates], dtype=float)
     alts, azs = sky.alt_az_batch(ra_arr, dec_arr, loc, at_utc)
 
-    # Drop targets below the alt cutoff before the (more expensive) night-
-    # window math. At a typical mid-latitude site this halves the
-    # candidate set.
-    visible_mask = alts >= min_alt
-    visible_indices = np.where(visible_mask)[0]
-    visible_ra = ra_arr[visible_mask]
-    visible_dec = dec_arr[visible_mask]
-
-    transits: list[datetime | None] = [None] * len(visible_indices)
-    hours_arr = np.zeros(len(visible_indices))
-    alt_curves = np.zeros((len(visible_indices), 0))
-    if dusk_utc is not None and dawn_utc is not None and len(visible_indices) > 0:
-        transits, hours_arr, alt_curves = sky.night_transits_and_hours(
-            visible_ra, visible_dec, loc, dusk_utc, dawn_utc, min_alt
+    has_night = dusk_utc is not None and dawn_utc is not None
+    transits: list[datetime | None] = [None] * len(candidates)
+    hours_arr = np.zeros(len(candidates))
+    alt_curves = np.zeros((len(candidates), 0))
+    limit_curves = None
+    skyline = _skyline() if use_skyline else None
+    night_hours = 0.0
+    if has_night:
+        transits, hours_arr, alt_curves, limit_curves = sky.night_transits_and_hours(
+            ra_arr, dec_arr, loc, dusk_utc, dawn_utc, min_alt, skyline=skyline
         )
+        night_hours = (dawn_utc - dusk_utc).total_seconds() / 3600
+    if all_sky:
+        visible_indices = np.arange(len(candidates))
+    else:
+        visible_indices = np.where(hours_arr > 0 if has_night else alts >= min_alt)[0]
 
     out: list[TonightEntry] = []
-    for k, idx in enumerate(visible_indices):
-        entry = candidates[int(idx)]
+    for idx in visible_indices:
+        k = int(idx)
+        entry = candidates[k]
         cap = captured.get(entry.canonical.strip().lower())
         transit = transits[k]
         transit_iso = transit.isoformat() if transit is not None else None
@@ -3445,12 +4941,32 @@ def get_tonight(
         # tighter precision. Drop the curve entirely when the night window
         # was degenerate (zero columns) so the UI just hides the column.
         curve = [round(float(v), 1) for v in alt_curves[k]] if alt_curves.shape[1] > 0 else None
+        blocked_curve = (
+            [round(float(v), 1) for v in limit_curves[k]]
+            if limit_curves is not None and limit_curves.shape[1] > 0
+            else None
+        )
         out.append(
             TonightEntry(
                 name=entry.canonical,
-                common_name=entry.common_name,
+                common_name=_display_common_name(entry),
                 object_type=entry.object_type,
                 constellation=entry.constellation,
+                messier=entry.messier,
+                size_arcmin=entry.size_arcmin,
+                minor_arcmin=entry.minor_arcmin,
+                pa_deg=entry.pa_deg,
+                shot_s=coverage.shot_at(shot, float(entry.ra_deg), float(entry.dec_deg)),
+                score=sky.target_score(
+                    entry.object_type,
+                    showpieces.fraction(entry.canonical),
+                    entry.messier is not None,
+                    _display_common_name(entry) is not None,
+                    entry.size_arcmin,
+                    entry.magnitude,
+                    float(hours_arr[k]),
+                    night_hours,
+                ),
                 ra_deg=float(entry.ra_deg),
                 dec_deg=float(entry.dec_deg),
                 magnitude=entry.magnitude,
@@ -3458,17 +4974,17 @@ def get_tonight(
                 az_now_deg=float(azs[idx]),
                 transit_utc=transit_iso,
                 hours_above_min_alt=float(hours_arr[k]),
+                image_version=image_versions.get(entry.canonical),
                 session_count=int(cap["session_count"]) if cap else 0,
                 last_session_at=cap["last_session_at"] if cap else None,
                 alt_curve_deg=curve,
+                skyline_curve_deg=blocked_curve,
             )
         )
 
-    # Prefer "stays up tonight" over "is up right this second"; current
-    # altitude breaks ties so two equally-available targets list with the
-    # higher one first. Rows with zero hours up sink to the bottom on
-    # their own without needing a hard filter.
-    out.sort(key=lambda e: (e.hours_above_min_alt, e.alt_now_deg), reverse=True)
+    # Current altitude breaks ties, which also orders the list when the
+    # site has no night window and every score is zero.
+    out.sort(key=lambda e: (e.score, e.hours_above_min_alt, e.alt_now_deg), reverse=True)
     return TonightResponse(
         at_utc=at_utc.isoformat(),
         site_latitude=float(site_lat),
@@ -3479,6 +4995,7 @@ def get_tonight(
         dusk_utc=dusk_utc.isoformat() if dusk_utc else None,
         dawn_utc=dawn_utc.isoformat() if dawn_utc else None,
         alt_curve_step_min=sky.SPARKLINE_STEP_MIN,
+        skyline_scan=skyline.scan if skyline else None,
         entries=out,
     )
 
@@ -3616,6 +5133,67 @@ def get_output(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
+# Framing (the crop editor)
+# ---------------------------------------------------------------------------
+
+
+class FramingQuery(BaseModel):
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class FramingBox(BaseModel):
+    cx: float
+    cy: float
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    angle: float = 0.0
+
+
+def _framing_canvas(node_hash: str, port: str) -> tuple[Any, int, int]:
+    """Header and (height, width) of the image the crop node frames."""
+    from astropy.io import fits
+
+    from nodes.basic.crop import _spatial_shape
+    from server.preview import _locate_artifact
+
+    entry = job_manager.cache.lookup(node_hash)
+    target = _locate_artifact(entry, port) if entry is not None else None
+    if target is None or target.suffix.lower() not in (".fit", ".fits"):
+        raise HTTPException(status_code=404, detail="no image for this node output")
+    with fits.open(target, memmap=True) as hdul:
+        hdu = next((h for h in hdul if h.data is not None), None)
+        if hdu is None:
+            raise HTTPException(status_code=404, detail="no image data")
+        header = hdu.header.copy()
+        height, width = _spatial_shape(hdu.data)
+    return header, height, width
+
+
+@app.post("/api/framing/{node_hash}/{port}")
+def get_framing(node_hash: str, port: str, body: FramingQuery) -> dict[str, Any]:
+    """Where the crop params in `body` put the box on this canvas.
+
+    For the crop editor: the canvas size, whether it is plate-solved, where
+    north points on the display (degrees clockwise from up), and the stored
+    box in display pixels (`cx, cy, width, height, angle`), or null.
+    """
+    from nodes.basic.framing import canvas_info
+
+    header, height, width = _framing_canvas(node_hash, port)
+    return canvas_info(header, height, width, body.params)
+
+
+@app.post("/api/framing/{node_hash}/{port}/box")
+def framing_params(node_hash: str, port: str, body: FramingBox) -> dict[str, Any]:
+    """The crop params to store for a box drawn on this canvas: on the sky
+    when the canvas is plate-solved, else as fractions of the canvas."""
+    from nodes.basic.framing import params_for_box
+
+    header, height, width = _framing_canvas(node_hash, port)
+    return params_for_box(header, height, width, body.model_dump())
+
+
+# ---------------------------------------------------------------------------
 # Static UI (SvelteKit static build)
 # ---------------------------------------------------------------------------
 # Serves the prebuilt UI from ui/build/ when present. On macOS dev we usually
@@ -3623,6 +5201,8 @@ def get_output(node_hash: str, port: str, neutral: int = 1) -> FileResponse:
 # skip the mount entirely and the user keeps using `npm run dev` on :5173.
 # Hosting layout on the Linux box: `npm run build` populates ui/build/, and
 # astrolab-api serves the whole app on :8000 (no separate vite-dev process).
+
+mount_endpoints(app)
 
 _UI_BUILD_DIR = Path(__file__).resolve().parent.parent / "ui" / "build"
 
@@ -3662,7 +5242,8 @@ if _UI_BUILD_DIR.is_dir():
         # No long cache on index.html — the served HTML is what changes
         # when we rebuild; assets it references are content-hashed and
         # caching them is handled by the StaticFiles mount above.
-        headers = {"Cache-Control": "no-cache"} if target.name == "index.html" else None
+        revalidate = {"index.html", "service-worker.js", "manifest.webmanifest"}
+        headers = {"Cache-Control": "no-cache"} if target.name in revalidate else None
         return FileResponse(target, headers=headers)
 
 

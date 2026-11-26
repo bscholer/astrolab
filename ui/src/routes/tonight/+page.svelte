@@ -1,368 +1,524 @@
 <!--
-  Tonight: what's worth pointing at right now from the configured site.
-
-  Combines the OpenNGC catalog with the user's existing library so each
-  visible target shows session count + last-captured date inline. The
-  table is sorted by descending altitude (highest in the sky first); a
-  filter rail trims by object type, magnitude, and minimum altitude.
-
-  Tonight is read-only: it doesn't queue captures or jobs. The page is
-  for sitting on the couch with a coffee at 7pm and deciding what's
-  worth taking the scope out for.
+  Tonight: what is worth pointing at from the configured site, and the plan
+  Run all night works through. One set of targets, one selection, three
+  views of it: the ranked list, the sky map, and the plan. Picking an object
+  in one view picks it in the others. The URL keeps the view and the object
+  (?view=map&target=NGC 224), so links and reloads land in the same place.
 -->
 <script lang="ts">
-  import { api, type TonightEntry, type TonightResponse } from '$lib/api';
+  import { onMount, tick } from 'svelte';
+  import { page } from '$app/stores';
+  import { replaceState } from '$app/navigation';
+  import {
+    api,
+    type MasterAdviceRow,
+    type ScopeAutoTarget,
+    type ScopeState,
+    type TonightEntry,
+    type TonightResponse,
+  } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
+  import MoreData from '$lib/MoreData.svelte';
+  import TonightList from '$lib/TonightList.svelte';
+  import AutoPlan from '$lib/AutoPlan.svelte';
+  import AtlasMap from '$lib/atlas/AtlasMap.svelte';
+  import { mosaicName } from '$lib/atlas/atlas';
+  import { displayName, matchesSearch, typeGroup, type TypeGroup } from '$lib/tonight';
+
+  type View = 'list' | 'map' | 'plan';
+  const VIEWS: View[] = ['list', 'map', 'plan'];
+  const GROUPS: { id: TypeGroup; label: string }[] = [
+    { id: 'nebulae', label: 'Nebulae' },
+    { id: 'galaxies', label: 'Galaxies' },
+    { id: 'clusters', label: 'Clusters' },
+  ];
+
+  const params = $page.url.searchParams;
+  let view = $state<View>(VIEWS.includes(params.get('view') as View) ? (params.get('view') as View) : 'list');
+  let selected = $state<string | null>(params.get('target'));
+  // Older links put the object in ?q=.
+  let search = $state(params.get('q') ?? '');
+  let group = $state<TypeGroup | null>(null);
+  let shotOnly = $state(false);
+  let showFilters = $state(false);
+  // Clearing a number input gives null. load() skips the fetch until the
+  // value is valid again.
+  let minAlt = $state<number | null>(20);
+  let maxMag = $state<number | null>(12);
 
   let data = $state<TonightResponse | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
+  let scope = $state<ScopeState | null>(null);
+  // Masters that gain the most from more time (server/capture_loop.py).
+  let worth = $state<MasterAdviceRow[]>([]);
 
-  // Filter state. Initial values mirror the server defaults so a fresh
-  // page load and a no-filter API call land on the same row set.
-  // Typed as nullable: clearing a `type="number"` input gives null, and
-  // we'd rather pause refetching than ship a bad query and crash the
-  // page while the user is mid-edit.
-  let minAlt = $state<number | null>(20);
-  let maxMag = $state<number | null>(12);
-  // Type chip: null = "all". Single-select keeps the chip rail simple.
-  let typeFilter = $state<string | null>(null);
-  // Captured-only toggle: when on, hide rows the user has never imaged.
-  let capturedOnly = $state(false);
+  let map = $state<AtlasMap | null>(null);
+  // The map is heavy; it mounts the first time it is shown, then stays.
+  let mapMounted = $state(false);
+  $effect(() => {
+    if (view === 'map') mapMounted = true;
+  });
+
+  // The map goes edge to edge under the top bar.
+  $effect(() => {
+    document.body.classList.toggle('atlas-page', view === 'map');
+    return () => document.body.classList.remove('atlas-page');
+  });
+
+  // Keep the view and the object in the URL.
+  $effect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('q');
+    if (view === 'list') url.searchParams.delete('view');
+    else url.searchParams.set('view', view);
+    if (selected) url.searchParams.set('target', selected);
+    else url.searchParams.delete('target');
+    if (url.href === window.location.href) return;
+    try {
+      replaceState(url, {});
+    } catch {
+      // Before the router is ready; the URL is cosmetic.
+    }
+  });
 
   async function load() {
     const min = minAlt;
     const max = maxMag;
-    // Skip the refetch while either input is empty / mid-edit. The
-    // effect that drives load() will fire again the moment the user
-    // types a valid number, so this is intentionally silent.
-    if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) {
-      return;
-    }
+    // Skip the refetch while either input is empty or mid-edit; the effect
+    // fires again once the value is a number.
+    if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max)) return;
     loading = true;
-    error = null;
     try {
-      const r = await api.getTonight({ min_alt: min, max_mag: max });
-      data = r;
+      // The whole sky, so the map can show what is down too. The list keeps
+      // what clears the altitude limit.
+      data = await api.getTonight({ all_sky: true, min_alt: min, max_mag: max });
+      error = null;
+      // A ?target= that is not a catalog id: find it by name.
+      if (selected && !data.entries.some((e) => e.name === selected)) {
+        const want = selected;
+        selected = data.entries.find((e) => matchesSearch(e, want))?.name ?? null;
+      }
     } catch (e) {
-      const msg = (e as Error).message;
-      error = msg;
-      // 400 from missing site config is the common case; let the toast
-      // sit so the user notices the link to Settings.
-      toast.error(msg);
+      error = (e as Error).message;
+      toast.error(error);
     } finally {
       loading = false;
     }
   }
 
-  // Single effect: refetch whenever a server-affecting filter changes.
-  // The reactive reads of minAlt/maxMag inside this block register them
-  // as dependencies, so editing either input triggers the call. Type
-  // and captured-only filters are pure client-side (just re-derive
-  // filteredEntries) and don't need a roundtrip.
   $effect(() => {
     void minAlt;
     void maxMag;
     load();
   });
 
-  // Distinct object_type values across the current row set, for the
-  // chip rail. Sorted alphabetically, "(none)" rolled into "Other" so
-  // weird OpenNGC type-code escapees aren't a separate chip.
-  const types = $derived.by(() => {
-    if (!data) return [];
-    const set = new Set<string>();
-    for (const e of data.entries) {
-      set.add(e.object_type ?? 'Other');
+  async function refreshScope() {
+    try {
+      scope = await api.getScope();
+    } catch {
+      // The next poll retries.
     }
-    return Array.from(set).sort();
+  }
+
+  onMount(() => {
+    refreshScope();
+    api.getMasterAdvice(true).then(
+      (rows) => (worth = rows.slice(0, 4)),
+      () => (worth = []),
+    );
+    const t = setInterval(refreshScope, 5000);
+    return () => clearInterval(t);
   });
 
-  const filteredEntries = $derived.by(() => {
-    if (!data) return [] as TonightEntry[];
-    return data.entries.filter((e) => {
-      if (typeFilter !== null && (e.object_type ?? 'Other') !== typeFilter) {
-        return false;
-      }
-      if (capturedOnly && e.session_count === 0) return false;
-      return true;
-    });
+  const canQueue = $derived(
+    !!scope?.reachable && !!scope.capabilities?.includes('goto') && !!scope.capabilities?.includes('capture'),
+  );
+  const obs = $derived(scope?.observe ?? null);
+  const job = $derived(scope?.status?.job ?? null);
+  const observing = $derived(obs?.state === 'running');
+  const planned = $derived(new Set((scope?.targets ?? []).map((t) => t.name)));
+
+  /** Rows in the plan: one per target, one per mosaic. */
+  const planCount = $derived(
+    new Set((scope?.targets ?? []).map((t) => (t.mosaic ? `m:${t.mosaic}` : t.name))).size,
+  );
+
+  /** Panels in the plan per object, for objects with a mosaic planned. */
+  const mosaics = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const t of scope?.targets ?? []) if (t.mosaic) counts.set(t.mosaic, (counts.get(t.mosaic) ?? 0) + 1);
+    const out = new Map<string, number>();
+    if (!counts.size || !data) return out;
+    for (const e of data.entries) {
+      const n = counts.get(mosaicName(displayName(e)));
+      if (n) out.set(e.name, n);
+    }
+    return out;
   });
 
-  // Local-time ISO formatting for the transit column. The server returns
-  // UTC and we render in the user's wall-clock; saves a per-target tz
-  // conversion server-side and is more honest about who owns "local".
-  function fmtLocalTime(iso: string | null): string {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  function upTonight(e: TonightEntry, d: TonightResponse): boolean {
+    return d.dusk_utc && d.dawn_utc ? e.hours_above_min_alt > 0 : e.alt_now_deg >= d.min_alt_deg;
   }
 
-  function fmtMag(mag: number | null): string {
-    if (mag === null) return '—';
-    return mag.toFixed(1);
+  const listEntries = $derived(
+    data
+      ? data.entries.filter(
+          (e) =>
+            upTonight(e, data!) &&
+            (!shotOnly || e.session_count > 0 || e.shot_s > 0) &&
+            (group === null || typeGroup(e.object_type) === group) &&
+            matchesSearch(e, search),
+        )
+      : [],
+  );
+
+  function select(name: string | null) {
+    selected = name;
   }
 
-  function fmtAlt(deg: number): string {
-    return `${deg.toFixed(0)}°`;
+  // ----- actions, the same from every view
+
+  let pointing = $state<string | null>(null);
+  let saving = $state(false);
+
+  async function shoot(e: TonightEntry) {
+    pointing = e.name;
+    try {
+      const r = await api.observe({ name: e.name, ra_deg: e.ra_deg, dec_deg: e.dec_deg, object_type: e.object_type });
+      toast.success(`Started ${r.target}. The Scope page shows each step.`);
+      await refreshScope();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      pointing = null;
+    }
   }
 
-  function fmtHours(h: number): string {
-    if (h === 0) return '—';
-    return `${h.toFixed(1)}h`;
+  async function togglePlan(e: TonightEntry) {
+    saving = true;
+    try {
+      const current = (await api.getScope()).targets ?? [];
+      const on = current.some((t) => t.name === e.name);
+      const targets = on
+        ? current.filter((t) => t.name !== e.name)
+        : [
+            ...current,
+            {
+              name: e.name,
+              ra_deg: e.ra_deg,
+              dec_deg: e.dec_deg,
+              object_type: e.object_type,
+              display_name: displayName(e),
+              common_name: e.common_name,
+            },
+          ];
+      await api.setScopeAuto({ enabled: !!scope?.scheduler?.enabled, targets });
+      toast.success(on ? `Took ${displayName(e)} out of the plan.` : `Added ${displayName(e)} to the plan.`);
+      await refreshScope();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      saving = false;
+    }
   }
 
-  function fmtCaptured(entry: TonightEntry): string {
-    if (entry.session_count === 0) return '—';
-    const last = entry.last_session_at
-      ? new Date(entry.last_session_at).toLocaleDateString()
-      : '?';
-    return `${entry.session_count} (last ${last})`;
+  function showOnMap(e: TonightEntry) {
+    select(e.name);
+    view = 'map';
   }
 
-  // Sparkline geometry. Kept module-local so the SVG path math stays out
-  // of the markup. Width is intentionally narrow because the column has
-  // to fit a 5-column-wide table without forcing horizontal scroll.
-  const SPARK_W = 110;
-  const SPARK_H = 28;
-  const SPARK_PAD_Y = 2;
-
-  /** Build SVG points for the altitude polyline (clipped to 0..90). */
-  function sparkPoints(curve: number[]): string {
-    if (curve.length < 2) return '';
-    const dx = SPARK_W / (curve.length - 1);
-    const yScale = (alt: number) => {
-      // Clip below horizon to 0 so the line doesn't disappear off the
-      // bottom of the box; alt > 90 is impossible but we clip anyway.
-      const a = Math.max(0, Math.min(90, alt));
-      return SPARK_H - SPARK_PAD_Y - (a / 90) * (SPARK_H - SPARK_PAD_Y * 2);
-    };
-    return curve.map((alt, i) => `${(i * dx).toFixed(1)},${yScale(alt).toFixed(1)}`).join(' ');
+  function showInList(e: TonightEntry) {
+    select(e.name);
+    view = 'list';
   }
 
-  function sparkArea(curve: number[]): string {
-    if (curve.length < 2) return '';
-    const pts = sparkPoints(curve);
-    return `0,${SPARK_H} ${pts} ${SPARK_W},${SPARK_H}`;
+  async function mosaic(e: TonightEntry) {
+    select(e.name);
+    view = 'map';
+    await tick();
+    await tick();
+    map?.startMosaic(e);
   }
 
-  /** Y position of the min-alt threshold guide. */
-  function thresholdY(min: number): number {
-    const a = Math.max(0, Math.min(90, min));
-    return SPARK_H - SPARK_PAD_Y - (a / 90) * (SPARK_H - SPARK_PAD_Y * 2);
+  /** A plan row's object on the map; a mosaic shows its panels. */
+  function showPlanned(t: ScopeAutoTarget) {
+    const entries = data?.entries ?? [];
+    const e = t.mosaic
+      ? entries.find((x) => mosaicName(displayName(x)) === t.mosaic)
+      : entries.find((x) => x.name === t.name);
+    if (e) showOnMap(e);
+    else toast.error(`${t.display_name ?? t.name} is not in the catalog the map draws.`);
   }
 
-  /** Fraction along [dusk, dawn] for "now". Null when we're outside the
-   *  window or the window itself is degenerate; the caller hides the
-   *  marker in either case. */
-  function nowFraction(d: TonightResponse): number | null {
-    if (!d.dusk_utc || !d.dawn_utc) return null;
-    const dusk = new Date(d.dusk_utc).getTime();
-    const dawn = new Date(d.dawn_utc).getTime();
-    const now = new Date(d.at_utc).getTime();
-    if (dawn <= dusk) return null;
-    const frac = (now - dusk) / (dawn - dusk);
-    if (frac < 0 || frac > 1) return null;
-    return frac;
-  }
-
-  function sparkTooltip(curve: number[]): string {
-    const peak = Math.max(...curve);
-    return `peak ${peak.toFixed(0)}° tonight`;
-  }
-
-  function fmtWindow(d: TonightResponse): string {
-    if (!d.dusk_utc || !d.dawn_utc) return '24-hour daylight';
-    const dusk = new Date(d.dusk_utc).toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const dawn = new Date(d.dawn_utc).toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    return `${dusk} – ${dawn}`;
+  function fmtTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 </script>
 
-<div class="header">
-  <h1>Tonight</h1>
-  {#if data}
-    <span class="meta muted small">
-      {data.entries.length} visible · night {fmtWindow(data)}
-    </span>
+<svelte:head><title>Tonight · astrolab</title></svelte:head>
+
+<div class="page" class:map-mode={view === 'map'}>
+  <div class="header">
+    <h1>Tonight</h1>
+    {#if data}
+      <span class="meta muted">
+        {data.dusk_utc && data.dawn_utc ? `Dark ${fmtTime(data.dusk_utc)} – ${fmtTime(data.dawn_utc)}` : '24-hour daylight'}
+      </span>
+    {/if}
+    {#if observing || job?.state === 'running'}
+      <a class="pill" href="/scope">
+        <span class="live-dot" aria-hidden="true"></span>
+        {observing ? obs?.target : 'Scope'}
+        <span class="muted">
+          {#if observing}{obs?.step}{:else if job}{job.captured ?? 0}/{job.frames ?? 0}{/if}
+        </span>
+      </a>
+    {/if}
+    <div class="tabs" role="tablist" aria-label="Views of tonight">
+      <button type="button" role="tab" class="tab" class:active={view === 'list'} aria-selected={view === 'list'} onclick={() => (view = 'list')}>List</button>
+      <button type="button" role="tab" class="tab" class:active={view === 'map'} aria-selected={view === 'map'} onclick={() => (view = 'map')}>Map</button>
+      <button type="button" role="tab" class="tab" class:active={view === 'plan'} aria-selected={view === 'plan'} onclick={() => (view = 'plan')}>
+        Plan{#if planCount}<span class="count">{planCount}</span>{/if}
+      </button>
+    </div>
+  </div>
+
+  {#if error && view !== 'plan'}
+    <section class="panel error-panel">
+      <p>Couldn't load Tonight: {error}</p>
+      {#if /site location/i.test(error)}
+        <p class="muted small">
+          Set your latitude, longitude and elevation on the <a href="/settings">Settings</a> page, then come back.
+        </p>
+      {/if}
+    </section>
+  {/if}
+
+  {#if view === 'list' && !error}
+    <div class="toolbar">
+      <input class="search" type="search" placeholder="Search" aria-label="Search targets" bind:value={search} />
+      <button
+        type="button"
+        class="filter-toggle"
+        class:active={showFilters || group !== null || shotOnly}
+        aria-expanded={showFilters}
+        onclick={() => (showFilters = !showFilters)}
+      >
+        Filter
+      </button>
+    </div>
+    {#if showFilters}
+      <section class="filters">
+        <div class="filter-row">
+          <label class="filter-num">
+            <span class="filter-label">Min altitude</span>
+            <input type="number" min={0} max={89} step={1} bind:value={minAlt} aria-label="Minimum altitude in degrees" />
+            <span class="filter-unit">deg</span>
+          </label>
+          <label class="filter-num">
+            <span class="filter-label">Max magnitude</span>
+            <input type="number" min={-2} max={20} step={0.5} bind:value={maxMag} aria-label="Maximum magnitude (dimmer = larger)" />
+          </label>
+        </div>
+        <div class="chips" role="group" aria-label="Object type">
+          <button type="button" class="chip" class:active={group === null} onclick={() => (group = null)}>All types</button>
+          {#each GROUPS as g (g.id)}
+            <button type="button" class="chip" class:active={group === g.id} onclick={() => (group = group === g.id ? null : g.id)}>
+              {g.label}
+            </button>
+          {/each}
+          <button type="button" class="chip" class:active={shotOnly} onclick={() => (shotOnly = !shotOnly)}>Shot before</button>
+        </div>
+        <p class="muted small hint">The altitude and magnitude limits apply to the map too.</p>
+      </section>
+    {/if}
+    {#if data}
+      <TonightList
+        {data}
+        entries={listEntries}
+        {selected}
+        visible={view === 'list'}
+        {planned}
+        {mosaics}
+        {canQueue}
+        busy={saving || pointing !== null || observing}
+        {pointing}
+        onselect={select}
+        onshoot={shoot}
+        ontoggleauto={togglePlan}
+        onmap={showOnMap}
+        onmosaic={mosaic}
+        onimagechanged={load}
+      />
+    {:else if loading}
+      <p class="muted">Computing the sky…</p>
+    {/if}
+  {/if}
+
+  {#if view === 'plan'}
+    <section class="panel">
+      <AutoPlan {scope} onchanged={refreshScope} onshow={showPlanned} />
+    </section>
+    {#if worth.length}
+      <section class="panel worth" aria-label="Worth more time">
+        <h2 class="worth-h">Worth more time</h2>
+        <ul>
+          {#each worth as row, i (row.project_id)}
+            <li>
+              <a class="worth-name" href="/projects/{row.project_id}">
+                {row.common_name ?? row.name}
+                {#if row.common_name}<span class="worth-canon">{row.target}</span>{/if}
+              </a>
+              <MoreData
+                {row}
+                compact
+                onUpdated={(r) => {
+                  worth[i] = r;
+                  refreshScope();
+                }}
+              />
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+  {/if}
+
+  {#if mapMounted && !error}
+    <div class="map-wrap" class:hidden={view !== 'map'}>
+      <AtlasMap
+        bind:this={map}
+        bind:group
+        bind:search
+        {data}
+        {scope}
+        {selected}
+        visible={view === 'map'}
+        {canQueue}
+        busy={saving || pointing !== null || observing}
+        onselect={select}
+        onshoot={shoot}
+        ontoggleauto={togglePlan}
+        onlist={showInList}
+        onplanchanged={refreshScope}
+      />
+    </div>
   {/if}
 </div>
 
-{#if error}
-  <section class="panel error-panel">
-    <p>
-      Couldn't load Tonight: {error}
-    </p>
-    {#if /site location/i.test(error)}
-      <p class="muted small">
-        Set your latitude / longitude / elevation on the
-        <a href="/settings">Settings</a> page, then come back.
-      </p>
-    {/if}
-  </section>
-{:else if loading && data === null}
-  <p class="muted">Computing the sky…</p>
-{:else if data}
-  <section class="filters">
-    <div class="filter-row">
-      <label class="filter-num">
-        <span class="filter-label">Min altitude</span>
-        <input
-          type="number"
-          min={0}
-          max={89}
-          step={1}
-          bind:value={minAlt}
-          aria-label="Minimum altitude in degrees"
-        />
-        <span class="filter-unit">deg</span>
-      </label>
-      <label class="filter-num">
-        <span class="filter-label">Max magnitude</span>
-        <input
-          type="number"
-          min={-2}
-          max={20}
-          step={0.5}
-          bind:value={maxMag}
-          aria-label="Maximum magnitude (dimmer = larger)"
-        />
-      </label>
-    </div>
-    <div class="chips" role="group" aria-label="Filters">
-      <button
-        type="button"
-        class="chip"
-        class:active={capturedOnly}
-        onclick={() => (capturedOnly = !capturedOnly)}
-      >
-        Captured only
-      </button>
-      {#if types.length > 0}
-        <span class="chip-divider" aria-hidden="true"></span>
-        <button
-          type="button"
-          class="chip"
-          class:active={typeFilter === null}
-          onclick={() => (typeFilter = null)}
-        >
-          All types
-        </button>
-        {#each types as t (t)}
-          <button
-            type="button"
-            class="chip"
-            class:active={typeFilter === t}
-            onclick={() => (typeFilter = typeFilter === t ? null : t)}
-          >
-            {t}
-          </button>
-        {/each}
-      {/if}
-    </div>
-  </section>
-
-  {#if filteredEntries.length === 0}
-    <p class="muted">No targets match the current filters.</p>
-  {:else}
-    <section class="panel table-panel">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th class="col-hide-mobile">Common name</th>
-            <th class="col-hide-mobile">Type</th>
-            <th class="num">Mag</th>
-            <th class="num">Alt now</th>
-            <th class="num col-hide-mobile">Transit</th>
-            <th class="num">Hours up</th>
-            <th class="col-hide-mobile">Tonight</th>
-            <th class="col-hide-mobile">Captured</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each filteredEntries as entry (entry.name)}
-            <tr class:captured={entry.session_count > 0}>
-              <td class="name">{entry.name}</td>
-              <td class="col-hide-mobile">{entry.common_name ?? '—'}</td>
-              <td class="muted col-hide-mobile">{entry.object_type ?? '—'}</td>
-              <td class="num">{fmtMag(entry.magnitude)}</td>
-              <td class="num">{fmtAlt(entry.alt_now_deg)}</td>
-              <td class="num col-hide-mobile">{fmtLocalTime(entry.transit_utc)}</td>
-              <td class="num">{fmtHours(entry.hours_above_min_alt)}</td>
-              <td class="spark-cell col-hide-mobile">
-                {#if entry.alt_curve_deg && entry.alt_curve_deg.length >= 2 && data}
-                  <svg
-                    class="spark"
-                    width={SPARK_W}
-                    height={SPARK_H}
-                    viewBox="0 0 {SPARK_W} {SPARK_H}"
-                    role="img"
-                    aria-label={sparkTooltip(entry.alt_curve_deg)}
-                  >
-                    <title>{sparkTooltip(entry.alt_curve_deg)}</title>
-                    <line
-                      class="spark-threshold"
-                      x1="0"
-                      x2={SPARK_W}
-                      y1={thresholdY(data.min_alt_deg)}
-                      y2={thresholdY(data.min_alt_deg)}
-                    />
-                    <polygon
-                      class="spark-fill"
-                      points={sparkArea(entry.alt_curve_deg)}
-                    />
-                    <polyline
-                      class="spark-line"
-                      points={sparkPoints(entry.alt_curve_deg)}
-                    />
-                    {#if nowFraction(data) !== null}
-                      <line
-                        class="spark-now"
-                        x1={(nowFraction(data) ?? 0) * SPARK_W}
-                        x2={(nowFraction(data) ?? 0) * SPARK_W}
-                        y1="0"
-                        y2={SPARK_H}
-                      />
-                    {/if}
-                  </svg>
-                {:else}
-                  <span class="muted">—</span>
-                {/if}
-              </td>
-              <td class="captured-cell col-hide-mobile">{fmtCaptured(entry)}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </section>
-  {/if}
-{/if}
-
 <style>
+  :global(body.atlas-page main.container) {
+    max-width: none;
+    padding: 0;
+  }
+  :global(body.atlas-page footer.footer) {
+    display: none;
+  }
+  .map-mode {
+    height: calc(100dvh - 3.4rem);
+    display: flex;
+    flex-direction: column;
+  }
+  .map-mode .header {
+    margin: 0;
+    padding: 0.35rem 1rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .map-wrap {
+    flex: 1;
+    min-height: 0;
+  }
+  .map-wrap.hidden {
+    display: none;
+  }
+
   .header {
     display: flex;
     align-items: baseline;
-    gap: 0.75rem;
-    margin: 0.5rem 0 1.25rem;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    margin: 0.5rem 0 1rem;
   }
   .header h1 {
     margin: 0;
-    flex: 1;
     font-size: 1.5rem;
+  }
+  .map-mode .header h1 {
+    font-size: 1.15rem;
   }
   .meta {
     font-family: var(--font-mono);
+    font-size: 0.85em;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: auto;
+    padding: 0.15rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+  }
+  .tab {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: none;
+    padding: 0.3rem 0.85rem;
+    min-height: 0;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--fg-mute);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+  .count {
+    margin-left: 0.35rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    opacity: 0.8;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    max-width: 14rem;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0.2rem 0.7rem;
+    font-size: 0.78rem;
+    color: var(--fg);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+    align-self: center;
+  }
+  .live-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 8px var(--good);
+  }
+  @media (max-width: 560px) {
+    .tabs {
+      margin-left: 0;
+      order: 10;
+      flex-basis: 100%;
+      justify-content: space-between;
+    }
+    .tab {
+      flex: 1;
+    }
   }
 
   .small {
@@ -371,7 +527,6 @@
   .muted {
     color: var(--fg-mute);
   }
-
   .panel {
     margin-bottom: 1.25rem;
     padding: 1rem 1.2rem;
@@ -383,7 +538,64 @@
   .error-panel {
     border-color: var(--bad);
   }
+  .worth-h {
+    margin: 0 0 0.6rem;
+    font-size: 1.05rem;
+  }
+  .worth ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.9rem;
+  }
+  .worth li {
+    display: grid;
+    gap: 0.2rem;
+  }
+  .worth-canon {
+    font-weight: 400;
+    font-size: 0.78rem;
+    color: var(--fg-mute);
+    font-family: var(--font-mono);
+    margin-left: 0.4rem;
+  }
+  .worth-name {
+    font-weight: 600;
+    color: var(--fg);
+    text-decoration: none;
+  }
 
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.9rem;
+  }
+  .search {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 0.55rem 0.9rem;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font: inherit;
+  }
+  .filter-toggle {
+    appearance: none;
+    padding: 0.25rem 0;
+    background: none;
+    border: 0;
+    color: var(--fg-mute);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .filter-toggle.active {
+    color: var(--accent);
+  }
   .filters {
     margin-bottom: 1.1rem;
   }
@@ -421,20 +633,19 @@
     font-family: var(--font-mono);
     font-size: 0.8rem;
   }
+  .hint {
+    margin: 0.6rem 0 0;
+  }
   .chips {
     display: flex;
     gap: 0.4rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
     align-items: center;
+    padding-bottom: 2px;
   }
-  /* Thin vertical rule to visually separate the captured-only chip from
-     the type filter chips within the same chip rail. */
-  .chip-divider {
-    display: inline-block;
-    width: 1px;
-    height: 1.1rem;
-    background: var(--border);
-    margin: 0 0.15rem;
+  .chips > * {
     flex-shrink: 0;
   }
   .chip {
@@ -442,12 +653,12 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--fg-mute);
-    padding: 0.25rem 0.7rem;
+    min-height: 34px;
+    padding: 0 0.8rem;
     border-radius: 999px;
     font: inherit;
     font-size: 0.78rem;
     cursor: pointer;
-    transition: border-color 160ms ease, color 160ms ease;
   }
   .chip:hover {
     color: var(--fg);
@@ -458,113 +669,5 @@
     background: var(--accent);
     border-color: transparent;
     font-weight: 600;
-  }
-
-  .table-panel {
-    padding: 0;
-    overflow: hidden;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.88rem;
-  }
-  thead th {
-    text-align: left;
-    padding: 0.6rem 0.85rem;
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--fg-mute);
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-elev);
-    position: sticky;
-    top: 0;
-  }
-  tbody td {
-    padding: 0.5rem 0.85rem;
-    border-top: 1px solid var(--border-soft, rgba(255, 255, 255, 0.04));
-  }
-  tbody tr:hover {
-    background: var(--bg-elev-2);
-  }
-  /* Captured rows pop just enough to read at a glance, without
-     overwhelming the rest of the table. */
-  tbody tr.captured td.name {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  tbody tr.captured .captured-cell {
-    color: var(--accent);
-  }
-  td.name {
-    font-family: var(--font-mono);
-  }
-  th.num,
-  td.num {
-    text-align: right;
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-  /* Sparkline cell: keep the cell tight and the SVG vertically aligned
-     with the numeric columns above. block display drops the inline-svg
-     baseline gap so the curve sits where the eye expects. */
-  .spark-cell {
-    width: 1%;
-    white-space: nowrap;
-  }
-  .spark {
-    display: block;
-    overflow: visible;
-  }
-  /* Threshold guide (min-alt): dim, dashed, behind the curve. Helps the
-     eye gauge how much of the night the target spends above the
-     filter cutoff without needing the Hours-up column to confirm. */
-  .spark-threshold {
-    stroke: var(--fg-mute);
-    stroke-width: 0.5;
-    stroke-dasharray: 2 2;
-    opacity: 0.5;
-  }
-  .spark-fill {
-    fill: var(--accent-soft, rgba(94, 234, 212, 0.18));
-    stroke: none;
-  }
-  .spark-line {
-    fill: none;
-    stroke: var(--accent);
-    stroke-width: 1.25;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  /* Vertical "now" tick lets the user place the moment within the curve
-     at a glance: still rising, near peak, on the way down. */
-  .spark-now {
-    stroke: var(--fg);
-    stroke-width: 1;
-    opacity: 0.6;
-  }
-  /* Captured rows pull the curve toward the captured-row color so it
-     reads as part of the same row group instead of a separate accent. */
-  tbody tr.captured .spark-line {
-    stroke: var(--accent);
-  }
-
-  /* On narrow screens, hide secondary columns so the 4 essential columns
-     (Name, Mag, Alt now, Hours up) fit without horizontal scroll. The
-     sparkline and captured count are recoverable by switching to desktop
-     or landscape; they're nice-to-have, not the primary decision signal. */
-  @media (max-width: 768px) {
-    .col-hide-mobile {
-      display: none;
-    }
-
-    /* Tighten cell padding on small screens so the 4 visible columns
-       breathe without the table pushing outside the viewport. */
-    thead th,
-    tbody td {
-      padding: 0.5rem 0.5rem;
-    }
   }
 </style>

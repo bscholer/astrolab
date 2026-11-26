@@ -14,8 +14,11 @@ class PortType(StrEnum):
     SEQUENCE_FITS = "sequence/fits"
     MASTER_FITS = "master/fits"
     MASTER_FITS_LIST = "master/fits/list"
+    IMAGE_FITS_LIST = "image/fits/list"
     CHANNEL_TRIPLE = "channel_triple"
 
 
-LIST_PORTS: frozenset[PortType] = frozenset({PortType.MASTER_FITS_LIST})
+LIST_PORTS: frozenset[PortType] = frozenset(
+    {PortType.MASTER_FITS_LIST, PortType.IMAGE_FITS_LIST}
+)
 """Port types whose value at runtime is a list of Refs rather than a single Ref."""

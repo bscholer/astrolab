@@ -38,6 +38,9 @@ def cache_root() -> Path:
     ContentCache root won't see a hot path change.
     """
     override = _read_cache_root_override()
+    if override is None and os.environ.get("ASTROLAB_CACHE_ROOT_DEFAULT", "").strip():
+        # The deployment's cache volume, used until Settings saves a root.
+        override = Path(os.environ["ASTROLAB_CACHE_ROOT_DEFAULT"].strip())
     if override is not None:
         override.mkdir(parents=True, exist_ok=True)
         return override
@@ -68,3 +71,16 @@ def _read_cache_root_override() -> Path | None:
     if not raw:
         return None
     return Path(str(raw)).expanduser().resolve()
+
+
+def nas_captures(root: Path) -> Path:
+    """Where raw captures go. ASTROLAB_NAS_CAPTURES_DIR names a folder under the root
+    (default 'captures'); point it at the scope's own layout ('Astronomy' in a copy of
+    its card) so the backup adds to that copy instead of duplicating it."""
+    return root / os.environ.get("ASTROLAB_NAS_CAPTURES_DIR", "captures").strip()
+
+
+def nas_app(root: Path) -> Path:
+    """Where finished images and database snapshots go: ASTROLAB_NAS_APP_DIR under the
+    root (default: the root itself)."""
+    return root / os.environ.get("ASTROLAB_NAS_APP_DIR", "").strip()

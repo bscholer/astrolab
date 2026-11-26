@@ -41,6 +41,15 @@ build` once, then just hit `http://localhost:8000/` — FastAPI serves the
 prebuilt UI under the same origin. Re-run `npm run build` after frontend
 edits.
 
+### Trying a change on a deployed pod
+
+`scripts/dev-push.sh` copies the working tree into a running Kubernetes pod
+in seconds, without an image build. Add `--ui` to build and copy the UI, and
+`--worker` to restart the job worker. It needs the pod to run uvicorn with
+`--reload`, which the image does when `ASTROLAB_DEV_RELOAD=1` is set or
+`/data/dev-reload` exists. The first run creates that file, and reload starts
+with the next pod start. The next real deploy replaces whatever was copied in.
+
 ## Linux vs macOS
 
 The pipeline shells out to three Linux-only tools: **Siril 1.4+**,
@@ -274,3 +283,9 @@ The code is MIT (see `LICENSE`). The vendored OpenNGC catalog under
 `catalogs/openngc/` is CC BY-SA 4.0 by Mattia Verga; that carve-out is
 preserved in `LICENSE`. By contributing you agree your contributions
 are MIT-licensed.
+
+## Adding an API endpoint or MCP tool
+
+Declare routes with `@http_endpoint` and tools with `@mcp_tool` from `server/endpoints.py`. Both take pydantic models and a per-exception `error_map`. Stack them to publish one function both ways (see `trigger_scan` in `server/api.py`).
+
+After any change, run `python -m scripts.export_spec` and commit `docs/openapi.json` and `docs/mcp-tools.json`. A test fails when they are stale. Live copies are at `/openapi.json` and `POST /mcp` (`tools/list`). Endpoints with `authentication=AuthMode.TOKEN` need `ASTROLAB_API_TOKEN` and a bearer header.

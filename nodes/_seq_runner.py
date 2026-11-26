@@ -40,6 +40,7 @@ image_ref(path) -> Ref
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from server.models import Ref
@@ -99,6 +100,17 @@ def stage_sequence(seq_in: Path, seq_out: Path, basename: str, fitseq: bool) -> 
         if f.suffix not in (".fit", ".fits", ".seq"):
             continue
         link = seq_out / f.name
+        if f.suffix == ".seq":
+            # Copy, never link: Siril rewrites the .seq (plate solving records
+            # which frames solved), and through a link that would edit the
+            # upstream cache entry. A copy already here is this node's own,
+            # from an earlier attempt in the same run; keep it.
+            if not (link.exists() and not link.is_symlink()):
+                if link.is_symlink():
+                    link.unlink()
+                shutil.copyfile(f, link)
+            staged.append(link)
+            continue
         if link.exists() or link.is_symlink():
             link.unlink()
         link.symlink_to(f.resolve())

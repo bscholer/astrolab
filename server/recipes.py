@@ -1,0 +1,71 @@
+"""Finishing defaults picked from what the catalog knows about a target.
+
+A recipe is a set of parameter overrides for the stack_per_night template's
+finishing nodes. Target masters start from one, and every value stays
+editable on the project page.
+
+The values come from the projects tuned by hand so far (C 20, C 34): GraXpert
+background extraction and denoise on. The stretch is the image-based 'auto'
+method (nodes/basic/stretch.py), which lifts the target's own faint signal
+and keeps the sky between 0.08 and 0.15; the template's fixed background of
+0.05 rendered faint targets nearly black.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+NEBULA_TYPES = {
+    "H II Region",
+    "Emission Nebula",
+    "Supernova Remnant",
+    "Nebula",
+    "Cluster with Nebula",
+    "Planetary Nebula",
+    "Reflection Nebula",
+    "Dark Nebula",
+}
+GALAXY_TYPES = {"Galaxy", "Galaxy Pair", "Galaxy Triplet", "Galaxy Group"}
+DUO_BAND = {"HAOIII", "DUO", "DUAL"}
+
+
+@dataclass(frozen=True)
+class Recipe:
+    id: str
+    label: str
+    overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def is_duo(filter_name: str | None) -> bool:
+    return (filter_name or "").replace("-", "").replace(" ", "").upper() in DUO_BAND
+
+
+def _kind(object_type: str | None) -> str:
+    if object_type in NEBULA_TYPES:
+        return "nebula"
+    if object_type in GALAXY_TYPES:
+        return "galaxy"
+    return "stars"
+
+
+def recipe_for(object_type: str | None, filter_name: str | None) -> Recipe:
+    kind = _kind(object_type)
+    duo = is_duo(filter_name)
+    base: dict[str, dict[str, Any]] = {"graxpert_bg": {"enabled": True}}
+    if kind == "nebula":
+        base["graxpert_denoise"] = {"enabled": True}
+        base["stretch"] = {"method": "auto"}
+        # Duo-band masters use stack_per_night_duo, which splits H-alpha and
+        # OIII before debayering and has HOO on and SCNR off by default.
+        return Recipe(
+            "nebula-duo" if duo else "nebula",
+            "Emission nebula, duo-band" if duo else "Nebula",
+            base,
+        )
+    if kind == "galaxy":
+        base["graxpert_denoise"] = {"enabled": True}
+        base["stretch"] = {"method": "auto"}
+        return Recipe("galaxy", "Galaxy", base)
+    base["stretch"] = {"method": "auto"}
+    return Recipe("stars", "Star field or cluster", base)

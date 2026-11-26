@@ -27,7 +27,9 @@ from pathlib import Path
 # can't find anything when it tries to dispatch a template.
 import nodes.basic  # noqa: F401
 
+from . import telemetry
 from .cache import ContentCache
+from .catalog.db import keep_open
 from .jobs import JobManager, JobWorker
 
 log = logging.getLogger("astrolab.worker")
@@ -99,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
+    telemetry.setup("astrolab-worker")
+    keep_open(args.db)
     worker = JobWorker(cache=ContentCache(), db_path=args.db)
     shutdown = _Shutdown()
     shutdown.install_handlers()

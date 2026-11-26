@@ -265,10 +265,9 @@ def test_cleanup_under_budget_is_noop(client, tmp_path: Path) -> None:
     assert body["over_budget"] is False
 
 
-def test_cleanup_evicts_when_over_budget(client, tmp_path: Path) -> None:
-    """Force a cleanup with a tiny budget; the eviction sweep should drop
-    entries until we're at or under the cap (or flag over_budget if
-    nothing remains we're allowed to evict)."""
+def test_cleanup_over_budget_keeps_results(client, tmp_path: Path) -> None:
+    """A tiny budget can't take a project's result (downscale is keep tier):
+    the cleanup evicts nothing and flags over_budget instead."""
     src = _make_png(tmp_path / "in.png")
     rid = client.post("/api/projects", json=_payload(src, name="alpha")).json()["id"]
     _wait_for_current(client, rid)
@@ -278,5 +277,6 @@ def test_cleanup_evicts_when_over_budget(client, tmp_path: Path) -> None:
 
     r = client.post("/api/storage/cleanup", json={"max_bytes": 1})
     body = r.json()
-    assert body["evicted_count"] >= 1
-    assert body["bytes_freed"] > 0
+    assert body["evicted_count"] == 0
+    assert body["over_budget"] is True
+    assert client.get("/api/storage").json()["total_bytes"] == pre

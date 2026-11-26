@@ -3,145 +3,161 @@
 </p>
 
 <p align="center">
-  <em>Iterate-and-compare astrophotography stacking. Tweak a slider, see the result, undo, branch, publish.</em>
+  <em>Scheduling, stacking and processing for a smart telescope.</em>
 </p>
 
 ---
 
-## What it is
+astrolab is a self-hosted web app I use to run a DWARF 3 that sits outside on a fence. At night it picks targets and drives the scope. During the night and the next morning it copies the frames over, throws out the bad ones, and stacks them. Then I open a target and process it in the browser.
 
-astrolab is a local-first workbench that wraps Siril, GraXpert, and StarNet++ behind a typed pipeline graph and a content-addressed cache. Each "project" is a live edit of a stack: changing a knob in the UI submits a fresh job, but every upstream node it didn't touch (calibrate, register, stack) is a free cache hit, so re-renders feel cheap. Every revision shows up in a history strip; promote keepers to a public gallery.
+The scope connection goes through a small relay service ([dwarf-relay](https://github.com/bscholer/dwarf-relay)), so the DWARF 3 is the only scope it can control right now. Processing works on FITS files from other capture programs too (see [Other scopes](#other-scopes)).
 
-It is built around the Dwarf 3 capture layout for now, but nothing in the pipeline is Dwarf-specific. Want your scope supported? See the [Adding a scope](CONTRIBUTING.md#adding-a-scope) section in CONTRIBUTING.md; it starts with running a small collector script, not uploading raw files.
+<img src="docs/screenshots/last-night.png" alt="Home page: last night's card with good, rescued and junk time per target, and before/after sliders for updated masters" width="720" />
 
-## What it does
+## Capture
 
-<!-- Screenshot: Library page with at least two targets in the list, one expanded to show multiple sessions. Dark mode, sessions sorted by name. -->
-<img src="docs/screenshots/library.png" alt="Library page showing targets and sessions" width="720" />
+<img src="docs/screenshots/sky-map.png" alt="Tonight sky map: the Milky Way with targets labelled, the scope's frame, the horizon, and the best targets tonight" width="720" />
 
-- Wraps **Siril 1.4** for calibration, registration, stacking, and pixel ops.
-- Drives **GraXpert** for background extraction and ML denoise.
-- Drives **StarNet++ v2** for star removal, replacement, and recombination.
-- Caches every node's output by `(inputs + params + node version)` so editing a downstream knob never re-runs an upstream node.
-- Tracks a per-project edit history (revert, branch, compare, publish).
-- Surfaces a **Tonight** planner with altitude/visibility for the targets you've already captured, so you know what's worth re-imaging.
-- Gallery view surfaces the renders you opt in to publish; everything else stays in your private history.
+The Tonight page lists what's up and well placed, and has a sky map you can pan around to find a target and point the scope at it.
 
-<img src="docs/screenshots/project.png" alt="Project page with history strip showing multiple revisions" width="720" />
+You build a plan there: an ordered list of targets, each with a filter, exposure, gain and a goal in hours. Time from earlier nights counts toward the goal. With "Run all night" on, the scheduler works down the list. It prepares and calibrates the scope, slews, captures, and closes the barrel when it gets light. When it's cloudy it takes short test captures until the sky clears, and it gives up on a capture that stalls.
 
-<img src="docs/screenshots/compare.png" alt="Compare view with two revisions" width="720" />
+Other things it handles:
 
-<img src="docs/screenshots/tonight.png" alt="Tonight planner with targets listed" width="720" />
+- Mosaics. Targets too big for one frame are split into panels that get shot in turn and stacked together.
+- Trees and houses. When the scope can't find stars in a frame, that bit of sky gets marked. If it keeps failing over several nights, the scheduler stops pointing there. You can also scan the surroundings with the wide camera to get the skyline up front.
+- Alerts. It can post to a webhook (ntfy works) when something needs attention, including rain or snow in the forecast while the scope is out.
 
-<img src="docs/screenshots/system.png" alt="System monitoring dashboard, showing live CPU, memory, disk, GPU stats, and more" width="720" />
+<img src="docs/screenshots/plan.png" alt="Tonight plan: twelve targets with filter, exposure, hours goal and gain, and a four-panel mosaic" width="720" />
+
+<img src="docs/screenshots/scope.png" alt="Scope page: status, pitch and rotation, and the live stack" width="720" />
+
+## Library
+
+New sessions get copied off the scope (and optionally to a NAS). Frames are sorted into good, rescued and junk. "Rescued" means the scope marked the frame as failed but it looks fine on a second check. Sessions with too little usable data are deleted.
+
+Each night is calibrated with matching darks, flats and bias, plate solved against a local Gaia catalogue (falling back to star matching), registered and stacked with Siril. The nights for a target are then combined into a master, which gets rebuilt whenever a good night is added. Sessions are matched by sky position, so mosaic panels end up in the same master, and so does a target that was saved under two different names.
+
+The home page shows how last night went for each target, and estimates how many more hours it would take to cut the noise by a third. That estimate goes back into the plan.
+
+## Processing
+
+<img src="docs/screenshots/project.png" alt="Project page: Triangulum Galaxy master with Quick sliders and the history strip" width="720" />
+
+Each target opens with a handful of sliders: brightness, dark sky, noise reduction, colour strength, green removal and stars. There's also HOO colour for duo-band data and a crop tool. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
+
+Each render is saved to a history strip, where you can undo, branch, compare two versions side by side, and publish the ones you like to the gallery. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
+
+Under the hood it's a pipeline of cached steps, so moving a slider doesn't redo calibration or stacking. Most edits come back in a few seconds.
+
+I don't want the app editing pictures with AI, so it doesn't. The [roadmap](docs/roadmap.md) has more on where this is going.
 
 ## Quick start
 
 ### Docker (recommended)
 
-No local install needed. The image bundles Siril 1.4 and GraXpert 3.0.2.
-New to Docker? See [INSTALLING.md](INSTALLING.md) for a step-by-step setup guide.
+The image bundles Siril and GraXpert. New to Docker? [INSTALLING.md](INSTALLING.md) walks through it.
 
-**CPU-only (most users):**
+**CPU only:**
 
 ```bash
 docker run -d \
   --name astrolab \
   -p 8000:8000 \
-  -v ~/Pictures/Siril:/captures:ro \
+  -v ~/Pictures/Siril:/captures \
   -v astrolab-data:/data \
   ghcr.io/bscholer/astrolab:latest
 ```
 
-Open `http://localhost:8000`. The container auto-scans `/captures` on first run, so your sessions should appear within a few seconds.
-
-**NVIDIA GPU (for GraXpert and StarNet++ AI nodes):**
-
-You need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host first.
+**NVIDIA GPU** (much faster GraXpert and StarNet++; needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)):
 
 ```bash
 docker run -d \
   --name astrolab \
   --gpus all \
   -p 8000:8000 \
-  -v ~/Pictures/Siril:/captures:ro \
+  -v ~/Pictures/Siril:/captures \
   -v astrolab-data:/data \
   -e ASTROLAB_ENABLE_STARNET=1 \
   ghcr.io/bscholer/astrolab:cuda
 ```
 
-`ASTROLAB_ENABLE_STARNET=1` tells the entrypoint to download StarNet++ v2 on first run and store it in the persistent `/data` volume. Omit it if you don't need star removal.
+`ASTROLAB_ENABLE_STARNET=1` downloads StarNet++ v2 into `/data` on first run. Leave it out if you don't need star removal.
 
-**Mount points:**
+Open `http://localhost:8000`. astrolab scans `/captures` on first run, so existing sessions show up within seconds.
 
 | Path | Purpose |
 |------|---------|
-| `/captures` | Your raw capture tree (read-only is fine; astrolab never writes here) |
-| `/data` | Persistent state: cache, projects, settings, optional StarNet++ binary |
+| `/captures` | Your capture tree. Read-only (`:ro`) is fine if you only process files; with a scope connected, astrolab copies new sessions here, so it must be writable. |
+| `/data` | Settings, the catalog, projects, the cache, and the optional StarNet++ binary. |
 
----
+### Connecting a scope
 
-### From source (dev / no Docker)
+1. Run the relay: [dwarf-relay](https://github.com/bscholer/dwarf-relay) (a Docker image) or the [Home Assistant app](https://github.com/bscholer/home-assistant-dwarf). It talks to the scope, and you can still use the DWARFLAB app at the same time.
+2. In astrolab's **Settings**, set your site's latitude and longitude, and the scope service URL (the relay, port 9902).
+3. Add targets on **Tonight**, then turn on **Run all night**.
+
+astrolab talks to the relay over a small versioned HTTP API and only shows the features the relay says it supports. To add another scope, you'd write a service with the same API; astrolab itself wouldn't need to change.
+
+### Try it without a scope
+
+`server/fakescope/` is a fake DWARF 3 with a made-up yard and weather. It serves the same API as the relay (`python -m server.fakescope`, port 9902), so you can point astrolab at it and watch the scheduler go. It can also run the real scheduler through lots of simulated nights in a few seconds, which is how I test scheduler changes.
+
+### From source
 
 ```bash
 git clone https://github.com/bscholer/astrolab.git
 cd astrolab
+uv sync --extra dev
+cd ui && npm ci && cd ..
 
-# python deps + venv (uv reads pyproject.toml)
-uv sync
-
-# UI deps
-cd ui && npm install && cd ..
-
-# run the API on :8000
-.venv/bin/uvicorn server.api:app --reload --host 0.0.0.0 --port 8000
-
-# in another terminal: vite dev server on :5173 (proxies /api to :8000)
-cd ui && npm run dev
+.venv/bin/uvicorn server.api:app --reload --host 0.0.0.0 --port 8000   # API on :8000
+cd ui && npm run dev                                                   # UI on :5173
 ```
 
-Open `http://localhost:5173`, point the captures path at your Siril folder in **Settings**, hit **Refresh**, and projects show up.
+Siril, GraXpert and StarNet++ must be installed on the host for the processing paths. [CONTRIBUTING.md](CONTRIBUTING.md) covers tests, lint and adding pipeline nodes.
 
-For a single-port setup mirroring production (`http://localhost:8000`), `cd ui && npm run build` once instead.
+## Other scopes
 
-## Hardware + OS support
+astrolab works out where files came from by reading their FITS headers, so folder layout doesn't matter. It recognises captures from NINA, ZWO ASIAIR and Seestar, and adding another capture program is usually a few lines in the classifier ([Adding a scope](CONTRIBUTING.md#adding-a-scope)). I've only tested processing end to end on DWARF 3 data, though, and scope control is DWARF 3 only for now.
 
-The Docker image is the supported runtime. It's amd64-only and runs anywhere Docker does (Linux, macOS via Docker Desktop, Windows via WSL2).
+## API
 
-- **CPU only** (the `:latest` and `:cpu` tags) works on any amd64 box. GraXpert and StarNet++ fall back to CPU; stacking is fine, AI nodes are noticeably slower.
-- **NVIDIA GPU** (the `:cuda` tag, plus `--gpus all` and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)) is recommended if you want GraXpert and StarNet++ to fly. Tested on Ampere and Ada.
-- **From source** (Linux only, see Quick Start above) works for dev. macOS source installs run everything except the Siril paths; the test suite mocks the Siril subprocess so the dev loop stays full-featured, but final validation belongs on a Linux box.
+Every endpoint is in the OpenAPI spec ([docs/openapi.json](docs/openapi.json)). astrolab serves an MCP endpoint at `/mcp` with a few tools so far ([docs/mcp-tools.json](docs/mcp-tools.json)). The relay has its own MCP server for driving the scope directly. Prometheus metrics are at `/metrics`, and OpenTelemetry traces are sent when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
-### Apple Silicon caveat
+## Hardware and OS
 
-The image is amd64; on M-series Macs it runs through Rosetta. Siril, the calibrate / register / stack / save_image pipeline all work fine under Rosetta. **GraXpert and StarNet++ do not** — their PyInstaller-bundled Python stack hits a Rosetta amd64 emulation bug and segfaults at startup. Astrolab's pipeline will therefore crash on those nodes when run on Apple Silicon via Docker Desktop. The Siril-only path through `stack` works end to end and produces a usable PNG. For full pipelines with GraXpert / StarNet, run on a Linux or amd64-native host.
+The Docker image is amd64 and runs anywhere Docker does: Linux, macOS through Docker Desktop, and Windows through WSL2.
+
+- **CPU only** (`:latest`, `:cpu`): everything works; GraXpert and StarNet++ are slow.
+- **NVIDIA GPU** (`:cuda`): tested on Ampere and Ada.
+- **Apple Silicon**: the image runs under Rosetta. Siril and stacking work, but GraXpert and StarNet++ crash at startup under emulation. Use a Linux or amd64 host for full pipelines.
 
 ## Status
 
-Phase 0. Not stable, not packaged, schemas can change between commits. Useful enough to process my own captures every weekend; rough enough that I'd hate to ship it as v1.0.0 today. The [V1 milestone](https://github.com/bscholer/astrolab/milestone/1) tracks the punch list.
+v0.3. I use it every clear night, but settings and the API can still change between releases. The [milestones](https://github.com/bscholer/astrolab/milestones) track what's next.
 
 ## Built on
 
-The actual image processing is done by external tools that astrolab orchestrates:
+The image processing is done by tools astrolab runs as separate processes:
 
-- **[Siril](https://siril.org)** (GPLv3) - calibration, registration, stacking, plate-solving.
-- **[GraXpert](https://www.graxpert.com)** (GPLv3) - background gradient extraction and ML denoise.
-- **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware) - star-nebula separation.
+- **[Siril](https://siril.org)** (GPLv3): calibration, registration, stacking, plate solving.
+- **[GraXpert](https://www.graxpert.com)** (GPLv3): gradient removal and denoise.
+- **[StarNet++ v2](https://www.starnetastro.com)** (proprietary freeware): star removal.
 
-The `calibrate_register_stack` template follows the pipeline shape from [Naztronomy's smart-telescope script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py). No code is copied; astrolab reimplements the same Siril command sequence as graph nodes so each step is cacheable. Stage order is his.
-
-The multi-scope ingest classifier (NINA, ZWO ASIAIR, Seestar) and the cross-scope filter alias table were derived clean-room from public header dumps in [starbash](https://github.com/geeksville/starbash) (Kevin Hester, GPLv3). No starbash code is in astrolab; the mappings are factual observations about how each capture program writes its FITS headers.
-
-Full notes in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
+The stacking steps follow the shape of [Naztronomy's smart-telescope script](https://github.com/naztronaut/siril-scripts/blob/main/Naztronomy-Smart_Telescope_PP.py); no code is copied. The multi-scope header classifier and filter aliases were derived clean-room from public header dumps in [starbash](https://github.com/geeksville/starbash) (Kevin Hester). The relay's DWARF message definitions come from [dwarf_python_api](https://github.com/stevejcl/dwarf_python_api) (Steve JC), which the relay uses as a dependency. Full notes are in [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).
 
 ## Links
 
-- [Design doc](docs/design.md), the original README. Pipeline contracts, cache shape, node authoring guide.
-- [Contributing](CONTRIBUTING.md). Dev setup, test/lint commands, "add a node" walkthrough.
-- [Issue tracker](https://github.com/bscholer/astrolab/issues). [V1 board](https://github.com/users/bscholer/projects).
+- [Roadmap](docs/roadmap.md): where it's going and why.
+- [Design doc](docs/design.md): pipeline contracts, cache shape, node authoring.
+- [Contributing](CONTRIBUTING.md): dev setup, tests, adding a node or a scope.
+- [Issues](https://github.com/bscholer/astrolab/issues).
 
 ## License
 
-MIT, with a CC BY-SA 4.0 carve-out for the vendored OpenNGC catalog under `catalogs/openngc/` (Mattia Verga). See [LICENSE](LICENSE) for both.
+MIT, with a CC BY-SA 4.0 carve-out for the vendored OpenNGC catalog under `catalogs/openngc/` (Mattia Verga). See [LICENSE](LICENSE).
 
-The Docker image bundles Siril (GPLv3) and GraXpert (GPLv3) as separate processes; astrolab's MIT license applies only to astrolab's own source code. See [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md) for details.
+Tonight thumbnails come from the Digitized Sky Survey (STScI/NASA), coloured and tiled by CDS and hosted by ESA ESASky. The server downloads them on demand and does not bundle them. See the [DSS copyright terms](https://archive.stsci.edu/dss/copyright.html).
+
+The Docker image bundles Siril (GPLv3) and GraXpert (GPLv3) as separate programs; astrolab's MIT license covers only astrolab's own source. See [LICENSES/THIRD_PARTY.md](LICENSES/THIRD_PARTY.md).

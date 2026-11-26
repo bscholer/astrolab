@@ -61,8 +61,15 @@ class NodeSpec(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     """Raw param dict; validated against the node's params_schema at resolve time."""
 
-    inputs: dict[str, str] = Field(default_factory=dict)
-    """Map of input_port -> '<source_node_id>.<source_port>'. Explicit edges only in Phase 0."""
+    inputs: dict[str, str | list[str]] = Field(default_factory=dict)
+    """Map of input_port -> '<source_node_id>.<source_port>'. Explicit edges only in Phase 0.
+    A list feeds a list-typed port; templates only get lists by per-session expansion."""
+    per_session: bool = False
+    """Run this node once per session. The runtime copies it as '<id>@<session>' for
+    each session the job has inputs for (job.inputs keys like 'convert@42.lights').
+    A shared node that reads a per-session node's output gets the list of all copies,
+    so its port must be list-typed. Parameter overrides keyed by the plain id apply
+    to every copy."""
 
     ui_depends_on: str | None = None
     """UI-only visibility gate: id of another node in the same template
