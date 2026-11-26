@@ -140,6 +140,13 @@ input[type='range'] {
 body.project-page .container {
   max-width: min(1800px, calc(100vw - 2rem));
 }
+/* The editor fills the window under the site header; nothing below it. */
+body.editor-open main.container {
+  padding-bottom: 0.75rem;
+}
+body.editor-open footer.container {
+  display: none;
+}
 
 .muted {
   color: var(--fg-mute);

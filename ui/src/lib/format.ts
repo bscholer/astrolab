@@ -34,6 +34,7 @@ export function templateDisplayName(id: string): string {
 /** Short recipe names for tight spots like the project cards. */
 const TEMPLATE_SHORT_NAMES: Record<string, string> = {
   calibrate_register_stack: 'Single stack',
+  calibrate_register_stack_narrowband: 'Single stack, narrowband',
   stack_per_night: 'Stacked per night',
   stack_per_night_duo: 'Duo-band, per night',
   hoo_dwarf3_dualband: 'HOO',
@@ -69,6 +70,12 @@ export function formatDateSpan(start: string | null, end: string | null): string
  * forbids decimals here. A returned string of '' means "don't render
  * anything" (zero frames).
  */
+/** Share of frames the scope registered and kept, as "72% kept". */
+export function formatKeptPct(failed: number, total: number): string {
+  if (!total) return '';
+  return `${Math.round(((total - failed) / total) * 100)}% kept`;
+}
+
 export function formatFailPct(failed: number, total: number): string {
   if (!total) return '';
   const pct = Math.round((failed / total) * 100);
@@ -112,13 +119,6 @@ export function filterBadgeClass(f: string | null | undefined): string {
  * styles: zero gets a quiet good-color treatment, normal gets warn,
  * a quarter or more gets the loud bad treatment.
  */
-export function failPctClass(failed: number, total: number): string {
-  if (!total) return '';
-  const pct = (failed / total) * 100;
-  if (pct === 0) return 'fail-zero';
-  if (pct >= 25) return 'fail-high';
-  return '';
-}
 
 
 export function shortAgo(iso: string): string {

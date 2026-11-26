@@ -40,13 +40,11 @@ atmosphere. Don't replace this with a flat color.
 
 - **accent (teal)**: primary CTAs, focus rings, the running step's
   glow, the modified-params badge, hover-tints. Never on body text.
-- **bad (magenta)**: destructive action hover, failed status, high
-  failure-percentage, "no calibration match" badges. Never as a
+- **bad (magenta)**: destructive action hover, failed status,
+  "no calibration match" badges. Never as a
   decorative accent.
-- **good (green)**: completed status, `0% failed` (subtle), exact
-  calibration match.
-- **warn (amber)**: non-zero `% failed` under threshold, approx
-  calibration match. Don't use it for "in progress" — that's accent.
+- **good (green)**: completed status, exact calibration match.
+- **warn (amber)**: approx calibration match. Don't use it for "in progress" — that's accent.
 
 ---
 
@@ -122,24 +120,19 @@ would otherwise leak.
 
 Same rule for any other internal id that bleeds into copy.
 
-### Frame counts: total + percentage failed
+### Frame counts: total + percentage kept
 
-Don't use fractions like `108 / 111 frames`. Show the total and a
-rounded failure percentage:
+Don't use fractions like `108 / 111 frames`. Show the total and the
+rounded share the scope kept (registered), in muted text:
 
 ```
-185 frames · 2% failed
-79 frames · 0% failed
-1,167 frames · 65% failed     ← high — uses fail-high color
+185 frames · 98% kept
+1,167 frames · 35% kept
 ```
 
-**Round to whole percent.** Color treatment:
-
-- `0% failed` → `--good`, slightly faded (positive but not loud)
-- regular non-zero → `--warn`
-- ≥ 25% (configurable) → `--bad` with `font-weight: 500`
-
-Class hooks: `.fail-pct`, `.fail-pct.fail-zero`, `.fail-pct.fail-high`.
+Failed frames are normal on this scope (clouds, wind, a dewy lens), so the
+number stays quiet: no red or amber. Library cards add a thin teal bar
+for the kept share. The tooltip says how many were saved as failed.
 
 ### Capitalization
 
@@ -206,12 +199,15 @@ Three densities:
 
 ### Editor
 
-The Edit tab is its own full-screen app (`ui/src/lib/editor/`): one viewport,
-no page scroll. Phones and tablets in portrait stack it; tablets in landscape
-and desktops put the tools in a column to the right of the picture.
+The Edit tab (`ui/src/lib/editor/`) sits under the site header like the
+Pipeline and Details tabs, with the same title row and the Edit | Pipeline |
+Details switch in the same place, and fills the rest of the window: no page
+scroll, no footer. Phones and tablets in portrait stack it; tablets in
+landscape and desktops put the tools in a column to the right of the picture.
 
 ```
-[ ‹  Name / catalog · status      Edit Pipeline Details  ↶ ↷  ⋯  Export ]
+[ Name catalog                          status  ↶ ↷  ⋯  Export ]
+[ Edit | Pipeline | Details ]
 [ picture (contain), Compare pill, Rendering pill        | tool panel     ]
 [                                                         | Looks Crop ... ]
 ```
@@ -353,7 +349,11 @@ This list is what the playground is wrestling toward. Treat it as a
 spec, not a proposal.
 
 - **Home** (`/`) opens Projects once any exist, the Library before that.
-- **Library page** (`/library`, tabs Targets and Storage) is for browsing existing data. The capture-root
+- **Library page** (`/library`, tabs Targets and Storage) is for browsing existing data. Targets is a
+  grid of cards like Projects: the picture is the target's newest project render, then integration,
+  sessions, last night and a kept-frames bar. A card opens the target's sessions in a sheet (from the
+  right; from below on phones) with links to its projects; starting a project there picks the
+  duo-band recipe for duo-band filters and the per-night recipe otherwise. The capture-root
   text input belongs in **Settings**, not here. The library top has a
   small refresh icon button + muted "scanned Xh ago" relative time.
 - **Settings page** owns: capture root (and a "Scan now" primary

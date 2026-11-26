@@ -15,7 +15,7 @@
   the active job changes.
 -->
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { page } from '$app/stores';
   import { replaceState } from '$app/navigation';
   import {
@@ -133,7 +133,6 @@
   let sourceSessions = $state<SessionSummary[] | null>(null);
   let sourceSessionsLoading = $state(false);
   let sourceSessionsError = $state<string | null>(null);
-  let sourceSessionsOpen = $state(false);
   let sourceSessionsForProjectId = $state<string | null>(null);
 
   // Per-session notes mirror the Library page so the textarea autosaves
@@ -365,20 +364,16 @@
     }
   }
 
-  function onSourceSessionsToggle(e: Event) {
-    const open = (e.currentTarget as HTMLDetailsElement).open;
-    sourceSessionsOpen = open;
-    // Lazy-load on first open. Subsequent opens hit the cached array
-    // (sessions don't change without a rescan, and a rescan is a
-    // library-level action).
-    if (
-      open
-      && project
-      && (sourceSessions === null || sourceSessionsForProjectId !== project.id)
-    ) {
-      loadSourceSessions();
-    }
-  }
+  // Load the session rows whenever the Details tab is showing and the
+  // list is missing or belongs to another project / session set.
+  let sourceSessionsKey = '';
+  $effect(() => {
+    if (view !== 'details' || !project) return;
+    const key = `${project.id}:${project.source_session_ids.join(',')}`;
+    if (key === sourceSessionsKey && sourceSessions !== null) return;
+    sourceSessionsKey = key;
+    untrack(() => loadSourceSessions());
+  });
 
   function toggleSessionNotes(s: SessionSummary) {
     if (sessionNotesOpenId === s.id) {
@@ -1063,14 +1058,7 @@
 
     {@const sessionCount = project.source_session_ids.length}
     {#if view === 'details'}
-    <details class="details-block" open>
-      <summary class="section-h">Notes and sessions <span class="muted">{sessionCount} session{sessionCount === 1 ? '' : 's'}{project.description ? ' · has notes' : ''}</span></summary>
-    <div class="notes-sources">
-      <!-- Notes card: same border/header chrome as the Sessions used
-           card so the two columns line up on wide viewports. The
-           textarea itself drops its own border and rides flush inside
-           the card, with the NOTES label living in the matching
-           header row. -->
+    <section class="notes-sources" aria-label="Notes and sessions">
       <div class="notes-block">
         <div class="notes-head">
           <label class="notes-label" for="project-notes">Notes</label>
@@ -1090,78 +1078,47 @@
         ></textarea>
       </div>
 
-      <!-- Sessions used: collapsible read-only view of the source
-           sessions backing this project. Helpful for looking back at
-           raw capture metadata without leaving the project page.
-           Run / reassign / multi-select are intentionally omitted
-           (renders happen project-wide; reassigning would yank a
-           session out of this project, which is a surprising side
-           effect to hide behind a pencil). The Manage sessions
-           affordance lives in the summary so it's reachable even
-           when the section is collapsed; stopPropagation on its
-           click stops the details from toggling underneath. -->
-      <details
-        class="sources"
-        ontoggle={onSourceSessionsToggle}
-      >
-      <summary class="sources-summary">
-        <svg
-          class="sources-chevron"
-          viewBox="0 0 24 24"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-        <span class="sources-title">Sessions used</span>
-        <span class="sources-count muted">({sessionCount})</span>
-        <button
-          type="button"
-          class="hbtn sources-manage"
-          onclick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openManageSessions();
-          }}
-          title="Add or remove sessions on this project"
-        >Manage sessions...</button>
-      </summary>
-      <div class="sources-body">
-        {#if sourceSessionsLoading && sourceSessions === null}
-          <p class="muted small">Loading sessions...</p>
-        {:else if sourceSessionsError && sourceSessions === null}
-          <p class="muted small">Couldn't load sessions: {sourceSessionsError}</p>
-        {:else if sourceSessions && sourceSessions.length === 0}
-          <p class="muted small">No source sessions resolved. The capture rows may have been removed since this project was created.</p>
-        {:else if sourceSessions}
-          <ul class="sources-list">
-            {#each sourceSessions as s (s.id)}
-              <SessionRow
-                session={s}
-                shortDate={shortSessionDate(s.started_at)}
-                notesOpen={sessionNotesOpenId === s.id}
-                notesDraft={sessionNotesDraftById.get(s.id) ?? ''}
-                notesSaving={sessionNotesSavingId === s.id}
-                onToggleNotes={() => toggleSessionNotes(s)}
-                onNotesInput={(v) => setSessionNotesDraft(s.id, v)}
-                onNotesBlur={() => saveSessionNotesOnBlur(s)}
-                {calLabel}
-                {calTitle}
-              />
-            {/each}
-          </ul>
-        {/if}
+      <!-- Sessions used: read-only rows for the sessions behind this
+           project. Adding or removing them goes through Manage sessions. -->
+      <div class="sources">
+        <div class="sources-summary">
+          <span class="sources-title">Sessions used</span>
+          <span class="sources-count muted">({sessionCount})</span>
+          <button
+            type="button"
+            class="hbtn sources-manage"
+            onclick={openManageSessions}
+            title="Add or remove sessions on this project"
+          >Manage sessions...</button>
+        </div>
+        <div class="sources-body">
+          {#if sourceSessionsLoading && sourceSessions === null}
+            <p class="muted small">Loading sessions...</p>
+          {:else if sourceSessionsError && sourceSessions === null}
+            <p class="muted small">Couldn't load sessions: {sourceSessionsError}</p>
+          {:else if sourceSessions && sourceSessions.length === 0}
+            <p class="muted small">No source sessions resolved. The capture rows may have been removed since this project was created.</p>
+          {:else if sourceSessions}
+            <ul class="sources-list">
+              {#each sourceSessions as s (s.id)}
+                <SessionRow
+                  session={s}
+                  shortDate={shortSessionDate(s.started_at)}
+                  notesOpen={sessionNotesOpenId === s.id}
+                  notesDraft={sessionNotesDraftById.get(s.id) ?? ''}
+                  notesSaving={sessionNotesSavingId === s.id}
+                  onToggleNotes={() => toggleSessionNotes(s)}
+                  onNotesInput={(v) => setSessionNotesDraft(s.id, v)}
+                  onNotesBlur={() => saveSessionNotesOnBlur(s)}
+                  {calLabel}
+                  {calTitle}
+                />
+              {/each}
+            </ul>
+          {/if}
+        </div>
       </div>
-    </details>
-    </div>
-
-    </details>
+    </section>
     {/if}
   {/if}
 </div>
@@ -1343,6 +1300,9 @@
   .project-root {
     display: contents;
   }
+  .project-root[hidden] {
+    display: none;
+  }
 
   .header {
     display: flex;
@@ -1439,35 +1399,10 @@
     font-weight: 600;
     font-size: 0.75rem;
   }
-  .workshop,
-  .details-block {
+  .workshop {
     margin: 1rem 0;
     border-top: 1px solid var(--border);
     padding-top: 0.75rem;
-  }
-  .details-block > summary {
-    cursor: pointer;
-    list-style: none;
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-  }
-  .details-block > summary::-webkit-details-marker {
-    display: none;
-  }
-  .details-block > summary::before {
-    content: '▸';
-    color: var(--fg-mute);
-    transition: transform 120ms;
-  }
-  .details-block[open] > summary::before {
-    transform: rotate(90deg);
-  }
-  .details-block > summary .muted {
-    font-size: 0.8rem;
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
   }
   .capture-line {
     display: flex;
@@ -1666,7 +1601,6 @@
   }
   .sources-summary {
     list-style: none;
-    cursor: pointer;
     padding: 0.55rem 0.85rem;
     display: flex;
     align-items: center;
@@ -1684,9 +1618,6 @@
     padding: 0.2rem 0.55rem;
     font-size: 0.78rem;
   }
-  .sources-summary::-webkit-details-marker {
-    display: none;
-  }
   .sources-title {
     font-size: 0.95rem;
     font-weight: 500;
@@ -1695,15 +1626,7 @@
     font-variant-numeric: tabular-nums;
     font-size: 0.85rem;
   }
-  .sources-chevron {
-    color: var(--fg-mute);
-    transition: transform 160ms ease;
-    flex-shrink: 0;
-  }
-  .sources[open] .sources-chevron {
-    transform: rotate(180deg);
-  }
-  .sources[open] .sources-summary {
+  .sources-summary {
     border-bottom: 1px solid var(--border);
   }
   .sources-body {
