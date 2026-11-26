@@ -119,6 +119,10 @@ docker run -d \
 
 Then open your browser and go to **http://localhost:8000**.
 
+`:ro` makes the captures folder read-only, which is fine for processing files you
+already have. If you connect a scope, drop `:ro`: astrolab copies new sessions from the
+scope into this folder.
+
 astrolab will scan your captures folder on first launch — this usually takes a few
 seconds, but can take longer if you have thousands of files. Your sessions will appear
 in the Library once the scan finishes.
