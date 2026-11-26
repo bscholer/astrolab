@@ -151,7 +151,7 @@ def _grow(m: np.ndarray, r: int) -> np.ndarray:
     return out
 
 
-def _spread(c: np.ndarray) -> tuple[float, float]:
+def _spread(c: np.ndarray, k: int = BLOCK) -> tuple[float, float]:
     """(sky, nebula signal above sky) on block medians, stars erased.
 
     Stars are relatively bright in OIII, so raw percentiles would match the
@@ -159,7 +159,7 @@ def _spread(c: np.ndarray) -> tuple[float, float]:
     Rosette). Sky is a low percentile: a nebula filling half the frame lifts
     the median.
     """
-    b = _blocks(np.nan_to_num(c))
+    b = _blocks(np.nan_to_num(c), k)
     b = b[b > 0]
     if b.size == 0:
         return 0.0, 0.0
@@ -168,26 +168,37 @@ def _spread(c: np.ndarray) -> tuple[float, float]:
 
 
 def hoo(
-    data: np.ndarray, oiii_strength: float, ha_hue: float = 24.0, oiii_hue: float = 215.0
+    data: np.ndarray,
+    oiii_strength: float,
+    ha_hue: float = 24.0,
+    oiii_hue: float = 215.0,
+    pixel_scale: float = 1.0,
 ) -> np.ndarray:
-    """(3, H, W) RGB with H-alpha in red and OIII in green/blue -> HOO, linear."""
+    """(3, H, W) RGB with H-alpha in red and OIII in green/blue -> HOO, linear.
+
+    `pixel_scale` is how many full-size pixels one pixel of `data` covers (the quick
+    preview's downscaled copy); block and star-halo sizes shrink with it so
+    they cover the same patch of sky.
+    """
+    k = max(2, round(BLOCK / pixel_scale))
+    halo = max(1, round(3 / pixel_scale))
     ha = np.nan_to_num(data[0].astype(np.float32))
     oiii = np.nan_to_num(0.5 * (data[1].astype(np.float32) + data[2].astype(np.float32)))
     lit = (ha > 0) & (oiii > 0)
-    hsky, hspread = _spread(ha)
-    osky, ospread = _spread(oiii)
+    hsky, hspread = _spread(ha, k)
+    osky, ospread = _spread(oiii, k)
     scale = hspread / ospread if ospread > 0 else 1.0
     h_lin = np.clip(ha - hsky, 0, None)
     o_lin = np.clip(oiii - osky, 0, None) * scale
     lum = h_lin + o_lin
 
-    hb = _smooth(np.clip(_blocks(ha) - hsky, 0, None))
-    ob = _smooth(np.clip(_blocks(oiii) - osky, 0, None) * scale)
+    hb = _smooth(np.clip(_blocks(ha, k) - hsky, 0, None))
+    ob = _smooth(np.clip(_blocks(oiii, k) - osky, 0, None) * scale)
     signal = hb + ob
     share = ob / np.maximum(signal, 1e-12)
     # Statistics only from blocks wholly inside the image: a union of offset
     # nights or a mosaic leaves empty canvas, which is not sky.
-    inside = _blocks(lit.astype(np.float32)) > 0.99
+    inside = _blocks(lit.astype(np.float32), k) > 0.99
     # Colour only on nebula: none below the median block (sky), full from the
     # 90th percentile up.
     if inside.sum() >= 10:
@@ -206,11 +217,11 @@ def hoo(
     t = np.clip((share - lo) / max(hi - lo, 1e-6) + 0.3 * (oiii_strength - 1.0), 0, 1)
 
     shape = ha.shape
-    tf = _upsample(t, shape)
-    wf = _upsample(weight, shape)
+    tf = _upsample(t, shape, k)
+    wf = _upsample(weight, shape, k)
     # Stars stay white: colour fades out where a pixel is far above its block.
-    local = _upsample(_blocks(lum), shape)
-    star = _grow(np.clip((lum / np.maximum(local, 1e-9) - 1.3) / 0.7, 0, 1), 3)
+    local = _upsample(_blocks(lum, k), shape, k)
+    star = _grow(np.clip((lum / np.maximum(local, 1e-9) - 1.3) / 0.7, 0, 1), halo)
     amount = wf * (1 - star)
     ha_rgb, oiii_rgb = hue_rgb(ha_hue), hue_rgb(oiii_hue)
     col = (1 - tf)[None] * ha_rgb[:, None, None] + tf[None] * oiii_rgb[:, None, None]

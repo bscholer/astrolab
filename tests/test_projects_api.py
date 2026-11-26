@@ -606,3 +606,27 @@ def test_switch_template_keeps_history_and_shared_edits(client, tmp_path: Path) 
         rid, new_template=other, new_base_job=job, label="reset", reset_nodes=("ds",)
     )
     assert project.current_overrides() == {}
+
+
+def test_quick_preview_needs_finishing_steps(client, tmp_path: Path) -> None:
+    """The test template has no finishing chain, so there is nothing to preview."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    r = client.post(f"/api/projects/{pid}/quick-preview", json={"overrides": {}})
+    assert r.status_code == 409
+    assert client.post("/api/projects/nope/quick-preview", json={}).status_code == 404
+
+
+def test_patch_with_a_session_amends_its_version(client, tmp_path: Path) -> None:
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+    for size in (32, 16):
+        r = client.patch(
+            f"/api/projects/{pid}",
+            json={"overrides": {"ds": {"target_size_px": size}}, "session": "s1"},
+        )
+        assert r.status_code == 200, r.text
+        _wait_for_job(client, r.json()["current_job_id"])
+    history = client.get(f"/api/projects/{pid}").json()["history"]
+    assert [h["seq"] for h in history] == [0, 1]

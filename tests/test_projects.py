@@ -434,3 +434,42 @@ def test_upgrade_template_persists_across_rehydrate(pm) -> None:
     assert reloaded.history[-1].snapshot is not None
     assert reloaded.history[-1].snapshot["from_version"] == 1
     assert reloaded.history[-1].snapshot["to_version"] == 2
+
+
+def test_an_editing_session_leaves_one_version(pm) -> None:
+    """Patches tagged with the same session replace the session's version
+    while it is the newest; a new session starts a new version."""
+    manager, jobs = pm
+    project = manager.create(
+        name="session", template=_make_template(), base_job=_make_job(), source_session_ids=[]
+    )
+    jobs.mark_completed(project.history[0].job_id)
+
+    manager.patch(project.id, overrides={"ds": {"target_size_px": 32}}, session="a")
+    jobs.mark_completed(project.history[-1].job_id)
+    manager.patch(project.id, overrides={"ds": {"target_size_px": 16}}, session="a")
+    jobs.mark_completed(project.history[-1].job_id)
+    assert [h.seq for h in project.history] == [0, 1]
+    assert project.history[-1].overrides == {"ds": {"target_size_px": 16}}
+
+    manager.patch(project.id, overrides={"ds": {"target_size_px": 8}}, session="b")
+    assert [h.seq for h in project.history] == [0, 1, 2]
+
+    # Reloading keeps the session tag, so the same session keeps amending.
+    reloaded = ProjectManager(jobs, db_path=manager._db_path)  # type: ignore[arg-type]
+    reloaded.rehydrate()
+    again = reloaded.get(project.id)
+    assert again is not None and again.history[-1].snapshot == {"edit_session": "b"}
+
+
+def test_a_session_does_not_amend_after_an_undo(pm) -> None:
+    manager, jobs = pm
+    project = manager.create(
+        name="undo", template=_make_template(), base_job=_make_job(), source_session_ids=[]
+    )
+    jobs.mark_completed(project.history[0].job_id)
+    manager.patch(project.id, overrides={"ds": {"target_size_px": 32}}, session="a")
+    jobs.mark_completed(project.history[-1].job_id)
+    manager.revert(project.id, 0)
+    manager.patch(project.id, overrides={"ds": {"target_size_px": 16}}, session="a")
+    assert [h.seq for h in project.history] == [0, 1, 2]

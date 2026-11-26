@@ -204,6 +204,30 @@ Three densities:
 - Footer: the cache the project owns, then its actions, because the
   actions act on it ("how much will I free?").
 
+### Editor
+
+The Edit tab is its own full-screen app (`ui/src/lib/editor/`): one viewport,
+no page scroll. Phones and tablets in portrait stack it; tablets in landscape
+and desktops put the tools in a column to the right of the picture.
+
+```
+[ ‹  Name / catalog · status      Edit Pipeline Details  ↶ ↷  ⋯  Export ]
+[ picture (contain), Compare pill, Rendering pill        | tool panel     ]
+[                                                         | Looks Crop ... ]
+```
+
+- Tools: Looks (palette and style cards rendered on your own picture),
+  Crop, Light, Colour, Detail, Versions. One tool's few controls show at a
+  time; the panel scrolls inside itself only if it must.
+- Controls run 0-100 (or -100..100 for contrast, highlights, shadows,
+  balance), each with an icon, its value and a reset to the recipe's value.
+  Controls the instant preview can't show carry a small RENDER tag.
+- The picture is the instant preview (`/api/projects/{id}/quick-preview`).
+  Compare splits it against how the session started; holding the picture
+  shows the start.
+- Edits in one sitting make one version; "Keep as a version" starts a new
+  one. Undo and redo walk the session's edits.
+
 ### Pipeline strip card
 
 16:9 aspect, `--radius-card` corners. Background is the live preview
@@ -335,7 +359,7 @@ spec, not a proposal.
   button next to it), cache budget, cache root display, anything else
   configuration-shaped.
 - **Projects page** is a grid of project cards (see Components above).
-- **Project detail page** is the editing surface (already designed).
+- **Project detail page** has three tabs: Edit (the editor, below), Pipeline (every step) and Details (notes, sessions, what more data would buy). `?view=` keeps the tab.
 - **Jobs page** is a thin debugging table; not a primary surface.
 
 ### Header bar

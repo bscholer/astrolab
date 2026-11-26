@@ -330,9 +330,15 @@ class ProjectManager:
         draft_mode: bool | None = None,
         label: str | None = None,
         force: bool = False,
+        session: str | None = None,
     ) -> Project:
         """Apply param overrides (and optionally toggle draft_mode), submit a
         new job, and append the resulting state to history.
+
+        `session` names an editing session (the editor makes one each time it
+        opens). While the latest version belongs to the same session, a new
+        patch replaces it instead of adding one, so a session of tweaks leaves
+        one version, not one per slider.
 
         Cancels the project's currently-active job before submitting the new
         one so an in-flight pipeline that's about to be superseded by fresh
@@ -376,7 +382,15 @@ class ProjectManager:
         prev_record = self._jobs.get(prev_job_id)
         prev_status = prev_record.status if prev_record is not None else None
         cancelled_live = self._jobs.cancel(prev_job_id)
-        collapse = prev_status == "interrupted" or cancelled_live
+        same_session = (
+            session is not None
+            and prev_entry.kind == "edit"
+            and (prev_entry.snapshot or {}).get("edit_session") == session
+            and prev_entry.seq == max(h.seq for h in project.history)
+            and prev_entry.seq > 0
+        )
+        collapse = prev_status == "interrupted" or cancelled_live or same_session
+        snapshot = {"edit_session": session} if session is not None else None
 
         # When collapsing, compare against the entry BEFORE the one being
         # replaced so the auto-label reads "64 -> 8" across a drag, not the
@@ -403,6 +417,7 @@ class ProjectManager:
                 overrides=new_overrides,
                 label=derived_label,
                 created_at=_now(),
+                snapshot=snapshot or prev_entry.snapshot,
             )
             # Replace in place; current_seq already points at this seq so
             # undo/redo continues to walk the same numeric range.
@@ -425,6 +440,7 @@ class ProjectManager:
             overrides=new_overrides,
             label=derived_label,
             created_at=_now(),
+            snapshot=snapshot,
         )
         project.history.append(entry)
         project.current_seq = next_seq
@@ -971,7 +987,8 @@ class ProjectManager:
                 conn.execute(
                     """
                     UPDATE project_history
-                    SET job_id=?, overrides_json=?, label=?, created_at=?
+                    SET job_id=?, overrides_json=?, label=?, created_at=?,
+                        snapshot_json=?
                     WHERE project_id=? AND seq=?
                     """,
                     (
@@ -979,6 +996,7 @@ class ProjectManager:
                         json.dumps(entry.overrides),
                         entry.label,
                         entry.created_at,
+                        json.dumps(entry.snapshot) if entry.snapshot is not None else None,
                         project_id,
                         entry.seq,
                     ),

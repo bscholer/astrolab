@@ -1017,6 +1017,18 @@
               }
             ],
             "title": "Overrides"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session"
           }
         },
         "title": "PatchProjectRequest",
@@ -1129,6 +1141,28 @@
         ],
         "title": "PortType",
         "type": "string"
+      },
+      "QuickPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "max_edge": {
+            "default": 1280,
+            "maximum": 2048.0,
+            "minimum": 96.0,
+            "title": "Max Edge",
+            "type": "integer"
+          },
+          "overrides": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Overrides",
+            "type": "object"
+          }
+        },
+        "title": "QuickPreviewRequest",
+        "type": "object"
       },
       "ReassignCandidateCatalog": {
         "additionalProperties": false,
@@ -3882,6 +3916,58 @@
           }
         },
         "summary": "Export Project"
+      }
+    },
+    "/api/projects/{project_id}/quick-preview": {
+      "post": {
+        "description": "Render the finishing steps with these overrides on a small copy of the\nimage, in well under a second (server/quick_preview.py).",
+        "operationId": "quick_preview_image_api_projects__project_id__quick_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuickPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {}
+            },
+            "description": "the preview"
+          },
+          "404": {
+            "description": "unknown project"
+          },
+          "409": {
+            "description": "nothing rendered far enough to preview yet"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Quick Preview Image"
       }
     },
     "/api/projects/{project_id}/revert/{seq}": {
