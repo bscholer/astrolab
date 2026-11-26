@@ -630,3 +630,14 @@ def test_patch_with_a_session_amends_its_version(client, tmp_path: Path) -> None
         _wait_for_job(client, r.json()["current_job_id"])
     history = client.get(f"/api/projects/{pid}").json()["history"]
     assert [h["seq"] for h in history] == [0, 1]
+
+
+def test_list_skips_a_picture_that_was_evicted(client, tmp_path: Path) -> None:
+    """The card's picture must exist; an evicted one falls back, or is left off."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+    body = client.get(f"/api/projects/{pid}").json()
+    assert body.get("preview_hash")
+    job_manager.cache.evict(body["preview_hash"], reason="test")
+    assert "preview_hash" not in client.get(f"/api/projects/{pid}").json()

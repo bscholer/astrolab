@@ -487,6 +487,10 @@
         .filter((n) => Number.isFinite(n)),
       ...project.suggested_additions.session_ids
     ];
+    // Read the count now: the update below replaces `project`, and the new
+    // one has no suggestions left (reading them afterwards threw, so a
+    // successful add showed as "Couldn't add sessions: undefined").
+    const added = project.suggested_additions.session_count;
     bannerSwapping = true;
     try {
       const next = await api.patchProjectSessions(project.id, {
@@ -497,11 +501,7 @@
       // on; the extras don't break the Project shape so onProjectUpdated
       // only reads Project keys.
       onProjectUpdated(next);
-      toast.success(
-        `Added ${project.suggested_additions.session_count} session${
-          project.suggested_additions.session_count === 1 ? '' : 's'
-        }; rendering...`
-      );
+      toast.success(`Added ${added} session${added === 1 ? '' : 's'}; rendering...`);
     } catch (e) {
       toast.error(`Couldn't add sessions: ${(e as Error).message}`);
     } finally {
@@ -835,6 +835,8 @@
     subtitle={project.display?.canonical && project.display.canonical !== project.display.name ? project.display.canonical : ''}
     resultSrc={fullSrc}
     {rendering}
+    nodeStatus={pipeline.nodeStatus}
+    nodeProgress={pipeline.nodeProgress}
     {cropNode}
     {cropInput}
     {cropPreviewUrl}
@@ -1032,7 +1034,7 @@
         />
       {/snippet}
       <div class="workshop">
-        <h2 class="section-h">Pipeline <span class="muted">every step, {schema.nodes.length} in all</span></h2>
+        <h2 class="section-h">Pipeline <span class="muted">{schema.nodes.length} steps</span></h2>
       <section class="nodes">
         {#if prepNodes.length > 0}
           <ol class="node-prep-strip" aria-label="Prep steps">

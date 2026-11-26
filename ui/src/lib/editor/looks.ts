@@ -16,7 +16,13 @@ export interface Look {
   active?: (ctx: Ctx) => boolean;
 }
 
-const duo = (c: Ctx) => has(c.project, 'channel_map');
+/** Palettes only make sense for duo-band (H-alpha + OIII) data: the
+ *  broadband recipe has the step too, but a galaxy has no OIII to color. */
+const duo = (c: Ctx) =>
+  has(c.project, 'channel_map') &&
+  (c.project.template.id.endsWith('_duo') ||
+    /ha|oiii|duo|dual|nb|narrow/i.test(c.project.capture?.filter ?? '') ||
+    !!(c.draft.channel_map?.enabled ?? (c.project.template.nodes.find((n) => n.id === 'channel_map')?.params as Record<string, unknown> | undefined)?.enabled));
 
 function palette(ha: number, oiii: number) {
   return (c: Ctx) => {
