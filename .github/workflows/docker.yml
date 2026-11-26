@@ -14,6 +14,11 @@ on:
       - 'uv.lock'
       - 'ui/package*.json'
   workflow_dispatch:
+    inputs:
+      siril:
+        description: Also build dev-bscholer-siril-cuda (Siril from source, about 5 minutes)
+        type: boolean
+        default: false
 
 concurrency:
   group: docker-${{ github.ref }}
@@ -175,8 +180,10 @@ jobs:
   build-bscholer-siril:
     name: build bscholer-siril-cuda
     runs-on: ubuntu-latest
-    # Only on main-branch pushes; skip PRs — building siril from source is slow.
-    if: github.event_name != 'pull_request'
+    # Only when asked for (Run workflow, tick "siril"). It was for work on the Siril
+    # fork; built on every push it took about 5 minutes and filled the 10 GB build
+    # cache with layers that changed every commit, pushing out the app's own.
+    if: github.event_name == 'workflow_dispatch' && inputs.siril
     needs: build
     permissions:
       contents: read
