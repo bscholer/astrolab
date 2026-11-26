@@ -341,7 +341,7 @@ def test_build_from_sessions_rejects_mismatched_gain(db, tmp_path: Path) -> None
 def test_build_from_sessions_accepts_differing_target_ids(db, tmp_path: Path) -> None:
     """build_from_sessions no longer rejects on raw target_id. Target
     identity is enforced at the API layer via canonical-group matching
-    (api._assert_sessions_share_target) so manually-retargeted sessions
+    (api._assert_sessions_share_sky) so manually-retargeted sessions
     work; the builder's job is the stacker-relevant compat tuple only.
 
     For coverage of the API-level same-target gate (which DOES still

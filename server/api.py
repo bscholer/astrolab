@@ -2012,7 +2012,7 @@ def create_project_from_sessions(req: CreateProjectFromSessionsRequest, conn: DB
     # Same-target gate (canonical-group aware). Doing this BEFORE
     # build_from_sessions keeps the IncompatibleSessions error from the
     # builder focused on stacking-relevant mismatches.
-    _assert_sessions_share_target(conn, sids)
+    _assert_sessions_share_sky(conn, sids)
 
     try:
         template = load_template(req.template_id)
@@ -2181,7 +2181,7 @@ def _canonical_group_for_target_row(
     """Resolve a target row to its canonical bucket key, or None when nothing
     canonical can be inferred. Mirrors the inline logic in
     `_display_for_project`; factored out so the suggestions / swap-sessions
-    paths can share it without duplicating the precedence rules.
+    paths (`_session_canonicals`) can share it without duplicating the precedence rules.
 
     Precedence: prefer the scanner's auto-resolved canonical, then enrich the
     stored name through OpenNGC. No user-override column post-rip.
@@ -2196,151 +2196,129 @@ def _canonical_group_for_target_row(
     return hit.canonical if hit is not None else None
 
 
-def _canonical_group_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> str | None:
-    """Resolve the single canonical_group for a project's source sessions.
-
-    Returns None when the project has no sessions, the sessions resolve to
-    more than one canonical bucket, or any target's canonical can't be
-    resolved at all. The same-target gate on `swap_sessions` reuses this so
-    the rule matches what `_display_for_project` shows in the header.
-    """
-    if not session_ids:
-        return None
-    try:
-        ids = [int(s) for s in session_ids]
-    except (ValueError, TypeError):
-        return None
-    if not ids:
-        return None
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT t.id AS target_id, t.name AS name,
-               t.resolved_canonical AS resolved_canonical
-        FROM sessions s
-        LEFT JOIN targets t ON t.id = s.target_id
-        WHERE s.id IN ({placeholders})
-          AND t.id IS NOT NULL
-        """,  # noqa: S608  (placeholders are ints)
-        ids,
-    ).fetchall()
-    if not rows:
-        return None
-    canonicals: set[str] = set()
-    for r in rows:
-        c = _canonical_group_for_target_row(r["target_id"], r["name"], r["resolved_canonical"])
-        if c is None:
-            return None
-        canonicals.add(c)
-    if len(canonicals) != 1:
-        return None
-    return next(iter(canonicals))
-
-
-def _canonical_group_for_session(conn: sqlite3.Connection, session_id: int) -> str | None:
-    """Resolve one session's canonical_group via its target row. Returns
-    None if the session has no target or the target's canonical can't be
-    inferred."""
-    row = conn.execute(
+def _session_canonicals(conn: sqlite3.Connection) -> dict[int, str | None]:
+    """Every session's canonical group (None when it has no target or the
+    target can't be resolved), by the same rules as
+    `_canonical_group_for_target_row`."""
+    out: dict[int, str | None] = {}
+    for r in conn.execute(
         """
-        SELECT t.id AS target_id, t.name AS name,
+        SELECT s.id AS session_id, t.id AS target_id, t.name AS name,
                t.resolved_canonical AS resolved_canonical
-        FROM sessions s
-        LEFT JOIN targets t ON t.id = s.target_id
-        WHERE s.id = ?
-        """,
-        (session_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    return _canonical_group_for_target_row(row["target_id"], row["name"], row["resolved_canonical"])
+        FROM sessions s LEFT JOIN targets t ON t.id = s.target_id
+        """
+    ):
+        out[int(r["session_id"])] = _canonical_group_for_target_row(
+            r["target_id"], r["name"], r["resolved_canonical"]
+        )
+    return out
 
 
-def _assert_sessions_share_target(
+def _same_sky(
+    a: int,
+    b: int,
+    canon: dict[int, str | None],
+    feet: dict[int, coverage.Footprint],
+    *,
+    unplaced_match: bool = False,
+) -> bool:
+    """Two sessions belong in one stack when they resolve to the same catalog
+    object or their frames overlap on the sky (server/coverage.py). Overlap is
+    what lets mosaic panels join each other and the target they cover, the way
+    masters group them (server/masters.py), whatever name each was shot under.
+
+    With `unplaced_match`, two sessions neither of which can be placed by name
+    match each other unless both have footprints that don't overlap; the
+    create and swap gates keep that rule so untargeted captures still stack."""
+    ca, cb = canon.get(a), canon.get(b)
+    if ca is not None and ca == cb:
+        return True
+    fa, fb = feet.get(a), feet.get(b)
+    if fa is not None and fb is not None:
+        return coverage.overlaps(fa, fb)
+    return unplaced_match and ca is None and cb is None
+
+
+def _sky_region(
+    start: set[int],
+    pool: set[int],
+    canon: dict[int, str | None],
+    feet: dict[int, coverage.Footprint],
+    *,
+    unplaced_match: bool = False,
+) -> set[int]:
+    """`start` plus every session of `pool` reachable from it through
+    `_same_sky` links, so a chain of mosaic panels comes in whole."""
+    region = set(start)
+    rest = set(pool) - region
+    frontier = list(region)
+    while frontier and rest:
+        a = frontier.pop()
+        hits = {
+            b for b in rest if _same_sky(a, b, canon, feet, unplaced_match=unplaced_match)
+        }
+        rest -= hits
+        region |= hits
+        frontier.extend(hits)
+    return region
+
+
+def _assert_sessions_share_sky(
     conn: sqlite3.Connection,
     session_ids: list[int],
     *,
-    expected_canonical: str | None = None,
+    project_session_ids: list[int] | None = None,
 ) -> None:
-    """Raise HTTPException(400) unless every session resolves to the
-    same canonical target group.
+    """Raise HTTPException(400) unless the sessions form one patch of sky.
 
-    Single source of truth for the "are these the same astronomical
-    object?" check used by:
-      - POST /api/projects/from_sessions (expected_canonical=None: all
-        proposed sessions must agree with each other)
-      - PATCH /api/projects/{id}/sessions (expected_canonical=project's
-        canonical group)
-      - api._suggestions_for_project's pre-filter (calls
-        _canonical_group_for_session directly; same primitive)
-
-    Uses canonical-group resolution (not raw target_id), so a user who
-    re-targets a session via the Library edit affordance still passes
-    the check as long as the new target resolves to the same canonical.
-    target_id equality alone would reject those cases even though they
-    semantically represent the same object — that's the bug this
-    helper exists to prevent.
-
-    Sessions whose canonical group is unresolved (no target row, or
-    no canonical inference) are treated as a distinct "untargeted"
-    bucket: they only match other untargeted sessions, never a named
-    canonical.
+    Sessions belong together when they resolve to the same catalog object or
+    their frames overlap (`_same_sky`), directly or through a chain of other
+    sessions in the set: panels 1-2-3 of a mosaic pass even though panels 1
+    and 3 don't touch. Used by POST /api/projects/from_sessions and, with
+    `project_session_ids`, by PATCH /api/projects/{id}/sessions, where the new
+    set must also reach the project's current sessions so a swap can't turn a
+    project into a different object.
     """
     if not session_ids:
         return
-    resolved: dict[int, str | None] = {
-        sid: _canonical_group_for_session(conn, sid) for sid in session_ids
-    }
-    if expected_canonical is None:
-        # POST shape: all proposed sessions must share one group;
-        # pick the first as the reference.
-        reference_sid = session_ids[0]
-        reference = resolved[reference_sid]
-    else:
-        reference_sid = None
-        reference = expected_canonical
-    for sid, canonical in resolved.items():
-        if canonical == reference:
-            continue
-        target_name_row = conn.execute(
+    canon = _session_canonicals(conn)
+    feet = coverage.footprints(conn)
+    ids = set(session_ids)
+
+    def _name(sid: int) -> str:
+        row = conn.execute(
             "SELECT t.name AS target_name FROM sessions s "
             "LEFT JOIN targets t ON t.id = s.target_id WHERE s.id = ?",
             (sid,),
         ).fetchone()
-        target_name = (
-            target_name_row["target_name"]
-            if target_name_row and target_name_row["target_name"]
-            else "unknown"
-        )
-        cand_label = canonical or "unresolved"
-        ref_label = reference or "unresolved"
-        if expected_canonical is None:
-            ref_row = conn.execute(
-                "SELECT t.name AS target_name FROM sessions s "
-                "LEFT JOIN targets t ON t.id = s.target_id WHERE s.id = ?",
-                (reference_sid,),
-            ).fetchone()
-            ref_target = (
-                ref_row["target_name"]
-                if ref_row and ref_row["target_name"]
-                else "unknown"
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"session {sid} is on target {target_name} "
-                    f"(canonical {cand_label}) but session {reference_sid} "
-                    f"is on target {ref_target} (canonical {ref_label})"
-                ),
-            )
+        name = row["target_name"] if row and row["target_name"] else "unknown"
+        c = canon.get(sid)
+        return f"{name}, {c}" if c and c != name else name
+
+    first = min(ids)
+    region = _sky_region({first}, ids, canon, feet, unplaced_match=True)
+    stray = sorted(ids - region)
+    if stray:
+        sid = stray[0]
         raise HTTPException(
             status_code=400,
             detail=(
-                f"session {sid} is on target {target_name} "
-                f"(canonical {cand_label}) but this project is on "
-                f"canonical {ref_label}"
+                f"session {sid} ({_name(sid)}) is on a different target than "
+                f"session {first} ({_name(first)}) and their frames don't overlap on the sky"
             ),
         )
+    if project_session_ids:
+        old = set(project_session_ids)
+        if not ids & old and not _sky_region(
+            old, ids | old, canon, feet, unplaced_match=True
+        ) & ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"session {first} ({_name(first)}) is on a different target than "
+                    "this project and its frames don't overlap the project's on the sky"
+                ),
+            )
 
 
 def _display_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> ProjectDisplay | None:
@@ -2425,15 +2403,15 @@ def _display_for_project(conn: sqlite3.Connection, session_ids: list[str]) -> Pr
 
 
 class SuggestedAdditions(BaseModel):
-    """Sessions on the project's canonical_group that aren't yet bound
-    to the project. Surfaced inline on the project-detail response so
-    the "+ Add N more sessions?" banner renders on first paint without
-    a second roundtrip.
+    """Sessions on the same patch of sky as the project (same catalog object,
+    or frames that overlap, so other mosaic panels count) that aren't yet
+    bound to it. Surfaced inline on the project-detail response so the
+    "+ Add N more sessions?" banner renders on first paint without a second
+    roundtrip.
 
-    Empty lists when the project is multi-target / unresolved / there
-    are no orphan sessions. `suggestions_token` is a stable hash of the
-    sorted session_ids so the UI can scope a dismissal to the current
-    set: capture a new session and the token changes, the banner
+    Empty lists when there are no such sessions. `suggestions_token` is a
+    stable hash of the sorted session_ids so the UI can scope a dismissal to
+    the current set: capture a new session and the token changes, the banner
     reappears."""
 
     model_config = ConfigDict(extra="forbid")
@@ -2447,107 +2425,76 @@ class SuggestedAdditions(BaseModel):
 
 def _suggestions_for_project(
     conn: sqlite3.Connection,
-    canonical_group: str | None,
     existing_session_ids: list[str],
+    feet: dict[int, coverage.Footprint] | None = None,
 ) -> SuggestedAdditions:
-    """Find sessions on the same canonical_group that aren't already in
-    the project. Cheap aggregate: for typical libraries we're talking
-    tens of sessions and the join is a small fan-out.
-
-    Returns an empty payload when canonical_group is None (multi-target
-    project) or no orphans match. We mirror the same precedence rules
-    as `_canonical_group_for_project` to keep "session N belongs to
-    canonical X" consistent across both directions of the lookup.
+    """Find sessions that could stack with the project and aren't in it yet:
+    those reachable from the project's sessions through `_same_sky` links
+    (same catalog object, or overlapping frames, chained), among sessions
+    with the project's stacking fields. `feet` lets a caller building many
+    projects compute the footprints once.
     """
-    if not canonical_group:
-        return SuggestedAdditions(
-            session_ids=[],
-            session_count=0,
-            frame_count=0,
-            integration_seconds=0.0,
-            suggestions_token="",
-        )
+    empty = SuggestedAdditions(
+        session_ids=[],
+        session_count=0,
+        frame_count=0,
+        integration_seconds=0.0,
+        suggestions_token="",
+    )
     existing: set[int] = set()
     for sid in existing_session_ids:
         try:
             existing.add(int(sid))
         except (ValueError, TypeError):
             continue
+    if not existing:
+        return empty
 
-    # Reference session: any of the project's existing sessions defines
-    # the COMPAT_FIELDS bundle (instrument, camera, filter, exptime,
-    # gain, binning) that PATCH would later enforce. We suggest only
-    # orphans that match all of them, so the user never sees a "+ Add
-    # 3 sessions" banner that would 400 with "exptime: 15.0, 30.0".
-    compat_reference: sqlite3.Row | None = None
-    if existing:
-        placeholders = ",".join("?" for _ in existing)
-        compat_reference = conn.execute(
-            f"""
-            SELECT instrument, camera, filter, exptime, gain, binning
-            FROM sessions WHERE id IN ({placeholders})
-            LIMIT 1
-            """,  # noqa: S608  (ids are ints)
-            list(existing),
-        ).fetchone()
-
-    # Pull every session whose target row resolves to the same canonical
-    # bucket. We compute the bucket per-target in Python because the
-    # rule (`resolved_canonical` else `openngc_enrich(name)`) doesn't
-    # express cleanly in SQL. Cheap enough at typical library sizes.
-    rows = conn.execute(
-        """
-        SELECT s.id AS session_id, s.instrument, s.camera, s.filter,
-               s.exptime, s.gain, s.binning, s.frame_count, s.failed_count,
-               t.id AS target_id, t.name AS target_name,
-               t.resolved_canonical AS resolved_canonical
-        FROM sessions s
-        LEFT JOIN targets t ON t.id = s.target_id
-        WHERE t.id IS NOT NULL
-        """,
-    ).fetchall()
-    out_ids: list[int] = []
+    # Reference session: any of the project's existing sessions defines the
+    # stacking fields (instrument, camera, filter, gain, binning) that PATCH
+    # would later enforce. We suggest only sessions that match all of them, so
+    # the user never sees a "+ Add 3 sessions" banner that would 400. Keep in
+    # sync with job_builder.COMPAT_FIELDS; `exptime` is deliberately absent
+    # because the calibrate node handles mixed exposures via per-bin darks.
+    placeholders = ",".join("?" for _ in existing)
+    compat_reference = conn.execute(
+        f"""
+        SELECT instrument, camera, filter, gain, binning
+        FROM sessions WHERE id IN ({placeholders})
+        LIMIT 1
+        """,  # noqa: S608  (ids are ints)
+        list(existing),
+    ).fetchone()
+    if compat_reference is None:
+        return empty
+    fields = ("instrument", "camera", "filter", "gain", "binning")
+    rows = {
+        int(r["id"]): r
+        for r in conn.execute(
+            "SELECT id, instrument, camera, filter, gain, binning, exptime, "
+            "frame_count, failed_count FROM sessions"
+        )
+    }
+    pool = {
+        sid
+        for sid, r in rows.items()
+        if sid not in existing and all(r[f] == compat_reference[f] for f in fields)
+    }
+    if not pool:
+        return empty
+    canon = _session_canonicals(conn)
+    feet = coverage.footprints(conn) if feet is None else feet
+    out_ids = sorted(_sky_region(existing, pool, canon, feet) - existing)
+    if not out_ids:
+        return empty
     frames = 0
     integration = 0.0
-    for r in rows:
-        sid = int(r["session_id"])
-        if sid in existing:
-            continue
-        c = _canonical_group_for_target_row(
-            r["target_id"], r["target_name"], r["resolved_canonical"]
-        )
-        if c != canonical_group:
-            continue
-        # Drop anything that wouldn't survive the PATCH endpoint's
-        # _assert_compatible gate. The COMPAT_FIELDS list lives in
-        # job_builder; we don't import it here to keep this helper
-        # cheap, just enumerate the fields inline (target_id is
-        # already covered by the canonical-group filter above).
-        # Keep in sync with job_builder.COMPAT_FIELDS — `exptime` is
-        # deliberately absent because the calibrate node now handles
-        # mixed exposures via per-bin dark selection.
-        if compat_reference is not None:
-            mismatch = False
-            for field in ("instrument", "camera", "filter", "gain", "binning"):
-                if r[field] != compat_reference[field]:
-                    mismatch = True
-                    break
-            if mismatch:
-                continue
-        out_ids.append(sid)
+    for sid in out_ids:
+        r = rows[sid]
         usable = max(0, (r["frame_count"] or 0) - (r["failed_count"] or 0))
         frames += r["frame_count"] or 0
         if r["exptime"] is not None and usable > 0:
             integration += float(r["exptime"]) * usable
-    out_ids.sort()
-    if not out_ids:
-        return SuggestedAdditions(
-            session_ids=[],
-            session_count=0,
-            frame_count=0,
-            integration_seconds=0.0,
-            suggestions_token="",
-        )
     # Stable hash over the sorted id list: a new captured session changes
     # the token, banner reappears even if the user previously dismissed.
     import hashlib as _hashlib
@@ -2684,7 +2631,9 @@ def _attach_history_quality(project_dict: dict, conn: sqlite3.Connection) -> Non
         }
 
 
-def _project_to_response(project, conn: sqlite3.Connection) -> dict:
+def _project_to_response(
+    project, conn: sqlite3.Connection, feet: dict[int, coverage.Footprint] | None = None
+) -> dict:
     payload = project.to_public_dict()
     _attach_preview(payload)
     _attach_history_status(payload)
@@ -2695,12 +2644,10 @@ def _project_to_response(project, conn: sqlite3.Connection) -> dict:
     payload["master"] = master_projects(conn).get(project.id)
     display = _display_for_project(conn, session_ids)
     payload["display"] = display.model_dump(mode="json") if display else None
-    # Suggestions are sourced from the project's canonical_group; null when
-    # the project is multi-target / unresolved or has no orphan sessions.
-    # We surface the empty payload as None on the DTO so the UI's "render
+    # Suggestions are sessions on the same patch of sky (same object or
+    # overlapping frames); null when there are none, so the UI's "render
     # the banner" check is a single null guard.
-    canonical_group = _canonical_group_for_project(conn, session_ids)
-    suggestions = _suggestions_for_project(conn, canonical_group, session_ids)
+    suggestions = _suggestions_for_project(conn, session_ids, feet)
     payload["suggested_additions"] = (
         suggestions.model_dump(mode="json") if suggestions.session_ids else None
     )
@@ -2716,7 +2663,8 @@ def _project_to_response(project, conn: sqlite3.Connection) -> dict:
 
 @app.get("/api/projects")
 def list_projects(conn: DBDep) -> list[dict]:
-    out = [_project_to_response(p, conn) for p in project_manager.list()]
+    feet = coverage.footprints(conn)
+    out = [_project_to_response(p, conn, feet) for p in project_manager.list()]
     out.sort(key=lambda p: p["updated_at"], reverse=True)
     return out
 
@@ -3020,9 +2968,8 @@ def project_cache_dry_run(project_id: str, keep_outputs: bool = False) -> dict:
 
 @app.get("/api/projects/{project_id}/suggestions")
 def get_project_suggestions(project_id: str, conn: DBDep) -> dict:
-    """Return sessions on the project's canonical_group that aren't yet
-    bound to it. Empty when the project is multi-target / unresolved or
-    has no orphan sessions.
+    """Return sessions on the project's patch of sky (same object, or frames
+    that overlap) that aren't yet bound to it.
 
     Mirrors the `suggested_additions` block carried on the main project
     DTO; exposed separately so the UI can re-fetch after a swap without
@@ -3031,10 +2978,7 @@ def get_project_suggestions(project_id: str, conn: DBDep) -> dict:
     project = project_manager.get(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"project {project_id} not found")
-    canonical_group = _canonical_group_for_project(conn, project.source_session_ids)
-    return _suggestions_for_project(conn, canonical_group, project.source_session_ids).model_dump(
-        mode="json"
-    )
+    return _suggestions_for_project(conn, project.source_session_ids).model_dump(mode="json")
 
 
 class PatchProjectSessionsRequest(BaseModel):
@@ -3083,11 +3027,11 @@ def patch_project_sessions(project_id: str, req: PatchProjectSessionsRequest, co
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"session {sid} not found")
-    project_canonical = _canonical_group_for_project(conn, project.source_session_ids)
-    if project_canonical is not None:
-        _assert_sessions_share_target(
-            conn, new_ids, expected_canonical=project_canonical
-        )
+    _assert_sessions_share_sky(
+        conn,
+        new_ids,
+        project_session_ids=[int(x) for x in project.source_session_ids if str(x).isdigit()],
+    )
 
     # Pin template id+version: a swap must NOT silently upgrade the
     # template even if a newer version is on disk. The granularity-rip

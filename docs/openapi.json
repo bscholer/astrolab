@@ -4075,7 +4075,7 @@
     },
     "/api/projects/{project_id}/suggestions": {
       "get": {
-        "description": "Return sessions on the project's canonical_group that aren't yet\nbound to it. Empty when the project is multi-target / unresolved or\nhas no orphan sessions.\n\nMirrors the `suggested_additions` block carried on the main project\nDTO; exposed separately so the UI can re-fetch after a swap without\na full project reload.",
+        "description": "Return sessions on the project's patch of sky (same object, or frames\nthat overlap) that aren't yet bound to it.\n\nMirrors the `suggested_additions` block carried on the main project\nDTO; exposed separately so the UI can re-fetch after a swap without\na full project reload.",
         "operationId": "get_project_suggestions_api_projects__project_id__suggestions_get",
         "parameters": [
           {

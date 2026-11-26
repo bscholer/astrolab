@@ -42,6 +42,7 @@ def _seed_session(
     filter_name: str | None = None,
     n_frames: int = 3,
     resolved_canonical: str | None = "NGC 598",
+    radec: tuple[float, float] | None = None,
 ) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
@@ -73,9 +74,10 @@ def _seed_session(
             ),
         )
         for p in paths:
+            ra, dec = radec if radec else (None, None)
             cur = conn.execute(
-                "INSERT INTO frames (path, image_type) VALUES (?, 'LIGHT')",
-                (str(p),),
+                "INSERT INTO frames (path, image_type, ra, dec) VALUES (?, 'LIGHT', ?, ?)",
+                (str(p), ra, dec),
             )
             conn.execute(
                 "INSERT INTO session_frames (session_id, frame_id) VALUES (?, ?)",
@@ -420,6 +422,68 @@ def test_patch_sessions_400_on_cross_target(client) -> None:
     assert "session 2" in detail
     assert "NGC 224" in detail
     assert "NGC 598" in detail
+
+
+def test_overlapping_mosaic_panels_suggest_and_join_across_names(client) -> None:
+    """Mosaic panels stack together when their frames overlap, even when the
+    resolver put them on different objects: panel 3 of an IC 1805 mosaic
+    resolves to the Soul (IC 1848), panel 4 to the Heart. A panel that only
+    touches panel 4 comes in through it; a frame elsewhere on the sky with yet
+    another name stays out."""
+    c, db_path, tmp_path = client
+    with open_db(db_path) as conn:
+        # Positions from the real panels, 2.4 deg apart east-west at Dec 60.4.
+        _seed_session(
+            conn, session_id=1, folder=tmp_path / "s1", target_id=1,
+            target_name="IC 1805 panel 3 of 4", resolved_canonical="IC 1848",
+            radec=(43.36, 60.42),
+        )
+        _seed_session(
+            conn, session_id=2, folder=tmp_path / "s2", target_id=2,
+            target_name="IC 1805 panel 4 of 4", resolved_canonical="IC 1805",
+            radec=(38.58, 60.42),
+        )
+        _seed_session(
+            conn, session_id=3, folder=tmp_path / "s3", target_id=3,
+            target_name="IC 1805 panel 2 of 4", resolved_canonical=None,
+            radec=(33.80, 60.42),
+        )
+        _seed_session(
+            conn, session_id=4, folder=tmp_path / "s4", target_id=4,
+            target_name="M 31", resolved_canonical="NGC 224", radec=(10.68, 41.27),
+        )
+    r = c.post(
+        "/api/projects/from_sessions",
+        json={"session_ids": [1], "template_id": "calibrate_register_stack"},
+    )
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+    _drain_job(c, r.json()["current_job_id"])
+
+    sugg = c.get(f"/api/projects/{pid}").json()["suggested_additions"]
+    assert sugg is not None
+    assert sugg["session_ids"] == [2, 3]
+
+    swap = c.patch(
+        f"/api/projects/{pid}/sessions",
+        json={"session_ids": [1, 2, 3], "auto_render": False},
+    )
+    assert swap.status_code == 200, swap.text
+
+    # Dropping the panel that links the other two leaves two patches of sky.
+    gap = c.patch(
+        f"/api/projects/{pid}/sessions",
+        json={"session_ids": [1, 3], "auto_render": False},
+    )
+    assert gap.status_code == 400
+    assert "session 3" in gap.json()["detail"]
+
+    far = c.patch(
+        f"/api/projects/{pid}/sessions",
+        json={"session_ids": [1, 2, 3, 4], "auto_render": False},
+    )
+    assert far.status_code == 400
+    assert "NGC 224" in far.json()["detail"]
 
 
 def test_patch_sessions_400_on_incompatible_gain(client) -> None:

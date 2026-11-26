@@ -66,12 +66,12 @@ class IncompatibleSessions(JobBuildError):
     instrument, camera, binning).
 
     Target identity is intentionally NOT enforced here. It IS enforced
-    by the API layer (api._assert_sessions_share_target), which uses
-    canonical-group resolution so manually-retargeted sessions match
-    correctly. Doing raw target_id equality here would reject those
-    cases even after the API check passed. Keep validation logic in
-    one place; the stacker compat check focuses on stacking-relevant
-    fields only.
+    by the API layer (api._assert_sessions_share_sky), which matches
+    sessions by catalog object or by overlapping frames, so
+    manually-retargeted sessions and mosaic panels match correctly.
+    Doing raw target_id equality here would reject those cases even
+    after the API check passed. Keep validation logic in one place;
+    the stacker compat check focuses on stacking-relevant fields only.
     """
 
 
@@ -87,11 +87,10 @@ MIN_FRAMES_FOR_STACK = 3
 # Order matters only for stable error formatting.
 #
 # Notable absences:
-# - target_id: enforced upstream via canonical-group resolution in the
-#   API layer (api._assert_sessions_share_target), so manually-
-#   retargeted sessions that resolve to the same canonical match
-#   correctly. Raw target_id equality would reject those even after
-#   the API check passed.
+# - target_id: enforced upstream in the API layer
+#   (api._assert_sessions_share_sky) by catalog object or sky overlap,
+#   so retargeted sessions and mosaic panels match correctly.
+#   Raw target_id equality would reject those even after the API check passed.
 # - exptime: the calibrate node accepts a list of master darks and
 #   selects the right one per-frame from the bundle's per-bin matches,
 #   so a bundle that mixes 30s and 60s subs is fine as long as a dark
