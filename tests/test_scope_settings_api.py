@@ -396,3 +396,17 @@ def test_a_restitch_gives_the_image_a_new_version(client, tmp_path, monkeypatch)
     stamp = (folder / "pano.jpg").stat().st_mtime_ns + 5_000_000_000
     os.utime(folder / "pano.jpg", ns=(stamp, stamp))  # written again by a restitch
     assert client.get("/api/scope/pano").json()["image_version"] > first
+
+
+def test_pano_refuses_a_scope_without_the_dwarf3_angles(client, monkeypatch):
+    import server.api as api_mod
+
+    _pano_env(monkeypatch)
+
+    class MiniSvc(PanoSvc):
+        def info(self):
+            return {"service": {"model": "DWARF mini"}}
+
+    monkeypatch.setattr(api_mod, "_scope_client", lambda: MiniSvc())
+    r = client.post("/api/scope/pano")
+    assert r.status_code == 400 and "DWARF mini" in r.json()["detail"]

@@ -22,6 +22,22 @@
   let saving = $state(false);
 
   const sched = $derived(scope?.scheduler ?? null);
+
+  // The usual deep-sky exposures; the menu shows the ones the connected scope has.
+  const PLAN_EXPOSURES = [10, 15, 30, 60, 120, 180];
+  const FILTER_LABELS: Record<string, string> = { duo: 'Duo-band', astro: 'Astro', vis: 'Vis' };
+  // A DWARF II has an IR-cut switch rather than a filter wheel.
+  const DWARF2_LABELS: Record<string, string> = { vis: 'IR cut', astro: 'IR pass' };
+  const filters = $derived(
+    ['duo', 'astro', 'vis'].filter((f) => !scope?.capture || scope.capture.filters.includes(f)),
+  );
+  const filterLabel = (f: string) =>
+    (scope?.service?.model === 'DWARF II' ? DWARF2_LABELS[f] : undefined) ?? FILTER_LABELS[f] ?? f;
+  const exposures = $derived(
+    scope?.capture
+      ? PLAN_EXPOSURES.filter((e) => e !== 15 && scope.capture!.exposures.includes(String(e)))
+      : [30, 60],
+  );
   const obs = $derived(scope?.observe ?? null);
 
   async function setAuto(enabled: boolean, targets?: ScopeAutoTarget[]) {
@@ -172,9 +188,9 @@
               onchange={(e) => editRow(row, { filter: e.currentTarget.value || null } as Partial<ScopeAutoTarget>)}
             >
               <option value="">Filter: auto</option>
-              <option value="duo">Duo-band</option>
-              <option value="astro">Astro</option>
-              <option value="vis">Vis</option>
+              {#each filters as f (f)}
+                <option value={f}>{filterLabel(f)}</option>
+              {/each}
             </select>
             <select
               class="opt"
@@ -184,8 +200,9 @@
               onchange={(e) => editRow(row, { exposure_s: (Number(e.currentTarget.value) || null) as ScopeAutoTarget['exposure_s'] })}
             >
               <option value="">15 s</option>
-              <option value="30">30 s</option>
-              <option value="60">60 s</option>
+              {#each exposures as e (e)}
+                <option value={String(e)}>{e} s</option>
+              {/each}
             </select>
             <input
               class="opt num-in"

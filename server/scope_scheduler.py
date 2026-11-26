@@ -70,6 +70,7 @@ class Scheduler:
         self._rescue_share = rescue_share
         self._sky_credit = sky_credit
         self._skyline = skyline or (lambda: None)
+        self._capture_options: dict | None = None  # what the connected scope model accepts
         self._rescue: dict[str, tuple[float, float]] = {}
         self._clock = clock
         self.interval_s = interval_s
@@ -305,7 +306,7 @@ class Scheduler:
         cand = next((c for c in self._get_targets() if c.name == target), None)
         if cand is None:
             return
-        exposure = scope_plan.capture_settings(cand).exposure_s
+        exposure = scope_plan.capture_settings(cand, self._capture_options).exposure_s
         self._last_frame_at = self.mono()
         self._stuck_alerted = False
         self._integrated[cand.name] = self._integrated.get(cand.name, 0.0) + frames * exposure
@@ -443,7 +444,10 @@ class Scheduler:
             return
         c = pick.target
         self._sky_wait_until = 0.0
-        cs = scope_plan.capture_settings(c)
+        info = scope_plan.service_info(client)
+        if info is not None:  # else keep the last options; the start below reports a service away
+            self._capture_options = scope_plan.capture_options(info)
+        cs = scope_plan.capture_settings(c, self._capture_options)
         self._observer.start(
             client, c.name, c.ra_deg, c.dec_deg, FRAMES_PER_RUN, cs.exposure_s, cs.gain, cs.filter
         )
