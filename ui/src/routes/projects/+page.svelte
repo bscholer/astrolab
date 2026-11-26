@@ -1,41 +1,39 @@
 <!--
-  Projects list — full-width rows. See ui/design.md for the layout.
+  Projects list: a grid of picture-first cards. See ui/design.md.
 
-  Per-row affordances on the right rail:
-    - Storage size (owned + shared sub-line if any)
-    - Broom — drops the heavy mid-pipeline cache while keeping the
-      saved final image so the UI still has a thumbnail.
-    - Trash — deletes the project AND its owned cache entries. Shared
+  Each card: the current render with the name over it, one line of facts
+  (integration, sessions, filter), and a footer with the cache size and
+  its two actions:
+    - Broom: drops the heavy mid-pipeline cache while keeping the saved
+      final image so the UI still has a picture.
+    - Trash: deletes the project AND its owned cache entries. Shared
       entries (used by other projects) stay on disk.
+  Frame counts, exposure, gain and the like live on the project page.
 -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api, type Project, type ProjectCapture, type StorageSnapshot, type SystemActiveJob } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import {
-    failPctClass,
     filterBadgeClass,
     formatBytes,
+    formatDateSpan,
     formatFailPct,
     formatIntegrationTime,
     shortAgo,
-    templateDisplayName
+    templateDisplayName,
+    templateShortName
   } from '$lib/format';
 
-  function shortDate(iso: string | null): string {
-    return iso ? iso.slice(0, 10) : '';
-  }
-
-  /** Format the date span of the project's source sessions: a single
-   * date when start/end fall on the same day, otherwise 'YYYY-MM-DD →
-   * YYYY-MM-DD'. Empty string when nothing's known. */
-  function captureDateRange(c: ProjectCapture | undefined): string {
-    if (!c) return '';
-    const s = shortDate(c.started_at);
-    const e = shortDate(c.ended_at);
-    if (!s && !e) return '';
-    if (!e || s === e) return s || e;
-    return `${s} → ${e}`;
+  /** The details the card leaves out, for its tooltip. */
+  function captureDetail(c: ProjectCapture): string {
+    const bits = [`${c.frame_count.toLocaleString()} frames`];
+    const fail = formatFailPct(c.failed_count, c.frame_count);
+    if (fail) bits.push(fail);
+    if (c.exptime != null) bits.push(`${c.exptime}s`);
+    if (c.gain != null) bits.push(`gain ${c.gain}`);
+    if (c.bytes_on_disk > 0) bits.push(`${formatBytes(c.bytes_on_disk)} of frames`);
+    return bits.join(' · ');
   }
 
   let projects = $state<Project[] | null>(null);
@@ -154,108 +152,62 @@
     <a href="/" class="link">Library</a> to start one.
   </p>
 {:else}
-  <ul class="list">
+  <ul class="grid">
     {#each projects as r, i (r.id)}
       {@const s = storageById.get(r.id)}
       {@const activeJob = activeByJobId.get(r.current_job_id)}
-      <li class="prow" class:busy={busyId === r.id} style="--stagger: {i}">
-        {#if r.preview_hash && r.preview_port}
-          <a class="prow-thumb" href="/projects/{r.id}" aria-label="Open project">
+      {@const c = r.capture}
+      {@const common = c?.target_common_name && c.target_common_name !== r.name ? c.target_common_name : null}
+      <li class="card" class:busy={busyId === r.id} style="--stagger: {i}">
+        <a class="pic" href="/projects/{r.id}" aria-label="Open {common ?? r.name}">
+          {#if r.preview_hash && r.preview_port}
             <img
-              class="prow-thumb-img"
               src={api.previewUrl(r.preview_hash, r.preview_port)}
               alt=""
               loading="lazy"
               decoding="async"
             />
-            <span class="prow-thumb-version">v{r.current_seq + 1}</span>
-          </a>
-        {:else}
-          <!-- Reserve the same 84px slot so rows without a preview line
-               up with rows that do have one. Title says why so future
-               eyes don't think it's a bug. -->
-          <div
-            class="prow-thumb prow-thumb-empty"
-            title="No saved render yet"
-            aria-hidden="true"
-          ></div>
-        {/if}
-        <a class="prow-link" href="/projects/{r.id}">
-          <div class="prow-name">
-            {#if r.capture?.target_common_name && r.capture.target_common_name !== r.name}
-              {r.capture.target_common_name}
-              <span class="prow-cat muted">{r.name}</span>
-            {:else}
-              {r.name}
-            {/if}
-            {#if !r.preview_hash}
-              <span class="version-chip">v{r.current_seq + 1}</span>
-            {/if}
-          </div>
-          <div class="prow-template">{templateDisplayName(r.template_id)}</div>
-          {#if r.capture && r.capture.frame_count > 0}
-            <div class="prow-meta muted small">
-              <span class="meta-strong num">{r.capture.frame_count.toLocaleString()} frames</span>
-              <span class="dot" aria-hidden="true">·</span>
-              <span class="fail-pct {failPctClass(r.capture.failed_count, r.capture.frame_count)}">
-                {formatFailPct(r.capture.failed_count, r.capture.frame_count)}
-              </span>
-              {#if r.capture.session_count > 0}
-                <span class="dot" aria-hidden="true">·</span>
-                <span>{r.capture.session_count} session{r.capture.session_count === 1 ? '' : 's'}</span>
-              {/if}
-              {#if r.capture.exptime != null}
-                <span class="dot" aria-hidden="true">·</span>
-                <span class="num">{r.capture.exptime}s</span>
-              {/if}
-              {#if r.capture.gain != null}
-                <span class="dot" aria-hidden="true">·</span>
-                <span>gain {r.capture.gain}</span>
-              {/if}
-              {#if r.capture.integration_seconds && r.capture.integration_seconds > 0}
-                <span class="dot" aria-hidden="true">·</span>
-                <span class="num" title="Useful integration time across source sessions">
-                  {formatIntegrationTime(r.capture.integration_seconds)} integ
-                </span>
-              {/if}
-              {#if r.capture.bytes_on_disk > 0}
-                <span class="dot" aria-hidden="true">·</span>
-                <span class="num" title="Source-frame bytes on disk">
-                  {formatBytes(r.capture.bytes_on_disk)}
-                </span>
-              {/if}
-              {#if r.capture.filter}
-                <span class="dot" aria-hidden="true">·</span>
-                <span class="{filterBadgeClass(r.capture.filter)}">{r.capture.filter}</span>
-              {/if}
-              {#if captureDateRange(r.capture)}
-                <span class="dot" aria-hidden="true">·</span>
-                <span class="num">{captureDateRange(r.capture)}</span>
-              {/if}
-            </div>
+          {:else}
+            <span class="no-pic muted small">{activeJob ? 'Rendering…' : 'No render yet'}</span>
           {/if}
-          <div class="prow-foot muted small">
-            <span class="num" title={r.updated_at}>edited {shortAgo(r.updated_at)}</span>
-          </div>
+          <span class="version">v{r.current_seq + 1}</span>
+          <span class="title">
+            <span class="name">{common ?? r.name}</span>
+            {#if common}<span class="cat">{r.name}</span>{/if}
+          </span>
           {#if activeJob}
-            <div class="prow-progress">
-              <div class="progress" aria-label="progress">
-                <div class="progress-fill" style="--pct: {(activeJob.progress * 100).toFixed(1)}%"></div>
-              </div>
-              <span class="prow-pct muted small mono">{(activeJob.progress * 100).toFixed(0)}%</span>
-            </div>
+            <span class="progress" role="progressbar" aria-valuenow={Math.round(activeJob.progress * 100)} aria-valuemin="0" aria-valuemax="100" aria-label="Processing">
+              <span class="progress-fill" style="--pct: {(activeJob.progress * 100).toFixed(1)}%"></span>
+            </span>
           {/if}
         </a>
-        <div class="prow-side">
-          {#if s}
-            <div class="prow-storage">
-              <span class="storage-main num">{formatBytes(s.owned_bytes)}</span>
-              {#if s.shared_bytes > 0}
-                <span class="storage-sub muted num">+{formatBytes(s.shared_bytes)} shared</span>
-              {/if}
-            </div>
+
+        <div class="facts" title={c && c.frame_count > 0 ? captureDetail(c) : undefined}>
+          {#if c?.integration_seconds && c.integration_seconds > 0}
+            <span class="strong num">{formatIntegrationTime(c.integration_seconds)}</span>
           {/if}
-          <div class="prow-actions">
+          {#if c && c.session_count > 0}
+            <span>{c.session_count} session{c.session_count === 1 ? '' : 's'}</span>
+          {/if}
+          {#if c && formatDateSpan(c.started_at, c.ended_at)}
+            <span>{formatDateSpan(c.started_at, c.ended_at)}</span>
+          {/if}
+          {#if c?.filter}
+            <span class={filterBadgeClass(c.filter)}>{c.filter}</span>
+          {/if}
+        </div>
+        <div class="recipe muted" title={templateDisplayName(r.template_id)}>
+          {templateShortName(r.template_id)} · edited <span title={r.updated_at}>{shortAgo(r.updated_at)}</span>
+        </div>
+
+        <div class="foot">
+          {#if s}
+            <span class="size num" title="Cache this project owns{s.shared_bytes > 0 ? `, plus ${formatBytes(s.shared_bytes)} shared with other projects` : ''}">
+              {formatBytes(s.owned_bytes)}
+              {#if s.shared_bytes > 0}<span class="muted">+{formatBytes(s.shared_bytes)}</span>{/if}
+            </span>
+          {/if}
+          <div class="actions">
             <button
               type="button"
               class="icon-btn"
@@ -310,7 +262,6 @@
     flex: 1;
     font-size: 1.5rem;
   }
-
   .storage-pill {
     background: var(--bg-elev);
     border: 1px solid var(--border);
@@ -324,7 +275,6 @@
   .storage-pill:hover {
     border-color: var(--accent);
   }
-
   .link {
     color: var(--accent);
     text-decoration: underline;
@@ -333,224 +283,181 @@
   }
   .link:hover { text-decoration-color: var(--accent); }
 
-  .list {
+  .grid {
     list-style: none;
     padding: 0;
     margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+    gap: 1rem;
   }
 
-  /* Project row — see design.md "Project row layout".
-     Stagger animation pulled from app.css. */
-  .prow {
+  .card {
     display: flex;
-    align-items: stretch;
-    gap: 1rem;
-    padding: 0.95rem 1.15rem;
+    flex-direction: column;
     background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     box-shadow: var(--shadow);
+    overflow: hidden;
     animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-    animation-delay: calc(var(--stagger, 0) * 60ms + 80ms);
+    animation-delay: calc(var(--stagger, 0) * 50ms + 60ms);
     transition: border-color 160ms ease, transform 160ms ease, opacity 160ms ease;
   }
-  .prow:hover {
+  .card:hover {
     border-color: var(--border-strong);
-    transform: translateY(-1px);
+    transform: translateY(-2px);
   }
-  .prow.busy {
+  .card.busy {
     opacity: 0.55;
     pointer-events: none;
   }
 
-  /* Left column: name + template + foot. */
-  .prow-link {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    flex: 1;
-    min-width: 0;
+  /* The picture, with the name laid over its lower edge. */
+  .pic {
+    position: relative;
+    display: block;
+    /* 4:3 like the Gallery: renders run from portrait to 2:1 wide. */
+    aspect-ratio: 4 / 3;
+    background: var(--bg-elev-2);
+    overflow: hidden;
     color: inherit;
     text-decoration: none;
   }
-  .prow-name {
-    /* Project names are entities in their own right — serif per design.md. */
-    font-family: var(--font-display);
-    font-weight: 500;
-    font-size: 1.2rem;
-    letter-spacing: -0.01em;
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-  .prow-template {
-    font-size: 0.88rem;
-    color: var(--fg);
-    opacity: 0.85;
-    font-variant: small-caps;
-    letter-spacing: 0.02em;
-  }
-  /* Mid-row meta: frames + % failed + sessions + capture details. The
-     same dot/strong/filter pattern Library uses inside session rows. */
-  .prow-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.4rem;
-    font-size: 0.82rem;
-  }
-  .prow-meta .dot { opacity: 0.5; }
-  .meta-strong {
-    color: var(--fg);
-    font-weight: 500;
-  }
-  .prow-foot {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    font-size: 0.78rem;
-    opacity: 0.85;
-  }
-
-  /* Catalog id (M 33, NGC 7380) sits next to the friendly name in mono.
-     Nudge the baseline because the serif name sits taller than mono. */
-  .prow-cat {
-    font-family: var(--font-mono);
-    font-weight: 500;
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    position: relative;
-    top: -0.1em;
-  }
-
-  /* Failure percentage — semantic color, matches Library tokens. */
-  .fail-pct {
-    color: var(--warn);
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-  .fail-pct.fail-zero {
-    color: var(--good);
-    opacity: 0.85;
-  }
-  .fail-pct.fail-high {
-    color: var(--bad);
-    font-weight: 500;
-  }
-
-  /* Project thumbnail — real preview from the current job's output.
-     When the job is still running or its cache was evicted we fall
-     through to the inline version chip on the name (no placeholder,
-     no fake gradient). */
-  .prow-thumb {
-    position: relative;
-    width: 84px;
-    height: 84px;
-    flex-shrink: 0;
-    border-radius: calc(var(--radius-card) - 2px);
-    overflow: hidden;
-    background: var(--bg-elev-2);
-    box-shadow:
-      0 0 0 1px var(--hairline),
-      inset 0 0 18px rgba(0, 0, 0, 0.5);
-    transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 220ms ease;
-  }
-  .prow:hover .prow-thumb:not(.prow-thumb-empty) {
-    transform: scale(1.04);
-    filter: saturate(1.15) brightness(1.05);
-  }
-  /* Empty placeholder: reserves the 84px slot so name + meta align with
-     rows that do have a preview. Subtle inset hairline so it reads as
-     'preview slot, nothing here yet' rather than a missing element. */
-  .prow-thumb-empty {
-    background: transparent;
-    box-shadow: inset 0 0 0 1px var(--hairline);
-    cursor: default;
-  }
-  .prow-thumb-img {
+  .pic img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
+    transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 280ms ease;
   }
-  .prow-thumb-version {
+  .card:hover .pic img {
+    transform: scale(1.03);
+    filter: saturate(1.1) brightness(1.05);
+  }
+  .no-pic {
     position: absolute;
-    bottom: 4px;
-    right: 5px;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-bottom: 2.5rem;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .pic::after {
+    /* Darken the bottom so the name reads on any picture. */
+    content: '';
+    position: absolute;
+    inset: 45% 0 0 0;
+    background: linear-gradient(180deg, transparent, rgba(2, 3, 10, 0.85));
+    pointer-events: none;
+  }
+  .title {
+    position: absolute;
+    left: 0.95rem;
+    right: 0.95rem;
+    bottom: 0.7rem;
+    z-index: 1;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.55rem;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+  }
+  .name {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 1.3rem;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    color: #fff;
+  }
+  .cat {
     font-family: var(--font-mono);
-    font-size: 0.62rem;
+    font-size: 0.75rem;
+    color: rgba(233, 241, 255, 0.75);
+  }
+  .version {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.7rem;
+    z-index: 1;
+    padding: 0.1rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
     font-weight: 600;
     color: rgba(255, 255, 255, 0.92);
     background: rgba(0, 0, 0, 0.55);
-    padding: 0.05rem 0.35rem;
     border-radius: 999px;
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
   }
 
-  /* Inline version chip — hugs the project name. */
-  .version-chip {
-    padding: 0.05rem 0.45rem;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 500;
-    color: var(--accent);
-    background: var(--accent-soft);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    line-height: 1.4;
-    /* Mono baseline sits low under serif; nudge up to align. */
-    position: relative;
-    top: -0.15em;
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.9rem;
+    padding: 0.8rem 0.95rem 0.15rem;
+    font-size: 0.88rem;
+    color: var(--fg-mute);
+  }
+  .facts:empty {
+    display: none;
+  }
+  .strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .recipe {
+    padding: 0.15rem 0.95rem 0;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  /* Right rail — storage on top, action icons under it, hairline left
-     edge. Storage lives next to the actions because the actions act on
-     it ("how much will I free?"). */
-  .prow-side {
+  .foot {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    justify-content: space-between;
+    align-items: center;
     gap: 0.6rem;
-    flex-shrink: 0;
-    padding-left: 0.85rem;
-    border-left: 1px solid var(--hairline);
+    margin-top: auto;
+    padding: 0.7rem 0.95rem 0.8rem;
   }
-  .prow-storage {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 0.05rem;
-    line-height: 1.15;
-    text-align: right;
-  }
-  .storage-main {
-    font-weight: 500;
-    font-size: 0.92rem;
+  .size {
+    font-size: 0.82rem;
     color: var(--fg);
   }
-  .storage-sub {
-    font-size: 0.7rem;
+  .size .muted {
+    margin-left: 0.25rem;
+    font-size: 0.75rem;
+  }
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .muted {
+    color: var(--fg-mute);
+  }
+  .small {
+    font-size: 0.85em;
   }
 
-  .prow-actions {
+  .actions {
     display: flex;
     gap: 0.4rem;
+    margin-left: auto;
   }
   .icon-btn {
     appearance: none;
     background: transparent;
     border: 1px solid var(--border);
     color: var(--fg-mute);
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
+    min-height: 0;
     padding: 0;
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
@@ -571,30 +478,25 @@
   }
   .icon-btn svg {
     display: block;
-    transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
-  .icon-btn:hover:not(:disabled) svg { transform: rotate(-6deg); }
-  .icon-btn.danger:hover:not(:disabled) svg { transform: translateY(-1px); }
 
-  .prow-progress {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.15rem;
-  }
+  /* Processing progress along the picture's bottom edge. */
   .progress {
-    flex: 1;
-    height: 4px;
-    background: rgba(94, 234, 212, 0.08);
-    border-radius: 999px;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    z-index: 2;
+    background: rgba(94, 234, 212, 0.12);
     overflow: hidden;
   }
   @keyframes bar-shimmer {
     0%   { transform: translateX(-100%); }
     100% { transform: translateX(400%); }
   }
-
   .progress-fill {
+    display: block;
     width: var(--pct);
     height: 100%;
     background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 60%, var(--bad)));
@@ -611,10 +513,6 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .progress-fill::after { animation: none; }
-  }
-  .prow-pct {
-    flex-shrink: 0;
-    min-width: 2.6rem;
-    text-align: right;
+    .card, .pic img { transition: none; }
   }
 </style>

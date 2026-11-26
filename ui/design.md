@@ -108,7 +108,7 @@ Triangulum Galaxy  M 33      ← friendly name primary, M 33 muted
 
 Apply this in:
 - Library target cards
-- Project rows
+- Project cards
 - Jobs table
 - Page H1s (target detail pages)
 
@@ -177,35 +177,32 @@ Three densities:
   `--border-strong`.
 - **Session inside a target**: `--bg-elev-2`, hairline border, gap from
   parent.
-- **Project row** (full width): `--pad-card` + `--radius-card`. Three
-  zones — thumbnail (left), info stack (middle), side rail (right).
+- **Project card**: `--radius-card`, picture first. Cards sit in a grid
+  (`minmax(300px, 1fr)`), so a phone shows one full-width card.
 
-#### Project row layout
+#### Project card layout
 
 ```
-[ name  cat  v14 ]                        [ size       ]
-[ template       ]                        [ +shared    ]
-[ frames · % failed · 2 sessions · ... ]  [ ─────────── ]
-[ edited Xh ago  ]                        [ broom trash ]
+[ picture, 4:3, cover          v14 ]
+[                                  ]
+[ Name (serif)  NGC 2238           ]   <- over a dark gradient
+[ 45m · 2 sessions · Nov 12–14 · HaOIII ]
+[ Duo-band, per night · edited 6h ago   ]
+[ 208 GiB +3 GiB          broom  trash ]
 ```
 
-The right-side rail (`.prow-side`) has:
-- A vertical hairline border on the left edge
-- Storage size up top (mono numerals, right-aligned)
-- Action icons below (broom, trash)
-
-The size lives next to the actions because the actions act on it
-("how much will I free?").
-
-**Thumbnail when available.** `/api/projects` now returns
-`preview_hash` and `preview_port` derived from the current job's
-outputs (port `image` preferred, otherwise the first one). The row
-renders an 84px square preview from `api.previewUrl(hash, port)` with
-the version pill (`v14`) overlaid in the bottom-right and a hover
-saturate. When the current job is still running or its cache has
-been evicted, the fields are absent and the row falls back to an
-inline `v14` chip next to the name — never a placeholder gradient or
-synthesized art.
+- The picture is the current job's preview (`preview_hash`/`preview_port`
+  from `/api/projects`). Without one the frame stays empty with "No render
+  yet" (or "Rendering…" while a job runs): never a placeholder gradient or
+  synthesized art. A running job draws a 3px progress bar on the
+  picture's bottom edge.
+- One line of facts: integration time (strong), sessions, the capture
+  dates, the filter badge. Frames, exposure, gain, fail % and source
+  bytes stay off the card (they are on the project page and in the facts
+  line's tooltip).
+- The recipe uses the short template name (`templateShortName`).
+- Footer: the cache the project owns, then its actions, because the
+  actions act on it ("how much will I free?").
 
 ### Pipeline strip card
 
@@ -337,7 +334,7 @@ spec, not a proposal.
 - **Settings page** owns: capture root (and a "Scan now" primary
   button next to it), cache budget, cache root display, anything else
   configuration-shaped.
-- **Projects page** is full-width project rows (see Components above).
+- **Projects page** is a grid of project cards (see Components above).
 - **Project detail page** is the editing surface (already designed).
 - **Jobs page** is a thin debugging table; not a primary surface.
 
