@@ -32,6 +32,9 @@
     resultSrc: string | null;
     /** A pipeline job for this project is running. */
     rendering: boolean;
+    /** Per-step state of the current job, from the page's pipeline view. */
+    nodeStatus?: Record<string, string>;
+    nodeProgress?: Record<string, { fraction: number; message: string }>;
     cropNode: string;
     cropInput: { hash?: string; port?: string };
     cropPreviewUrl: string | null;
@@ -43,7 +46,8 @@
     versions: Snippet;
   };
   let {
-    project, title, subtitle = '', resultSrc, rendering, cropNode, cropInput, cropPreviewUrl,
+    project, title, subtitle = '', resultSrc, rendering, nodeStatus = {}, nodeProgress = {},
+    cropNode, cropInput, cropPreviewUrl,
     onProjectUpdated, onView, onReprocess, upgradeLabel = null, onUpgrade, versions,
   }: Props = $props();
 
@@ -186,7 +190,56 @@
   let maxEdge = 1280;
   // The pipeline output the preview starts from changes when a render
   // finishes; refetch then.
-  const baseKey = $derived(`${project.current_job_id}:${rendering ? 'r' : 'd'}`);
+  // ---- render progress --------------------------------------------------------
+  // The preview starts from the step before the finishing chain. While a
+  // render is re-making that step (after a crop, gradient or noise change)
+  // the preview still shows the old one: "cooking".
+  const FINISH_KINDS = new Set([
+    'channel_map', 'color_balance', 'auto_bp_shift', 'stretch',
+    'starnet_extract', 'starnet_replace', 'starnet_recombine', 'save_image',
+  ]);
+  const DONE = new Set(['completed', 'cached', 'skipped']);
+  const baseNode = $derived.by(() => {
+    const nodes = project.template.nodes;
+    let i = nodes.length;
+    while (i > 0 && FINISH_KINDS.has(nodes[i - 1].kind)) i--;
+    const src = (nodes[i]?.inputs as Record<string, string> | undefined)?.image;
+    return src ? src.split('.')[0] : null;
+  });
+  const cooking = $derived(
+    rendering && !!baseNode && !!nodeStatus[baseNode] && !DONE.has(nodeStatus[baseNode])
+  );
+  /** Share of the job's steps done, counting the running step's progress. */
+  const jobPct = $derived.by(() => {
+    // Per-night steps report as "convert@43"; count those instead of the
+    // template entry ("convert") they stand for.
+    const keys = Object.keys(nodeStatus);
+    const ids = keys.filter((k) => k.includes('@') || !keys.some((o) => o.startsWith(`${k}@`)));
+    if (!ids.length) return 0;
+    let done = 0;
+    for (const id of ids) {
+      const st = nodeStatus[id];
+      if (st && DONE.has(st)) done += 1;
+      else if (st === 'running') done += Math.min(1, Math.max(0, nodeProgress[id]?.fraction ?? 0));
+    }
+    return Math.round((100 * done) / ids.length);
+  });
+  const STEP_LABEL: Record<string, string> = {
+    convert: 'Reading frames', calibrate: 'Calibrating', register: 'Aligning', offset: 'Leveling frames',
+    resample: 'Resampling', bg_extract: 'Flattening frames', extract: 'Splitting H-alpha and OIII',
+    pack: 'Packing channels', narrowband_extract: 'Splitting channels', narrowband_compose: 'Composing channels',
+    stack: 'Stacking', combine: 'Combining nights', crop: 'Cropping', frame: 'Cropping',
+    graxpert_bg: 'Removing gradient', graxpert_denoise: 'Reducing noise',
+    channel_map: 'Coloring', color_balance: 'Balancing color', auto_bp_shift: 'Setting black point',
+    stretch: 'Stretching', starnet_extract: 'Finding stars', starnet_replace: 'Rebuilding stars',
+    starnet_recombine: 'Finishing', save: 'Saving',
+  };
+  const runningLabel = $derived.by(() => {
+    const id = Object.keys(nodeStatus).find((k) => nodeStatus[k] === 'running');
+    return id ? (STEP_LABEL[id.split('@')[0]] ?? 'Rendering') : 'Rendering';
+  });
+
+  const baseKey = $derived(`${project.current_job_id}:${cooking ? 'c' : 'b'}:${rendering ? 'r' : 'd'}`);
 
   async function fetchPreview() {
     if (previewBusy) {
@@ -393,7 +446,7 @@
   const status = $derived(
     committing ? 'Saving…'
       : dirty ? 'Edited'
-      : rendering ? 'Rendering full size…'
+      : rendering ? `${runningLabel}… ${jobPct}%`
       : `v${project.current_seq + 1}`
   );
 </script>
@@ -431,12 +484,16 @@
         </div>
       {/if}
     </div>
-    <button class="export" onclick={exportPng}><Icon name="download" size={16} /> Export</button>
+    <button class="export" onclick={exportPng} class:busy={rendering || committing}
+      title={rendering ? `Rendering the full-size picture, ${jobPct}%` : 'Download the full-size PNG'}>
+      {#if rendering || committing}<span class="spin"></span>{:else}<Icon name="download" size={16} />{/if} Export
+    </button>
   </header>
 
   <div
     class="stage"
     class:cropping={tab === 'crop'}
+    class:stale={cooking && tab !== 'crop'}
     bind:this={stage}
     onpointerdown={tab === 'crop' ? undefined : onStageDown}
     onpointerup={onStageUp}
@@ -477,14 +534,23 @@
     {:else}
       <div class="empty">{rendering ? 'Rendering…' : 'No render yet'}</div>
     {/if}
+    {#if tab !== 'crop' && cooking}
+      <div class="cooking" role="status" aria-live="polite">
+        <span class="cook-chip"><span class="spin"></span>{runningLabel}… {jobPct}%</span>
+      </div>
+    {/if}
+    {#if rendering}
+      <div class="jobbar" aria-hidden="true"><span style="width: {Math.max(jobPct, 3)}%"></span></div>
+    {/if}
     {#if tab !== 'crop'}
       <div class="overlay">
         <button class="pill" class:on={compare === 'split'} onclick={(e) => { e.stopPropagation(); compare = compare === 'split' ? 'after' : 'split'; }}
           onpointerdown={(e) => e.stopPropagation()} title="Compare with how this edit started (\)">
           <Icon name="split" size={15} /> Compare
         </button>
-        {#if pendingRender || (rendering && !previewOk)}<span class="pill quiet"><span class="spin"></span>Rendering</span>
-        {:else if !previewOk}<span class="pill quiet">Full render</span>{/if}
+        {#if rendering && !cooking}<span class="pill quiet" title="The full-size picture is rendering; the preview is up to date"><span class="spin"></span>Full size {jobPct}%</span>
+        {:else if pendingRender && !rendering}<span class="pill quiet"><span class="spin"></span>Saving</span>
+        {:else if !previewOk && !rendering}<span class="pill quiet">Full render</span>{/if}
         <span class="narrow-only undo-pills">
           <button class="pill round" onclick={(e) => { e.stopPropagation(); undo(); }} onpointerdown={(e) => e.stopPropagation()}
             disabled={!undoStack.length} aria-label="Undo"><Icon name="undo" size={16} /></button>
@@ -502,7 +568,7 @@
         <div class="cards">
           {#each PALETTES.filter((l) => l.show(ctx)) as look (look.id)}
             <button class="card" class:on={lookActive(look)} onclick={() => applyLook(look)}>
-              <span class="thumb">{#if thumbs[look.id]}<img src={thumbs[look.id]} alt="" />{/if}</span>
+              <span class="thumb" class:loading={cooking || !thumbs[look.id]}>{#if thumbs[look.id]}<img src={thumbs[look.id]} alt="" />{/if}<span class="spin"></span></span>
               <span class="cn">{look.name}</span><span class="cs">{look.sub}</span>
             </button>
           {/each}
@@ -512,7 +578,7 @@
       <div class="cards">
         {#each STYLES.filter((l) => l.show(ctx)) as look (look.id)}
           <button class="card" onclick={() => applyLook(look)}>
-            <span class="thumb">{#if thumbs[look.id]}<img src={thumbs[look.id]} alt="" />{/if}</span>
+            <span class="thumb" class:loading={cooking || !thumbs[look.id]}>{#if thumbs[look.id]}<img src={thumbs[look.id]} alt="" />{/if}<span class="spin"></span></span>
             <span class="cn">{look.name}</span><span class="cs">{look.sub}</span>
           </button>
         {/each}
@@ -717,6 +783,71 @@
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+  }
+  .stage.stale .pic {
+    opacity: 0.45;
+    filter: saturate(0.6) blur(1px);
+    transition: opacity 200ms ease, filter 200ms ease;
+  }
+  .cooking {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .cook-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.55rem 1rem;
+    border-radius: 999px;
+    background: rgba(8, 12, 24, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .jobbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgba(94, 234, 212, 0.12);
+    z-index: 3;
+    pointer-events: none;
+  }
+  .jobbar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 500ms ease-out;
+  }
+  .thumb {
+    position: relative;
+  }
+  .thumb .spin {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    margin: -7px 0 0 -7px;
+    width: 14px;
+    height: 14px;
+    color: var(--fg);
+    display: none;
+  }
+  .thumb.loading .spin {
+    display: block;
+  }
+  .thumb.loading img {
+    opacity: 0.4;
+  }
+  .export.busy {
+    background: rgba(244, 247, 251, 0.85);
+    font-variant-numeric: tabular-nums;
+    min-width: 5.2rem;
+    justify-content: center;
   }
   .pic {
     position: absolute;
