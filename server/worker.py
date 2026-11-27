@@ -20,6 +20,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 
 # Populate the node registry. nodes.basic registers every concrete node via
@@ -35,6 +36,11 @@ from .jobs import JobManager, JobWorker
 log = logging.getLogger("astrolab.worker")
 
 IDLE_POLL_SECONDS = 0.25
+# How often an idle worker re-checks for abandoned 'running' rows. Startup alone
+# is not enough: after a pod restart the new worker can get the dead worker's
+# pid, and its row's heartbeat is still fresh at that moment, so the row looked
+# alive forever.
+RECLAIM_INTERVAL_SECONDS = 60.0
 
 
 class _Shutdown:
@@ -66,9 +72,15 @@ def _run_loop(worker: JobWorker, shutdown: _Shutdown) -> None:
     reclaimed = worker.reclaim_stale()
     if reclaimed:
         log.info("reclaimed %d stale running job(s)", reclaimed)
+    last_reclaim = time.monotonic()
     while not shutdown.stop.is_set():
         record = worker.claim_next_queued()
         if record is None:
+            if time.monotonic() - last_reclaim >= RECLAIM_INTERVAL_SECONDS:
+                last_reclaim = time.monotonic()
+                reclaimed = worker.reclaim_stale()
+                if reclaimed:
+                    log.info("reclaimed %d stale running job(s)", reclaimed)
             shutdown.stop.wait(IDLE_POLL_SECONDS)
             continue
         if shutdown.cancel_current.is_set():
