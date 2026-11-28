@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from server.api import app
 from server.jobs import JobEvent, JobRecord
-from server.models import Job, NodeSpec, Template
+from server.models import Job, NodeSpec, Ref, Template
 
 
 def _template(node_ids: tuple[str, ...] = ("a", "b", "c")) -> Template:
@@ -248,6 +248,47 @@ def test_step_aware_progress_monotonic_within_node(tmp_path: Path) -> None:
     by_id = {a["id"]: a for a in payload["jobs"]["active"]}
     # max(0.8, 0.2) / 2 nodes = 0.4 - not (0.0 + 0.2) / 2 = 0.1
     assert pytest.approx(by_id["r1"]["progress"], abs=1e-9) == 0.4
+
+
+def test_progress_counts_every_night_of_a_per_session_step(tmp_path: Path) -> None:
+    """Four nights of a two-step per-night template plus one shared step is nine
+    nodes, not three: three nights done is 3/9, not 3/3 (the bar once ran far
+    ahead of the work because the total was the template's node count)."""
+    from server.system_metrics import collect_system_metrics
+
+    tpl = Template(
+        id="t-test",
+        version=1,
+        description="Per night",
+        nodes=[
+            NodeSpec(id="a", kind="noop", per_session=True),
+            NodeSpec(id="b", kind="noop", per_session=True, inputs={"x": "a.x"}),
+            NodeSpec(id="c", kind="noop", inputs={"x": "b.x"}),
+        ],
+    )
+    job = Job(
+        template_id="t-test",
+        template_version=1,
+        inputs={f"a@{n}.lights": Ref(node_hash="h", port="lights", path=Path("/x"), type="sequence/fits") for n in (1, 2, 3, 4)},
+    )
+    events = []
+    for n in (1, 2, 3):
+        events.append(JobEvent(type="node_started", timestamp="t", node_id=f"a@{n}"))
+        events.append(JobEvent(type="node_completed", timestamp="t", node_id=f"a@{n}"))
+    events.append(JobEvent(type="node_started", timestamp="t", node_id="a@4"))
+    events.append(JobEvent(type="node_progress", timestamp="t", node_id="a@4", fraction=0.5))
+    rec = _record(job_id="r1", status="running", template=tpl, events=events)
+    rec.job = job
+    jm = FakeJobManager([rec], cache_root=tmp_path)
+
+    with patch("server.system_metrics._nvidia_smi_query", return_value=None):
+        payload = collect_system_metrics(jm)  # type: ignore[arg-type]
+
+    by_id = {a["id"]: a for a in payload["jobs"]["active"]}
+    assert pytest.approx(by_id["r1"]["progress"], abs=1e-9) == 3.5 / 9
+    assert by_id["r1"]["current_step_kind"] == "noop"
+    assert rec.public_dict()["node_total"] == 9
+    assert rec.public_dict()["nights"] == 4
 
 
 def test_active_jobs_include_project_name_and_version(tmp_path: Path) -> None:

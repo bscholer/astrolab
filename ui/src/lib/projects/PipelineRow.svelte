@@ -20,7 +20,7 @@
     nschema: TemplateNodeSchema;
     project: Project;
     status: NodeStatus;
-    progress: { fraction: number; message: string } | undefined;
+    progress: { fraction: number; message: string; at?: number } | undefined;
     hash: string | undefined;
     port: string;
     kind: string;
@@ -130,6 +130,17 @@
     const s = Math.round((ms % 60_000) / 1000);
     return `${m}m ${s}s`;
   }
+
+  // A running step that has said nothing for a while is worth flagging: that is how a
+  // step stuck waiting on something looks from here.
+  const QUIET_AFTER_MS = 60_000;
+  let now = $state(Date.now());
+  $effect(() => {
+    if (status !== 'running') return;
+    const t = setInterval(() => (now = Date.now()), 5000);
+    return () => clearInterval(t);
+  });
+  const quietMs = $derived(progress?.at ? Math.max(0, now - progress.at) : null);
 
   const upstreamPreviewUrl = $derived.by(() => {
     if (!upstreamHash) return null;
@@ -316,6 +327,9 @@
           </span>
           {#if status === 'running' && progress?.message}
             <span class="step-status-msg muted small">{progress.message}</span>
+          {/if}
+          {#if status === 'running' && quietMs !== null && quietMs >= QUIET_AFTER_MS}
+            <span class="quiet small" title="The last progress message from this step arrived this long ago. Some steps are silent for a while; a long silence can mean it is waiting on something.">quiet for {formatStepDuration(quietMs)}</span>
           {/if}
           {#if status === 'failed' && !isOutput}
             <span class="step-status-msg muted small">see error below</span>
@@ -794,6 +808,7 @@
     padding-bottom: 0.35rem;
     border-bottom: 1px solid var(--hairline);
   }
+  .quiet { color: var(--warn, #e0a64a); white-space: nowrap; }
   .step-status-msg {
     min-width: 0;
     overflow: hidden;

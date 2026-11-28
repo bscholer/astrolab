@@ -340,6 +340,19 @@ export interface JobQuality {
   siril_warnings: string[];
 }
 
+export interface GaiaCatalogStatus {
+  installed: boolean;
+  path: string;
+  size_bytes: number;
+  linked: boolean;
+  download_bytes: number;
+  disk_bytes: number;
+  free_bytes: number | null;
+  source: string;
+  install: { phase: 'downloading' | 'unpacking'; done_bytes: number; total_bytes: number } | null;
+  error: string | null;
+}
+
 export interface JobSummary {
   id: string;
   status: JobStatus;
@@ -350,6 +363,9 @@ export interface JobSummary {
   finished_at: string | null;
   error: string | null;
   outputs: Record<string, JobOutputRef> | null;
+  // Nodes the job runs (a per-night step counts once per night) and how many nights.
+  node_total?: number;
+  nights?: number;
   // Only populated when the job was built from catalog session(s).
   capture?: JobCaptureSummary;
   // Only populated by GET /api/jobs/{id}, not the list endpoint.
@@ -1253,6 +1269,10 @@ export const api = {
       }
     >(`/api/projects/${id}/sessions`, req),
   getStorage: () => getJSON<StorageSnapshot>('/api/storage'),
+  getGaiaCatalog: () => getJSON<GaiaCatalogStatus>('/api/settings/gaia'),
+  installGaiaCatalog: () => postJSON<GaiaCatalogStatus>('/api/settings/gaia/install', {}),
+  cancelGaiaInstall: () => postJSON<GaiaCatalogStatus>('/api/settings/gaia/cancel', {}),
+  removeGaiaCatalog: () => deleteJSON<GaiaCatalogStatus>('/api/settings/gaia'),
   getNasUsage: () => getJSON<NasUsageResponse>('/api/storage/nas'),
   refreshNasUsage: () =>
     postJSON<NasUsageResponse & { started: boolean }>('/api/storage/nas/refresh', {}),
