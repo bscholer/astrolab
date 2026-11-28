@@ -500,10 +500,9 @@ class JobWorker:
     CANCEL_POLL_SECONDS = 0.5
     CACHE_SWEEP_SECONDS = 30
     """How often the monitor thread re-runs the eviction sweep while a
-    job is active. Cheap when under budget (run_cleanup no-ops); when
-    over budget, bounds how long the cache can balloon mid-job before
-    we reclaim space. The in-use lockfile guarantees the running job's
-    own entries survive every sweep."""
+    job is active. Cheap when under budget; when over budget, bounds how
+    long the cache can balloon mid-job before we reclaim space. The in-use
+    lockfile guarantees the running job's own entries survive every sweep."""
 
     def __init__(
         self,
@@ -629,8 +628,8 @@ class JobWorker:
 
         Called pre-job and periodically from the per-job monitor thread.
         Never raises: a broken cleanup must not fail the job it's protecting.
-        run_cleanup itself no-ops when usage is under budget, so calling
-        this on every idle tick costs only a catalog read.
+        Entries nothing uses go on every call, so this also runs when idle
+        and after each job; under budget it costs only a catalog read.
         """
         try:
             max_bytes = int(
@@ -765,6 +764,9 @@ class JobWorker:
                 log.exception("failed to release in-use marks for job %s", record.id)
             monitor_stop.set()
             monitor_thread.join(timeout=5)
+            # The job's own leftovers (a failed run's entries) go now, not at
+            # the next job.
+            self.sweep_cache()
 
     @retry_on_locked
     def _terminate(

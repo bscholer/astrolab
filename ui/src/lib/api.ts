@@ -806,8 +806,6 @@ export interface CacheDisk {
 export interface StorageSnapshot {
   total_bytes: number;
   entry_count: number;
-  unreachable_bytes: number;
-  unreachable_count: number;
   cache_root: string;
   cache_disk: CacheDisk;
   per_project: ProjectStorage[];

@@ -51,7 +51,7 @@ def test_sweep_cache_noops_under_budget(tmp_path: Path) -> None:
     _commit_entry(cache, "h1", payload=1_000)
     # Budget high enough to keep everything.
     set_setting(SETTING_CACHE_MAX_BYTES, 1_000_000_000, db_path=db_path)
-    # A completed job made h1, so it isn't dead (dead entries go regardless).
+    # A completed job made h1, so it isn't unused (unused entries go regardless).
     import sqlite3
 
     conn = sqlite3.connect(db_path)

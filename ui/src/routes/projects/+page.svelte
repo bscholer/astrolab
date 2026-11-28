@@ -156,9 +156,6 @@
   {#if storage}
     <a href="/settings" class="storage-pill" title="Open storage settings">
       cache <span class="num">{formatBytes(storage.total_bytes)}</span>
-      {#if storage.unreachable_bytes > 0}
-        <span class="muted">· {formatBytes(storage.unreachable_bytes)} dead</span>
-      {/if}
     </a>
   {/if}
 </div>

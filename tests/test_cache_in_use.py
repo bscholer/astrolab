@@ -180,40 +180,34 @@ def test_in_use_marker_naming(tmp_path: Path) -> None:
     assert marker.exists() and marker.is_file()
 
 
-def test_run_cleanup_always_evicts_dead_entries(tmp_path: Path) -> None:
-    # Under budget, a failed run's leftovers still go; a completed standalone
-    # job's output (auto-stack has no project) stays.
+def test_run_cleanup_always_evicts_unused_entries(tmp_path: Path) -> None:
+    # Under budget: entries nothing refers to go at once; a completed job's
+    # output stays; a failed run's results stay for a day so a retry resumes.
     import json
+    import os
 
     cache = ContentCache(root=tmp_path / "cache")
     db_path = tmp_path / "catalog.sqlite"
-    _commit_entry(cache, "h_failed")
-    _commit_entry(cache, "h_done")
-    _commit_entry(cache, "h_unknown")
+    for h in ("h_done", "h_unknown", "h_resume_new", "h_resume_old"):
+        _commit_entry(cache, h)
+    os.utime(cache.entry_dir("h_resume_old") / "_done", (1, 1))
     _seed_jobs_table(db_path, ("failed-job", "failed"), ("done-job", "completed"))
     conn = sqlite3.connect(db_path)
     with conn:
         conn.execute(
             "UPDATE jobs SET node_hashes_json = ? WHERE id = 'failed-job'",
-            (json.dumps({"convert": "h_failed"}),),
+            (json.dumps({"a": "h_resume_new", "b": "h_resume_old"}),),
         )
         conn.execute(
             "UPDATE jobs SET node_hashes_json = ? WHERE id = 'done-job'",
-            (json.dumps({"convert": "h_failed", "stack": "h_done"}),),
+            (json.dumps({"stack": "h_done"}),),
         )
     conn.close()
 
-    import os
-
-    for h in ("h_failed", "h_done", "h_unknown"):
-        old = cache.entry_dir(h) / "_done"
-        os.utime(old, (1, 1))
-    _commit_entry(cache, "h_fresh")  # dead but recent: a retry may still want it
-
     result = run_cleanup(cache, max_bytes=10**12, db_path=db_path)
 
-    assert cache.entry_dir("h_fresh").exists()
-    assert result.evicted_count == 1
+    assert result.evicted_count == 2
     assert not cache.entry_dir("h_unknown").exists()
-    assert cache.entry_dir("h_failed").exists()  # the completed job used it too
+    assert not cache.entry_dir("h_resume_old").exists()
+    assert cache.entry_dir("h_resume_new").exists()
     assert cache.entry_dir("h_done").exists()

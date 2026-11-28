@@ -56,7 +56,7 @@ class CacheEntryInfo:
     node_hash: str
     bytes: int
     owners: set[str] = field(default_factory=set)
-    """Project ids whose history references this entry. Empty = unreachable."""
+    """Project ids whose history references this entry. Empty = no project uses it."""
 
     tier: str = "bulk"
     """Storage tier of the producing node. `bulk` (pre-stack sequence data)
@@ -69,13 +69,25 @@ class CacheEntryInfo:
     from_completed_job: bool = False
     """A completed job (with or without a project) produced or used this
     entry. Auto-stack and other standalone jobs have no project, so their
-    results have no owners but are not dead."""
+    results have no owners but are still used."""
+
+    from_unfinished_job: bool = False
+    """A failed or interrupted job recorded this entry. A retry can resume
+    from it, so it is not removed straight away."""
 
     @property
-    def dead(self) -> bool:
-        """Nothing can reach it: no project history and no completed job.
-        Left behind by deleted projects and failed or interrupted runs."""
-        return not self.owners and not self.from_completed_job
+    def unused(self) -> bool:
+        """Nothing refers to it: no project history and no job at all.
+        Left behind by deleted projects; removed at once."""
+        return not self.owners and not self.from_completed_job and not self.from_unfinished_job
+
+    @property
+    def resumable(self) -> bool:
+        """Only a failed or interrupted job refers to it (no project, no
+        completed job). Kept for RESUME_WINDOW_S so a retry picks up there."""
+        return (
+            not self.owners and not self.from_completed_job and self.from_unfinished_job
+        )
 
 
 @dataclass
@@ -116,8 +128,6 @@ class StorageSnapshot:
 
     total_bytes: int
     entry_count: int
-    unreachable_bytes: int
-    unreachable_count: int
     cache_root: str
     cache_disk: CacheDisk
     per_project: list[ProjectStorage]
@@ -202,6 +212,10 @@ def build_reachability(
                         tier = job_tiers.get(node_id) or job_tiers.get(node_id.split("@", 1)[0])
                         if tier:
                             _promote(entries[h], tier)
+        if j["status"] != "completed":
+            for h in raw.values() if isinstance(raw, dict) else raw:
+                if isinstance(h, str) and h in entries:
+                    entries[h].from_unfinished_job = True
         if isinstance(raw, dict):
             job_hashes_raw[j["id"]] = {
                 str(k): str(v) for k, v in raw.items() if isinstance(v, str)
@@ -271,8 +285,6 @@ def system_storage(
         entries, projects = build_reachability(conn, cache)
 
     total_bytes = sum(e.bytes for e in entries.values())
-    unreachable_bytes = sum(e.bytes for e in entries.values() if e.dead)
-    unreachable_count = sum(1 for e in entries.values() if e.dead)
 
     per_project: list[ProjectStorage] = []
     for pid, p in projects.items():
@@ -304,8 +316,6 @@ def system_storage(
     return StorageSnapshot(
         total_bytes=total_bytes,
         entry_count=len(entries),
-        unreachable_bytes=unreachable_bytes,
-        unreachable_count=unreachable_count,
         cache_root=str(cache.root),
         cache_disk=cache_disk,
         per_project=per_project,
@@ -457,8 +467,8 @@ _TIER_ORDER = {"bulk": 0, "keep": 1}
 def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
     """Sort key: lower = evict sooner.
 
-    Position 0: orphan-flag (0 = no owners, 1 = has owners) so unreachable
-    entries go first (dead ones are already gone by then, see run_cleanup).
+    Position 0: orphan-flag (0 = no owners, 1 = has owners) so unowned
+    entries go first (unused ones are already gone by then, see run_cleanup).
     Position 1: tier rank (bulk=0, keep=1).
     Position 2: oldest-owner timestamp ascending; unknown sorts after
     populated values so we don't accidentally prioritize an undated entry.
@@ -469,8 +479,8 @@ def _eviction_key(entry: CacheEntryInfo) -> tuple[int, int, str]:
     return (has_owners, tier_rank, age_key)
 
 
-DEAD_GRACE_S = 24 * 3600
-"""Dead entries younger than this stay, so retrying a failed run resumes where it stopped."""
+RESUME_WINDOW_S = 24 * 3600
+"""How long a failed or interrupted run's results stay so a retry resumes where it stopped."""
 
 
 def _age_s(cache: ContentCache, node_hash: str) -> float:
@@ -516,11 +526,11 @@ def run_cleanup(
     max_bytes: int,
     db_path: Path | None = None,
 ) -> CleanupResult:
-    """Evict dead entries, then more until total usage is <= max_bytes.
+    """Evict unused entries, then more until total usage is <= max_bytes.
 
-    Dead entries (no project, no completed job: deleted projects, failed and
-    interrupted runs) older than DEAD_GRACE_S go on every call, budget or not.
-    Younger ones stay so a retry of a failed run reuses its finished steps.
+    Unused entries (no project, no job: deleted projects) go on every call,
+    budget or not. Results of a failed or interrupted run with no project go
+    after RESUME_WINDOW_S, so a retry resumes where it stopped.
 
     Budget eviction only takes bulk-tier entries (pre-stack sequence data):
       1. Orphans first (no project owns them, e.g. old auto-stack work).
@@ -528,7 +538,7 @@ def run_cleanup(
     Keep-tier entries (stacks and everything after) are results people look
     at, and small next to bulk, so the budget never takes them; one huge run
     once evicted every other project's images that way. They go when their
-    project is deleted or they turn dead. If bulk alone can't get under
+    project is deleted or nothing uses them. If bulk alone can't get under
     budget, the result says over_budget and the per-node disk check decides.
 
     Entries with a live in-use marker are skipped regardless of position;
@@ -539,18 +549,18 @@ def run_cleanup(
         entries, _ = build_reachability(conn, cache)
         alive = _alive_job_ids(conn)
 
-    dead_count = 0
-    dead_freed = 0
-    for e in [e for e in entries.values() if e.dead]:
-        if _age_s(cache, e.node_hash) < DEAD_GRACE_S:
+    unused_count = 0
+    unused_freed = 0
+    for e in [e for e in entries.values() if e.unused or e.resumable]:
+        if e.resumable and _age_s(cache, e.node_hash) < RESUME_WINDOW_S:
             continue
         if cache.is_in_use(e.node_hash, alive):
             continue  # the budget pass below counts it if it gets that far
-        dead_freed += cache.evict(e.node_hash, reason="dead")
-        dead_count += 1
+        unused_freed += cache.evict(e.node_hash, reason="unused")
+        unused_count += 1
         del entries[e.node_hash]
-    if dead_count:
-        log.info("run_cleanup dead: evicted=%d freed=%d", dead_count, dead_freed)
+    if unused_count:
+        log.info("run_cleanup unused: evicted=%d freed=%d", unused_count, unused_freed)
 
     total = sum(e.bytes for e in entries.values())
     if total <= max_bytes:
@@ -561,8 +571,8 @@ def run_cleanup(
             len(entries),
         )
         return CleanupResult(
-            evicted_count=dead_count,
-            bytes_freed=dead_freed,
+            evicted_count=unused_count,
+            bytes_freed=unused_freed,
             bytes_remaining=total,
             over_budget=False,
         )
@@ -577,7 +587,7 @@ def run_cleanup(
         len(alive),
     )
 
-    evicted_count = dead_count
+    evicted_count = unused_count
     bytes_freed = 0
     skipped_in_use = 0
     for e in ordered:
@@ -608,7 +618,7 @@ def run_cleanup(
 
     over_budget = (total - bytes_freed) > max_bytes
     remaining = total - bytes_freed
-    bytes_freed += dead_freed
+    bytes_freed += unused_freed
     log.info(
         "run_cleanup done: evicted=%d freed=%d remaining=%d over_budget=%s skipped_in_use=%d",
         evicted_count,

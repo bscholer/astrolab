@@ -365,7 +365,6 @@ def cmd_cache_stats(args: argparse.Namespace) -> None:
 
     total_bytes = data.get("total_bytes", 0)
     entry_count = data.get("entry_count", 0)
-    unreachable = data.get("unreachable_bytes", 0)
     per_project = data.get("per_project") or []
 
     if _want_json(args):
@@ -381,7 +380,6 @@ def cmd_cache_stats(args: argparse.Namespace) -> None:
 
     print(f"total cache size : {_fmt_bytes(total_bytes)}")
     print(f"entry count      : {entry_count}")
-    print(f"unreachable      : {_fmt_bytes(unreachable)}")
     print(f"cache root       : {data.get('cache_root', '')}")
     print()
     top = sorted(per_project, key=lambda p: p.get("owned_bytes", 0), reverse=True)[:10]

@@ -431,7 +431,6 @@ class TestCacheStats:
     _STORAGE = {
         "total_bytes": 2_000_000_000,
         "entry_count": 42,
-        "unreachable_bytes": 100_000,
         "cache_root": "/data/cache",
         "cache_disk": {"total_bytes": 500_000_000_000, "used_bytes": 100_000_000, "free_bytes": 400_000_000_000},
         "per_project": [

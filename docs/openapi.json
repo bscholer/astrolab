@@ -5420,7 +5420,7 @@
     },
     "/api/storage": {
       "get": {
-        "description": "System-wide storage snapshot: total cache bytes, dead bytes, and a\nper-project breakdown of owned vs shared bytes.",
+        "description": "System-wide storage snapshot: total cache bytes and a\nper-project breakdown of owned vs shared bytes.",
         "operationId": "get_storage_api_storage_get",
         "responses": {
           "200": {

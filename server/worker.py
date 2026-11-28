@@ -81,6 +81,7 @@ def _run_loop(worker: JobWorker, shutdown: _Shutdown) -> None:
                 reclaimed = worker.reclaim_stale()
                 if reclaimed:
                     log.info("reclaimed %d stale running job(s)", reclaimed)
+                worker.sweep_cache()
             shutdown.stop.wait(IDLE_POLL_SECONDS)
             continue
         if shutdown.cancel_current.is_set():

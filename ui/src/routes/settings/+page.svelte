@@ -4,7 +4,7 @@
   Slider sets cache_max_bytes (binary GiB). The "Run cleanup" button
   triggers POST /api/storage/cleanup which evicts entries until the cache
   fits under the budget. Eviction order:
-    1. Dead entries (deleted projects, failed or interrupted runs) go on
+    1. Unused entries (deleted projects, failed or interrupted runs) go on
        every sweep, under budget or not. Results of completed jobs stay.
     2. Bulk-tier entries (pre-stack sequence data — convert/calibrate/
        register/etc.) by oldest owning project first.
@@ -560,11 +560,6 @@
         <span class="stat-label">cache total</span>
         <span class="stat-val">{formatBytes(storage.total_bytes)}</span>
         <span class="stat-sub muted">{storage.entry_count} entries</span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">unreachable</span>
-        <span class="stat-val">{formatBytes(storage.unreachable_bytes)}</span>
-        <span class="stat-sub muted">{storage.unreachable_count} dead entries</span>
       </div>
       <div class="stat">
         <span class="stat-label">partition</span>

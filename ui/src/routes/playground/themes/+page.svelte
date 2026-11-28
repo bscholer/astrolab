@@ -354,11 +354,6 @@
             <span class="stat-sub muted small">32 entries</span>
           </div>
           <div class="stat">
-            <span class="stat-label">unreachable</span>
-            <span class="stat-val">0 B</span>
-            <span class="stat-sub muted small">0 dead entries</span>
-          </div>
-          <div class="stat">
             <span class="stat-label">cache root</span>
             <code class="stat-path muted small">/home/bscholer/.local/share/astrolab/cache</code>
           </div>

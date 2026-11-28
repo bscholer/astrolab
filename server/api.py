@@ -3153,14 +3153,12 @@ def patch_project_sessions(project_id: str, req: PatchProjectSessionsRequest, co
 
 @app.get("/api/storage")
 def get_storage() -> dict:
-    """System-wide storage snapshot: total cache bytes, dead bytes, and a
+    """System-wide storage snapshot: total cache bytes and a
     per-project breakdown of owned vs shared bytes."""
     snap = system_storage(job_manager.cache, db_path=job_manager.db_path)
     return {
         "total_bytes": snap.total_bytes,
         "entry_count": snap.entry_count,
-        "unreachable_bytes": snap.unreachable_bytes,
-        "unreachable_count": snap.unreachable_count,
         "cache_root": snap.cache_root,
         "cache_disk": {
             "total_bytes": snap.cache_disk.total_bytes,
