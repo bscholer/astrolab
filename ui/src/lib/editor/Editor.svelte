@@ -1148,6 +1148,7 @@
     .t { font-size: 1.25rem; }
     .views { margin: 0.35rem 0 0.5rem; }
     .canon { display: none; }
+    .s { display: none; }
   }
   @media (max-width: 380px) {
     .export :global(svg) { display: none; }

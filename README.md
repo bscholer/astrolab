@@ -12,11 +12,17 @@ astrolab is a self-hosted web app I use to run a DWARF 3 that sits outside on a 
 
 The scope connection goes through a small relay service ([dwarf-relay](https://github.com/bscholer/dwarf-relay)), so the DWARF 3 is the only scope it can control right now. Processing works on FITS files from other capture programs too (see [Other scopes](#other-scopes)).
 
-<img src="docs/screenshots/last-night.png" alt="Home page: last night's card with good, rescued and junk time per target, and before/after sliders for updated masters" width="720" />
+<p>
+  <img src="docs/screenshots/projects.png" alt="Projects page: last night's totals and what each target's master gained, above a grid of project pictures" width="560" />
+  <img src="docs/screenshots/projects-phone.png" alt="Projects on a phone" width="162" />
+</p>
 
 ## Capture
 
-<img src="docs/screenshots/sky-map.png" alt="Tonight sky map: the Milky Way with targets labelled, the scope's frame, the horizon, and the best targets tonight" width="720" />
+<p>
+  <img src="docs/screenshots/sky-map.png" alt="Tonight sky map: the Milky Way with targets labelled, the scope's frame, the horizon, and the best targets tonight" width="560" />
+  <img src="docs/screenshots/sky-map-phone.png" alt="Sky map on a phone" width="162" />
+</p>
 
 The Tonight page lists what's up and well placed, and has a sky map you can pan around to find a target and point the scope at it.
 
@@ -40,15 +46,25 @@ Each night is calibrated with matching darks, flats and bias, plate solved again
 
 The Projects page opens with how last night went: what each target added to its master. Each master's Details tab estimates how many more hours it would take to cut the noise by a third, and that estimate goes back into the plan.
 
+<p>
+  <img src="docs/screenshots/library.png" alt="Library page: a tile per target with total integration, sessions, last night and the share of frames kept" width="560" />
+  <img src="docs/screenshots/library-phone.png" alt="Library on a phone" width="162" />
+</p>
+
+The Library page has a tile per target with its total time and how many frames were kept. A tile opens the target's sessions, where you can start a new project from any of them. The Storage tab shows what's taking up space on the NAS.
+
 ## Processing
 
-<img src="docs/screenshots/project.png" alt="Project page: Triangulum Galaxy master with Quick sliders and the history strip" width="720" />
+<p>
+  <img src="docs/screenshots/editor.png" alt="Editor: California Nebula with palette and style cards rendered on the picture itself" width="560" />
+  <img src="docs/screenshots/editor-phone.png" alt="Editor on a phone" width="162" />
+</p>
 
-Each target opens with a handful of sliders: brightness, dark sky, noise reduction, color strength, green removal and stars. There's also HOO color for duo-band data and a crop tool. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
+Each project opens in an editor with six tools: Looks, Crop, Light, Color, Detail and Versions. Looks are one-tap starting points, each shown on your own picture. Duo-band data gets color palettes (HOO, gold and azure, and a few more), and every target gets styles like Vivid or Faint detail. The other tools have a few sliders each: brightness, background, contrast, highlights and shadows; H-alpha and OIII colors and saturation; stars, sharpening and noise reduction. GraXpert handles gradient removal and denoising, and StarNet++ shrinks or removes stars.
 
-Each render is saved to a history strip, where you can undo, branch, and compare two versions side by side. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
+Most sliders update the picture right away. A preview is rendered on the server from the stack as you drag, and the full-size render follows when you stop. Edits made in one sitting are saved as one version. Versions lets you go back, branch, and compare two of them, and the Compare button shows before and after side by side. You can export a full-size PNG, or the linear stack as FITS if you'd rather finish somewhere else.
 
-Under the hood it's a pipeline of cached steps, so moving a slider doesn't redo calibration or stacking. Most edits come back in a few seconds.
+Under the hood it's a pipeline of cached steps, so the full render after an edit doesn't redo calibration or stacking. Most come back in a few seconds; a crop takes longer, since every step after it runs again.
 
 I don't want the app editing pictures with AI, so it doesn't. The [roadmap](docs/roadmap.md) has more on where this is going.
 

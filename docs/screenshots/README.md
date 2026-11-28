@@ -1,11 +1,12 @@
 # Screenshots used in the README
 
-Referenced by `<img>` tags in `README.md`. Dark mode, 1440x900 browser, the site's own time zone.
+Referenced by `<img>` tags in `README.md`. Dark mode, 1440x900 browser, the site's own time zone (America/Los_Angeles). `scope.png` is cropped to 1440x720. Projects, Library, the editor and the sky map also have a `-phone.png` taken at 390x844 (2x), shown beside the desktop shot at the same height.
 
-- `last-night.png` - Home page, last night's card with at least one updated master.
+- `projects.png` - Projects page with the Last night strip (shows when the night was yesterday or tonight).
+- `library.png` - Library, Targets tab.
+- `editor.png` - A duo-band project's Edit tab on Looks, so the palettes show.
 - `sky-map.png` - Tonight, Map view.
 - `plan.png` - Tonight, Plan view with Run all night on and a mosaic in the list.
-- `project.png` - A target master project with the Quick panel and history strip.
 - `scope.png` - Top of the Scope page: status and the live stack.
 
 Keep the yard out of public screenshots: the Surroundings panorama and the live wide camera show the house and neighbours. Settings shows the site's coordinates.

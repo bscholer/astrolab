@@ -49,9 +49,8 @@
   // Keeping every target's sessions in hand makes expand/collapse feel
   // free: no spinner, no API roundtrip when the user clicks.
   let targetDetails = $state<Map<number, TargetDetail>>(new Map());
-  // Projects, for each target's picture and the "open project" links.
+  // Projects, for each target's project count and the links in its sheet.
   let projects = $state<Project[]>([]);
-  let brokenPics = $state<Set<number>>(new Set());
 
   /** Projects made from each target's sessions, newest edit first. */
   const projectsFor = $derived.by(() => {
@@ -68,16 +67,6 @@
       for (const tid of tids) out.set(tid, [...(out.get(tid) ?? []), p]);
     }
     for (const list of out.values()) list.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    return out;
-  });
-
-  /** The picture for a target's card: its newest project render. */
-  const picFor = $derived.by(() => {
-    const out = new Map<number, { hash: string; port: string }>();
-    for (const [tid, list] of projectsFor) {
-      const p = list.find((x) => x.preview_hash && x.preview_port);
-      if (p) out.set(tid, { hash: p.preview_hash!, port: p.preview_port! });
-    }
     return out;
   });
 
@@ -732,43 +721,24 @@
   </div>
   <ul class="grid">
     {#each sortedTargets ?? [] as t, i (t.id)}
-      {@const pic = picFor.get(t.id)}
       {@const kept = keptPct(t)}
+      {@const nProj = projectsFor.get(t.id)?.length ?? 0}
       <li
         class:cascade={cascadeOnLoad}
         style={cascadeOnLoad ? `--stagger: ${i}` : ''}
         animate:flip={{ duration: 350, easing: cubicOut }}
       >
-        <button type="button" class="card" class:on={openTargetId === t.id} onclick={() => openTarget_(t.id)}>
-          <span class="pic">
-            {#if pic && !brokenPics.has(t.id)}
-              <img
-                src={api.previewUrl(pic.hash, pic.port)}
-                alt=""
-                loading="lazy"
-                decoding="async"
-                onerror={() => (brokenPics = new Set([...brokenPics, t.id]))}
-              />
-            {:else}
-              <span class="no-pic muted small">{projectsFor.has(t.id) ? 'No picture yet' : 'No project yet'}</span>
-            {/if}
-            <span class="title">
-              <span class="name">{t.common_name ?? t.name}</span>
-              {#if t.common_name}<span class="cat">{t.name}</span>{/if}
-            </span>
-          </span>
-          <span class="facts">
-            {#if t.integration_seconds && t.integration_seconds > 0}
-              <span class="strong num">{formatIntegrationTime(t.integration_seconds)}</span>
-            {/if}
-            <span>{t.session_count} session{t.session_count === 1 ? '' : 's'}</span>
-            {#if t.last_session_at}<span>last {shortDay(t.last_session_at)}</span>{/if}
+        <button type="button" class="tile" class:on={openTargetId === t.id} onclick={() => openTarget_(t.id)}>
+          <span class="tname">{t.common_name ?? t.name}</span>
+          {#if t.common_name}<span class="tcat">{t.name}</span>{/if}
+          <span class="tint num">{t.integration_seconds && t.integration_seconds > 0 ? formatIntegrationTime(t.integration_seconds) : 'No usable time'}</span>
+          <span class="tmeta">
+            {t.session_count} session{t.session_count === 1 ? '' : 's'}{#if t.last_session_at}&nbsp;· last {shortDay(t.last_session_at)}{/if}
           </span>
           {#if kept !== null}
-            <span class="kept" title="The scope registered {(t.frame_count - t.failed_count).toLocaleString()} of {t.frame_count.toLocaleString()} frames; the rest were saved as failed">
-              <span class="num">{kept}% of {t.frame_count.toLocaleString()} frames kept</span>
-            </span>
+            <span class="tmeta num" title="The scope registered {(t.frame_count - t.failed_count).toLocaleString()} of {t.frame_count.toLocaleString()} frames; the rest were saved as failed">{kept}% of {t.frame_count.toLocaleString()} frames kept</span>
           {/if}
+          {#if nProj}<span class="tproj">{nProj} project{nProj === 1 ? '' : 's'}</span>{/if}
         </button>
       </li>
     {/each}
@@ -1218,127 +1188,72 @@
     border-color: transparent;
   }
 
-  /* Target cards, the same look as the Projects grid. */
+  /* Target tiles: text only, so the Library reads as data, not pictures. */
   .grid {
     list-style: none;
     padding: 0;
     margin: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
+    gap: 0.6rem;
   }
   .grid > li.cascade {
     animation: rise-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-    animation-delay: calc(var(--stagger, 0) * 40ms + 60ms);
+    animation-delay: calc(var(--stagger, 0) * 30ms + 60ms);
   }
-  .card {
+  .tile {
     appearance: none;
     width: 100%;
     height: 100%;
-    padding: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    padding: 0.8rem 0.95rem 0.85rem;
     text-align: left;
     font: inherit;
     color: inherit;
-    background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg-elev-2) 100%);
+    background: var(--bg-elev);
     border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    box-shadow: var(--shadow);
-    overflow: hidden;
+    border-radius: 12px;
     cursor: pointer;
-    transition: border-color 160ms ease, transform 160ms ease;
+    transition: border-color 160ms ease, background 160ms ease;
   }
-  .card:hover {
-    border-color: var(--border-strong);
-    transform: translateY(-2px);
+  .tile:hover {
+    background: var(--bg-elev-2);
   }
-  .card.on {
+  .tile.on {
     border-color: var(--accent);
   }
-  .card:focus-visible {
+  .tile:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  .pic {
-    position: relative;
-    display: block;
-    aspect-ratio: 4 / 3;
-    background: var(--bg-elev-2);
-    overflow: hidden;
+  .tname {
+    font-weight: 600;
+    font-size: 0.98rem;
+    line-height: 1.25;
   }
-  .pic img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-    transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-  .card:hover .pic img {
-    transform: scale(1.03);
-  }
-  .no-pic {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding-bottom: 2.5rem;
-    background: radial-gradient(80% 70% at 50% 40%, rgba(94, 234, 212, 0.06), transparent 70%);
-  }
-  .pic::after {
-    content: '';
-    position: absolute;
-    inset: 45% 0 0 0;
-    background: linear-gradient(180deg, transparent, rgba(2, 3, 10, 0.85));
-    pointer-events: none;
-  }
-  .title {
-    position: absolute;
-    left: 0.85rem;
-    right: 0.85rem;
-    bottom: 0.65rem;
-    z-index: 1;
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 0.1rem 0.5rem;
-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
-  }
-  .name {
-    font-family: var(--font-display);
-    font-weight: 500;
-    font-size: 1.2rem;
-    line-height: 1.15;
-    letter-spacing: -0.01em;
-    color: #fff;
-  }
-  .cat {
+  .tcat {
     font-family: var(--font-mono);
     font-size: 0.72rem;
-    color: rgba(233, 241, 255, 0.75);
-  }
-  .facts {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.2rem 0.6rem;
-    padding: 0.7rem 0.85rem 0.2rem;
-    font-size: 0.85rem;
     color: var(--fg-mute);
   }
-  .facts .strong {
-    color: var(--fg);
+  .tint {
+    margin-top: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 1.15rem;
     font-weight: 600;
-    font-size: 1rem;
   }
-  .kept {
-    display: flex;
-    flex-direction: column;
-    padding: 0.2rem 0.85rem 0.8rem;
-    font-size: 0.75rem;
+  .tmeta {
+    font-size: 0.78rem;
     color: var(--fg-mute);
+  }
+  .tproj {
+    margin-top: 0.45rem;
+    font-size: 0.72rem;
+    color: var(--accent);
   }
 
   /* The open target: sessions in a sheet from the right (from below on phones). */
@@ -1395,6 +1310,8 @@
     letter-spacing: -0.01em;
   }
   .drawer-title .cat {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
     color: var(--fg-mute);
   }
   .close {
@@ -1459,19 +1376,12 @@
   .drawer-hint {
     margin: 0 0 0.6rem;
   }
-  /* Phones: two cards a row, so the library reads at a glance. */
   @media (max-width: 520px) {
     .grid {
       grid-template-columns: 1fr 1fr;
-      gap: 0.6rem;
     }
-    .title { left: 0.6rem; right: 0.6rem; bottom: 0.5rem; }
-    .name { font-size: 1rem; }
-    .cat { display: none; }
-    .no-pic { padding-bottom: 1.8rem; }
-    .facts { padding: 0.55rem 0.6rem 0.1rem; font-size: 0.75rem; gap: 0.1rem 0.45rem; }
-    .facts .strong { font-size: 0.9rem; }
-    .kept { padding: 0.3rem 0.6rem 0.6rem; font-size: 0.68rem; }
+    .tile { padding: 0.65rem 0.7rem 0.7rem; }
+    .tint { font-size: 1rem; }
   }
   @media (max-width: 600px) {
     .drawer {

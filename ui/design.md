@@ -105,7 +105,7 @@ Triangulum Galaxy  M 33      ← friendly name primary, M 33 muted
 ```
 
 Apply this in:
-- Library target cards
+- Library target tiles
 - Project cards
 - Jobs table
 - Page H1s (target detail pages)
@@ -349,8 +349,8 @@ spec, not a proposal.
 
 - **Home** (`/`) opens Projects once any exist, the Library before that.
 - **Library page** (`/library`, tabs Targets and Storage) is for browsing existing data. Targets is a
-  grid of cards like Projects: the picture is the target's newest project render, then integration,
-  sessions, last night and the kept-frames share. A card opens the target's sessions in a sheet (from the
+  grid of text tiles, with no pictures so it doesn't look like Projects: name, catalog id, integration,
+  sessions, last night, the kept share and how many projects use it. A tile opens the target's sessions in a sheet (from the
   right; from below on phones) with links to its projects; starting a project there picks the
   duo-band recipe for duo-band filters and the per-night recipe otherwise. The capture-root
   text input belongs in **Settings**, not here. The library top has a

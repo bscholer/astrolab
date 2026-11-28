@@ -224,8 +224,12 @@
     display: block;
     aspect-ratio: 4 / 3;
     background: var(--bg-elev-2);
+    overflow: hidden;
   }
   .pic img {
+    /* Out of flow, so a tall picture can't stretch the 4:3 box. */
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
