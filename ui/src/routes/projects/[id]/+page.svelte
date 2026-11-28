@@ -50,6 +50,10 @@
   const subscription = createJobSubscription(
     (ev, onTerminal) => pipeline.applyEvent(ev, onTerminal)
   );
+  // The job's node and night counts size the percentages; they arrive with the job.
+  $effect(() => {
+    pipeline.setShape(subscription.activeJob?.node_total, subscription.activeJob?.nights);
+  });
   const patchQueue = createPatchQueue(() => project);
 
   // Target masters only: what more hours would buy (server/capture_loop.py).
@@ -831,7 +835,7 @@
     resultSrc={fullSrc}
     {rendering}
     nodeStatus={pipeline.nodeStatus}
-    nodeProgress={pipeline.nodeProgress}
+    jobProgress={pipeline.jobFraction()}
     {cropNode}
     {cropInput}
     {cropPreviewUrl}

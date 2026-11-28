@@ -14,7 +14,7 @@
     lockfile protocol in server/cache.py.
 -->
 <script lang="ts">
-  import { api, type ScopeState, type StorageSnapshot } from '$lib/api';
+  import { api, type GaiaCatalogStatus, type ScopeState, type StorageSnapshot } from '$lib/api';
   import { onMount } from 'svelte';
   import { toast } from '$lib/toast.svelte';
   import { formatBytes } from '$lib/format';
@@ -104,10 +104,43 @@
     }
   }
 
+  // Local Gaia catalogue for plate solving. Polled fast while an install runs.
+  let gaia = $state<GaiaCatalogStatus | null>(null);
+  let gaiaBusy = $state(false);
+  async function loadGaia() {
+    try {
+      gaia = await api.getGaiaCatalog();
+    } catch {
+      /* the panel just stays as it was */
+    }
+  }
+  async function gaiaAction(fn: () => Promise<GaiaCatalogStatus>, failed: string) {
+    gaiaBusy = true;
+    try {
+      gaia = await fn();
+    } catch (e) {
+      toast.error(`${failed}: ${(e as Error).message}`);
+    } finally {
+      gaiaBusy = false;
+    }
+  }
+  const gaiaPct = $derived(
+    gaia?.install && gaia.install.total_bytes
+      ? Math.round((100 * gaia.install.done_bytes) / gaia.install.total_bytes)
+      : 0
+  );
+
   onMount(() => {
     loadScope();
+    loadGaia();
     const timer = setInterval(loadScope, 10000);
-    return () => clearInterval(timer);
+    const gaiaTimer = setInterval(() => {
+      if (gaia?.install) loadGaia();
+    }, 1500);
+    return () => {
+      clearInterval(timer);
+      clearInterval(gaiaTimer);
+    };
   });
 
   async function saveCaptureRoot() {
@@ -472,6 +505,64 @@
 </section>
 
 <section class="panel">
+  <h2>Local Gaia catalogue</h2>
+  <p class="muted small">
+    Siril plate solves every frame against the Gaia star catalogue. With the catalogue on
+    this server a solve takes under a second. Without it, Siril asks an online service for
+    each frame, which can take minutes a frame and turns a night of 900 frames into a day.
+  </p>
+  {#if gaia === null}
+    <p class="muted">Loading…</p>
+  {:else}
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-label">status</span>
+        <span class="stat-val">
+          {gaia.install ? (gaia.install.phase === 'downloading' ? 'Downloading' : 'Unpacking') : gaia.installed ? 'Installed' : 'Not installed'}
+        </span>
+        <span class="stat-sub muted">
+          {#if gaia.install}{gaiaPct}%{:else if gaia.installed && !gaia.linked}not linked for Siril{:else if gaia.installed}plate solving is local{:else}plate solving uses the slow online service{/if}
+        </span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">{gaia.installed ? 'on disk' : 'needs'}</span>
+        <span class="stat-val">{formatBytes(gaia.installed ? gaia.size_bytes : gaia.disk_bytes)}</span>
+        <span class="stat-sub muted">
+          {#if gaia.installed}{gaia.path}{:else}{formatBytes(gaia.download_bytes)} to download{#if gaia.free_bytes !== null}, {formatBytes(gaia.free_bytes)} free{/if}{/if}
+        </span>
+      </div>
+    </div>
+    {#if gaia.install}
+      <div class="gaia-bar" role="progressbar" aria-valuenow={gaiaPct} aria-valuemin="0" aria-valuemax="100" aria-label="Gaia catalogue install">
+        <span style:width="{gaiaPct}%"></span>
+      </div>
+      <p class="muted small">
+        {gaia.install.phase === 'downloading' ? 'Downloading from Zenodo' : 'Unpacking'}:
+        {formatBytes(gaia.install.done_bytes)} of {formatBytes(gaia.install.total_bytes)}
+      </p>
+    {/if}
+    {#if gaia.error}
+      <p class="warn small">Install failed: {gaia.error}</p>
+    {/if}
+    <div class="gaia-actions">
+      {#if gaia.install}
+        <button type="button" class="btn" disabled={gaiaBusy} onclick={() => gaiaAction(api.cancelGaiaInstall, "Couldn't cancel")}>Cancel</button>
+      {:else if gaia.installed}
+        <button
+          type="button"
+          class="btn warn"
+          disabled={gaiaBusy}
+          onclick={() => confirm('Remove the local Gaia catalogue? Plate solving goes back to the slow online service.') && gaiaAction(api.removeGaiaCatalog, "Couldn't remove it")}
+        >Remove</button>
+      {:else}
+        <button type="button" class="btn primary" disabled={gaiaBusy} onclick={() => gaiaAction(api.installGaiaCatalog, "Couldn't start the install")}>Download and install</button>
+      {/if}
+      <a class="muted small" href={gaia.source} target="_blank" rel="noreferrer">Gaia DR3 catalogue from Siril (Zenodo)</a>
+    </div>
+  {/if}
+</section>
+
+<section class="panel">
   <h2>Site location</h2>
   <p class="muted small">
     Where you observe from. The Tonight planner uses these to compute
@@ -825,6 +916,26 @@
     display: flex;
     gap: 0.5rem;
     margin-top: 0.6rem;
+  }
+  .gaia-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border, #26324a);
+    overflow: hidden;
+    margin: 0.6rem 0 0.3rem;
+  }
+  .gaia-bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent, #7ee0cc);
+    transition: width 0.4s ease;
+  }
+  .gaia-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.8rem;
+    flex-wrap: wrap;
   }
   .btn {
     appearance: none;

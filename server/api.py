@@ -108,6 +108,8 @@ from server.endpoints import (
     mcp_tool,
     mount_endpoints,
 )
+from server.gaia import ensure_link as ensure_gaia_link
+from server.gaia import gaia
 from server.job_builder import (
     CalibrationMissing,
     IncompatibleSessions,
@@ -223,6 +225,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     curator.start()
     nas_backup.start()
     nas_usage.start()
+    ensure_gaia_link()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3190,6 +3193,36 @@ def get_nas_storage() -> dict:
 def refresh_nas_storage() -> dict:
     """Start a new walk of the NAS. It takes a minute or more on a large share."""
     return {"started": nas_usage.refresh(), **nas_usage.snapshot()}
+
+
+@app.get("/api/settings/gaia")
+def get_gaia_catalog() -> dict:
+    """The local Gaia catalogue Siril plate solves against: installed or not, its size
+    on disk, where it is, and the progress of an install under way."""
+    return gaia.status()
+
+
+@app.post("/api/settings/gaia/install", status_code=202)
+def install_gaia_catalog() -> dict:
+    """Download and unpack the catalogue (1.1 GB down, about 3 GB on disk) in the
+    background. Poll GET /api/settings/gaia for progress. Siril runs started afterwards
+    use it; no restart needed."""
+    started = gaia.start_install()
+    return {"started": started, **gaia.status()}
+
+
+@app.post("/api/settings/gaia/cancel")
+def cancel_gaia_install() -> dict:
+    """Stop an install under way and discard the partial download."""
+    return {"cancelled": gaia.cancel(), **gaia.status()}
+
+
+@app.delete("/api/settings/gaia")
+def remove_gaia_catalog() -> dict:
+    """Delete the installed catalogue. Plate solves go back to the slow online service."""
+    if gaia.installing:
+        raise HTTPException(status_code=409, detail="An install is running; cancel it first.")
+    return {"removed": gaia.remove(), **gaia.status()}
 
 
 @app.get("/metrics", include_in_schema=False)

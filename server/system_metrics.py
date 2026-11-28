@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import psutil
 
 from .catalog.db import connect as open_catalog_db
+from .runtime import planned_nodes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -315,12 +316,14 @@ def _job_step_state(
     """
     try:
         nodes = list(record.template.nodes)
+        # Per-session steps run once per night: count every copy, not the one
+        # template entry, or the bar runs ahead of the work.
+        total, _nights = planned_nodes(record.template, record.job)
     except Exception:
         return 0.0, None, None
-    total = len(nodes)
     if total <= 0:
         return 0.0, None, None
-    kind_by_id = {n.id: n.kind for n in nodes}
+    kind_by_id = {n.id.split("@", 1)[0]: n.kind for n in nodes}
     events = list(getattr(record, "events", []) or [])
     if not events and job_manager is not None:
         try:
@@ -337,7 +340,7 @@ def _job_step_state(
     fractions: dict[str, float] = {}
     for ev in events:
         nid = ev.node_id
-        if ev.type in ("node_completed", "node_cached") and nid is not None:
+        if ev.type in ("node_completed", "node_cached", "node_skipped") and nid is not None:
             completed_nodes.add(nid)
             if last_started == nid:
                 last_started = None
@@ -360,7 +363,7 @@ def _job_step_state(
     if last_started is not None and last_started not in completed_nodes:
         current_fraction = fractions.get(last_started, 0.0)
         current_id = last_started
-        current_kind = kind_by_id.get(last_started)
+        current_kind = kind_by_id.get(last_started.split("@", 1)[0])
     progress = min(1.0, (completed + current_fraction) / total)
     return progress, current_id, current_kind
 

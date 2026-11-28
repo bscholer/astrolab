@@ -5351,6 +5351,88 @@
         "summary": "Patch Settings"
       }
     },
+    "/api/settings/gaia": {
+      "delete": {
+        "description": "Delete the installed catalogue. Plate solves go back to the slow online service.",
+        "operationId": "remove_gaia_catalog_api_settings_gaia_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Gaia Catalog Api Settings Gaia Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Remove Gaia Catalog"
+      },
+      "get": {
+        "description": "The local Gaia catalogue Siril plate solves against: installed or not, its size\non disk, where it is, and the progress of an install under way.",
+        "operationId": "get_gaia_catalog_api_settings_gaia_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Gaia Catalog Api Settings Gaia Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Gaia Catalog"
+      }
+    },
+    "/api/settings/gaia/cancel": {
+      "post": {
+        "description": "Stop an install under way and discard the partial download.",
+        "operationId": "cancel_gaia_install_api_settings_gaia_cancel_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Gaia Install Api Settings Gaia Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cancel Gaia Install"
+      }
+    },
+    "/api/settings/gaia/install": {
+      "post": {
+        "description": "Download and unpack the catalogue (1.1 GB down, about 3 GB on disk) in the\nbackground. Poll GET /api/settings/gaia for progress. Siril runs started afterwards\nuse it; no restart needed.",
+        "operationId": "install_gaia_catalog_api_settings_gaia_install_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Install Gaia Catalog Api Settings Gaia Install Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Install Gaia Catalog"
+      }
+    },
     "/api/sky/coverage": {
       "get": {
         "description": "Where every session's frames landed on the sky, for the atlas.",

@@ -38,7 +38,7 @@ from .catalog.db import connect as open_catalog_db
 from .catalog.db import retry_on_locked
 from .models import Job, Ref, Template
 from .ports import PortType
-from .runtime import JobCancelled, RunError, run_job
+from .runtime import JobCancelled, RunError, planned_nodes, run_job
 from .storage import (
     SETTING_CACHE_MAX_BYTES,
     InsufficientStorageError,
@@ -144,6 +144,7 @@ class JobRecord:
         }
         if self.quality is not None:
             d["quality"] = self.quality
+        d["node_total"], d["nights"] = planned_nodes(self.template, self.job)
         if include_template:
             # Pydantic model_dump gives the canonical Template JSON shape that
             # the UI can graph without further translation. We tack each

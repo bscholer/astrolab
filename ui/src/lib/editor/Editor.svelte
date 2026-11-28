@@ -34,7 +34,8 @@
     rendering: boolean;
     /** Per-step state of the current job, from the page's pipeline view. */
     nodeStatus?: Record<string, string>;
-    nodeProgress?: Record<string, { fraction: number; message: string }>;
+    /** Share of the whole job done, 0 to 1. */
+    jobProgress?: number;
     cropNode: string;
     cropInput: { hash?: string; port?: string };
     cropPreviewUrl: string | null;
@@ -46,7 +47,7 @@
     versions: Snippet;
   };
   let {
-    project, title, subtitle = '', resultSrc, rendering, nodeStatus = {}, nodeProgress = {},
+    project, title, subtitle = '', resultSrc, rendering, nodeStatus = {}, jobProgress = 0,
     cropNode, cropInput, cropPreviewUrl,
     onProjectUpdated, onView, onReprocess, upgradeLabel = null, onUpgrade, versions,
   }: Props = $props();
@@ -209,21 +210,8 @@
   const cooking = $derived(
     rendering && !!baseNode && !!nodeStatus[baseNode] && !DONE.has(nodeStatus[baseNode])
   );
-  /** Share of the job's steps done, counting the running step's progress. */
-  const jobPct = $derived.by(() => {
-    // Per-night steps report as "convert@43"; count those instead of the
-    // template entry ("convert") they stand for.
-    const keys = Object.keys(nodeStatus);
-    const ids = keys.filter((k) => k.includes('@') || !keys.some((o) => o.startsWith(`${k}@`)));
-    if (!ids.length) return 0;
-    let done = 0;
-    for (const id of ids) {
-      const st = nodeStatus[id];
-      if (st && DONE.has(st)) done += 1;
-      else if (st === 'running') done += Math.min(1, Math.max(0, nodeProgress[id]?.fraction ?? 0));
-    }
-    return Math.round((100 * done) / ids.length);
-  });
+  /** Share of the job done, from the page's pipeline view (same number the Projects card shows). */
+  const jobPct = $derived(Math.round(100 * jobProgress));
   const STEP_LABEL: Record<string, string> = {
     convert: 'Reading frames', calibrate: 'Calibrating', register: 'Aligning', offset: 'Leveling frames',
     resample: 'Resampling', bg_extract: 'Flattening frames', extract: 'Splitting H-alpha and OIII',

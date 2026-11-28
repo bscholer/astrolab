@@ -136,6 +136,20 @@ def session_keys(job: Job) -> list[str]:
     return sorted(keys, key=lambda k: (len(k), k))
 
 
+def planned_nodes(template: Template, job: Job) -> tuple[int, int]:
+    """(nodes the job will run, sessions it covers), per-session copies counted.
+
+    Progress is steps done over this total; the template's own node count would
+    leave out every copy past the first.
+    """
+    try:
+        expanded = expand_per_session(template, job)
+    except RunError:
+        return len(template.nodes), 1
+    nights = len(session_keys(job)) if any(n.per_session for n in template.nodes) else 1
+    return len(expanded.nodes), max(1, nights)
+
+
 def expand_per_session(template: Template, job: Job) -> Template:
     """Copy each per_session node once per session in the job.
 
