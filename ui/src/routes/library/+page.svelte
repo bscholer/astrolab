@@ -8,7 +8,7 @@
     api,
     type CalibrationMode,
     type CalibrationStatus,
-    type Project,
+    type ProjectSummary,
     type ReassignCandidatesResponse,
     type ScanStatusResponse,
     type SessionSummary,
@@ -51,11 +51,11 @@
   // free: no spinner, no API roundtrip when the user clicks.
   let targetDetails = $state<Map<number, TargetDetail>>(new Map());
   // Projects, for each target's project count and the links in its sheet.
-  let projects = $state<Project[]>([]);
+  let projects = $state<ProjectSummary[]>([]);
 
   /** Projects made from each target's sessions, newest edit first. */
   const projectsFor = $derived.by(() => {
-    const out = new Map<number, Project[]>();
+    const out = new Map<number, ProjectSummary[]>();
     const sessionTarget = new Map<string, number>();
     for (const [tid, d] of targetDetails) for (const s of d.sessions) sessionTarget.set(String(s.id), tid);
     for (const p of projects) {
@@ -777,7 +777,7 @@
       <div class="drawer-projects">
         {#each tProjects as pr (pr.id)}
           <a class="proj" href="/projects/{pr.id}">
-            {#if pr.preview_hash && pr.preview_port}<img src={api.previewUrl(pr.preview_hash, pr.preview_port)} alt="" loading="lazy" />{/if}
+            {#if pr.preview_hash && pr.preview_port}<img src={api.previewThumbUrl(pr.preview_hash, pr.preview_port)} alt="" loading="lazy" />{/if}
             <span><b>{pr.display?.name ?? pr.name}</b><span class="muted small">{templateShortName(pr.template_id)} · {pr.source_session_ids.length} session{pr.source_session_ids.length === 1 ? '' : 's'}</span></span>
           </a>
         {/each}

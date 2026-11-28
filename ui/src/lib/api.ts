@@ -1,3 +1,4 @@
+import { version as appVersion } from '$app/environment';
 /**
  * Tiny typed wrapper around fetch. Every call goes through `/api/...`,
  * which the Vite dev server proxies to the FastAPI control plane on :8000;
@@ -188,11 +189,10 @@ export class ApiError extends Error {
   }
 }
 
-// Stable per-tab cache-buster so within a session the browser can cache
-// previews freely, but a fresh tab/reload gets fresh URLs (and dodges any
-// stale `immutable` PNGs from earlier renderer versions).
-const PREVIEW_CACHE_KEY =
-  typeof window !== 'undefined' ? Date.now().toString(36) : 'ssr';
+// Preview URLs carry the UI build. A node hash fixes the picture's input
+// but not the renderer, which changes with the code; the server lets the
+// browser keep a picture for a day, and a new build asks again.
+const PREVIEW_CACHE_KEY = encodeURIComponent(appVersion);
 
 async function _readErrorDetail(r: Response): Promise<string> {
   // FastAPI errors come back as { detail: "..." }; non-JSON bodies fall
@@ -583,6 +583,17 @@ export interface Project {
   // Set when the server keeps this project up to date as a target master.
   master?: { key: string; target_id: number; recipe: string | null } | null;
 }
+
+// A row of GET /api/projects: a project without the editor-only fields.
+// GET /api/projects/{id} has them.
+export type ProjectSummary = Omit<
+  Project,
+  'template' | 'base_job' | 'current_overrides' | 'history' | 'latest_template_version'
+> & {
+  // The current version's job failed.
+  current_failed: boolean;
+  version_count: number;
+};
 
 export interface PreviewRef {
   hash: string;
@@ -1232,7 +1243,7 @@ export const api = {
     postJSON<{ job_id: string }>('/api/jobs/from_session', req),
   rerunJob: (id: string) =>
     postJSON<{ job_id: string }>(`/api/jobs/${id}/rerun`, {}),
-  listProjects: () => getJSON<Project[]>('/api/projects'),
+  listProjects: () => getJSON<ProjectSummary[]>('/api/projects'),
   getMasterAdvice: (needsTime = false) =>
     getJSON<MasterAdviceRow[]>(`/api/target-masters/advice${needsTime ? '?needs_time=true' : ''}`),
   queueMoreData: (projectId: string, hours: number) =>
@@ -1426,12 +1437,12 @@ export const api = {
     return postJSON(`/api/framing/${nodeHash}/${encodeURIComponent(port)}/box`, box);
   },
   previewUrl(nodeHash: string, port: string): string {
-    // Cache-buster: previously we promised previews were `immutable` for 24h,
-    // which means stale renders linger in browser caches even after the
-    // server-side renderer changes. Each page load starts a new "session",
-    // so we tag URLs with that session id; within the session the browser
-    // can cache freely, across sessions it refetches.
     return `/api/preview/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}`;
+  },
+  // The same picture as a JPEG, about a fifth of the size: for the
+  // Projects and Library cards, which show one per card.
+  previewThumbUrl(nodeHash: string, port: string): string {
+    return `/api/preview/${nodeHash}/${encodeURIComponent(port)}?v=${PREVIEW_CACHE_KEY}&fmt=jpg`;
   },
   previewUrlStretched(nodeHash: string, port: string): string {
     // Like previewUrl but passes force_stretch=1 so the server ignores the

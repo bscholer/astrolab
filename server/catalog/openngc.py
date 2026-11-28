@@ -231,6 +231,12 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return list(reader)
 
 
+def warm() -> None:
+    """Load the catalogue now, so the first request that names a target
+    doesn't wait for it (about 0.8 s)."""
+    _load()
+
+
 @cache
 def _load() -> tuple[list[CatalogEntry], dict[str, CatalogEntry]]:
     """Parse both CSVs and build the alias index.

@@ -641,3 +641,37 @@ def test_list_skips_a_picture_that_was_evicted(client, tmp_path: Path) -> None:
     assert body.get("preview_hash")
     job_manager.cache.evict(body["preview_hash"], reason="test")
     assert "preview_hash" not in client.get(f"/api/projects/{pid}").json()
+
+
+def test_list_leaves_out_editor_fields(client, tmp_path: Path) -> None:
+    """The list is for cards: no template, base job, overrides or history,
+    which made it hundreds of KB. One project still has them all."""
+    src = _make_png(tmp_path / "in.png")
+    pid = client.post("/api/projects", json=_payload(src)).json()["id"]
+    _wait_for_job(client, client.get(f"/api/projects/{pid}").json()["current_job_id"])
+    row = next(r for r in client.get("/api/projects").json() if r["id"] == pid)
+    for key in ("template", "base_job", "current_overrides", "history"):
+        assert key not in row
+    assert row["current_failed"] is False
+    assert row["version_count"] == 1
+    assert row["preview_hash"] and row["capture"] is not None
+    full = client.get(f"/api/projects/{pid}").json()
+    assert full["history"] and full["template"]
+
+
+def test_card_picture_comes_as_a_jpeg(client, tmp_path: Path, monkeypatch) -> None:
+    """fmt=jpg serves a JPEG copy of the rendered preview; a URL that
+    carries the UI build may be kept for a day."""
+    import server.api as api_mod
+
+    png = _make_png(tmp_path / "_preview_image.png")
+    monkeypatch.setattr(api_mod, "render_preview", lambda *a, **k: png)
+    jpg = client.get("/api/preview/abc/image?fmt=jpg&v=build1")
+    assert jpg.status_code == 200, jpg.text
+    assert jpg.headers["content-type"] == "image/jpeg"
+    assert jpg.content[:2] == b"\xff\xd8"
+    assert "max-age=86400" in jpg.headers["cache-control"]
+    assert (tmp_path / "_preview_image.jpg").exists()
+    plain = client.get("/api/preview/abc/image")
+    assert plain.headers["content-type"] == "image/png"
+    assert "max-age=60" in plain.headers["cache-control"]

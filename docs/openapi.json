@@ -3384,7 +3384,7 @@
     },
     "/api/preview/{node_hash}/{port}": {
       "get": {
-        "description": "Render (or return cached) thumbnail PNG for a node's output.\n\nThe preview is cached inside the node's cache entry so subsequent loads\nare a static file read. FITS artifacts get an autostretched render;\nPNG artifacts pass through.\n\n`neutral=0` bypasses the per-channel rebalance (debug affordance --\nshows what Siril's linked autostretch produces, which is what you'd\nsee opening the FITS in Siril directly). Default `neutral=1` runs an\nOSC-friendly per-channel stretch so pre-rgb_equal stages stop looking\nswampy green.\n\n`force_stretch=1` ignores the output manifest's `display_ready` flag and\nalways runs autostretch. Used by the crop editor so it gets a visually\nuseful preview even when the upstream node (e.g. graxpert) marks its\noutput as display-ready linear data.",
+        "description": "Render (or return cached) thumbnail PNG for a node's output.\n\nThe preview is cached inside the node's cache entry so subsequent loads\nare a static file read. FITS artifacts get an autostretched render;\nPNG artifacts pass through.\n\n`neutral=0` bypasses the per-channel rebalance (debug affordance --\nshows what Siril's linked autostretch produces, which is what you'd\nsee opening the FITS in Siril directly). Default `neutral=1` runs an\nOSC-friendly per-channel stretch so pre-rgb_equal stages stop looking\nswampy green.\n\n`force_stretch=1` ignores the output manifest's `display_ready` flag and\nalways runs autostretch. Used by the crop editor so it gets a visually\nuseful preview even when the upstream node (e.g. graxpert) marks its\noutput as display-ready linear data.\n`fmt=jpg` returns a JPEG copy, about a fifth of the size, for the\npictures on the Projects and Library cards.\n\n`v` is the UI build. The node hash fixes the input but not the\nrenderer, so the URL carries the build and a browser keeps the\npicture for a day; a new build asks again.",
         "operationId": "get_preview_api_preview__node_hash___port__get",
         "parameters": [
           {
@@ -3424,6 +3424,36 @@
               "title": "Force Stretch",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "fmt",
+            "required": false,
+            "schema": {
+              "default": "png",
+              "enum": [
+                "png",
+                "jpg"
+              ],
+              "title": "Fmt",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "v",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "V"
+            }
           }
         ],
         "responses": {
@@ -3451,6 +3481,7 @@
     },
     "/api/projects": {
       "get": {
+        "description": "Every project, newest first, without the editor-only fields\n(template, base job, overrides, version history). Open one project\nfor those.",
         "operationId": "list_projects_api_projects_get",
         "responses": {
           "200": {

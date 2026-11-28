@@ -92,6 +92,7 @@ from server.catalog.matching import match_bundle_darks
 from server.catalog.openngc import CatalogEntry
 from server.catalog.openngc import all_entries as openngc_all_entries
 from server.catalog.openngc import enrich as openngc_enrich
+from server.catalog.openngc import warm as openngc_warm
 from server.catalog.scanner import resolve_target as resolve_target_row
 from server.catalog.scanner import scan as run_scan
 from server.catalog.sky_match import (
@@ -130,7 +131,7 @@ from server.morning import morning
 from server.nas_backup import SETTING_NAS_ROOT, NasBackup, nas_root
 from server.nas_usage import NasUsage
 from server.paths import astrolab_home
-from server.preview import PreviewError, render_output, render_preview
+from server.preview import PreviewError, jpeg_copy, render_output, render_preview
 from server.projects import ProjectManager, ProjectNotFound
 from server.quality import (
     compute_quality_for_record,
@@ -230,8 +231,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     nas_usage.start()
     ensure_gaia_link()
     local_usage.start()
+    threading.Thread(target=_warm_caches, name="warm-caches", daemon=True).start()
     yield
     job_manager.shutdown(wait=False)
+
+
+def _warm_caches() -> None:
+    """Load the lookups the list pages need in the background at startup,
+    so the first visit after a restart or dev push isn't the one that pays
+    for them."""
+    try:
+        openngc_warm()
+        list_templates()
+    except Exception:  # pragma: no cover
+        log.exception("warming caches failed; they load on first use instead")
 
 
 def _make_progress_callback() -> Any:
@@ -2668,10 +2681,45 @@ def _project_to_response(
     return payload
 
 
+# Fields the list leaves out: the template, base job and overrides are
+# only for the editor, and the history is most of the payload (a long
+# project has hundreds of versions). GET /api/projects/{id} has them all.
+_LIST_OMIT = ("template", "base_job", "current_overrides", "history")
+
+
+def _project_list_entry(
+    project,
+    conn: sqlite3.Connection,
+    feet: dict[int, coverage.Footprint],
+    masters: dict,
+) -> dict:
+    payload = project.to_public_dict()
+    _attach_preview(payload)
+    record = job_manager.get(payload["current_job_id"])
+    payload["current_failed"] = record is not None and record.status == "failed"
+    payload["version_count"] = len(payload["history"])
+    for key in _LIST_OMIT:
+        payload.pop(key, None)
+    session_ids = payload.get("source_session_ids") or []
+    payload["capture"] = _capture_for_project(conn, session_ids).model_dump(mode="json")
+    payload["master"] = masters.get(project.id)
+    display = _display_for_project(conn, session_ids)
+    payload["display"] = display.model_dump(mode="json") if display else None
+    suggestions = _suggestions_for_project(conn, session_ids, feet)
+    payload["suggested_additions"] = (
+        suggestions.model_dump(mode="json") if suggestions.session_ids else None
+    )
+    return payload
+
+
 @app.get("/api/projects")
 def list_projects(conn: DBDep) -> list[dict]:
+    """Every project, newest first, without the editor-only fields
+    (template, base job, overrides, version history). Open one project
+    for those."""
     feet = coverage.footprints(conn)
-    out = [_project_to_response(p, conn, feet) for p in project_manager.list()]
+    masters = master_projects(conn)
+    out = [_project_list_entry(p, conn, feet, masters) for p in project_manager.list()]
     out.sort(key=lambda p: p["updated_at"], reverse=True)
     return out
 
@@ -5051,7 +5099,12 @@ def get_template_schema(template_id: str) -> dict:
 
 @app.get("/api/preview/{node_hash}/{port}")
 def get_preview(
-    node_hash: str, port: str, neutral: int = 1, force_stretch: int = 0
+    node_hash: str,
+    port: str,
+    neutral: int = 1,
+    force_stretch: int = 0,
+    fmt: Literal["png", "jpg"] = "png",
+    v: str | None = None,
 ) -> FileResponse:
     """Render (or return cached) thumbnail PNG for a node's output.
 
@@ -5069,6 +5122,12 @@ def get_preview(
     always runs autostretch. Used by the crop editor so it gets a visually
     useful preview even when the upstream node (e.g. graxpert) marks its
     output as display-ready linear data.
+    `fmt=jpg` returns a JPEG copy, about a fifth of the size, for the
+    pictures on the Projects and Library cards.
+
+    `v` is the UI build. The node hash fixes the input but not the
+    renderer, so the URL carries the build and a browser keeps the
+    picture for a day; a new build asks again.
     """
     manifest = job_manager.cache.load_outputs(node_hash)
     display_ready = False
@@ -5082,14 +5141,14 @@ def get_preview(
         )
     except PreviewError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    media_type = "image/png"
+    if fmt == "jpg":
+        path = jpeg_copy(path)
+        media_type = "image/jpeg"
     return FileResponse(
         path,
-        media_type="image/png",
-        # Content-addressed by node_hash, but the *renderer* can change (siril
-        # autostretch swap, MTF tweaks, etc.). max-age covers a normal session
-        # and dropping `immutable` lets a hard refresh actually fetch the new
-        # render after a code change.
-        headers={"Cache-Control": "public, max-age=60"},
+        media_type=media_type,
+        headers={"Cache-Control": f"public, max-age={86400 if v else 60}"},
     )
 
 

@@ -15,6 +15,7 @@ Strategy:
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 
@@ -57,6 +58,22 @@ def render_preview(
         neutral=neutral, display_ready=display_ready,
         max_dim=THUMB_LONG_EDGE, cache_tag="preview",
     )
+
+
+def jpeg_copy(png: Path, quality: int = 85) -> Path:
+    """A JPEG of a rendered preview PNG, cached beside it.
+
+    The list pages show a picture per card; as PNG these run 200 to 450 KB
+    each, as JPEG about a fifth of that. Redone when the PNG is newer.
+    """
+    out = png.with_suffix(".jpg")
+    if out.exists() and out.stat().st_mtime >= png.stat().st_mtime:
+        return out
+    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+    with Image.open(png) as img:
+        img.convert("RGB").save(tmp, "JPEG", quality=quality, optimize=True, progressive=True)
+    os.replace(tmp, out)
+    return out
 
 
 def render_output(

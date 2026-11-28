@@ -13,7 +13,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import LastNight from '$lib/LastNight.svelte';
-  import { api, type MorningResponse, type Project, type ProjectCapture, type StorageSnapshot, type SystemActiveJob } from '$lib/api';
+  import { api, type MorningResponse, type ProjectSummary, type ProjectCapture, type StorageSnapshot, type SystemActiveJob } from '$lib/api';
   import { toast } from '$lib/toast.svelte';
   import {
     filterBadgeClass,
@@ -37,7 +37,7 @@
     return bits.join(' · ');
   }
 
-  let projects = $state<Project[] | null>(null);
+  let projects = $state<ProjectSummary[] | null>(null);
   let storage = $state<StorageSnapshot | null>(null);
   let busyId = $state<string | null>(null);
   let activeJobs = $state<SystemActiveJob[]>([]);
@@ -61,11 +61,11 @@
   let brokenPics = $state<Set<string>>(new Set());
 
   async function loadAll() {
+    // The cards draw as soon as the list arrives; storage only adds the
+    // sizes, so it fills in when it comes.
+    api.getStorage().then((s) => (storage = s), () => {});
     try {
-      [projects, storage] = await Promise.all([
-        api.listProjects(),
-        api.getStorage(),
-      ]);
+      projects = await api.listProjects();
     } catch (e) {
       toast.error(`Couldn't load projects: ${(e as Error).message}`);
     }
@@ -103,7 +103,7 @@
     return new Map(storage.per_project.map((p) => [p.project_id, p]));
   });
 
-  async function freeIntermediates(r: Project) {
+  async function freeIntermediates(r: ProjectSummary) {
     const ok = confirm(
       `Free intermediates for "${r.name}"? The saved final image stays; ` +
         'cached upstream stages will need to be recomputed if you tweak.'
@@ -126,7 +126,7 @@
     }
   }
 
-  async function deleteProject(r: Project) {
+  async function deleteProject(r: ProjectSummary) {
     const owned = storageById.get(r.id)?.owned_bytes ?? 0;
     const ok = confirm(
       `Delete "${r.name}"? This drops the project and frees ` +
@@ -179,14 +179,14 @@
       {@const activeJob = activeByJobId.get(r.current_job_id)}
       {@const c = r.capture}
       {@const common = c?.target_common_name && c.target_common_name !== r.name ? c.target_common_name : null}
-      {@const failed = !activeJob && !!r.history?.find((h) => h.seq === r.current_seq)?.failed}
+      {@const failed = !activeJob && r.current_failed}
       {@const pct = activeJob ? Math.round(activeJob.progress * 100) : 0}
       <li class="card" class:busy={busyId === r.id} style="--stagger: {i}">
         <a class="pic" href="/projects/{r.id}" aria-label="Open {common ?? r.name}">
           {#if r.preview_hash && r.preview_port && !brokenPics.has(r.id)}
             <img
               onerror={() => (brokenPics = new Set([...brokenPics, r.id]))}
-              src={api.previewUrl(r.preview_hash, r.preview_port)}
+              src={api.previewThumbUrl(r.preview_hash, r.preview_port)}
               alt=""
               loading="lazy"
               decoding="async"
