@@ -505,7 +505,17 @@ def run_job(
             for input_hash in _input_node_hashes(resolved_inputs):
                 cache_obj.mark_in_use(input_hash, job_id)
 
-        def _node_progress(f: float, m: str, _nid: str = nid) -> None:
+        # A node with several stages (a Siril script of several commands, a
+        # loop over dark groups) can report each stage from 0 again. The bar
+        # must never go backwards, so the highest fraction seen so far is a
+        # floor for everything the node reports after it. The message still
+        # goes through, so the user sees the stage change.
+        high_water = [0.0]
+
+        def _node_progress(
+            f: float, m: str, _nid: str = nid, _hw: list[float] = high_water
+        ) -> None:
+            f = _hw[0] = max(_hw[0], min(1.0, f))
             on_progress(f, f"{_nid}: {m}")
             on_event({"type": "node_progress", "node_id": _nid, "fraction": f, "message": m})
 

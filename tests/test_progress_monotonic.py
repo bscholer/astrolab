@@ -309,3 +309,66 @@ def test_narrowband_compose_progress_is_monotonic(
             f"narrowband_compose[{mode}] progress went backwards: "
             f"{prev:.4f} -> {curr:.4f}\nfull series: {log!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Runtime-level: the guard every node goes through
+# ---------------------------------------------------------------------------
+#
+# Nodes with several stages (a Siril script of several commands, a loop over
+# dark groups, convert/calibrate/extract in the duo-band template) each
+# report a fresh 0..1 sweep. Fixing every node's bookkeeping one at a time
+# kept missing the next one, so the runtime holds the line for all of them:
+# whatever a node reports, the events the UI sees never go backwards.
+
+from pydantic import BaseModel  # noqa: E402
+
+from nodes.base import Node  # noqa: E402
+from server.models import Job, NodeSpec, Template  # noqa: E402
+from server.registry import register  # noqa: E402
+from server.runtime import run_job  # noqa: E402
+
+
+class _NoParams(BaseModel):
+    pass
+
+
+@register("__test_staged_progress__")
+class _StagedProgressNode(Node[_NoParams]):
+    """Reports three stages, each sweeping 0 -> 1 again, like a node that
+    runs several Siril commands or one command per group."""
+
+    id = "__test_staged_progress__"
+    version = 1
+    cost = "cheap"
+    inputs: dict[str, PortType] = {}
+    outputs = {"image": PortType.IMAGE_FITS}
+    params_schema = _NoParams
+
+    def run(self, inputs, params, ctx, out_dir):  # type: ignore[no-untyped-def]
+        for stage in ("convert", "calibrate", "register"):
+            for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+                ctx.progress(f, f"{stage} {f:.0%}")
+        out = Path(out_dir) / "image.fit"
+        out.write_bytes(b"X")
+        return {"image": Ref(node_hash="", port="image", path=out, type=PortType.IMAGE_FITS)}
+
+
+def test_runtime_never_sends_the_ui_a_falling_node_progress(astrolab_home: Path) -> None:
+    template = Template(
+        id="staged",
+        version=1,
+        nodes=[NodeSpec(id="prepare", kind="__test_staged_progress__")],
+        outputs={"image": "prepare.image"},
+    )
+    events: list[dict] = []
+    run_job(template, Job(template_id="staged", template_version=1), events=events.append)
+
+    progress = [e for e in events if e["type"] == "node_progress"]
+    fractions = [e["fraction"] for e in progress]
+    assert len(fractions) == 15, "every report should still be forwarded"
+    for prev, curr in zip(fractions, fractions[1:], strict=False):
+        assert curr >= prev, f"progress went backwards: {prev} -> {curr} in {fractions!r}"
+    # The stage change stays visible even while the bar holds still.
+    assert [e["message"] for e in progress][-1] == "register 100%"
+    assert any(e["message"].startswith("calibrate") for e in progress)
