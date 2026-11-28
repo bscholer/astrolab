@@ -183,11 +183,12 @@ class NasUsage:
         return True
 
     def start(self) -> None:
-        if self._root() is None:
-            return
-
+        # Always loop: the NAS can be set in Settings after startup.
         def loop() -> None:
             while True:
+                if self._root() is None:
+                    time.sleep(60)
+                    continue
                 last = self._load() or {}
                 try:
                     age = (

@@ -40,7 +40,9 @@ Other things it handles:
 
 ## Library
 
-New sessions get copied off the scope (and optionally to a NAS). Frames are sorted into good, rescued and junk. "Rescued" means the scope marked the frame as failed but it looks fine on a second check. Sessions with too little usable data are deleted.
+New sessions get copied off the scope. Frames are sorted into good, rescued and junk. "Rescued" means the scope marked the frame as failed but it looks fine on a second check. Sessions with too little usable data are deleted.
+
+With a NAS folder set in Settings, the NAS keeps the reference copy of every kept session, every finished picture and FITS, and a daily database snapshot. The server's disk then works like a cache in front of it. When the disk runs short, astrolab first clears pipeline steps it can rebuild, then moves raw frames from nights older than a week to the NAS (only after checking every file arrived intact). A job that needs those frames copies them back before it starts, which is slow, so the heavy stacking is best left to the overnight runs. Every version's picture, and the stacked and final FITS of each project's first, latest and cover versions, always stay on the server, so editing a project never waits on the NAS. Without a NAS, everything stays local.
 
 Each night is calibrated with matching darks, flats and bias, plate solved against a local Gaia catalogue (falling back to star matching), registered and stacked with Siril. The nights for a target are then combined into a master, which gets rebuilt whenever a good night is added. Sessions are matched by sky position, so mosaic panels end up in the same master, and so does a target that was saved under two different names.
 
@@ -51,7 +53,7 @@ The Projects page opens with how last night went: what each target added to its 
   <img src="docs/screenshots/library-phone.png" alt="Library on a phone" width="162" />
 </p>
 
-The Library page has a tile per target with its total time and how many frames were kept. A tile opens the target's sessions, where you can start a new project from any of them. The Storage tab shows what's taking up space on the NAS.
+The Library page has a tile per target with its total time and how many frames were kept. A tile opens the target's sessions, where you can start a new project from any of them. The Storage tab has two charts: what's taking up the server's disk (raw captures, kept results, the pipeline cache, other files, and free space) and what's on the NAS.
 
 ## Processing
 

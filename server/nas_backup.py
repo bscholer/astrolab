@@ -45,8 +45,21 @@ FITS_PORTS = ("stacked", "recombined", "stretched")
 """The stacked FITS and the first of these finals the template has."""
 
 
-def nas_root() -> Path | None:
-    root = os.environ.get("ASTROLAB_NAS_ROOT", "").strip()
+SETTING_NAS_ROOT = "nas_root"
+"""The NAS folder set in Settings. Unset: ASTROLAB_NAS_ROOT. Empty string: no NAS,
+even when the environment names one."""
+
+
+def nas_root(db_path: Path | None = None) -> Path | None:
+    """The mounted NAS folder, or None when astrolab runs local-only."""
+    from server.storage import get_setting  # storage imports this module's neighbours
+
+    try:
+        configured = get_setting(SETTING_NAS_ROOT, None, db_path=db_path)
+    except Exception:  # noqa: BLE001  (no catalog yet: fall back to the environment)
+        configured = None
+    root = configured if configured is not None else os.environ.get("ASTROLAB_NAS_ROOT", "")
+    root = str(root).strip()
     return Path(root) if root else None
 
 
@@ -67,6 +80,13 @@ def _copy_if_changed(src: Path, dst: Path) -> int:
 
 def _safe(name: str) -> str:
     return re.sub(r"[\\/:*?\"<>|]+", "_", name).strip() or "unnamed"
+
+
+def image_backup_path(dest: Path, project: str, seq: int, port: str, suffix: str) -> Path:
+    """Where copy_images puts one output of one version under `dest`."""
+    base = _safe(project)
+    label = "" if port == "image" else f" {port}"
+    return dest / base / f"{base} v{seq}{label}{suffix}"
 
 
 def copy_captures(
@@ -104,9 +124,12 @@ def _resolve(ref: dict, cache_root: Path | None) -> Path | None:
     path = Path(ref.get("path") or "")
     h = ref.get("node_hash")
     if cache_root is not None and h and h in path.parts:
-        moved = cache_root.joinpath(h, *path.parts[path.parts.index(h) + 1 :])
-        if moved.is_file():
-            return moved
+        rest = path.parts[path.parts.index(h) + 1 :]
+        # The cache entry, or its kept copy (server/results.py) once evicted.
+        for base in (cache_root, cache_root / "_kept"):
+            moved = base.joinpath(h, *rest)
+            if moved.is_file():
+                return moved
     return path if path.is_file() else None
 
 
@@ -126,15 +149,13 @@ def copy_images(conn: sqlite3.Connection, dest: Path, cache_root: Path | None = 
             outputs = json.loads(outputs_json)
         except ValueError:
             continue
-        base = _safe(name)
         finals = [p for p in FITS_PORTS[1:] if outputs.get(p)]
         for port in ["image", "stacked", *finals[:1]]:
             ref = outputs.get(port)
             src = _resolve(ref, cache_root) if isinstance(ref, dict) else None
             if src is None:  # evicted from the cache; the NAS keeps what it already got
                 continue
-            label = "" if port == "image" else f" {port}"
-            copied += _copy_if_changed(src, dest / base / f"{base} v{seq}{label}{src.suffix}")
+            copied += _copy_if_changed(src, image_backup_path(dest, name, seq, port, src.suffix))
     return copied
 
 
@@ -215,12 +236,11 @@ class NasBackup:
             conn.close()
 
     def start(self) -> None:
-        if self._root() is None:
-            return
-
+        # Always loop: the NAS can be set in Settings after startup. run() does
+        # nothing while none is set.
         def loop() -> None:
             while True:
                 self.run()
-                time.sleep(EVERY_S)
+                time.sleep(EVERY_S if self._root() is not None else 60)
 
         threading.Thread(target=loop, name="astrolab-nas", daemon=True).start()

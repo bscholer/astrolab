@@ -269,7 +269,8 @@ def _remove_orphans(
     scan_started_at: float,
     stats: ScanStats,
 ) -> None:
-    """Delete frame and master rows whose files no longer exist under ``root``.
+    """Delete frame and master rows whose files no longer exist under ``root``,
+    except frames of folders offloaded to the NAS.
 
     Scoped to the prefix we just scanned, so unrelated paths from other
     capture roots aren't affected. The scan timestamp filter is what
@@ -281,10 +282,14 @@ def _remove_orphans(
     frames from multiple scopes, so we don't filter by scope_id here.
     """
     root_prefix = str(root.resolve()) + "/"
+    # Frames of folders offloaded to the NAS (server/archive.py) are gone from
+    # disk on purpose; their rows stay.
     cur = conn.execute(
         "DELETE FROM frames "
         "WHERE substr(path, 1, ?) = ? "
-        "AND (scanned_at IS NULL OR scanned_at < ?)",
+        "AND (scanned_at IS NULL OR scanned_at < ?) "
+        "AND NOT EXISTS (SELECT 1 FROM archived_folders a "
+        "  WHERE substr(frames.path, 1, length(a.folder) + 1) = a.folder || '/')",
         (len(root_prefix), root_prefix, scan_started_at),
     )
     stats.removed = cur.rowcount or 0

@@ -280,3 +280,40 @@ def test_cleanup_over_budget_keeps_results(client, tmp_path: Path) -> None:
     assert body["evicted_count"] == 0
     assert body["over_budget"] is True
     assert client.get("/api/storage").json()["total_bytes"] == pre
+
+
+def test_nas_folder_is_a_setting_with_the_environment_as_fallback(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_nas = tmp_path / "env-nas"
+    env_nas.mkdir()
+    monkeypatch.setenv("ASTROLAB_NAS_ROOT", str(env_nas))
+    got = client.get("/api/settings").json()
+    assert (got["nas_root"], got["nas_root_source"], got["nas_reachable"]) == (
+        str(env_nas), "environment", True,
+    )
+
+    assert client.patch("/api/settings", json={"nas_root": "relative/x"}).status_code == 400
+    assert client.patch("/api/settings", json={"nas_root": str(tmp_path / "nope")}).status_code == 400
+
+    mine = tmp_path / "my-nas"
+    mine.mkdir()
+    assert client.patch("/api/settings", json={"nas_root": str(mine)}).status_code == 200
+    got = client.get("/api/settings").json()
+    assert (got["nas_root"], got["nas_root_source"]) == (str(mine.resolve()), "setting")
+
+    assert client.patch("/api/settings", json={"nas_root": ""}).status_code == 200
+    got = client.get("/api/settings").json()
+    assert (got["nas_root"], got["nas_root_source"]) == (None, "off")
+
+
+def test_local_storage_endpoint_measures_the_cache_disk(client: TestClient) -> None:
+    started = client.post("/api/storage/local/refresh").json()
+    assert "measuring" in started
+    deadline = time.time() + 10
+    body = client.get("/api/storage/local").json()
+    while body["last"] is None and time.time() < deadline:
+        time.sleep(0.05)
+        body = client.get("/api/storage/local").json()
+    ids = [k["id"] for k in body["last"]["kinds"]]
+    assert ids == ["captures", "results", "cache", "other", "reserved", "free"]

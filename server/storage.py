@@ -30,6 +30,7 @@ import logging
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -654,6 +655,11 @@ minutes and took the node down that way. 20% keeps jobs clear of both."""
 DISK_FLOOR_ENV = "ASTROLAB_DISK_FLOOR_FRACTION"
 
 
+def disk_total_bytes(path: Path) -> int:
+    """Size of `path`'s disk, 0 when it can't be read."""
+    return _disk_usage(path).total_bytes
+
+
 def disk_free_bytes(path: Path) -> int:
     """Free bytes on `path`'s disk, 0 when it can't be read."""
     return _disk_usage(path).free_bytes
@@ -710,8 +716,13 @@ def ensure_disk_headroom(
     need_bytes: int,
     cache_max_bytes: int,
     db_path: Path | None = None,
+    offload: Callable[[int], int] | None = None,
 ) -> CleanupResult | None:
     """Make sure `need_bytes` will fit before a node writes.
+
+    When sweeping the cache isn't enough, `offload(bytes)` may free more by
+    moving raw captures to the NAS (server/archive.py); it returns what it
+    freed. Kept results (server/results.py) are never touched.
 
     The disk floor (`disk_floor_bytes`) is never handed out: a node gets
     room only above it. Headroom is bounded by both the usable disk space AND the
@@ -752,6 +763,15 @@ def ensure_disk_headroom(
     result = run_cleanup(cache, max_bytes=target_max, db_path=db_path)
 
     disk_after = _disk_usage(cache.root)
+    short = need_bytes - (disk_after.free_bytes - floor)
+    if short > 0 and offload is not None:
+        try:
+            offloaded = offload(short)
+        except Exception:  # noqa: BLE001  (a NAS hiccup must not hide the real error)
+            log.exception("offloading captures failed")
+            offloaded = 0
+        if offloaded:
+            disk_after = _disk_usage(cache.root)
     if disk_after.free_bytes - floor < need_bytes:
         raise InsufficientStorageError(
             need_bytes=need_bytes,
@@ -789,6 +809,8 @@ SETTING_SCRAP_PURGE = "scrap_purge"
 SETTING_LAST_SCAN = "last_scan"
 """When the last capture scan finished, with its counters, so the Library can say
 "scanned 5m ago" for scans the server started on its own, across restarts."""
+SETTING_LOCAL_USAGE = "local_usage"
+"""The last walk of the cache's disk (server/local_usage.py)."""
 SETTING_NAS_USAGE = "nas_usage"
 """The last walk of the NAS (server/nas_usage.py), shown until the next one finishes."""
 """When true, the curator deletes scrap capture folders (server/curator.py)."""

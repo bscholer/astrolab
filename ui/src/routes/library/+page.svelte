@@ -19,6 +19,7 @@
   import { toast } from '$lib/toast.svelte';
   import { shortAgo, formatBytes, formatIntegrationTime, templateShortName } from '$lib/format';
   import SessionRow from '$lib/SessionRow.svelte';
+  import LocalStorage from '$lib/LocalStorage.svelte';
   import NasStorage from '$lib/NasStorage.svelte';
 
   // Tabs, like Tonight's. ?view= keeps the tab across reloads and links.
@@ -665,7 +666,16 @@
 </div>
 
 {#if view === 'storage'}
-  <NasStorage />
+  <div class="storage-grid">
+    <section class="storage-panel">
+      <h2 class="storage-title">This server</h2>
+      <LocalStorage />
+    </section>
+    <section class="storage-panel">
+      <h2 class="storage-title">NAS</h2>
+      <NasStorage />
+    </section>
+  </div>
 {/if}
 
 {#if scanning && scanStatus && view === 'library'}
@@ -1793,4 +1803,18 @@
     text-decoration-color: var(--accent);
   }
 
+  .storage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+    gap: 1.5rem 2.5rem;
+    margin-top: 0.5rem;
+  }
+  .storage-panel {
+    min-width: 0;
+  }
+  .storage-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 0 0 0.25rem;
+  }
 </style>

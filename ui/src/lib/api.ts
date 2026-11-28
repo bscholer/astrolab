@@ -797,11 +797,40 @@ export interface NasMeasurement {
 }
 
 export interface NasUsageResponse {
-  /** False when ASTROLAB_NAS_ROOT is not set. */
+  /** False when no NAS folder is set (Settings, or ASTROLAB_NAS_ROOT). */
   configured: boolean;
   measuring: boolean;
   error: string | null;
   last: NasMeasurement | null;
+}
+
+export type LocalKindId = 'captures' | 'results' | 'cache' | 'other' | 'reserved' | 'free';
+
+export interface LocalKind {
+  id: LocalKindId;
+  label: string;
+  bytes: number;
+  files: number;
+}
+
+/** One walk of the disk the cache lives on (server/local_usage.py). */
+export interface LocalMeasurement {
+  cache_root: string;
+  captures_root: string | null;
+  /** False when captures live on another disk; they're then not in the chart. */
+  captures_on_disk: boolean;
+  measured_at: string;
+  seconds: number;
+  kinds: LocalKind[];
+  disk: { total_bytes: number; used_bytes: number; free_bytes: number };
+  /** Free space jobs never use, so the node keeps running. */
+  floor_bytes: number;
+}
+
+export interface LocalUsageResponse {
+  measuring: boolean;
+  error: string | null;
+  last: LocalMeasurement | null;
 }
 
 export interface ProjectStorage {
@@ -909,6 +938,11 @@ export interface SettingsResponse {
   // by /api/scan as its scan target. Lives server-side (not localStorage)
   // so it survives across browsers and devices.
   capture_root: string | null;
+  // The NAS folder in effect: from Settings ("setting"), ASTROLAB_NAS_ROOT
+  // ("environment"), turned off ("off"), or none at all (null).
+  nas_root: string | null;
+  nas_root_source: 'setting' | 'environment' | 'off' | null;
+  nas_reachable: boolean;
   // Observer site for the Tonight planner; all three null until the user
   // sets them. Tonight refuses to compute alt/az without all three.
   site_latitude: number | null;
@@ -1276,6 +1310,9 @@ export const api = {
   getNasUsage: () => getJSON<NasUsageResponse>('/api/storage/nas'),
   refreshNasUsage: () =>
     postJSON<NasUsageResponse & { started: boolean }>('/api/storage/nas/refresh', {}),
+  getLocalUsage: () => getJSON<LocalUsageResponse>('/api/storage/local'),
+  refreshLocalUsage: () =>
+    postJSON<LocalUsageResponse & { started: boolean }>('/api/storage/local/refresh', {}),
   storageCleanup: (max_bytes?: number) =>
     postJSON<CleanupResponse>('/api/storage/cleanup', max_bytes !== undefined ? { max_bytes } : {}),
   getSettings: () => getJSON<SettingsResponse>('/api/settings'),
@@ -1283,6 +1320,7 @@ export const api = {
     cache_max_bytes?: number;
     cache_root?: string;
     capture_root?: string;
+    nas_root?: string;
     site_latitude?: number | null;
     site_longitude?: number | null;
     site_elevation_m?: number | null;

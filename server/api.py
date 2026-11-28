@@ -82,6 +82,7 @@ from server import (
     telemetry,
     weather,
 )
+from server.archive import archived_names
 from server.capture_loop import advise, measure_cached, needs_more_time, noise_drop, queue_more
 from server.catalog import showpieces
 from server.catalog.common_names import lookup as lookup_common_name
@@ -120,12 +121,13 @@ from server.job_builder import (
     build_from_sessions,
 )
 from server.jobs import JobManager
+from server.local_usage import LocalUsage
 from server.masters import MasterKeeper, master_projects
 from server.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
 from server.metrics import render_metrics
 from server.models import CalibrationSpec, Job, Template
 from server.morning import morning
-from server.nas_backup import NasBackup, nas_root
+from server.nas_backup import SETTING_NAS_ROOT, NasBackup, nas_root
 from server.nas_usage import NasUsage
 from server.paths import astrolab_home
 from server.preview import PreviewError, render_output, render_preview
@@ -156,6 +158,7 @@ from server.storage import (
     SETTING_CACHE_ROOT_OVERRIDE,
     SETTING_CAPTURE_ROOT,
     SETTING_LAST_SCAN,
+    SETTING_LOCAL_USAGE,
     SETTING_NAS_USAGE,
     SETTING_SCOPE_ALERT_URL,
     SETTING_SCOPE_AUTO,
@@ -226,6 +229,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     nas_backup.start()
     nas_usage.start()
     ensure_gaia_link()
+    local_usage.start()
     yield
     job_manager.shutdown(wait=False)
 
@@ -3225,6 +3229,19 @@ def remove_gaia_catalog() -> dict:
     return {"removed": gaia.remove(), **gaia.status()}
 
 
+@app.get("/api/storage/local")
+def get_local_storage() -> dict:
+    """What takes up the disk the cache lives on, by kind, from the last
+    background walk (server/local_usage.py). `last` is null until it finishes."""
+    return local_usage.snapshot()
+
+
+@app.post("/api/storage/local/refresh", status_code=202)
+def refresh_local_storage() -> dict:
+    """Start a new walk of the local disk. It takes a few seconds."""
+    return {"started": local_usage.refresh(), **local_usage.snapshot()}
+
+
 @app.get("/metrics", include_in_schema=False)
 def get_metrics() -> Response:
     """Prometheus scrape endpoint."""
@@ -3298,9 +3315,25 @@ def get_settings() -> dict:
         SETTING_CACHE_ROOT_OVERRIDE: persisted_root,
         "cache_root_active": str(job_manager.cache.root),
         SETTING_CAPTURE_ROOT: capture_root,
+        **_nas_settings(),
         SETTING_SITE_LATITUDE: (float(site_lat) if site_lat is not None else None),
         SETTING_SITE_LONGITUDE: (float(site_lon) if site_lon is not None else None),
         SETTING_SITE_ELEVATION_M: (float(site_elev) if site_elev is not None else None),
+    }
+
+
+def _nas_settings() -> dict:
+    """The NAS folder in effect, where it comes from, and whether it is mounted."""
+    configured = get_setting(SETTING_NAS_ROOT, None, db_path=job_manager.db_path)
+    root = nas_root(job_manager.db_path)
+    if configured is not None:
+        source = "setting" if str(configured).strip() else "off"
+    else:
+        source = "environment" if root is not None else None
+    return {
+        SETTING_NAS_ROOT: str(root) if root is not None else None,
+        "nas_root_source": source,
+        "nas_reachable": bool(root is not None and root.is_dir()),
     }
 
 
@@ -3544,8 +3577,10 @@ def queue_more_data(project_id: str, req: MoreDataRequest, conn: DBDep) -> dict:
 
 
 def _purged_folders() -> set[str]:
+    """Sessions the mirror must not copy again and the scope cleaner may free:
+    scrap the curator deleted, and folders whose reference copy is on the NAS."""
     with _db() as conn:
-        return purged_names(conn)
+        return purged_names(conn) | archived_names(conn)
 
 
 curator = Curator(
@@ -3591,6 +3626,12 @@ nas_usage = NasUsage(
     nas_root,
     load=lambda: get_setting(SETTING_NAS_USAGE, None, db_path=job_manager.db_path),
     save=lambda v: set_setting(SETTING_NAS_USAGE, v, db_path=job_manager.db_path),
+)
+local_usage = LocalUsage(
+    lambda: job_manager.cache.root,
+    _mirror_root,
+    load=lambda: get_setting(SETTING_LOCAL_USAGE, None, db_path=job_manager.db_path),
+    save=lambda v: set_setting(SETTING_LOCAL_USAGE, v, db_path=job_manager.db_path),
 )
 scope_mirror = Mirror(
     get_client=_scope_client,
@@ -4393,6 +4434,10 @@ class PatchSettingsRequest(BaseModel):
     """Where the user's raw captures live (Dwarf 3 SD copy, etc.). Pass ''
     to clear. Validated as: absolute, exists, readable. Effect is immediate
     — the next /api/scan call uses this path."""
+    nas_root: str | None = None
+    """The mounted NAS folder (server/nas_backup.py, server/archive.py). Pass ''
+    to run without a NAS. Validated as: absolute, an existing writable folder.
+    Unset, ASTROLAB_NAS_ROOT applies."""
     site_latitude: float | None = None
     """Observer latitude in decimal degrees, north positive. Range
     -90..90. Stored alongside longitude/elevation; the Tonight planner
@@ -4483,6 +4528,22 @@ def patch_settings(req: PatchSettingsRequest) -> dict:
                 str(cp.resolve()),
                 db_path=job_manager.db_path,
             )
+    if req.nas_root is not None:
+        new_nas = req.nas_root.strip()
+        if new_nas:
+            np_ = Path(new_nas).expanduser()
+            if not np_.is_absolute():
+                raise HTTPException(
+                    status_code=400, detail=f"nas_root must be an absolute path, got {new_nas!r}"
+                )
+            if not np_.is_dir():
+                raise HTTPException(
+                    status_code=400, detail=f"nas_root {np_} does not exist or isn't a folder"
+                )
+            if not os.access(np_, os.W_OK):
+                raise HTTPException(status_code=400, detail=f"nas_root {np_} isn't writable")
+            new_nas = str(np_.resolve())
+        set_setting(SETTING_NAS_ROOT, new_nas, db_path=job_manager.db_path)
     if req.site_latitude is not None:
         if not -90.0 <= req.site_latitude <= 90.0:
             raise HTTPException(

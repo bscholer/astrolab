@@ -1092,6 +1092,17 @@
             ],
             "title": "Capture Root"
           },
+          "nas_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nas Root"
+          },
           "site_elevation_m": {
             "anyOf": [
               {
@@ -5567,6 +5578,48 @@
           }
         },
         "summary": "Storage Cleanup"
+      }
+    },
+    "/api/storage/local": {
+      "get": {
+        "description": "What takes up the disk the cache lives on, by kind, from the last\nbackground walk (server/local_usage.py). `last` is null until it finishes.",
+        "operationId": "get_local_storage_api_storage_local_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Local Storage Api Storage Local Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Local Storage"
+      }
+    },
+    "/api/storage/local/refresh": {
+      "post": {
+        "description": "Start a new walk of the local disk. It takes a few seconds.",
+        "operationId": "refresh_local_storage_api_storage_local_refresh_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh Local Storage Api Storage Local Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Refresh Local Storage"
       }
     },
     "/api/storage/nas": {

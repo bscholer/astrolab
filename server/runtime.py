@@ -304,6 +304,7 @@ def run_job(
     job_id: str | None = None,
     db_path: Path | None = None,
     cache_max_bytes: int | None = None,
+    offload: Callable[[int], int] | None = None,
 ) -> dict[str, Ref]:
     """Execute a Job and return a map of declared template outputs to Refs.
 
@@ -500,6 +501,7 @@ def run_job(
                     need_bytes=estimate,
                     cache_max_bytes=cache_max_bytes,
                     db_path=db_path,
+                    offload=offload,
                 )
             except InsufficientStorageError as exc:
                 on_event(

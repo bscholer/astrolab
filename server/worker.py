@@ -41,6 +41,8 @@ IDLE_POLL_SECONDS = 0.25
 # pid, and its row's heartbeat is still fresh at that moment, so the row looked
 # alive forever.
 RECLAIM_INTERVAL_SECONDS = 60.0
+KEEP_RESULTS_SECONDS = 3600.0
+"""How often an idle worker re-checks the kept results (server/results.py)."""
 
 
 class _Shutdown:
@@ -73,9 +75,16 @@ def _run_loop(worker: JobWorker, shutdown: _Shutdown) -> None:
     if reclaimed:
         log.info("reclaimed %d stale running job(s)", reclaimed)
     last_reclaim = time.monotonic()
+    worker.keep_results()
+    last_keep = time.monotonic()
     while not shutdown.stop.is_set():
         record = worker.claim_next_queued()
         if record is None:
+            if time.monotonic() - last_keep >= KEEP_RESULTS_SECONDS:
+                # Jobs keep their own results as they finish; this catches
+                # cover changes, deleted projects and NAS copies.
+                last_keep = time.monotonic()
+                worker.keep_results()
             if time.monotonic() - last_reclaim >= RECLAIM_INTERVAL_SECONDS:
                 last_reclaim = time.monotonic()
                 reclaimed = worker.reclaim_stale()

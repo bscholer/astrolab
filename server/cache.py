@@ -14,6 +14,12 @@ Phase 0 is filesystem-only. The README mentions a SQLite reverse index
 `(node_id, params_hash) -> node_hash` for fast lookup; we defer that until
 the catalog lands in Phase 1, since for the Phase 0 demo a directory probe
 is plenty.
+
+Kept results live under `<root>/_kept/<node_hash>/` (server/results.py): hard
+links to the entries that hold each project's pictures and its key FITS, so
+eviction from the cache doesn't lose them. A lookup that misses the cache but
+finds a kept copy links it back into the cache, so the runtime, previews and
+downloads all see an ordinary hit.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -40,6 +47,8 @@ WARNINGS_MANIFEST: str = "_warnings.json"
 uncalibratable frames). Replayed as `node_warning` events when the
 runtime serves a cache hit so the UI's per-node badge stays
 accurate without re-running the node."""
+KEPT_DIR: str = "_kept"
+"""Folder under the cache root holding kept results (see module docstring)."""
 INUSE_PREFIX: str = "_inuse_"
 """An empty file `_inuse_<job_id>` inside an entry dir means a live job is
 reading or writing that entry. Eviction must skip directories with any
@@ -59,8 +68,37 @@ class ContentCache:
     def entry_dir(self, node_hash: str) -> Path:
         return self.root / node_hash
 
+    @property
+    def kept_root(self) -> Path:
+        return self.root / KEPT_DIR
+
+    def kept_dir(self, node_hash: str) -> Path:
+        return self.kept_root / node_hash
+
     def is_committed(self, node_hash: str) -> bool:
-        return (self.entry_dir(node_hash) / DONE_MARKER).exists()
+        if (self.entry_dir(node_hash) / DONE_MARKER).exists():
+            return True
+        return self._restore_kept(node_hash)
+
+    def _restore_kept(self, node_hash: str) -> bool:
+        """Link a kept copy back into the cache. False when there is none, or
+        a half-written entry of that hash is in the way (a job is writing it)."""
+        src = self.kept_dir(node_hash)
+        dst = self.entry_dir(node_hash)
+        if not (src / DONE_MARKER).exists() or dst.exists():
+            return False
+        tmp = self.root / f".restore-{node_hash}-{os.getpid()}"
+        try:
+            link_tree(src, tmp)
+            tmp.rename(dst)
+        except OSError as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if (dst / DONE_MARKER).exists():  # another process restored it first
+                return True
+            log.warning("cache: could not restore kept %s: %s", node_hash[:12], exc)
+            return False
+        log.info("cache: restored %s from kept results", node_hash[:12])
+        return True
 
     def lookup(self, node_hash: str) -> Path | None:
         """Return the entry directory if the cache holds a committed entry, else None."""
@@ -325,3 +363,22 @@ class ContentCache:
                 with contextlib.suppress(OSError):
                     total += path.stat().st_size
         return total
+
+
+def link_tree(src: Path, dst: Path) -> None:
+    """Recreate `src` at `dst` with hard links (copies across filesystems),
+    leaving out in-use markers. `dst` must not exist."""
+    dst.mkdir(parents=True)
+    for path in src.rglob("*"):
+        rel = path.relative_to(src)
+        if path.name.startswith(INUSE_PREFIX):
+            continue
+        target = dst / rel
+        if path.is_dir():
+            target.mkdir(exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(path, target)
+        except OSError:
+            shutil.copy2(path, target)

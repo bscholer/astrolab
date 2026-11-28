@@ -44,6 +44,13 @@
   let captureRoot = $state('');
   let persistedCaptureRoot = $state<string | null>(null);
   let savingCapture = $state(false);
+  // The NAS folder (server/nas_backup.py, server/archive.py). Empty runs
+  // local-only. Unset on the server means ASTROLAB_NAS_ROOT applies.
+  let nasRoot = $state('');
+  let persistedNasRoot = $state<string | null>(null);
+  let nasSource = $state<'setting' | 'environment' | 'off' | null>(null);
+  let nasReachable = $state(false);
+  let savingNas = $state(false);
   let scanning = $state(false);
 
   // Site location for the Tonight planner. We keep these as strings while
@@ -143,6 +150,26 @@
     };
   });
 
+  function applyNas(r: { nas_root: string | null; nas_root_source: typeof nasSource; nas_reachable: boolean }) {
+    persistedNasRoot = r.nas_root;
+    nasRoot = r.nas_root ?? '';
+    nasSource = r.nas_root_source;
+    nasReachable = r.nas_reachable;
+  }
+
+  async function saveNasRoot() {
+    const next = nasRoot.trim();
+    savingNas = true;
+    try {
+      applyNas(await api.patchSettings({ nas_root: next }));
+      toast.success(next ? 'NAS folder saved.' : 'Running without a NAS.');
+    } catch (e) {
+      toast.error(`Couldn't save: ${(e as Error).message}`);
+    } finally {
+      savingNas = false;
+    }
+  }
+
   async function saveCaptureRoot() {
     const next = captureRoot.trim();
     savingCapture = true;
@@ -200,6 +227,7 @@
       pendingCacheRoot = settings.cache_root ?? settings.cache_root_active;
       persistedCaptureRoot = settings.capture_root;
       captureRoot = settings.capture_root ?? '';
+      applyNas(settings);
       persistedSiteLat = settings.site_latitude;
       persistedSiteLon = settings.site_longitude;
       persistedSiteElev = settings.site_elevation_m;
@@ -291,6 +319,8 @@
   const captureDirty = $derived(
     captureRoot.trim() !== (persistedCaptureRoot ?? '')
   );
+
+  const nasDirty = $derived(nasRoot.trim() !== (persistedNasRoot ?? ''));
 
   const siteDirty = $derived(
     siteLatInput.trim() !== (persistedSiteLat !== null ? String(persistedSiteLat) : '') ||
@@ -560,6 +590,50 @@
       <a class="muted small" href={gaia.source} target="_blank" rel="noreferrer">Gaia DR3 catalogue from Siril (Zenodo)</a>
     </div>
   {/if}
+</section>
+
+<section class="panel">
+  <h2>NAS</h2>
+  <p class="muted small">
+    A mounted NAS folder holds the reference copy of kept captures, finished pictures and FITS, and
+    daily database snapshots. When this disk runs short, old nights' raw frames move there, and a job
+    that needs them copies them back before it starts. Leave it empty to keep everything on this
+    server.
+  </p>
+  <div class="capture-row">
+    <input
+      type="text"
+      class="capture-input"
+      placeholder="/nas"
+      bind:value={nasRoot}
+      autocomplete="off"
+      spellcheck="false"
+      aria-label="NAS folder"
+    />
+    <button
+      type="button"
+      class="btn"
+      onclick={saveNasRoot}
+      disabled={savingNas || !nasDirty}
+      title={nasDirty ? 'Save the NAS folder to the server' : 'No changes to save'}
+    >
+      {savingNas ? 'Saving…' : 'Save'}
+    </button>
+  </div>
+  <p class="muted small note">
+    {#if nasDirty}
+      Unsaved.
+    {:else if nasSource === 'environment'}
+      From <code>ASTROLAB_NAS_ROOT</code>. Saving a folder here overrides it.
+    {:else if nasSource === 'off'}
+      No NAS: everything stays on this server.
+    {:else if nasSource === null}
+      No NAS set.
+    {/if}
+    {#if !nasDirty && persistedNasRoot && !nasReachable}
+      <span class="err">The folder isn't mounted right now.</span>
+    {/if}
+  </p>
 </section>
 
 <section class="panel">
@@ -989,5 +1063,8 @@
     margin-top: 0.5rem;
     font-size: 0.85rem;
     color: var(--warn);
+  }
+  .err {
+    color: var(--bad);
   }
 </style>

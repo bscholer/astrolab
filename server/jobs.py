@@ -41,16 +41,22 @@ from .ports import PortType
 from .runtime import JobCancelled, RunError, planned_nodes, run_job
 from .storage import (
     SETTING_CACHE_MAX_BYTES,
+    SETTING_CAPTURE_ROOT,
     InsufficientStorageError,
     default_cache_max_bytes_for,
     disk_floor_bytes,
     disk_free_bytes,
+    disk_total_bytes,
     ensure_disk_headroom,
     get_setting,
     run_cleanup,
 )
 
 log = logging.getLogger("astrolab.jobs")
+
+
+class InputsUnavailable(RuntimeError):
+    """A job's frames are offloaded to the NAS and can't be fetched back."""
 
 JobStatus = Literal["queued", "running", "completed", "failed", "interrupted"]
 EventType = Literal[
@@ -652,8 +658,135 @@ class JobWorker:
                 )
             )
             run_cleanup(self._cache, max_bytes=max_bytes, db_path=self._db_path)
+            self.relieve_disk()
         except Exception:  # pragma: no cover (defensive)
             log.exception("auto cache sweep failed")
+
+    OFFLOAD_MARGIN_FRACTION = 0.05
+    """Captures start going to the NAS when free space falls within this share
+    of the disk above the floor, and go until it is that far above again."""
+
+    def _nas_and_captures(self) -> tuple[Path, Path] | None:
+        """The NAS and capture roots when captures can be offloaded: both set,
+        and the captures on the cache's disk (offloading elsewhere frees
+        nothing the jobs need)."""
+        from .nas_backup import nas_root
+
+        nas = nas_root(self._db_path)
+        captures = get_setting(SETTING_CAPTURE_ROOT, None, db_path=self._db_path)
+        if nas is None or not captures or not nas.is_dir():
+            return None
+        captures_path = Path(captures)
+        try:
+            if captures_path.stat().st_dev != self._cache.root.stat().st_dev:
+                return None
+        except OSError:
+            return None
+        return nas, captures_path
+
+    def offload_captures(self, need_bytes: int) -> int:
+        """Free up to `need_bytes` by offloading raw captures to the NAS
+        (server/archive.py). 0 without a NAS."""
+        roots = self._nas_and_captures()
+        if roots is None or need_bytes <= 0:
+            return 0
+        from .archive import offload
+
+        conn = open_catalog_db(self._db_path) if self._db_path else open_catalog_db()
+        try:
+            return offload(conn, roots[1], roots[0], need_bytes)
+        finally:
+            conn.close()
+
+    def relieve_disk(self) -> int:
+        """When the disk nears its floor even after the cache sweep, offload
+        captures until it has OFFLOAD_MARGIN_FRACTION of room again."""
+        floor = disk_floor_bytes(self._cache.root)
+        if not floor:
+            return 0
+        total = disk_total_bytes(self._cache.root)
+        target = floor + int(total * self.OFFLOAD_MARGIN_FRACTION)
+        free = disk_free_bytes(self._cache.root)
+        return self.offload_captures(target - free) if free < target else 0
+
+    def keep_results(self) -> None:
+        """Keep every project's pictures and key FITS out of eviction
+        (server/results.py). Never raises."""
+        from .nas_backup import nas_root
+        from .paths import nas_app
+        from .results import reconcile
+
+        try:
+            nas = nas_root(self._db_path)
+            images = nas_app(nas) / "images" if nas is not None and nas.is_dir() else None
+            conn = open_catalog_db(self._db_path) if self._db_path else open_catalog_db()
+            try:
+                reconcile(self._cache, conn, images)
+            finally:
+                conn.close()
+        except Exception:  # pragma: no cover (defensive)
+            log.exception("keeping results failed")
+
+    def _fetch_inputs(
+        self,
+        record: JobRecord,
+        emit: Any,
+        cancel: threading.Event,
+        cache_max_bytes: int,
+    ) -> None:
+        """Copy back from the NAS every offloaded capture folder this job's
+        frames live in, before the pipeline starts. Progress shows on the
+        job's first node of each night. Raises InputsUnavailable when it can't."""
+        from .archive import FetchError, fetch, needed
+
+        inputs = record.job.model_dump(mode="json").get("inputs") or {}
+        conn = open_catalog_db(self._db_path) if self._db_path else open_catalog_db()
+        try:
+            todo = needed(conn, inputs)
+            if not todo:
+                return
+            if self._nas_and_captures() is None:
+                raise InputsUnavailable(
+                    f"{len(todo)} capture folder(s) this job needs are on the NAS, "
+                    "and no NAS is reachable",
+                )
+            need = sum(a.bytes for a in todo)
+            try:
+                ensure_disk_headroom(
+                    self._cache, need_bytes=need, cache_max_bytes=cache_max_bytes,
+                    db_path=self._db_path, offload=self.offload_captures,
+                )
+            except InsufficientStorageError as exc:
+                raise InputsUnavailable(f"no room to fetch frames from the NAS: {exc}") from exc
+            node = next((k.split(".", 1)[0] for k in inputs if k.endswith(".lights")), None)
+            done = 0
+
+            def progress(n: int) -> None:
+                nonlocal done
+                done += n
+                if node is not None:
+                    emit({
+                        "type": "node_progress", "node_id": node,
+                        "fraction": min(1.0, done / need) if need else 1.0,
+                        "message": (
+                            f"fetching frames from the NAS: {done / 1e9:.1f} of "
+                            f"{need / 1e9:.1f} GB"
+                        ),
+                    })
+
+            log.info("job %s: fetching %d folder(s), %.1f GB, from the NAS",
+                     record.id[:8], len(todo), need / 1e9)
+            for item in todo:
+                try:
+                    fetch(conn, item, on_bytes=progress, cancel=cancel)
+                except FetchError as exc:
+                    if cancel.is_set():
+                        raise JobCancelled(node) from exc
+                    raise InputsUnavailable(str(exc)) from exc
+                except OSError as exc:
+                    raise InputsUnavailable(f"fetching {Path(item.folder).name}: {exc}") from exc
+        finally:
+            conn.close()
 
     # -- internals ---------------------------------------------------------
 
@@ -702,7 +835,7 @@ class JobWorker:
             try:
                 ensure_disk_headroom(
                     self._cache, need_bytes=1, cache_max_bytes=cache_max_bytes,
-                    db_path=self._db_path,
+                    db_path=self._db_path, offload=self.offload_captures,
                 )
             except InsufficientStorageError as exc:
                 error = (
@@ -775,6 +908,7 @@ class JobWorker:
             with telemetry.tracer.start_as_current_span("job") as span:
                 span.set_attribute("astrolab.job_id", record.id)
                 span.set_attribute("astrolab.force", bool(record.force))
+                self._fetch_inputs(record, event_sink, cancel_event, cache_max_bytes)
                 outputs = run_job(
                     record.template,
                     record.job,
@@ -785,6 +919,7 @@ class JobWorker:
                     job_id=record.id,
                     db_path=self._db_path,
                     cache_max_bytes=cache_max_bytes,
+                    offload=self.offload_captures,
                 )
             record.outputs = outputs
             log.info(
@@ -804,6 +939,8 @@ class JobWorker:
         except RunError as exc:
             error = disk_stop["error"] if disk_stop else str(exc)
             self._terminate(record, status="failed", error=error)
+        except InputsUnavailable as exc:
+            self._terminate(record, status="failed", error=str(exc))
         except Exception as exc:  # pragma: no cover (defensive)
             log.exception("job %s crashed", record.id)
             self._terminate(
@@ -820,8 +957,9 @@ class JobWorker:
                 log.exception("failed to release in-use marks for job %s", record.id)
             monitor_stop.set()
             monitor_thread.join(timeout=5)
-            # The job's own leftovers (a failed run's entries) go now, not at
-            # the next job.
+            # Keep the new version's pictures before the sweep, then clear the
+            # job's own leftovers (a failed run's entries) now, not at the next job.
+            self.keep_results()
             self.sweep_cache()
 
     def _disk_kill(self, record: JobRecord) -> None:

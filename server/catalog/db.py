@@ -20,7 +20,7 @@ from pathlib import Path
 
 from server.paths import astrolab_home
 
-CURRENT_SCHEMA_VERSION = 19
+CURRENT_SCHEMA_VERSION = 20
 
 
 # Each entry runs once when the DB is at version N-1, advancing it to N.
@@ -494,6 +494,25 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "INSERT INTO schema_version (version) VALUES (19)",
+    ],
+    20: [
+        # server/archive.py: capture folders whose reference copy is on the
+        # NAS. local = 0 while the folder is off local disk; a job that needs
+        # it fetches it from nas_path first and sets local = 1. The row stays
+        # either way: the scanner keeps the rows of frames that were never
+        # backed up (unrescued failed_*), and the mirror doesn't copy the
+        # folder back from the scope.
+        """
+        CREATE TABLE archived_folders (
+            folder       TEXT PRIMARY KEY,
+            nas_path     TEXT NOT NULL,
+            bytes        INTEGER NOT NULL,
+            files        INTEGER NOT NULL,
+            archived_at  REAL NOT NULL,
+            local        INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        "INSERT INTO schema_version (version) VALUES (20)",
     ],
 }
 
