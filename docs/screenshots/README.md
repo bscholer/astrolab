@@ -1,6 +1,6 @@
 # Screenshots used in the README
 
-Referenced by `<img>` tags in `README.md`. Dark mode, 1440x900 browser, the site's own time zone (America/Los_Angeles). `scope.png` is cropped to 1440x720.
+Referenced by `<img>` tags in `README.md`. Dark mode, 1440x900 browser, the site's own time zone (America/Los_Angeles). `scope.png` is cropped to 1440x720. Projects, Library, the editor and the sky map also have a `-phone.png` taken at 390x844 (2x), shown beside the desktop shot at the same height.
 
 - `projects.png` - Projects page with the Last night strip (shows when the night was yesterday or tonight).
 - `library.png` - Library, Targets tab.
