@@ -84,14 +84,21 @@ fi
 # the API stay in 'pending' forever. We run it as a background process here
 # so a single container ships both halves of the system.
 #
-# Trade-off: there's no supervisor, so if the worker crashes the container
-# keeps running with just the API. uvicorn's logs will keep flowing but
-# new jobs will queue indefinitely. For v0.1.x this is fine; if the worker
-# becomes flaky in practice we'll add s6 or tini.
+# A small loop restarts it when it exits: the worker exits on purpose when a
+# job ignores a stop for disk space (server/jobs.py, _disk_kill), and a crash
+# would otherwise leave jobs queued forever. The new worker reclaims the
+# dead one's job on start.
 step "starting job worker"
-python -m server.worker &
+(
+    while true; do
+        code=0
+        python -m server.worker || code=$?
+        echo "astrolab: job worker exited ($code), restarting in 5 s" >&2
+        sleep 5
+    done
+) &
 WORKER_PID=$!
-ok "worker pid=$WORKER_PID"
+ok "worker supervisor pid=$WORKER_PID"
 
 # ---------------------------------------------------------------------------
 # 4. Hand off to the foreground process (uvicorn)

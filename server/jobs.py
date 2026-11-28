@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -40,7 +41,11 @@ from .ports import PortType
 from .runtime import JobCancelled, RunError, run_job
 from .storage import (
     SETTING_CACHE_MAX_BYTES,
+    InsufficientStorageError,
     default_cache_max_bytes_for,
+    disk_floor_bytes,
+    disk_free_bytes,
+    ensure_disk_headroom,
     get_setting,
     run_cleanup,
 )
@@ -499,6 +504,12 @@ class JobWorker:
     HEARTBEAT_SECONDS = 5
     CANCEL_POLL_SECONDS = 0.5
     CACHE_SWEEP_SECONDS = 30
+    DISK_CHECK_SECONDS = 2.0
+    """How often a running job checks the cache disk against its floor
+    (storage.DISK_FLOOR_FRACTION). At Siril's write rate, a few GB."""
+    DISK_KILL_GRACE_SECONDS = 60.0
+    """How long a job stopped for disk space has to wind down before the
+    worker removes its half-written entries and exits."""
     """How often the monitor thread re-runs the eviction sweep while a
     job is active. Cheap when under budget; when over budget, bounds how
     long the cache can balloon mid-job before we reclaim space. The in-use
@@ -657,18 +668,69 @@ class JobWorker:
         # read; this is purely reclaiming old/orphaned/bulk entries.
         self.sweep_cache()
 
+        # Look up the cache budget once per job so the runtime can preflight
+        # disk headroom on bulk-tier nodes. Passing it (and db_path) here is
+        # what activates the per-node estimator / InsufficientStorageError
+        # path; tests that bypass JobWorker get the legacy no-op behavior.
+        cache_max_bytes = int(
+            get_setting(
+                SETTING_CACHE_MAX_BYTES,
+                default_cache_max_bytes_for(self._cache.root),
+                db_path=self._db_path,
+            )
+        )
+
         cancel_event = threading.Event()
         monitor_stop = threading.Event()
+        disk_stop: dict[str, Any] = {}
+        """Set when the disk watchdog stopped the job: `error` and `at`."""
+
+        def check_disk(now: float) -> None:
+            # The per-node estimate runs once, before a node writes, and not
+            # every node has one. This catches whatever it missed: when the
+            # cache disk drops under its floor mid-node, evict what we can,
+            # and if that isn't enough, stop the job before kubelet starts
+            # evicting pods (storage.DISK_FLOOR_FRACTION).
+            if disk_stop:
+                if now - disk_stop["at"] >= self.DISK_KILL_GRACE_SECONDS:
+                    self._disk_kill(record)
+                return
+            floor = disk_floor_bytes(self._cache.root)
+            if not floor or disk_free_bytes(self._cache.root) >= floor:
+                return
+            try:
+                ensure_disk_headroom(
+                    self._cache, need_bytes=1, cache_max_bytes=cache_max_bytes,
+                    db_path=self._db_path,
+                )
+            except InsufficientStorageError as exc:
+                error = (
+                    "stopped to keep the cache disk from filling: "
+                    f"{exc.free_bytes / 1e9:.0f} GB free, and "
+                    f"{exc.floor_bytes / 1e9:.0f} GB must stay free so the node keeps "
+                    "running. Free space or delete old projects, then rerun; finished "
+                    "steps are kept."
+                )
+                log.warning("job %s: %s", record.id[:8], error)
+                disk_stop.update(at=now, error=error)
+                cancel_event.set()
+            except Exception:  # pragma: no cover (defensive)
+                log.exception("disk check failed")
 
         def monitor() -> None:
-            # Three duties: heartbeat the row so reclaim_stale doesn't kick
-            # us, poll cancel_requested so the API can ask us to stop, and
+            # Four duties: heartbeat the row so reclaim_stale doesn't kick
+            # us, poll cancel_requested so the API can ask us to stop,
             # periodically re-sweep the cache so a long job doesn't blow
-            # past the storage budget mid-run. Each duty has its own cadence.
+            # past the storage budget mid-run, and stop the job when the
+            # disk nears full (check_disk). Each duty has its own cadence.
             heartbeat_at = 0.0
             sweep_at = time.monotonic()  # pre-job sweep already ran; wait one cycle
+            disk_at = 0.0
             while not monitor_stop.is_set():
                 now = time.monotonic()
+                if now - disk_at >= self.DISK_CHECK_SECONDS:
+                    check_disk(now)
+                    disk_at = now
                 if now - heartbeat_at >= self.HEARTBEAT_SECONDS:
                     self._heartbeat(record.id)
                     heartbeat_at = now
@@ -708,17 +770,6 @@ class JobWorker:
             sink_stats["events"] += 1
             sink_stats["persist_s"] += time.monotonic() - t
 
-        # Look up the cache budget once per job so the runtime can preflight
-        # disk headroom on bulk-tier nodes. Passing it (and db_path) here is
-        # what activates the per-node estimator / InsufficientStorageError
-        # path; tests that bypass JobWorker get the legacy no-op behavior.
-        cache_max_bytes = int(
-            get_setting(
-                SETTING_CACHE_MAX_BYTES,
-                default_cache_max_bytes_for(self._cache.root),
-                db_path=self._db_path,
-            )
-        )
         try:
             with telemetry.tracer.start_as_current_span("job") as span:
                 span.set_attribute("astrolab.job_id", record.id)
@@ -742,12 +793,16 @@ class JobWorker:
             )
             self._terminate(record, status="completed")
         except JobCancelled as exc:
+            if disk_stop:
+                self._terminate(record, status="failed", error=disk_stop["error"])
+                return
             msg = (
                 f"cancelled at node {exc.node_id!r}" if exc.node_id else "cancelled"
             )
             self._terminate(record, status="interrupted", error=msg)
         except RunError as exc:
-            self._terminate(record, status="failed", error=str(exc))
+            error = disk_stop["error"] if disk_stop else str(exc)
+            self._terminate(record, status="failed", error=error)
         except Exception as exc:  # pragma: no cover (defensive)
             log.exception("job %s crashed", record.id)
             self._terminate(
@@ -767,6 +822,26 @@ class JobWorker:
             # The job's own leftovers (a failed run's entries) go now, not at
             # the next job.
             self.sweep_cache()
+
+    def _disk_kill(self, record: JobRecord) -> None:
+        """Last resort when a job stopped for disk space keeps running: a
+        node that doesn't check cancel could otherwise write until kubelet
+        evicts the pod. Remove the job's half-written entries, mark it
+        failed, and exit the worker process; the entrypoint restarts it."""
+        log.critical(
+            "job %s ignored the disk stop for %.0fs; removing its partial "
+            "entries and exiting the worker", record.id[:8], self.DISK_KILL_GRACE_SECONDS,
+        )
+        for h in set(record.node_hashes.values()):
+            with contextlib.suppress(Exception):
+                if not self._cache.is_committed(h):
+                    shutil.rmtree(self._cache.entry_dir(h), ignore_errors=True)
+        with contextlib.suppress(Exception):
+            self._terminate(
+                record, status="failed",
+                error="stopped to keep the cache disk from filling; the worker restarted",
+            )
+        os._exit(75)
 
     @retry_on_locked
     def _terminate(

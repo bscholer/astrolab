@@ -44,6 +44,14 @@ def _no_scope_mirror_thread(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_disk_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Jobs keep a share of the real disk free (server/storage.py,
+    DISK_FLOOR_FRACTION); tests must not depend on how full the host is.
+    tests/test_disk_floor.py turns it back on."""
+    monkeypatch.setenv("ASTROLAB_DISK_FLOOR_FRACTION", "0")
+
+
+@pytest.fixture(autouse=True)
 def _keep_every_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """Most tests seed a few synthetic frames and expect them in the library. With
     no scrap threshold, the curator keeps every session at once. Curator tests

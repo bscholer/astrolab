@@ -42,6 +42,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from nodes._seq_runner import drop_staged, quote, stage_sequence
+from nodes._storage_estimate import estimate_sequence_output_bytes
 from nodes.base import Node
 from nodes.basic.seq_register import quality_filters
 from server.models import Ref, RunContext
@@ -115,6 +116,17 @@ class NarrowbandExtractNode(Node[NarrowbandExtractParams]):
         "oiii": PortType.IMAGE_FITS,
     }
     params_schema = NarrowbandExtractParams
+
+    def estimate_storage_bytes(
+        self,
+        inputs: dict[str, Ref],
+        params: NarrowbandExtractParams,
+    ) -> int | None:
+        """Peak while running: the Ha and OIII sequences at full size in
+        float32 and a registered copy of each, so four times the input."""
+        del params
+        one = estimate_sequence_output_bytes(inputs["sequence"].path)
+        return None if one is None else 4 * one
 
     def run(
         self,

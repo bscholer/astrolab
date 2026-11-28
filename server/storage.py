@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -641,6 +642,36 @@ def run_cleanup(
 # ---------------------------------------------------------------------------
 
 
+DISK_FLOOR_FRACTION = 0.20
+"""Share of the cache's disk astrolab never fills, whatever the cache budget.
+
+The cache sits on the node's /scratch SSD, which on lambda-ubuntu also holds
+containerd's images and every pod's writable layer. When it fills, kubelet
+deletes images (image GC starts at 85% used) and then evicts every pod on
+the node (eviction-hard at 2% free there, see homelab-config
+ansible/host_vars/lambda-ubuntu.yml). A Veil stack once wrote 341 GB in 46
+minutes and took the node down that way. 20% keeps jobs clear of both."""
+DISK_FLOOR_ENV = "ASTROLAB_DISK_FLOOR_FRACTION"
+
+
+def disk_free_bytes(path: Path) -> int:
+    """Free bytes on `path`'s disk, 0 when it can't be read."""
+    return _disk_usage(path).free_bytes
+
+
+def disk_floor_bytes(path: Path) -> int:
+    """Free space jobs must leave on `path`'s disk: DISK_FLOOR_FRACTION of the
+    disk, or ASTROLAB_DISK_FLOOR_FRACTION (0 turns the floor off)."""
+    try:
+        fraction = float(os.environ.get(DISK_FLOOR_ENV, DISK_FLOOR_FRACTION))
+    except ValueError:
+        fraction = DISK_FLOOR_FRACTION
+    fraction = min(max(fraction, 0.0), 0.9)
+    if fraction == 0:
+        return 0
+    return int(_disk_usage(path).total_bytes * fraction)
+
+
 class InsufficientStorageError(RuntimeError):
     """Raised when a node needs more bytes than we can possibly free up.
 
@@ -649,19 +680,27 @@ class InsufficientStorageError(RuntimeError):
     with a human-readable message.
     """
 
-    def __init__(self, *, need_bytes: int, free_bytes: int, evicted_bytes: int):
+    def __init__(
+        self, *, need_bytes: int, free_bytes: int, evicted_bytes: int, floor_bytes: int = 0
+    ):
         self.need_bytes = need_bytes
         self.free_bytes = free_bytes
         self.evicted_bytes = evicted_bytes
+        self.floor_bytes = floor_bytes
         super().__init__(self._format())
 
     def _format(self) -> str:
         def _gb(n: int) -> str:
             return f"{n / 1_000_000_000:.1f} GB"
+        floor = (
+            f", and {_gb(self.floor_bytes)} must stay free so the node keeps running"
+            if self.floor_bytes
+            else ""
+        )
         return (
             f"not enough disk space: need {_gb(self.need_bytes)}, "
             f"only {_gb(self.free_bytes)} free after evicting "
-            f"{_gb(self.evicted_bytes)} from cache"
+            f"{_gb(self.evicted_bytes)} from cache{floor}"
         )
 
 
@@ -674,7 +713,8 @@ def ensure_disk_headroom(
 ) -> CleanupResult | None:
     """Make sure `need_bytes` will fit before a node writes.
 
-    Headroom is bounded by both the physical disk free space AND the
+    The disk floor (`disk_floor_bytes`) is never handed out: a node gets
+    room only above it. Headroom is bounded by both the usable disk space AND the
     configured cache budget: a 1 TB cache cap doesn't help if only 20 GB
     are left on the partition. Both constraints apply:
       - cache_used' must leave (cache_max_bytes - cache_used') >= need_bytes
@@ -685,17 +725,20 @@ def ensure_disk_headroom(
     aggressive sweep can't get us there.
     """
     disk = _disk_usage(cache.root)
+    floor = disk_floor_bytes(cache.root)
+    # Space below the floor is not ours to use (see DISK_FLOOR_FRACTION).
+    usable_free = max(0, disk.free_bytes - floor)
     with _conn(db_path) as conn:
         entries, _ = build_reachability(conn, cache)
     cache_used = sum(e.bytes for e in entries.values())
 
     budget_headroom = max(0, cache_max_bytes - cache_used)
-    headroom = min(disk.free_bytes, budget_headroom)
+    headroom = min(usable_free, budget_headroom)
     if headroom >= need_bytes:
         return None
 
     # Sweep enough to satisfy whichever constraint is binding.
-    disk_deficit = max(0, need_bytes - disk.free_bytes)
+    disk_deficit = max(0, need_bytes - usable_free)
     budget_deficit = max(0, need_bytes - budget_headroom)
     target_max = max(0, min(
         cache_max_bytes - need_bytes,
@@ -709,11 +752,12 @@ def ensure_disk_headroom(
     result = run_cleanup(cache, max_bytes=target_max, db_path=db_path)
 
     disk_after = _disk_usage(cache.root)
-    if disk_after.free_bytes < need_bytes:
+    if disk_after.free_bytes - floor < need_bytes:
         raise InsufficientStorageError(
             need_bytes=need_bytes,
             free_bytes=disk_after.free_bytes,
             evicted_bytes=result.bytes_freed,
+            floor_bytes=floor,
         )
     return result
 
