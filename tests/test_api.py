@@ -227,6 +227,15 @@ def test_scan_status_remembers_the_last_scan_across_restarts(
     client = TestClient(app)
     finished = client.get("/api/scan/status").json()["finished_at"]
     assert finished is not None
+    # The scan thread marks itself finished, then saves that; wait for the save
+    # before the "restart", or this races it.
+    from server.api import SETTING_LAST_SCAN, get_setting, job_manager
+
+    deadline = time.time() + 5
+    while (get_setting(SETTING_LAST_SCAN, None, db_path=job_manager.db_path) or {}).get(
+        "finished_at"
+    ) != finished and time.time() < deadline:
+        time.sleep(0.02)
 
     monkeypatch.setattr(scan_state, "_state", scan_state.ScanState())
     snap = client.get("/api/scan/status").json()
